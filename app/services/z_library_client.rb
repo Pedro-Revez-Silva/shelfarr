@@ -93,11 +93,16 @@ class ZLibraryClient
       ensure_configured!
 
       with_authenticated_retry(context: "download lookup") do |auth|
-        response = get_file_response(auth, id: id, hash: hash)
+        exchange = get_file_exchange(auth, id: id, hash: hash)
+        response = usable_search_response(exchange)
 
-        if download_html_fallback_response?(response)
+        if response.nil? || download_html_fallback_response?(response)
           alternate_download_url = get_download_url_from_alternate_domains(auth, id: id, hash: hash)
           return alternate_download_url if alternate_download_url
+
+          if response.nil? && !search_exchange_walled?(exchange)
+            raise ConnectionError, "Z-Library download lookup failed: #{exchange[:error].presence || "no response"}"
+          end
 
           Rails.logger.warn "[ZLibraryClient] eAPI download lookup unavailable; falling back to HTML book page"
           return get_html_download_url(auth, id: id, hash: hash)
@@ -987,10 +992,13 @@ class ZLibraryClient
       )
     end
 
-    def get_file_response(auth, id:, hash:)
-      connection.get("#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file") do |req|
-        req.headers["Cookie"] = cookie_header(auth)
-      end
+    # The file endpoint can 307 to the same bot wall search already follows.
+    def get_file_exchange(auth, id:, hash:)
+      follow_exchange(
+        "#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file",
+        method: :get,
+        seed_cookies: cookie_header(auth)
+      )
     end
 
     def parse_response(response, context:)
@@ -1053,8 +1061,8 @@ class ZLibraryClient
 
     def get_download_url_from_alternate_domains(current_auth, id:, hash:)
       each_alternate_auth(current_auth) do |auth|
-        response = get_file_response(auth, id: id, hash: hash)
-        next if download_html_fallback_response?(response)
+        response = usable_search_response(get_file_exchange(auth, id: id, hash: hash))
+        next if response.nil? || download_html_fallback_response?(response)
 
         data = parse_response(response, context: "download lookup")
         download_link = data.dig("file", "downloadLink")
@@ -1250,12 +1258,16 @@ class ZLibraryClient
     end
 
     def get_html_download_url(auth, id:, hash:)
-      response = connection.get("#{auth[:base_url]}/book/#{id}/#{hash}") do |req|
-        req.headers["Cookie"] = cookie_header(auth)
-      end
+      exchange = follow_exchange(
+        "#{auth[:base_url]}/book/#{id}/#{hash}",
+        method: :get,
+        seed_cookies: cookie_header(auth)
+      )
+      response = usable_search_response(exchange)
 
-      unless response.status == 200
-        raise ConnectionError, "Z-Library HTML download lookup failed with status #{response.status}"
+      unless response&.status == 200
+        status = response&.status || exchange[:error]
+        raise ConnectionError, "Z-Library HTML download lookup failed with status #{status}"
       end
 
       doc = Nokogiri::HTML(response.body.to_s)
@@ -1263,7 +1275,8 @@ class ZLibraryClient
         doc.at_css('a[href^="/dl/"], a[href*="/dl/"]')&.[]("href").presence
       raise Error, "Z-Library did not return a download link" if download_link.blank?
 
-      absolute_url(auth[:base_url], download_link).tap { |url| validate_download_url!(url) }
+      base_url = login_base_url(URI.parse(exchange[:url]), URI.parse(auth[:base_url]))
+      absolute_url(base_url, download_link).tap { |url| validate_download_url!(url) }
     end
 
     def absolute_url(base_url, url)

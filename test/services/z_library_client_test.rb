@@ -1107,6 +1107,142 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "get_download_url replays a saved session after a same-url 307 sets a cookie" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      file_url = "https://z-library.sk/eapi/book/999/deadbeef/file"
+      stub_request(:get, file_url)
+        .to_return(
+          status: 307,
+          body: diamwall_html,
+          headers: {
+            "Content-Type" => "text/html",
+            "Location" => file_url,
+            "Set-Cookie" => "__diamwall=token; Path=/"
+          }
+        ).then
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            file: { downloadLink: "https://z-library.sk/dl/999/deadbeef/book.epub" }
+          }.to_json,
+          headers: json_headers
+        )
+
+      assert_equal(
+        "https://z-library.sk/dl/999/deadbeef/book.epub",
+        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      )
+      assert_requested(:get, file_url, times: 1) do |request|
+        request.headers["Cookie"] == "remix_userid=12345; remix_userkey=saved-key"
+      end
+      assert_requested(:get, file_url, times: 1) do |request|
+        request.headers["Cookie"] == "__diamwall=token; remix_userid=12345; remix_userkey=saved-key"
+      end
+      assert_not_requested :get, "https://z-library.sk/book/999/deadbeef"
+    end
+  end
+
+  test "get_download_url tries an alternate domain when the file endpoint stays bot-walled" do
+    SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-library.bz")
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      recovered = stub_request(:get, "https://z-library.bz/eapi/book/999/deadbeef/file")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            file: { downloadLink: "https://download.z-library.bz/books/test-book.epub" }
+          }.to_json,
+          headers: json_headers
+        )
+
+      assert_equal(
+        "https://download.z-library.bz/books/test-book.epub",
+        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      )
+      assert_requested recovered
+      assert_not_requested :get, "https://z-library.sk/book/999/deadbeef"
+    end
+  end
+
+  test "get_download_url falls back to the HTML book page when the file endpoint stays bot-walled" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      book_url = "https://z-library.sk/book/999/deadbeef"
+      stub_request(:get, book_url)
+        .to_return(
+          status: 307,
+          headers: { "Location" => book_url, "Set-Cookie" => "dw=1; Path=/" }
+        ).then
+        .to_return(
+          status: 200,
+          body: '<html><a class="btn btn-default addDownloadedBook" href="/dl/999/deadbeef/book.epub">Download</a></html>',
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal(
+        "https://z-library.sk/dl/999/deadbeef/book.epub",
+        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      )
+      assert_requested(:get, book_url, times: 1) do |request|
+        request.headers["Cookie"] == "dw=1; remix_userid=12345; remix_userkey=saved-key"
+      end
+    end
+  end
+
+  test "get_download_url does not follow a diamwall file redirect" do
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-library.sk/eapi/book/999/deadbeef/file")
+        .to_return(
+          status: 307,
+          body: diamwall_html,
+          headers: {
+            "Content-Type" => "text/html",
+            "Location" => "https://z-library.sk/diamwall/challenge"
+          }
+        )
+      challenge = stub_request(:any, "https://z-library.sk/diamwall/challenge")
+      html_stub = stub_request(:get, "https://z-library.sk/book/999/deadbeef")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=saved-key" })
+        .to_return(
+          status: 200,
+          body: '<html><a class="btn btn-default addDownloadedBook" href="/dl/999/deadbeef/book.epub">Download</a></html>',
+          headers: { "Content-Type" => "text/html" }
+        )
+
+      assert_equal(
+        "https://z-library.sk/dl/999/deadbeef/book.epub",
+        ZLibraryClient.get_download_url(id: "999", hash: "deadbeef")
+      )
+      assert_requested html_stub
+      assert_not_requested challenge
+    end
+  end
+
   test "login cache is invalidated when credentials change" do
     VCR.turned_off do
       stub_zlibrary_login_success
