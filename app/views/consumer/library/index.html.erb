@@ -68,3 +68,7 @@
     <% if @next_cursor %><div class="consumer-pagination"><%= link_to "More on your shelf", consumer_library_path(type: @type, q: @query.presence, status: @status.presence, sort: @sort, cursor: @next_cursor), class: "consumer-button consumer-button--subtle" %></div><% end %>
   <% end %>
 </section>
+
+<% if (android_page = android_app_page_path) %>
+  <div class="consumer-pagination"><%= link_to "Get the Android app", android_page, class: "consumer-button consumer-button--subtle" %></div>
+<% end %>

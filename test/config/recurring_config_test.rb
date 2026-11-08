@@ -104,4 +104,16 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal "default", job["queue"]
     assert_equal "every 15 minutes", job["schedule"]
   end
+
+  test "refreshes the Android build cache every six hours" do
+    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+
+    job = config.fetch("default").fetch("android_update_refresh")
+
+    assert_equal "AndroidUpdateRefreshJob", job["class"]
+    assert_equal "default", job["queue"]
+    assert_equal "every 6 hours", job["schedule"]
+    assert_nil job["args"]
+    assert_equal job, config.fetch("production").fetch("android_update_refresh")
+  end
 end
