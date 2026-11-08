@@ -18,7 +18,9 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import mockwebserver3.MockResponse
+import mockwebserver3.MockResponseBody
 import okio.Buffer
+import okio.BufferedSink
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -208,17 +210,41 @@ class AppUpdaterTest {
         publish()
         updater.checkNow()
         updater.await { it is UpdateState.Available }
-        origin.enqueue(MockResponse.Builder().code(200).body(Buffer().write(apk)).throttleBody(8_192, 200, TimeUnit.MILLISECONDS).build())
-        updater.download()
-        updater.await { it is UpdateState.Downloading && it.bytesDone > 0 }
-        updater.cancelDownload()
-        assertTrue(updater.state.value is UpdateState.Available)
-        waitUntil { files().isEmpty() }
+        val firstChunk = CountDownLatch(1)
+        val finishBody = CountDownLatch(1)
+        val body = object : MockResponseBody {
+            override val contentLength = apk.size.toLong()
+            override fun writeTo(sink: BufferedSink) {
+                sink.write(apk, 0, 8_192)
+                sink.flush()
+                firstChunk.countDown()
+                check(finishBody.await(10, TimeUnit.SECONDS))
+                sink.write(apk, 8_192, apk.size - 8_192)
+            }
+        }
+        try {
+            origin.enqueue(MockResponse.Builder().code(200).body(body).build())
+            updater.download()
+            assertTrue(firstChunk.await(10, TimeUnit.SECONDS))
+            // Small files need not emit intermediate progress. Hold the response
+            // until bytes are on disk so cancellation cannot race a completed transfer.
+            waitUntil {
+                directory.listFiles().orEmpty().any {
+                    it.name.endsWith(".apk.part") && it.length() in 1 until apk.size.toLong()
+                }
+            }
+            updater.cancelDownload()
+            assertTrue(updater.state.value is UpdateState.Available)
+            waitUntil { files().isEmpty() }
+            finishBody.countDown()
 
-        serveApk()
-        updater.download()
-        updater.await { it is UpdateState.Ready }
-        assertEquals(setOf("update-3.apk"), files())
+            serveApk()
+            updater.download()
+            updater.await { it is UpdateState.Ready }
+            assertEquals(setOf("update-3.apk"), files())
+        } finally {
+            finishBody.countDown()
+        }
     }
 
     @Test
