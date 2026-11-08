@@ -29,6 +29,12 @@ Connections are owned by the signed-in Shelfarr user, including for admins.
 Another user cannot view, poll, refresh, or disconnect them. Nothing is added
 to the shared acquisition library, and there are no sharing controls yet.
 
+Screenshots below use a synthetic test account and an example approval code:
+
+![Mobile account approval](screenshot-kobo-account-activation-mobile.png)
+
+![Private catalogue after approval](screenshot-kobo-account-catalogue-desktop.png)
+
 ## What this step does and does not test
 
 This preview requests account authorization and catalogue metadata only. It
