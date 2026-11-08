@@ -104,3 +104,11 @@ Publish the APK first, then the feed.
   installer usually offers "Open").
 - The flow has unit, rendering and lint coverage; installation on a real device or
   emulator is not exercised by CI.
+
+## Screens
+
+These are fixture renders; version numbers illustrate a later available build.
+The first screen uses enlarged system text.
+
+<img src="screenshot-native-update-available.png" width="270" alt="Update available with enlarged text" />
+<img src="screenshot-native-update-permission.png" width="270" alt="Android installation permission explained inside Shelfarr" />
