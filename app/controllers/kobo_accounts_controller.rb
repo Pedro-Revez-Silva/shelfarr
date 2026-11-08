@@ -62,6 +62,5 @@ class KoboAccountsController < ApplicationController
 
   def prevent_caching
     response.headers["Cache-Control"] = "private, no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
   end
 end

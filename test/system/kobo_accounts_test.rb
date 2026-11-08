@@ -6,7 +6,18 @@ require_relative "../test_helpers/kobo_account_test_helper"
 class KoboAccountsTest < ApplicationSystemTestCase
   include KoboAccountTestHelper
 
-  setup { sign_in_as(users(:one)) }
+  setup do
+    @forgery_protection = KoboAccountsController.allow_forgery_protection
+    @origin_check = KoboAccountsController.forgery_protection_origin_check
+    KoboAccountsController.allow_forgery_protection = true
+    KoboAccountsController.forgery_protection_origin_check = true
+    sign_in_as(users(:one))
+  end
+
+  teardown do
+    KoboAccountsController.allow_forgery_protection = @forgery_protection
+    KoboAccountsController.forgery_protection_origin_check = @origin_check
+  end
 
   test "approve through the account screen and inspect its private catalogue" do
     stub_kobo_activation

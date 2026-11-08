@@ -21,7 +21,8 @@ class KoboAccountsControllerTest < ActionDispatch::IntegrationTest
     assert_select "[data-testid=kobo-activation-code]", text: "123456"
     assert_select "a[href='https://www.kobo.com/activate'][rel='noopener noreferrer']"
     assert_includes response.headers["Cache-Control"], "no-store"
-    assert_equal "no-referrer", response.headers["Referrer-Policy"]
+    assert_equal "same-origin", response.headers["Referrer-Policy"]
+    assert_select "meta[name=referrer][content=no-referrer]", count: 0
     assert_not_includes response.body, WORKFLOW
     assert_not_includes response.body, account.device_id
     assert_not_includes response.body, account.serial_number
@@ -171,5 +172,35 @@ class KoboAccountsControllerTest < ActionDispatch::IntegrationTest
     assert_not KoboAccount.exists?(account.id)
   ensure
     KoboAccountsController.skip_before_action(callback) if callback
+  end
+
+  test "same-origin forms work while missing tokens cross-origin and null-origin requests remain rejected" do
+    protection = KoboAccountsController.allow_forgery_protection
+    origin_check = KoboAccountsController.forgery_protection_origin_check
+    KoboAccountsController.allow_forgery_protection = true
+    KoboAccountsController.forgery_protection_origin_check = true
+    get kobo_accounts_path
+    origin = request.base_url
+    token = Nokogiri::HTML(response.body).at_css("form[action='#{kobo_accounts_path}'] input[name=authenticity_token]")["value"]
+    assert_equal "same-origin", response.headers["Referrer-Policy"]
+    [ "null", "https://another.example" ].each do |wrong_origin|
+      assert_no_difference "KoboAccount.count" do
+        post kobo_accounts_path, params: { name: "My account", authenticity_token: token }, headers: { "Origin" => wrong_origin }
+      end
+      assert_response :unprocessable_entity
+    end
+    post kobo_accounts_path, params: { name: "My account" }, headers: { "Origin" => origin }
+    assert_response :unprocessable_entity
+    assert_not_requested :get, %r{\A#{AUTH}/ActivateOnWeb\?}
+    get kobo_accounts_path
+    token = Nokogiri::HTML(response.body).at_css("form[action='#{kobo_accounts_path}'] input[name=authenticity_token]")["value"]
+    stub_kobo_activation
+    assert_difference "KoboAccount.count", 1 do
+      post kobo_accounts_path, params: { name: "My account", authenticity_token: token }, headers: { "Origin" => origin }
+    end
+    assert_response :redirect
+  ensure
+    KoboAccountsController.allow_forgery_protection = protection
+    KoboAccountsController.forgery_protection_origin_check = origin_check
   end
 end
