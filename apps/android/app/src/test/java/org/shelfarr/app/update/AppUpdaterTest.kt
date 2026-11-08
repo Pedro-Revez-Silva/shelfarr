@@ -66,9 +66,9 @@ class AppUpdaterTest {
         sessionInstaller: PackageSessionInstaller = installer,
         start: Boolean = true,
     ): AppUpdater = AppUpdater(
-        source = source,
+        builtIn = source,
         channel = "development",
-        fetcher = source?.let { UpdateFetcher(TestTls.trustingClient(), it) },
+        fetcherFor = { UpdateFetcher(TestTls.trustingClient(), it) },
         inspector = inspector,
         installer = sessionInstaller,
         directory = directory,

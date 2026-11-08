@@ -30,9 +30,10 @@ val shelfarrVersionName: String = (findProperty("shelfarrVersionName") as String
     }
 }
 
-// The publisher feed an in-app update may come from, fixed at build time. Empty (the
-// default) switches the updater off and leaves out its install permission. Debug and
-// release builds read separate properties, so a development feed can't reach a release.
+// The publisher feed fixed at build time. Since update discovery, it is only a fallback
+// for Shelfarr servers that don't announce a feed of their own. Empty (the default)
+// means no fallback. Debug and release builds read separate properties, so a
+// development feed can't reach a release.
 fun updateFeedUrl(property: String): String {
     val value = (findProperty(property) as String?).orEmpty().trim()
     if (value.isEmpty()) return ""
@@ -55,6 +56,14 @@ fun updateFeedUrl(property: String): String {
 val debugUpdateFeedUrl = updateFeedUrl("shelfarrUpdateFeedUrl")
 val releaseUpdateFeedUrl = updateFeedUrl("shelfarrReleaseUpdateFeedUrl")
 
+// Whether the app asks the connected Shelfarr server for its update feed (default on).
+// With this off and no build-time feed, the updater and its install permission are left out.
+val serverUpdates: Boolean = when (val value = (findProperty("shelfarrServerUpdates") as String?)?.trim()) {
+    null, "", "true" -> true
+    "false" -> false
+    else -> throw IllegalArgumentException("shelfarrServerUpdates must be true or false, not '$value'")
+}
+
 android {
     namespace = "org.shelfarr.app"
     compileSdk = 37
@@ -69,6 +78,7 @@ android {
         testInstrumentationRunnerArguments["additionalTestOutputDir"] =
             "/sdcard/Android/media/org.shelfarr.app.debug/reader-smoke"
         buildConfigField("boolean", "ALLOW_LOCAL_HTTP", "false")
+        buildConfigField("boolean", "UPDATE_FROM_SERVER", serverUpdates.toString())
     }
 
     buildTypes {
@@ -102,9 +112,9 @@ android {
     // One copy of the brand fonts, shared with the iOS project.
     sourceSets["main"].assets.directories.add("../../design/assets")
 
-    // The install permission and status receiver exist only in builds that have a feed.
-    if (debugUpdateFeedUrl.isNotEmpty()) sourceSets["debug"].manifest.srcFile("src/updater/AndroidManifest.xml")
-    if (releaseUpdateFeedUrl.isNotEmpty()) sourceSets["release"].manifest.srcFile("src/updater/AndroidManifest.xml")
+    // The install permission and status receiver exist only in builds that can update themselves.
+    if (serverUpdates || debugUpdateFeedUrl.isNotEmpty()) sourceSets["debug"].manifest.srcFile("src/updater/AndroidManifest.xml")
+    if (serverUpdates || releaseUpdateFeedUrl.isNotEmpty()) sourceSets["release"].manifest.srcFile("src/updater/AndroidManifest.xml")
 
     testOptions {
         unitTests {

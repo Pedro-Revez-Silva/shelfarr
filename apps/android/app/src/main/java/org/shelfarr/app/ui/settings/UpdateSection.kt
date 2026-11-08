@@ -1,6 +1,7 @@
 package org.shelfarr.app.ui.settings
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -15,6 +16,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,6 +50,7 @@ interface UpdateActions {
     fun dismissPermission() {}
     fun showPrompt() {}
     fun cancelInstall() {}
+    fun setAutoDownload(enabled: Boolean) {}
 
     companion object {
         val None = object : UpdateActions {}
@@ -55,10 +59,11 @@ interface UpdateActions {
 
 /**
  * The app's own updates, at the foot of Settings. Quiet when there is nothing to do;
- * nothing here starts a download or an installation unless the person asks.
+ * nothing here starts an installation unless the person asks, and downloads start on
+ * their own only when [autoDownload] is on.
  */
 @Composable
-internal fun UpdateSection(state: UpdateState, nowMs: Long, actions: UpdateActions) {
+internal fun UpdateSection(state: UpdateState, nowMs: Long, actions: UpdateActions, autoDownload: Boolean = false) {
     var askToPause by remember { mutableStateOf(false) }
     fun install(pausePlayback: Boolean) {
         if (actions.install(pausePlayback) == InstallRequest.PLAYBACK_ACTIVE) askToPause = true
@@ -72,7 +77,7 @@ internal fun UpdateSection(state: UpdateState, nowMs: Long, actions: UpdateActio
                     state.checking -> "Checking for updates…"
                     state.notice != null -> state.notice
                     state.lastCheckedAtMs != null -> "Up to date · checked ${formatAgo(state.lastCheckedAtMs, nowMs)}"
-                    else -> "Shelfarr checks for updates while you use it."
+                    else -> "Shelfarr checks your server for updates while you use it."
                 }
                 Text(status, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 state.problem?.let { Problem(it) }
@@ -146,6 +151,7 @@ internal fun UpdateSection(state: UpdateState, nowMs: Long, actions: UpdateActio
                 }
             }
         }
+        if (state != UpdateState.Disabled) AutoDownloadRow(autoDownload, actions::setAutoDownload)
     }
 
     if (askToPause) {
@@ -161,6 +167,25 @@ internal fun UpdateSection(state: UpdateState, nowMs: Long, actions: UpdateActio
             },
             dismissButton = { TextButton(onClick = { askToPause = false }) { Text("Not now") } },
         )
+    }
+}
+
+/** Opt-in: downloads may start on their own; installing still always waits for the person. */
+@Composable
+private fun AutoDownloadRow(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = onChange)
+            .padding(top = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text("Download updates automatically", style = MaterialTheme.typography.bodyMedium)
+            Muted("On Wi-Fi and other unmetered networks. Installing always waits for you.")
+        }
+        Switch(checked = enabled, onCheckedChange = null)
     }
 }
 

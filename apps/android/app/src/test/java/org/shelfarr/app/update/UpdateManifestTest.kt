@@ -62,6 +62,13 @@ class UpdateManifestTest {
     }
 
     @Test
+    fun `release note limits count Unicode codepoints like the publisher and server`() {
+        val notes = "😀".repeat(UpdateManifest.MAX_NOTES_CHARS)
+        assertEquals(notes, UpdateManifest.parse(feed("release_notes" to JsonPrimitive(notes)), expected).releaseNotes)
+        rejects(UpdateProblem.BAD_FEED, feed("release_notes" to JsonPrimitive(notes + "😀")))
+    }
+
+    @Test
     fun `refuses a feed for another app or channel`() {
         rejects(UpdateProblem.WRONG_APP, feed("package_name" to JsonPrimitive("org.shelfarr.app")))
         rejects(UpdateProblem.WRONG_APP, feed("package_name" to JsonPrimitive("com.evil.debug")))
@@ -115,5 +122,42 @@ class UpdateManifestTest {
     @Test
     fun `refuses a document that only claims fields with the wrong types`() {
         rejects(UpdateProblem.BAD_FEED, buildJsonObject { put("schema_version", 1); put("channel", 7) }.toString())
+    }
+
+    private val serverSource = requireNotNull(
+        UpdateSource.forServer(
+            (org.shelfarr.app.core.ServerAddress.parse("https://updates.example.org") as org.shelfarr.app.core.ServerAddress.ParseResult.Valid).address,
+            "/downloads/android-development.json",
+        ),
+    )
+
+    @Test
+    fun `a server's feed must list the API generations the build speaks`() {
+        val fromServer = FeedExpectation(serverSource, "development", PACKAGE)
+        val missing = assertThrows(UpdateException::class.java) { UpdateManifest.parse(feed(), fromServer) }
+        assertEquals(UpdateProblem.BAD_FEED, missing.problem)
+        val versions = kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(1), JsonPrimitive(2)))
+        val release = UpdateManifest.parse(feed("consumer_api_versions" to versions), fromServer)
+        assertEquals(setOf(1, 2), release.consumerApiVersions)
+        assertEquals(release, UpdateManifest.parse(release.toJson(), fromServer))
+        assertEquals(true, release.worksWith(setOf(2)))
+        assertEquals(false, release.worksWith(setOf(3)))
+    }
+
+    @Test
+    fun `the built-in feed may leave the API generations out, meaning the original one`() {
+        val release = UpdateManifest.parse(feed(), expected)
+        assertNull(release.consumerApiVersions)
+        assertEquals(true, release.worksWith(setOf(ConsumerApiGenerations.ORIGINAL)))
+        assertEquals(false, release.worksWith(setOf(2)))
+        assertEquals(release, UpdateManifest.parse(release.toJson(), expected))
+    }
+
+    @Test
+    fun `malformed API generations reject the feed`() {
+        listOf("[]", "[\"1\"]", "[0]", "[1001]", "[1,1]", "[1.0]", "1", "{}").forEach { raw ->
+            val value = kotlinx.serialization.json.Json.parseToJsonElement(raw)
+            rejects(UpdateProblem.BAD_FEED, feed("consumer_api_versions" to value))
+        }
     }
 }

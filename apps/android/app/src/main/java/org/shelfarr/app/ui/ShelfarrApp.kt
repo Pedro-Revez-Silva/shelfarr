@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +33,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +43,7 @@ import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -72,6 +75,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.shelfarr.app.core.BookType
+import org.shelfarr.app.core.ConnectDecision
+import org.shelfarr.app.core.ConnectLinks
+import org.shelfarr.app.core.ServerAddress
 import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.Session
@@ -112,20 +118,74 @@ internal const val PLAYER = "player/{id}"
 internal const val DOWNLOADS = "downloads"
 
 @Composable
-fun ShelfarrApp(container: AppContainer, requestedScreen: MutableStateFlow<AppScreen?> = remember { MutableStateFlow(null) }) {
+fun ShelfarrApp(
+    container: AppContainer,
+    requestedScreen: MutableStateFlow<AppScreen?> = remember { MutableStateFlow(null) },
+    connectRequest: MutableStateFlow<ServerAddress?> = remember { MutableStateFlow(null) },
+) {
     val sessionState by container.sessions.session.collectAsStateWithLifecycle()
+    // Survives rotation; a link's explanation stays until the person dismisses it.
+    var noticeTitle by rememberSaveable { mutableStateOf<String?>(null) }
+    var noticeMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val explain: (ConnectDecision.Explain) -> Unit = { decision ->
+        noticeTitle = decision.title
+        noticeMessage = decision.message
+    }
     Surface(Modifier.fillMaxSize()) {
         when (val state = sessionState) {
             is SessionState.SignedIn -> CompositionLocalProvider(LocalServer provides state.session.server) {
+                // Signed in, a link never connects anything: at most it explains.
+                ConnectLinkEffect(connectRequest, decide = { ConnectLinks.decide(it, state) }, onConnect = {}, onExplain = explain)
                 MainShell(container, state.session, requestedScreen)
             }
             else -> {
                 // A notification can't open another account's downloads through the sign-in screen.
                 LaunchedEffect(Unit) { requestedScreen.value = null }
-                SetupFlow(container)
+                SetupFlow(container, connectRequest, explain)
             }
         }
     }
+    val title = noticeTitle
+    val message = noticeMessage
+    if (title != null && message != null) {
+        ConnectLinkNotice(title, message) {
+            noticeTitle = null
+            noticeMessage = null
+        }
+    }
+}
+
+/**
+ * Acts once on a `shelfarr://connect` link the activity received, cold or warm. The
+ * request is consumed as soon as it is decided, so recreation can't repeat it.
+ */
+@Composable
+internal fun ConnectLinkEffect(
+    connectRequest: MutableStateFlow<ServerAddress?>,
+    decide: (ServerAddress) -> ConnectDecision,
+    onConnect: (ServerAddress) -> Unit,
+    onExplain: (ConnectDecision.Explain) -> Unit,
+) {
+    val requested by connectRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(requested) {
+        val server = requested ?: return@LaunchedEffect
+        connectRequest.value = null
+        when (val decision = decide(server)) {
+            is ConnectDecision.Connect -> onConnect(decision.server)
+            ConnectDecision.AlreadyThere -> Unit
+            is ConnectDecision.Explain -> onExplain(decision)
+        }
+    }
+}
+
+@Composable
+internal fun ConnectLinkNotice(title: String, message: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } },
+    )
 }
 
 /**
@@ -154,7 +214,7 @@ private fun Context.installPermissionIntent(): Intent =
     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
 
 @Composable
-private fun rememberUpdateActions(updater: AppUpdater): UpdateActions {
+private fun rememberUpdateActions(updater: AppUpdater, setAutoDownload: (Boolean) -> Unit): UpdateActions {
     val context = LocalContext.current
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         updater.onPermissionReturned()
@@ -175,6 +235,7 @@ private fun rememberUpdateActions(updater: AppUpdater): UpdateActions {
             override fun dismissPermission() = updater.dismissPermission()
             override fun showPrompt() = updater.showPromptAgain()
             override fun cancelInstall() = updater.cancelInstall()
+            override fun setAutoDownload(enabled: Boolean) = setAutoDownload(enabled)
         }
     }
 }
@@ -189,10 +250,24 @@ private fun Context.openNotificationSettings() {
 }
 
 @Composable
-private fun SetupFlow(container: AppContainer) {
+private fun SetupFlow(
+    container: AppContainer,
+    connectRequest: MutableStateFlow<ServerAddress?>,
+    onExplain: (ConnectDecision.Explain) -> Unit,
+) {
     val viewModel: SetupViewModel = viewModel { SetupViewModel(container) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+
+    ConnectLinkEffect(
+        connectRequest,
+        decide = { server ->
+            val setup = viewModel.state.value
+            ConnectLinks.decide(server, container.sessions.session.value, setup.signInActivity, setup.signingInTo)
+        },
+        onConnect = viewModel::connectFromLink,
+        onExplain = onExplain,
+    )
 
     LaunchedEffect(viewModel) {
         viewModel.openBrowser.collect { uri -> context.openInBrowser(uri) }
@@ -315,7 +390,8 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
             var disconnecting by remember { mutableStateOf(false) }
             val records by (container.currentAccount()?.downloads?.records ?: remember { MutableStateFlow(emptyMap()) })
                 .collectAsStateWithLifecycle()
-            val updateActions = rememberUpdateActions(container.updater)
+            val updateActions = rememberUpdateActions(container.updater, container::setAutoDownloadUpdates)
+            val autoDownloadUpdates by container.autoDownloadUpdates.collectAsStateWithLifecycle()
             LifecycleResumeEffect(container.updater) {
                 // Android may have dropped an installation without saying so.
                 container.updater.reconcileInstalling()
@@ -335,6 +411,7 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
                 onDownloads = { navController.navigate(DOWNLOADS) },
                 update = update,
                 updateActions = updateActions,
+                autoDownloadUpdates = autoDownloadUpdates,
             )
         }
         screen(DETAILS, listOf(navArgument("id") { type = NavType.StringType })) { entry ->

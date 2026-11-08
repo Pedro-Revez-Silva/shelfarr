@@ -17,6 +17,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -41,6 +44,8 @@ import org.shelfarr.app.core.KeystoreSecureStore
 import org.shelfarr.app.core.ProgressRegistry
 import org.shelfarr.app.core.Session
 import org.shelfarr.app.core.SessionManager
+import org.shelfarr.app.core.ServerAddress
+import org.shelfarr.app.core.StorageLayout
 import org.shelfarr.app.core.buildHttpClient
 import org.shelfarr.app.playback.PlaybackController
 import org.shelfarr.app.reader.ReaderSettingsStore
@@ -53,6 +58,7 @@ import org.shelfarr.app.update.AndroidPackageInspector
 import org.shelfarr.app.update.AndroidSessionInstaller
 import org.shelfarr.app.update.AppUpdater
 import org.shelfarr.app.update.PlaybackGuard
+import org.shelfarr.app.update.ServerDiscovery
 import org.shelfarr.app.update.UpdateFetcher
 import org.shelfarr.app.update.UpdateSource
 import org.shelfarr.app.update.buildUpdateHttpClient
@@ -140,11 +146,11 @@ class AppContainer(context: Context) {
     val httpClient: OkHttpClient = buildHttpClient(sessions) { rejected -> sessions.markExpired(rejected) }
     val api = ConsumerApi(httpClient)
     val authorizer = DeviceAuthorizer(api)
-    val epubCache = EpubCache(File(appContext.cacheDir, "epub"), httpClient)
+    val epubCache = EpubCache(File(appContext.cacheDir, StorageLayout.EPUB_CACHE_DIRECTORY), httpClient)
     val playback = PlaybackController(appContext, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
 
     // Display preferences only. No credential or identifier belongs here.
-    private val preferences: SharedPreferences = appContext.getSharedPreferences("preferences", Context.MODE_PRIVATE)
+    private val preferences: SharedPreferences = appContext.getSharedPreferences(StorageLayout.PREFERENCES, Context.MODE_PRIVATE)
     val readerSettings = ReaderSettingsStore(preferences)
 
     /** True while one of the app's screens is visible, which is when Android lets it start user-initiated work. */
@@ -176,7 +182,7 @@ class AppContainer(context: Context) {
             .components { add(OkHttpNetworkFetcherFactory(callFactory = { httpClient })) }
             .diskCache {
                 DiskCache.Builder()
-                    .directory(File(appContext.cacheDir, "covers"))
+                    .directory(File(appContext.cacheDir, StorageLayout.COVER_CACHE_DIRECTORY))
                     .maxSizeBytes(128L * 1024 * 1024)
                     .build()
             }
@@ -186,28 +192,41 @@ class AppContainer(context: Context) {
 
     private var account: AccountServices? = null
 
+    private val autoDownloadUpdatesState = MutableStateFlow(preferences.getBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, false))
+
+    /** Whether a found update may download on its own over an unmetered network. Installing always waits. */
+    val autoDownloadUpdates: StateFlow<Boolean> = autoDownloadUpdatesState.asStateFlow()
+
     /**
-     * Updates this app from its build-time publisher feed. It has its own HTTP client and
-     * never sees the Shelfarr server, the account or its credential.
+     * Updates this app from the feed the connected server offers, or the build-time
+     * publisher feed for servers that predate that. It has its own HTTP client and never
+     * sends the account's credential, cookies or anything the account holds.
      */
-    val updater: AppUpdater = UpdateSource.parse(BuildConfig.UPDATE_FEED_URL).let { source ->
+    val updater: AppUpdater = buildUpdateHttpClient().let { client ->
         AppUpdater(
-            source = source,
+            builtIn = UpdateSource.parse(BuildConfig.UPDATE_FEED_URL),
             channel = BuildConfig.UPDATE_CHANNEL,
-            fetcher = source?.let { UpdateFetcher(buildUpdateHttpClient(), it) },
+            fetcherFor = { source -> UpdateFetcher(client, source) },
             inspector = AndroidPackageInspector(appContext),
             installer = AndroidSessionInstaller(appContext),
-            directory = File(appContext.noBackupFilesDir, "updates"),
+            directory = StorageLayout.updatesDirectory(appContext),
             playback = object : PlaybackGuard {
                 override val isPlaying: Boolean get() = playback.isListening
                 override fun pause() = playback.pause()
             },
             scope = scope,
             beforeInstall = ::saveBeforeInstall,
+            discovery = if (BuildConfig.UPDATE_FROM_SERVER) ServerDiscovery(client) else null,
+            server = { updateServer(sessions.session.value) },
+            autoDownload = { autoDownloadUpdatesState.value && network.isUnmetered() },
         ).also { it.start() }
     }
 
     init {
+        // A different server may offer a different feed; what the previous one offered no longer applies.
+        scope.launch {
+            sessions.session.map { updateServer(it)?.identity }.distinctUntilChanged().drop(1).collect { updater.onServerChanged() }
+        }
         // Streams can't continue without a session, so don't leave a dead player behind.
         scope.launch {
             sessions.session.collect { state ->
@@ -235,8 +254,8 @@ class AppContainer(context: Context) {
         // The next account's downloads wait until the previous transfers have stopped.
         val closing = account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val directory = File(appContext.filesDir, "accounts/${session.accountKey}")
-        val store = FileProgressStore(File(directory, "progress.json"))
+        val directory = StorageLayout.accountDirectory(appContext, session.accountKey)
+        val store = FileProgressStore(File(directory, StorageLayout.PROGRESS_FILE))
         // Bound to this account's credential, so its retries and downloads can't borrow another token.
         val accountClient = buildHttpClient({ Credential(session.server, session.accessToken) }) { sessions.markExpired(it) }
         val accountApi = ConsumerApi(accountClient)
@@ -250,7 +269,7 @@ class AppContainer(context: Context) {
         )
         lateinit var downloads: DownloadManager
         downloads = DownloadManager(
-            root = File(directory, "downloads"),
+            root = File(directory, StorageLayout.DOWNLOADS_DIRECTORY),
             client = accountClient,
             server = session.server,
             fetchPublication = { id ->
@@ -262,7 +281,7 @@ class AppContainer(context: Context) {
             onQueued = { transfers.request(downloads.remainingBytes) },
         )
         val titles = LibraryCache(
-            file = File(directory, "library.json"),
+            file = File(directory, StorageLayout.LIBRARY_FILE),
             scope = accountScope,
             protectedIds = { downloads.records.value.keys },
             legacy = AccountPublications(directory),
@@ -282,6 +301,11 @@ class AppContainer(context: Context) {
     }
 
     fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
+
+    fun setAutoDownloadUpdates(enabled: Boolean) {
+        preferences.edit().putBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, enabled).apply()
+        autoDownloadUpdatesState.value = enabled
+    }
 
     fun setAppearance(mode: AppearanceMode) {
         preferences.edit().putInt(KEY_APPEARANCE, mode.ordinal).apply()
@@ -378,8 +402,15 @@ class AppContainer(context: Context) {
     }
 
     private companion object {
-        const val KEY_APPEARANCE = "appearance"
-        const val KEY_ASKED_NOTIFICATIONS = "asked_notifications"
+        const val KEY_APPEARANCE = StorageLayout.KEY_APPEARANCE
+        const val KEY_ASKED_NOTIFICATIONS = StorageLayout.KEY_ASKED_NOTIFICATIONS
         const val NETWORK_GRACE_MS = 5_000L
+
+        /** The server to ask for updates: the signed-in one, or the one whose sign-in ended. */
+        fun updateServer(state: SessionState): ServerAddress? = when (state) {
+            is SessionState.SignedIn -> state.session.server
+            is SessionState.Expired -> state.server
+            SessionState.SignedOut -> null
+        }
     }
 }

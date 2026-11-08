@@ -53,6 +53,7 @@ fun SettingsScreen(
     update: UpdateState = UpdateState.Disabled,
     updateActions: UpdateActions = UpdateActions.None,
     nowMs: Long = System.currentTimeMillis(),
+    autoDownloadUpdates: Boolean = false,
 ) {
     var confirming by remember { mutableStateOf(false) }
 
@@ -70,7 +71,7 @@ fun SettingsScreen(
         )
 
         // Something to act on comes first; otherwise updates sit quietly below.
-        if (update.hasUpdate) Section("App update") { UpdateSection(update, nowMs, updateActions) }
+        if (update.hasUpdate) Section("App update") { UpdateSection(update, nowMs, updateActions, autoDownloadUpdates) }
 
         Section("Account") {
             Text(session.user.displayName, style = MaterialTheme.typography.titleMedium)
@@ -129,7 +130,7 @@ fun SettingsScreen(
         }
 
         if (update != UpdateState.Disabled && !update.hasUpdate) {
-            Section("Updates") { UpdateSection(update, nowMs, updateActions) }
+            Section("Updates") { UpdateSection(update, nowMs, updateActions, autoDownloadUpdates) }
         }
 
         Spacer(Modifier.height(8.dp))

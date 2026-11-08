@@ -331,6 +331,30 @@ class ScreenshotTest {
         )
     }
 
+    @Test
+    fun settings_updates_automatic_downloads() = shot("08-settings-updates-auto-download") {
+        SettingsScreen(
+            session, AppearanceMode.SYSTEM, "0.1.1-debug", false, {}, {},
+            update = UpdateState.Idle(lastCheckedAtMs = now - 20 * 60_000), nowMs = now, autoDownloadUpdates = true,
+        )
+    }
+
+    /** A link for another server while signed in: it explains, and nothing changes. */
+    @Test
+    fun connect_link_other_server() {
+        compose.setContent {
+            ShelfarrTheme(AppearanceMode.LIGHT) {
+                Surface(Modifier.fillMaxSize()) { SettingsScreen(session, AppearanceMode.SYSTEM, "0.1.1-debug", false, {}, {}) }
+                val decision = org.shelfarr.app.core.ConnectLinks.decide(
+                    (org.shelfarr.app.core.ServerAddress.parse("https://other.example.org") as org.shelfarr.app.core.ServerAddress.ParseResult.Valid).address,
+                    org.shelfarr.app.core.SessionState.SignedIn(session),
+                ) as org.shelfarr.app.core.ConnectDecision.Explain
+                ConnectLinkNotice(decision.title, decision.message) {}
+            }
+        }
+        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screenshots/10-connect-link-other-server.png")
+    }
+
     private fun files(publication: Publication, doneFraction: Double) = publication.playableAssets.mapIndexed { index, asset ->
         val share = (doneFraction * publication.playableAssets.size - index).coerceIn(0.0, 1.0)
         DownloadedFile(asset.id, "$index.bin", asset.sizeBytes, "\"e\"", complete = share >= 1.0, bytesDone = (asset.sizeBytes * share).toLong())

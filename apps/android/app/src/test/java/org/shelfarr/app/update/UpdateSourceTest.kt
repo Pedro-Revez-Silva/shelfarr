@@ -7,6 +7,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.shelfarr.app.core.ServerAddress
 
 class UpdateSourceTest {
     private val source = requireNotNull(UpdateSource.parse("https://shelfarr.alguidar.org/downloads/android-development.json"))
@@ -74,5 +75,64 @@ class UpdateSourceTest {
         assertFalse(source.allowsArtifact("\\\\evil.example/x.apk", base.resolve("/downloads/x.apk")!!))
         val plain = "mirror/shelfarr-3.apk"
         assertTrue(source.allowsArtifact(plain, base.resolve(plain)!!))
+    }
+
+    private fun server(value: String) = (ServerAddress.parse(value) as ServerAddress.ParseResult.Valid).address
+
+    @Test
+    fun `a server's feed must resolve inside its own address, subpath included`() {
+        val shelfarr = server("https://books.example.org/shelfarr")
+        listOf(
+            "/shelfarr/apps/android/release.json",
+            "/apps/android/release.json",
+            "apps/android/release.json",
+            "https://books.example.org/shelfarr/apps/android/release.json",
+        ).forEach { reference ->
+            val feed = requireNotNull(UpdateSource.forServer(shelfarr, reference)) { reference }
+            assertEquals(reference, "/shelfarr/apps/android/release.json", feed.feed.encodedPath)
+            assertEquals(UpdateSource.Kind.SERVER, feed.kind)
+            assertEquals("https://books.example.org/shelfarr", feed.server)
+            assertEquals("/shelfarr/apps/android/", feed.directory)
+        }
+        listOf(
+            "https://other.example.org/shelfarr/apps/android/release.json",
+            "https://books.example.org/elsewhere/apps/android/release.json",
+            "https://books.example.org:8443/shelfarr/apps/android/release.json",
+            "http://books.example.org/shelfarr/apps/android/release.json",
+            "//other.example.org/apps/android/release.json",
+            "/shelfarr/../admin/release.json",
+            "/shelfarr/apps/%2e%2e/release.json",
+            "/shelfarr/apps/android/release.json?x=1",
+            "/shelfarr/apps/android/release.json#x",
+            "https://u:p@books.example.org/shelfarr/apps/android/release.json",
+            "/shelfarr/apps/android/release",
+            "/shelfarr/apps//release.json",
+            "",
+        ).forEach { reference -> assertNull(reference, UpdateSource.forServer(shelfarr, reference)) }
+    }
+
+    @Test
+    fun `a server's APKs may sit in a folder beside its feed, but nowhere else`() {
+        val feed = requireNotNull(UpdateSource.forServer(server("https://books.example.org/shelfarr"), "/shelfarr/apps/android/release.json"))
+        fun allows(raw: String) = feed.allowsArtifact(raw, raw.toHttpUrl())
+        assertTrue(allows("https://books.example.org/shelfarr/apps/android/release/42-${"a".repeat(64)}.apk"))
+        assertFalse(allows("https://books.example.org/shelfarr/other/release/42.apk"))
+        assertFalse(allows("https://books.example.org/apps/android/release/42.apk"))
+        assertFalse(allows("https://github.com/Pedro-Revez-Silva/shelfarr/releases/download/x/42.apk"))
+    }
+
+    @Test
+    fun `a plain HTTP server can't announce a feed`() {
+        val local = (ServerAddress.parse("http://192.168.1.4:3000", allowLocalHttp = true) as ServerAddress.ParseResult.Valid).address
+        assertNull(UpdateSource.forServer(local, "/apps/android/development.json"))
+    }
+
+    @Test
+    fun `sources are equal only for the same feed, kind and server`() {
+        val a = server("https://books.example.org")
+        val one = UpdateSource.forServer(a, "/apps/android/release.json")
+        assertEquals(one, UpdateSource.forServer(a, "https://books.example.org/apps/android/release.json"))
+        assertFalse(one == UpdateSource.parse("https://books.example.org/apps/android/release.json"))
+        assertFalse(one == UpdateSource.forServer(a, "/apps/android/development.json"))
     }
 }

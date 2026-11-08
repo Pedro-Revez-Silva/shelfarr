@@ -43,6 +43,8 @@ class UpdateException(
     val problem: UpdateProblem,
     message: String,
     cause: Throwable? = null,
+    /** The HTTP status for [UpdateProblem.SERVER], when the server answered with one. */
+    val status: Int? = null,
 ) : Exception(message, cause) {
     /** Retrying the same step later could succeed without anything changing here. */
     val isTransient: Boolean get() = problem == UpdateProblem.OFFLINE || problem == UpdateProblem.SERVER

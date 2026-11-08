@@ -31,6 +31,9 @@ jobs:
       - name: Check design tokens and contrast
         run: python3 apps/scripts/check-design-tokens.py
 
+      - name: Check Android manifest and compatibility catalog tooling
+        run: python3 -m unittest discover -s apps/scripts/tests -p 'test_android_update*.py' -q
+
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -38,6 +41,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          # The upgrade check builds the last published pre-discovery app as its baseline.
+          fetch-depth: 0
 
       - name: Set up Java
         uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
@@ -73,7 +79,9 @@ jobs:
           profile: pixel_7
           disable-linux-hw-accel: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
-          script: apps/scripts/android-reader-smoke.sh
+          script: |
+            apps/scripts/android-reader-smoke.sh
+            apps/android/tools/upgrade-preservation.sh
 
       - name: Upload debug build and rendered screens
         if: always()
@@ -89,6 +97,7 @@ jobs:
             apps/android/app/build/test-results/testDebugUnitTest
             apps/android/app/build/reports/androidTests
             apps/android/app/build/reports/reader-smoke
+            apps/android/app/build/reports/upgrade-preservation
             apps/android/app/build/outputs/connected_android_test_additional_output
 
   ios:

@@ -23,7 +23,7 @@ interface SecureStore {
  * `noBackupFilesDir`, so it never reaches device backups or transfers either.
  */
 class KeystoreSecureStore(context: Context) : SecureStore {
-    private val directory = File(context.noBackupFilesDir, "secure").apply { mkdirs() }
+    private val directory = StorageLayout.secureDirectory(context).apply { mkdirs() }
 
     private fun file(name: String): File {
         require(name.matches(SAFE_NAME)) { "Invalid secret name" }
@@ -89,7 +89,7 @@ class KeystoreSecureStore(context: Context) : SecureStore {
 
     private companion object {
         const val KEYSTORE = "AndroidKeyStore"
-        const val KEY_ALIAS = "shelfarr.session.v1"
+        const val KEY_ALIAS = StorageLayout.KEYSTORE_ALIAS
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val TAG_BITS = 128
         val SAFE_NAME = Regex("[a-z_]+")

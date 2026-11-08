@@ -19,6 +19,15 @@ data class SavedUpdate(
     @SerialName("artifact") val artifact: String? = null,
     /** The PackageInstaller session committed for [release], if one may still be open. */
     @SerialName("session_id") val sessionId: Int? = null,
+    /**
+     * The feed [release] came from and the server it was chosen for. Missing in state
+     * written before update discovery, which only ever used the built-in feed.
+     */
+    @SerialName("feed_kind") val feedKind: String? = null,
+    @SerialName("feed_url") val feedUrl: String? = null,
+    /** The Shelfarr server's identity the feed was chosen for; null when signed out. */
+    @SerialName("feed_server") val feedServer: String? = null,
+    @SerialName("server_api_versions") val serverApiVersions: List<Int>? = null,
 )
 
 /** One small JSON file, replaced atomically. Unreadable state is treated as none. */

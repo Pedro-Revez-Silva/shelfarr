@@ -35,6 +35,14 @@ class NetworkMonitor(context: Context) {
         }
     }
 
+    /** Whether the active network is unmetered, such as Wi-Fi: a hint for optional downloads. */
+    fun isUnmetered(): Boolean = try {
+        connectivity.activeNetwork != null && !connectivity.isActiveNetworkMetered
+    } catch (error: RuntimeException) {
+        Log.w("ShelfarrNetwork", "Could not read the network's metering", error)
+        false
+    }
+
     private fun current(): Boolean {
         val network = connectivity.activeNetwork ?: return false
         return connectivity.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true

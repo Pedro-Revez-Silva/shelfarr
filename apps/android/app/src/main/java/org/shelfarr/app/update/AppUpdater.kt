@@ -16,12 +16,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.shelfarr.app.core.ServerAddress
 
 /** Where the in-app updater is. Every state but [Disabled] and [Idle] concerns one [release]. */
 sealed interface UpdateState {
     val release: UpdateRelease? get() = null
 
-    /** This build has no update feed. */
+    /** This build has no update feed and doesn't ask servers for one. */
     data object Disabled : UpdateState
 
     /** Nothing to offer. [lastCheckedAtMs] is null until the first successful check. */
@@ -77,11 +78,31 @@ interface PlaybackGuard {
     fun pause()
 }
 
+/** The feed updates come from right now, and the server context it was chosen for. */
+data class UpdateBinding(
+    val source: UpdateSource,
+    /** The [ServerAddress.identity] this was chosen for; null when no server was connected. */
+    val context: String?,
+    /** The consumer API generations the server said it speaks; null when it didn't say. */
+    val serverApiVersions: Set<Int>?,
+)
+
 /**
- * Finds, downloads and installs newer builds of this app from its build-time feed.
+ * Finds, downloads and installs newer builds of this app.
+ *
+ * The connected Shelfarr server comes first: it is asked, without any credential,
+ * which feed it offers for this build's channel ([ServerDiscovery]). A server from
+ * before discovery (404 or 410), or no server at all, falls back to the feed fixed
+ * when the app was built, if any. A server that can't be reached or answers
+ * something unusable never moves updates to another publisher: the feed chosen
+ * earlier for that same server is used again, or the check fails.
+ *
+ * What is offered, downloaded or being verified belongs to the feed it came from
+ * ([UpdateBinding]); a new server, or a new feed for it, discards it.
  *
  * Checks happen at most every [autoCheckIntervalMs] while the app is in use, or when
- * asked. Downloading and installing only ever start because the person asked. A
+ * asked. Downloads start because the person asked, or, if they turned on [autoDownload],
+ * after a successful check. Installing only ever starts because the person asked. A
  * download must match the feed's size and SHA-256, and be this app — same package,
  * same signing certificates — at exactly the announced, strictly newer version.
  * Those checks are repeated just before Android's installer takes the file; Android
@@ -90,9 +111,10 @@ interface PlaybackGuard {
  * Public methods are meant for the main thread; work runs on [scope].
  */
 class AppUpdater(
-    source: UpdateSource?,
-    channel: String,
-    private val fetcher: UpdateFetcher?,
+    /** The feed fixed at build time, for servers that predate discovery; null if none. */
+    private val builtIn: UpdateSource?,
+    private val channel: String,
+    private val fetcherFor: (UpdateSource) -> UpdateFetcher,
     private val inspector: PackageInspector,
     private val installer: PackageSessionInstaller,
     private val directory: File,
@@ -103,11 +125,19 @@ class AppUpdater(
     private val clock: () -> Long = System::currentTimeMillis,
     private val sdkInt: Int = android.os.Build.VERSION.SDK_INT,
     private val autoCheckIntervalMs: Long = AUTO_CHECK_INTERVAL_MS,
+    /** Null leaves servers out: only [builtIn] is ever used. */
+    private val discovery: ServerDiscovery? = null,
+    /** The Shelfarr server to ask, signed in or last signed in to; null when there is none. */
+    private val server: () -> ServerAddress? = { null },
+    /** Whether a successful check may start downloading a new release on its own. */
+    private val autoDownload: () -> Boolean = { false },
 ) {
-    private val expectation: FeedExpectation? = source?.let { FeedExpectation(it, channel, inspector.installed().packageName) }
+    private val packageName: String by lazy { inspector.installed().packageName }
     private val store = UpdateStore(File(directory, STATE_FILE))
 
-    private val mutableState = MutableStateFlow<UpdateState>(if (expectation == null) UpdateState.Disabled else UpdateState.Idle())
+    val enabled: Boolean = builtIn != null || discovery != null
+
+    private val mutableState = MutableStateFlow<UpdateState>(if (enabled) UpdateState.Idle() else UpdateState.Disabled)
     val state: StateFlow<UpdateState> = mutableState.asStateFlow()
 
     private val pendingConfirmation = MutableStateFlow<PendingConfirmation?>(null)
@@ -126,55 +156,90 @@ class AppUpdater(
     private var lastAttemptAtMs: Long? = null
     private var lastCheckedAtMs: Long? = null
 
-    val enabled: Boolean get() = expectation != null
+    /** The feed the current state belongs to. Guarded by [lock]. */
+    private var binding: UpdateBinding? = null
+
+    /** Which feed the current state belongs to, for display and tests. */
+    val currentBinding: UpdateBinding? get() = synchronized(lock) { binding }
+
+    private fun expectation(source: UpdateSource) = FeedExpectation(source, channel, packageName)
+
+    private fun context(): String? = server()?.identity
 
     /** Restores what an earlier process left: a verified download, an open session, a finished update. */
     fun start(): Job? {
-        if (expectation == null) return null
+        if (!enabled) return null
         return synchronized(lock) {
-            restoring ?: scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) { restore(expectation) }.also {
+            restoring ?: scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) { restore() }.also {
                 restoring = it
                 it.start()
             }
         }
     }
 
-    private fun restore(expected: FeedExpectation) {
+    /** The binding an earlier process saved. State from before discovery belongs to the built-in feed. */
+    private fun savedBinding(saved: SavedUpdate): UpdateBinding? {
+        if (saved.feedKind == null && saved.feedUrl == null) {
+            return builtIn?.let { UpdateBinding(it, saved.feedServer, null) }
+        }
+        val kind = when (saved.feedKind) {
+            KIND_BUILT_IN -> UpdateSource.Kind.BUILT_IN
+            KIND_SERVER -> UpdateSource.Kind.SERVER
+            else -> return null
+        }
+        val feed = saved.feedUrl ?: return null
+        val source = UpdateSource.restore(kind, feed, saved.feedServer?.let(ServerAddress::restore)) ?: return null
+        // The built-in feed may only be the one this build has.
+        if (kind == UpdateSource.Kind.BUILT_IN && source != builtIn) return null
+        return UpdateBinding(source, saved.feedServer, saved.serverApiVersions?.toSet())
+    }
+
+    private fun restore() {
         val saved = store.read()
         val installed = inspector.installed()
-        val release = saved.release?.let { text ->
-            try {
-                UpdateManifest.parse(text, expected)
-            } catch (_: UpdateException) {
-                null
+        val savedBinding = savedBinding(saved)
+        val release = savedBinding?.let { bound ->
+            saved.release?.let { text ->
+                try {
+                    UpdateManifest.parse(text, expectation(bound.source))
+                } catch (_: UpdateException) {
+                    null
+                }
             }
         }
         val artifact = saved.artifact?.let { File(directory, it) }?.takeIf { it.parentFile == directory }
         val sessionOpen = saved.sessionId?.let(installer::isOpen) == true
         installer.abandonOthers(keep = saved.sessionId.takeIf { sessionOpen })
+        // Only state chosen for the server in use now carries on.
+        val current = savedBinding != null && savedBinding.context == context()
         synchronized(lock) {
-            lastAttemptAtMs = saved.lastAttemptAtMs
-            lastCheckedAtMs = saved.lastCheckedAtMs
+            lastAttemptAtMs = saved.lastAttemptAtMs.takeIf { current }
+            lastCheckedAtMs = saved.lastCheckedAtMs.takeIf { current }
+            binding = savedBinding.takeIf { current }
             val next: UpdateState = when {
                 release == null || release.versionCode <= installed.versionCode -> {
                     val updated = release != null && (saved.artifact != null || saved.sessionId != null)
                     if (sessionOpen) installer.abandon(saved.sessionId)
                     UpdateState.Idle(
-                        lastCheckedAtMs = saved.lastCheckedAtMs,
+                        lastCheckedAtMs = lastCheckedAtMs,
                         notice = if (updated) "Updated to ${installed.versionName ?: "the new version"}" else null,
                     )
                 }
+                // Android is installing it already: leave that alone, whichever server is in use.
                 sessionOpen -> {
+                    binding = savedBinding
                     activeSession = saved.sessionId
                     UpdateState.Installing(release)
                 }
+                !current -> UpdateState.Idle()
                 artifact != null && artifact.isFile && artifact.length() == release.sizeBytes -> UpdateState.Ready(
                     release,
                     notice = if (saved.sessionId != null) "The last installation didn't finish" else null,
                 )
                 else -> UpdateState.Available(release)
             }
-            persist(next, saved.lastCheckedAtMs)
+            persistBinding()
+            persist(next, lastCheckedAtMs)
             mutableState.value = next
             sweep()
         }
@@ -182,12 +247,55 @@ class AppUpdater(
 
     /** A check when one is due. Call as the app comes to the foreground. */
     fun onForeground() {
-        if (expectation == null) return
+        if (!enabled) return
         scope.launch {
             restoring?.join()
             reconcileInstalling()
             if (isCheckDue()) check(manual = false)
         }
+    }
+
+    /**
+     * The signed-in server changed, or the app signed out. Whatever was offered or
+     * downloading for the previous one is dropped and the new one is asked, unless
+     * Android is installing an update already.
+     */
+    fun onServerChanged() {
+        if (!enabled) return
+        scope.launch {
+            restoring?.join()
+            val context = context()
+            synchronized(lock) {
+                val bound = binding
+                if (bound != null && bound.context == context) return@launch
+                if (bound == null && mutableState.value.release == null && checkJob?.isActive != true) {
+                    lastCheckedAtMs = null
+                    lastAttemptAtMs = null
+                } else {
+                    if (mutableState.value is UpdateState.Installing) return@launch
+                    unbind()
+                }
+            }
+            check(manual = false)
+        }
+    }
+
+    /** Drops the state of the current feed. Holds [lock]. */
+    private fun unbind() {
+        checkJob?.cancel()
+        checkJob = null
+        downloadJob?.cancel()
+        downloadJob = null
+        downloadPartial = null
+        binding = null
+        lastCheckedAtMs = null
+        lastAttemptAtMs = null
+        val next = UpdateState.Idle()
+        persistBinding()
+        persist(next)
+        store.update { it.copy(lastCheckedAtMs = null, lastAttemptAtMs = null) }
+        mutableState.value = next
+        sweep()
     }
 
     /**
@@ -202,16 +310,51 @@ class AppUpdater(
 
     /** Checks now, because the person asked. */
     fun checkNow() {
-        if (expectation == null) return
+        if (!enabled) return
         scope.launch {
             restoring?.join()
             check(manual = true)
         }
     }
 
+    private sealed interface Choice {
+        data class Bound(val binding: UpdateBinding) : Choice
+        data class Unavailable(val reason: String) : Choice
+    }
+
+    private sealed interface Outcome {
+        data class Offered(val binding: UpdateBinding, val release: UpdateRelease) : Outcome
+        data class Unavailable(val reason: String) : Outcome
+        data class Failed(val message: String) : Outcome
+    }
+
+    /**
+     * Which feed to check for [server]. Throws when the server couldn't say and no feed
+     * was chosen for it before; never falls back to another publisher on an error.
+     */
+    private suspend fun choose(server: ServerAddress?, previous: UpdateBinding?): Choice {
+        val context = server?.identity
+        fun builtInOr(reason: String) = builtIn?.let { Choice.Bound(UpdateBinding(it, context, null)) } ?: Choice.Unavailable(reason)
+        val ask = discovery
+        if (ask == null || server == null) return builtInOr("Connect to your Shelfarr server to check for updates")
+        if (server.isCleartext) return builtInOr("${server.host} can only offer updates over https://")
+        val described = try {
+            ask.discover(server, channel)
+        } catch (error: UpdateException) {
+            val earlier = previous?.takeIf { it.context == context } ?: throw error
+            Log.i(TAG, "Server discovery failed, keeping the feed chosen before: ${error.message}")
+            return Choice.Bound(earlier)
+        }
+        return when (described) {
+            ServerUpdates.NotOffered -> builtInOr("${server.host} doesn't offer app updates yet")
+            is ServerUpdates.Described -> described.source?.let { Choice.Bound(UpdateBinding(it, context, described.apiVersions)) }
+                ?: Choice.Unavailable("${server.host} doesn't offer ${channelLabel()} updates")
+        }
+    }
+
+    private fun channelLabel(): String = if (channel == "release") "release" else "$channel build"
+
     private fun check(manual: Boolean) {
-        val expected = expectation ?: return
-        val fetch = fetcher ?: return
         synchronized(lock) {
             if (checkJob?.isActive == true || downloadJob?.isActive == true || installJob?.isActive == true) return
             if (mutableState.value is UpdateState.Installing) return
@@ -221,20 +364,50 @@ class AppUpdater(
             (mutableState.value as? UpdateState.Idle)?.let {
                 mutableState.value = it.copy(checking = true, problem = null, notice = if (manual) null else it.notice)
             }
+            val previous = binding
             val job = scope.launch(start = CoroutineStart.LAZY) {
-                val outcome = try {
-                    Result.success(UpdateManifest.parse(fetch.fetchFeed(), expected))
+                val asked = server()
+                val outcome: Outcome = try {
+                    when (val choice = choose(asked, previous)) {
+                        is Choice.Unavailable -> Outcome.Unavailable(choice.reason)
+                        is Choice.Bound -> {
+                            val source = choice.binding.source
+                            Outcome.Offered(choice.binding, UpdateManifest.parse(fetcherFor(source).fetchFeed(), expectation(source)))
+                        }
+                    }
                 } catch (error: UpdateException) {
                     Log.i(TAG, "Update check failed: ${error.message}")
-                    Result.failure(error)
+                    Outcome.Failed(error.message ?: "Couldn't check for updates")
                 }
                 synchronized(lock) {
                     if (checkJob != coroutineContext[Job]) return@launch
                     checkJob = null
-                    outcome.fold(
-                        onSuccess = { offer(it) },
-                        onFailure = { failed(it.message ?: "Couldn't check for updates", manual) },
-                    )
+                    // The account changed while this check ran: its answer is for the wrong server.
+                    if (server()?.identity != asked?.identity) {
+                        (mutableState.value as? UpdateState.Idle)?.let { mutableState.value = it.copy(checking = false) }
+                        return@launch
+                    }
+                    when (outcome) {
+                        is Outcome.Offered -> {
+                            val earlier = binding
+                            // A different feed, or the same feed chosen for another server: start afresh.
+                            if (earlier != null && (earlier.source != outcome.binding.source || earlier.context != outcome.binding.context)) unbind()
+                            if (outcome.binding != binding) {
+                                binding = outcome.binding
+                                persistBinding()
+                            }
+                            offer(outcome.release, outcome.binding)
+                        }
+                        is Outcome.Unavailable -> {
+                            if (binding != null || mutableState.value.release != null) unbind()
+                            val checkedAt = clock()
+                            lastCheckedAtMs = checkedAt
+                            val next = UpdateState.Idle(lastCheckedAtMs = checkedAt, problem = outcome.reason.takeIf { manual })
+                            persist(next, checkedAt)
+                            mutableState.value = next
+                        }
+                        is Outcome.Failed -> failed(outcome.message, manual)
+                    }
                     sweep()
                 }
             }
@@ -243,8 +416,8 @@ class AppUpdater(
         }
     }
 
-    /** Applies a freshly checked release. Holds [lock]. */
-    private fun offer(release: UpdateRelease) {
+    /** Applies a freshly checked release from [bound]. Holds [lock]. */
+    private fun offer(release: UpdateRelease, bound: UpdateBinding) {
         val now = clock()
         lastCheckedAtMs = now
         val installed = inspector.installed()
@@ -255,6 +428,10 @@ class AppUpdater(
                 lastCheckedAtMs = now,
                 problem = "Version ${release.versionName} needs a newer version of Android",
             )
+            !release.worksWith(bound.serverApiVersions ?: setOf(ConsumerApiGenerations.ORIGINAL)) -> UpdateState.Idle(
+                lastCheckedAtMs = now,
+                problem = "Version ${release.versionName} needs a newer Shelfarr server",
+            )
             // The same release: keep whatever progress has been made with it.
             current.release == release -> when (current) {
                 is UpdateState.Available -> current.copy(problem = null)
@@ -264,6 +441,10 @@ class AppUpdater(
         }
         persist(next, now)
         mutableState.value = next
+        if (next is UpdateState.Available && autoDownload()) {
+            Log.i(TAG, "Downloading version ${release.versionName} automatically")
+            download()
+        }
     }
 
     /** Holds [lock]. Automatic checks fail quietly; only an asked-for check reports. */
@@ -274,12 +455,12 @@ class AppUpdater(
         }
     }
 
-    /** Downloads the available release, because the person asked. */
+    /** Downloads the available release, because the person asked or allowed it ([autoDownload]). */
     fun download() {
-        val fetch = fetcher ?: return
         synchronized(lock) {
             val current = mutableState.value as? UpdateState.Available ?: return
             if (downloadJob?.isActive == true) return
+            val fetch = binding?.source?.let(fetcherFor) ?: return
             // A foreground check may still be fetching a new offer. It must not
             // replace or sweep the release the person has just chosen to download.
             checkJob?.cancel()
@@ -360,6 +541,9 @@ class AppUpdater(
                 is UpdateState.NeedsPermission -> current.release
                 else -> return InstallRequest.IGNORED
             }
+            // A committed Android session may finish after the server changed.
+            // Its old release must never become actionable for that new server.
+            if (discardStaleOffer(release)) return InstallRequest.IGNORED
             if (installJob?.isActive == true) return InstallRequest.IGNORED
             if (playback.isPlaying) {
                 if (!pausePlayback) return InstallRequest.PLAYBACK_ACTIVE
@@ -412,8 +596,7 @@ class AppUpdater(
                     file.delete()
                     UpdateState.Available(release, problem = "${error.message}. Download it again.")
                 }
-                persist(next)
-                mutableState.value = next
+                settleInstallation(next)
             }
         }
     }
@@ -462,8 +645,7 @@ class AppUpdater(
             activeSession = null
             lastPrompt = null
             pendingConfirmation.value = null
-            persist(next)
-            mutableState.value = next
+            settleInstallation(next)
         }
     }
 
@@ -491,8 +673,7 @@ class AppUpdater(
             lastPrompt = null
             pendingConfirmation.value = null
             val next = UpdateState.Ready(current.release)
-            persist(next)
-            mutableState.value = next
+            settleInstallation(next)
         }
     }
 
@@ -532,9 +713,26 @@ class AppUpdater(
             lastPrompt = null
             pendingConfirmation.value = null
             val next = UpdateState.Ready(current.release, notice = "The installation didn't finish")
-            persist(next)
-            mutableState.value = next
+            settleInstallation(next)
         }
+    }
+
+    /** An installer may have deferred a server change. Holds [lock]. */
+    private fun settleInstallation(next: UpdateState) {
+        if (discardStaleOffer(next.release)) return
+        persist(next)
+        mutableState.value = next
+    }
+
+    /** Drops a previous server's offer and immediately asks the current one. Holds [lock]. */
+    private fun discardStaleOffer(release: UpdateRelease?): Boolean {
+        val bound = binding
+        if (bound != null && bound.context == context() &&
+            (release == null || release.worksWith(bound.serverApiVersions ?: setOf(ConsumerApiGenerations.ORIGINAL)))
+        ) return false
+        unbind()
+        check(manual = false)
+        return true
     }
 
     /** The announced release's file, checked against the installed app. Throws if it isn't the update. */
@@ -556,6 +754,19 @@ class AppUpdater(
         }
         if ((candidate.minSdk ?: 0) > sdkInt) {
             throw UpdateException(UpdateProblem.INCOMPATIBLE, "The update needs a newer version of Android")
+        }
+    }
+
+    /** Saves which feed the state belongs to. Holds [lock] or runs before others can. */
+    private fun persistBinding() {
+        val bound = binding
+        store.update { saved ->
+            saved.copy(
+                feedKind = bound?.source?.kind?.let { if (it == UpdateSource.Kind.SERVER) KIND_SERVER else KIND_BUILT_IN } ?: KIND_NONE,
+                feedUrl = bound?.source?.feed?.toString(),
+                feedServer = bound?.context,
+                serverApiVersions = bound?.serverApiVersions?.sorted(),
+            )
         }
     }
 
@@ -590,6 +801,9 @@ class AppUpdater(
     companion object {
         private const val TAG = "ShelfarrUpdater"
         private const val STATE_FILE = "state.json"
+        private const val KIND_BUILT_IN = "built_in"
+        private const val KIND_SERVER = "server"
+        private const val KIND_NONE = "none"
         const val AUTO_CHECK_INTERVAL_MS = 6L * 60 * 60 * 1_000
         const val RETRY_INTERVAL_MS = 30L * 60 * 1_000
         private const val SPACE_MARGIN_BYTES = 32L * 1024 * 1024

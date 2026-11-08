@@ -2,6 +2,7 @@ package org.shelfarr.app.update
 
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
@@ -25,6 +27,11 @@ data class UpdateRelease(
     val sha256: String,
     val releaseNotes: String?,
     val minSdk: Int?,
+    /**
+     * The consumer API generations this build speaks. Required from a Shelfarr server's
+     * feed; the built-in publisher feed may leave it out, meaning generation 1.
+     */
+    val consumerApiVersions: Set<Int>? = null,
 ) {
     /** The canonical feed document for this release, kept so a relaunch can re-check it. */
     fun toJson(): String = buildJsonObject {
@@ -38,11 +45,26 @@ data class UpdateRelease(
         put("sha256", sha256)
         releaseNotes?.let { put("release_notes", it) }
         minSdk?.let { put("min_sdk", it) }
+        consumerApiVersions?.let { versions -> putJsonArray("consumer_api_versions") { versions.sorted().forEach { add(JsonPrimitive(it)) } } }
     }.toString()
+
+    /** Whether this build can talk to a server speaking [serverVersions]. */
+    fun worksWith(serverVersions: Set<Int>): Boolean = (consumerApiVersions ?: setOf(ConsumerApiGenerations.ORIGINAL)).any(serverVersions::contains)
 }
 
-/** What this build expects of its feed. */
-data class FeedExpectation(val source: UpdateSource, val channel: String, val packageName: String)
+/** Consumer API generations, independent of server and app release labels. */
+object ConsumerApiGenerations {
+    /** What servers from before update discovery speak, and what feeds without the field mean. */
+    const val ORIGINAL = 1
+
+    /** The generations this build of the app speaks. */
+    val SUPPORTED: Set<Int> = setOf(1)
+}
+
+/** What this build expects of its feed. A Shelfarr server's feed must say which API generations each build speaks. */
+data class FeedExpectation(val source: UpdateSource, val channel: String, val packageName: String) {
+    val requiresApiVersions: Boolean get() = source.kind == UpdateSource.Kind.SERVER
+}
 
 /**
  * Parses the publisher feed. Version 1:
@@ -58,9 +80,13 @@ data class FeedExpectation(val source: UpdateSource, val channel: String, val pa
  *   "size_bytes": 41234567,
  *   "sha256": "<64 lowercase hex>",
  *   "release_notes": "Optional, plain text, at most 4000 characters",
- *   "min_sdk": 26
+ *   "min_sdk": 26,
+ *   "consumer_api_versions": [1]
  * }
  * ```
+ *
+ * `consumer_api_versions` is required in a Shelfarr server's feed and optional in the
+ * built-in publisher feed.
  *
  * Unknown fields are ignored so a later publisher may add some. Wrong types,
  * out-of-range values and URLs outside the trusted directory reject the feed.
@@ -72,6 +98,7 @@ object UpdateManifest {
     const val MAX_VERSION_CODE = 2_100_000_000
     const val MAX_NOTES_CHARS = 4_000
     private const val MAX_NAME_CHARS = 64
+    private const val MAX_API_VERSIONS = 16
 
     private val json = Json { isLenient = false }
     private val VERSION_NAME = Regex("[0-9A-Za-z][0-9A-Za-z._+-]*")
@@ -113,8 +140,26 @@ object UpdateManifest {
         if (!SHA256.matches(sha256)) bad("The update's checksum isn't a SHA-256 value")
         val notes = root.optionalText("release_notes", MAX_NOTES_CHARS)?.let(::plainText)?.takeIf(String::isNotBlank)
         val minSdk = if (root["min_sdk"] == null || root["min_sdk"] is JsonNull) null else root.integer("min_sdk", 1..1_000)
+        val apiVersions = when (root["consumer_api_versions"]) {
+            null, JsonNull -> if (expected.requiresApiVersions) bad("The update feed is missing consumer_api_versions") else null
+            else -> apiVersions(root, "consumer_api_versions")
+        }
 
-        return UpdateRelease(channel, packageName, versionCode, versionName, apkUrl, size, sha256, notes, minSdk)
+        return UpdateRelease(channel, packageName, versionCode, versionName, apkUrl, size, sha256, notes, minSdk, apiVersions)
+    }
+
+    /** A non-empty list of distinct whole numbers from 1 to 1000. Shared with server discovery. */
+    internal fun apiVersions(root: JsonObject, name: String, describe: String = "update feed"): Set<Int> {
+        val array = root[name] as? JsonArray ?: throw UpdateException(UpdateProblem.BAD_FEED, "The $describe's $name isn't a list")
+        if (array.isEmpty() || array.size > MAX_API_VERSIONS) throw UpdateException(UpdateProblem.BAD_FEED, "The $describe's $name is empty or too long")
+        val versions = array.map { element ->
+            val value = element as? JsonPrimitive
+            val number = value?.takeIf { !it.isString && it.content.all(Char::isDigit) }?.longOrNull
+            if (number == null || number !in 1L..1_000L) throw UpdateException(UpdateProblem.BAD_FEED, "The $describe's $name must list whole numbers")
+            number.toInt()
+        }
+        if (versions.toSet().size != versions.size) throw UpdateException(UpdateProblem.BAD_FEED, "The $describe's $name repeats a version")
+        return versions.toSet()
     }
 
     /** Keeps line breaks and tabs, drops other control characters. */
@@ -141,7 +186,9 @@ object UpdateManifest {
         if (value is JsonNull) return null
         val primitive = value as? JsonPrimitive ?: bad("The update feed's $name has the wrong type")
         if (!primitive.isString) bad("The update feed's $name has the wrong type")
-        if (primitive.content.length > maxChars) bad("The update feed's $name is too long")
+        // Match Ruby String#length and Python len: Unicode codepoints, rather
+        // than UTF-16 code units (an emoji can occupy two of those).
+        if (primitive.content.codePointCount(0, primitive.content.length) > maxChars) bad("The update feed's $name is too long")
         return primitive.content
     }
 

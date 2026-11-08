@@ -35,6 +35,14 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- shelfarr://connect?server=<encoded https address>, from a server's download
+                 page: fills in the address for signing in. ConnectLink checks the rest. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="shelfarr" android:host="connect" />
+            </intent-filter>
         </activity>
 
         <!-- configChanges keeps the WebView-based reader alive across rotation

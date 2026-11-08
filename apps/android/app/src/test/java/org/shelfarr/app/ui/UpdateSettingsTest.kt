@@ -4,6 +4,8 @@ import android.app.Application
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertCountEquals
@@ -125,5 +127,37 @@ class UpdateSettingsTest {
         compose.onAllNodes(badge).assertCountEquals(1)
         // The badge never takes the person anywhere on its own.
         compose.onNodeWithText("Home screen").assertExists()
+    }
+
+    @Test
+    fun `automatic downloads are off until switched on, and say installing waits`() {
+        val changes = mutableListOf<Boolean>()
+        val actions = object : UpdateActions {
+            override fun setAutoDownload(enabled: Boolean) {
+                changes += enabled
+            }
+        }
+        var enabled by androidx.compose.runtime.mutableStateOf(false)
+        compose.setContent {
+            ShelfarrTheme(AppearanceMode.LIGHT) {
+                SettingsScreen(
+                    session, AppearanceMode.SYSTEM, "0.1.1-debug", false, {}, {},
+                    update = UpdateState.Idle(), updateActions = actions, autoDownloadUpdates = enabled,
+                )
+            }
+        }
+        compose.onNodeWithText("Download updates automatically").performScrollTo().assertExists()
+        compose.onNodeWithText("On Wi-Fi and other unmetered networks. Installing always waits for you.").assertExists()
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.ToggleableState, androidx.compose.ui.state.ToggleableState.Off)).assertExists()
+        compose.onNodeWithText("Download updates automatically").performClick()
+        assertEquals(listOf(true), changes)
+        enabled = true
+        compose.onNode(SemanticsMatcher.expectValue(SemanticsProperties.ToggleableState, androidx.compose.ui.state.ToggleableState.On)).assertExists()
+    }
+
+    @Test
+    fun `a build without updates shows no automatic download choice`() {
+        render(UpdateState.Disabled, UpdateActions.None)
+        compose.onAllNodesWithText("Download updates automatically").assertCountEquals(0)
     }
 }

@@ -97,6 +97,6 @@ class ReaderSettingsStore(private val preferences: SharedPreferences) {
     }
 
     private companion object {
-        const val KEY = "reader_settings"
+        const val KEY = org.shelfarr.app.core.StorageLayout.KEY_READER_SETTINGS
     }
 }

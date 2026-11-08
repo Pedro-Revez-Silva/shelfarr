@@ -16,6 +16,7 @@ import org.shelfarr.app.AppContainer
 import org.shelfarr.app.BuildConfig
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.AuthorizationOutcome
+import org.shelfarr.app.core.SignInActivity
 import org.shelfarr.app.core.Credential
 import org.shelfarr.app.core.PendingAuthorization
 import org.shelfarr.app.core.ServerAddress
@@ -45,7 +46,31 @@ data class SetupState(
     val errorMessage: String? = null,
     /** Set when an old session ended, to explain why this screen is back. */
     val expiredFor: String? = null,
-)
+    /** The address came from a server's "Open Shelfarr" link rather than typing. */
+    val fromLink: Boolean = false,
+    /** The server a [SetupPhase.Connecting] request is for. */
+    val connectingTo: ServerAddress? = null,
+) {
+    /** Whether a sign-in is being started or awaits approval, for deciding what a link may do. */
+    val signInActivity: SignInActivity
+        get() = if (phase is SetupPhase.Connecting || phase is SetupPhase.Authorizing) SignInActivity.IN_PROGRESS else SignInActivity.IDLE
+
+    /** The server a sign-in under way is for. */
+    val signingInTo: ServerAddress?
+        get() = (phase as? SetupPhase.Authorizing)?.server ?: if (phase is SetupPhase.Connecting) connectingTo else null
+}
+
+/**
+ * Whether [pending]'s approval pages are on its own server's HTTPS address. A link, not
+ * the person, chose that server, so its sign-in must not lead the browser elsewhere.
+ */
+internal fun approvalStaysOnServer(pending: PendingAuthorization): Boolean = listOf(
+    pending.grant.verificationUri,
+    pending.grant.verificationUriComplete,
+).all { reference ->
+    val url = pending.server.resolve(reference)
+    url != null && url.isHttps && url.username.isEmpty() && url.password.isEmpty() && pending.server.contains(url)
+}
 
 class SetupViewModel(private val container: AppContainer) : ViewModel() {
     private val mutableState = MutableStateFlow(initialState())
@@ -72,7 +97,22 @@ class SetupViewModel(private val container: AppContainer) : ViewModel() {
         )
     }
 
-    fun onAddressChange(value: String) = mutableState.update { it.copy(address = value, errorMessage = null) }
+    fun onAddressChange(value: String) = mutableState.update { it.copy(address = value, errorMessage = null, fromLink = false) }
+
+    /**
+     * A server's "Open Shelfarr" link, already checked by `ConnectLink` and allowed by
+     * `ConnectLinks.decide`: starts the usual browser approval for [server] without
+     * typing. It never opens the browser by itself; the approval screen names the
+     * server first, and the person opens the browser from there.
+     */
+    fun connectFromLink(server: ServerAddress) {
+        val current = mutableState.value
+        if (current.signInActivity == SignInActivity.IN_PROGRESS) return
+        mutableState.update {
+            it.copy(address = server.display, allowLocalHttp = false, errorMessage = null, fromLink = true)
+        }
+        connect()
+    }
 
     fun onAllowLocalHttpChange(value: Boolean) = mutableState.update { it.copy(allowLocalHttp = value, errorMessage = null) }
 
@@ -92,14 +132,27 @@ class SetupViewModel(private val container: AppContainer) : ViewModel() {
             )
         }
 
-        mutableState.update { it.copy(phase = SetupPhase.Connecting, errorMessage = null) }
+        val fromLink = current.fromLink
+        mutableState.update { it.copy(phase = SetupPhase.Connecting, errorMessage = null, connectingTo = server) }
         viewModelScope.launch {
             try {
                 val grant = container.api.startDeviceAuthorization(server, CLIENT_NAME)
                 val pending = PendingAuthorization(server, grant, System.currentTimeMillis() + grant.expiresIn * 1_000)
+                // A link chose this server, not the person: approval must stay on its own address.
+                if (fromLink && !approvalStaysOnServer(pending)) {
+                    mutableState.update {
+                        it.copy(
+                            phase = SetupPhase.EnterServer,
+                            fromLink = false,
+                            errorMessage = "${server.host} asked to approve this device somewhere else. " +
+                                "Check the address, then tap Continue to try again.",
+                        )
+                    }
+                    return@launch
+                }
                 container.sessions.savePendingAuthorization(pending)
                 await(pending)
-                browserRequests.trySend(browserUri(pending))
+                if (!fromLink) browserRequests.trySend(browserUri(pending))
             } catch (error: ApiException) {
                 mutableState.update { it.copy(phase = SetupPhase.EnterServer, errorMessage = connectMessage(error, server)) }
             }
