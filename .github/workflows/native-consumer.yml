@@ -32,6 +32,8 @@ jobs:
         run: python3 apps/scripts/check-design-tokens.py
 
       - name: Check Android manifest and compatibility catalog tooling
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
         run: python3 -m unittest discover -s apps/scripts/tests -p 'test_android_update*.py' -q
 
   android:
