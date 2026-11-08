@@ -95,14 +95,24 @@ class ZLibraryClient
       with_authenticated_retry(context: "download lookup") do |auth|
         exchange = get_file_exchange(auth, id: id, hash: hash)
         response = usable_search_response(exchange)
+        # Alternates that reject eAPI can still serve a book page. Try those before the walled mirror.
+        html_fallback_auths = search_exchange_walled?(exchange) ? [] : nil
 
         if response.nil? || download_html_fallback_response?(response)
-          alternate_download_url = get_download_url_from_alternate_domains(auth, id: id, hash: hash)
+          alternate_download_url = get_download_url_from_alternate_domains(
+            auth,
+            id: id,
+            hash: hash,
+            html_fallback_auths: html_fallback_auths
+          )
           return alternate_download_url if alternate_download_url
 
           if response.nil? && !search_exchange_walled?(exchange)
             raise ConnectionError, "Z-Library download lookup failed: #{exchange[:error].presence || "no response"}"
           end
+
+          recovered = download_html_fallbacks(html_fallback_auths, id: id, hash: hash)
+          return recovered unless recovered.nil?
 
           Rails.logger.warn "[ZLibraryClient] eAPI download lookup unavailable; falling back to HTML book page"
           return get_html_download_url(auth, id: id, hash: hash)
@@ -733,11 +743,13 @@ class ZLibraryClient
 
     def bot_wall_response?(response)
       return true if redirect_location(response).match?(/diamwall/i)
-      # A book title can contain a challenge phrase. JSON and an HTML results page are not the wall.
+      # A book title can contain a challenge phrase. JSON, a results page, and a
+      # book page that already has a download link are not the wall.
       return false if response.headers["content-type"].to_s.match?(/\bjson\b/i)
 
       body = response_body_string(response)
       return false if html_search_results_page?(body)
+      return false if response.status == 200 && html_book_download_page?(body)
 
       body.match?(BOT_WALL_BODY_PATTERN)
     end
@@ -746,6 +758,17 @@ class ZLibraryClient
       return false if body.blank? || !body.lstrip.start_with?("<")
 
       Nokogiri::HTML(body).at_css("z-bookcard, #searchResultBox, .notFound")
+    end
+
+    def html_book_download_page?(body)
+      return false if body.blank? || !body.lstrip.start_with?("<")
+
+      html_download_link(Nokogiri::HTML(body)).present?
+    end
+
+    def html_download_link(doc)
+      doc.at_css("a.addDownloadedBook[href]")&.[]("href").presence ||
+        doc.at_css('a[href^="/dl/"], a[href*="/dl/"]')&.[]("href").presence
     end
 
     def response_body_string(response)
@@ -1059,10 +1082,20 @@ class ZLibraryClient
       nil
     end
 
-    def get_download_url_from_alternate_domains(current_auth, id:, hash:)
+    def get_download_url_from_alternate_domains(current_auth, id:, hash:, html_fallback_auths: nil)
       each_alternate_auth(current_auth) do |auth|
-        response = usable_search_response(get_file_exchange(auth, id: id, hash: hash))
-        next if response.nil? || download_html_fallback_response?(response)
+        exchange = get_file_exchange(auth, id: id, hash: hash)
+        if search_exchange_walled?(exchange)
+          html_fallback_auths << auth if html_fallback_auths
+          next
+        end
+
+        response = usable_search_response(exchange)
+        if response && download_html_fallback_response?(response)
+          html_fallback_auths << auth if html_fallback_auths
+          next
+        end
+        next if response.nil?
 
         data = parse_response(response, context: "download lookup")
         download_link = data.dig("file", "downloadLink")
@@ -1070,6 +1103,16 @@ class ZLibraryClient
 
         validate_download_url!(download_link)
         return download_link
+      end
+
+      nil
+    end
+
+    def download_html_fallbacks(auths, id:, hash:)
+      Array(auths).each do |auth|
+        return get_html_download_url(auth, id: id, hash: hash)
+      rescue JSON::ParserError, Faraday::Error, Error => error
+        Rails.logger.debug "[ZLibraryClient] HTML download retry failed on #{auth[:domain]}: #{error.class}"
       end
 
       nil
@@ -1270,9 +1313,7 @@ class ZLibraryClient
         raise ConnectionError, "Z-Library HTML download lookup failed with status #{status}"
       end
 
-      doc = Nokogiri::HTML(response.body.to_s)
-      download_link = doc.at_css("a.addDownloadedBook[href]")&.[]("href").presence ||
-        doc.at_css('a[href^="/dl/"], a[href*="/dl/"]')&.[]("href").presence
+      download_link = html_download_link(Nokogiri::HTML(response.body.to_s))
       raise Error, "Z-Library did not return a download link" if download_link.blank?
 
       base_url = login_base_url(URI.parse(exchange[:url]), URI.parse(auth[:base_url]))
