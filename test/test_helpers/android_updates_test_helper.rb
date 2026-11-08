@@ -22,7 +22,7 @@ module AndroidUpdatesTestHelper
   end
 
   def fake_apk(seed)
-    ("PK\x03\x04shelfarr-#{seed}-".b * 64).b
+    ("PK\x03\x04shelfarr-#{seed}-".b * 64) + (0..255).to_a.pack("C*")
   end
 
   def catalog_entry(bytes:, channel: "release", version_code: 10, version_name: "2026.11.#{version_code}",

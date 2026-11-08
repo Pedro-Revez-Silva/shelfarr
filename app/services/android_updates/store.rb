@@ -127,6 +127,7 @@ module AndroidUpdates
     def stage
       path = ensure_directory(root.join("staging")).join("#{SecureRandom.hex(16)}.part")
       File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW | File::BINARY, 0o600) do |file|
+        file.binmode
         yield file
         file.flush
         file.fsync
@@ -199,7 +200,7 @@ module AndroidUpdates
 
     # An open regular file, or :missing (absent, a symlink or not a file).
     def open_regular(path)
-      file = File.open(path, File::RDONLY | File::NOFOLLOW | File::BINARY)
+      file = File.open(path, File::RDONLY | File::NOFOLLOW | File::BINARY).binmode
       return file if file.stat.file?
 
       file.close

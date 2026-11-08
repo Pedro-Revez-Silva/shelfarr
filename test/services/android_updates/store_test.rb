@@ -23,6 +23,21 @@ class AndroidUpdates::StoreTest < ActiveSupport::TestCase
     assert_nil reopened.ready_release("development")
   end
 
+  test "APK bytes are unchanged with Rails UTF-8 internal encoding" do
+    previous_encoding = Encoding.default_internal
+    Encoding.default_internal = Encoding::UTF_8
+    bytes = (0..255).to_a.pack("C*") * 4
+    release = promote_fixture(bytes)
+
+    assert android_store.intact?("release", release)
+    found, file = android_store.open_apk("release", release.file_name)
+    assert_equal release, found
+    assert_equal bytes, file.read
+  ensure
+    file&.close
+    Encoding.default_internal = previous_encoding
+  end
+
   test "keeps the build it replaces and prunes older ones" do
     first = promote_fixture(fake_apk(1), version_code: 1)
     second = promote_fixture(fake_apk(2), version_code: 2)
