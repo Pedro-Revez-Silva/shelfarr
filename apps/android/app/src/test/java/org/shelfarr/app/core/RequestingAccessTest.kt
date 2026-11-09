@@ -4,6 +4,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -94,6 +97,37 @@ class RequestingAccessTest {
         assertTrue(ended.notice!!.contains("wasn't allowed"))
         assertEquals(before, sessions.signedIn)
         assertTrue(fixture.revoked.isEmpty())
+    }
+
+    /**
+     * The remaining-time refresh runs beside the token poll. A refresh that checked
+     * "still approving" just before the approval ended (a thread descheduled on a busy
+     * machine) must not write "approving" back over the outcome. The clock holds that tick
+     * at exactly that point, between its check and its write, until the outcome is set.
+     */
+    @Test
+    fun `a countdown tick caught mid-update never revives an approval that has ended`() = runBlocking {
+        val testThread = Thread.currentThread()
+        val held = CountDownLatch(1)
+        lateinit var gated: RequestingAccess
+        val clock = {
+            if (Thread.currentThread() !== testThread && gated.state.value is RequestAccess.Approving && held.count > 0) {
+                held.countDown()
+                val until = System.currentTimeMillis() + 5_000
+                while (gated.state.value is RequestAccess.Approving && System.currentTimeMillis() < until) Thread.onSpinWait()
+            }
+            System.currentTimeMillis()
+        }
+        gated = RequestingAccess(backend, scope, "Shelfarr Android", now = clock)
+        val before = signIn()
+        fixture.decision = RequestFixtureApi.Decision.DENY
+        gated.start(before)
+        assertTrue("the countdown never ticked", held.await(5, TimeUnit.SECONDS))
+        val ended = withTimeout(10_000) { gated.state.first { it is RequestAccess.NotAllowed } }
+        // The held tick has now resumed; the outcome must still stand.
+        withTimeout(2_000) { while (held.count > 0) delay(10) }
+        delay(300)
+        assertEquals(ended, gated.state.value)
     }
 
     @Test

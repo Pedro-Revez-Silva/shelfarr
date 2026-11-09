@@ -160,7 +160,10 @@ class RequestingAccess(
             val countdown = launch {
                 while (isActive) {
                     delay(1_000)
-                    if (mutableState.value is RequestAccess.Approving) mutableState.value = approving()
+                    // Only replaces the exact value checked: an outcome, cancel or sign-out
+                    // set meanwhile (this tick being descheduled) is never written over.
+                    val shown = mutableState.value
+                    if (shown is RequestAccess.Approving) mutableState.compareAndSet(shown, approving())
                 }
             }
             val ended = try {
