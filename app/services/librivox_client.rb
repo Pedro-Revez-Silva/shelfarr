@@ -42,22 +42,33 @@ class LibrivoxClient
     def search(title:, author: nil, language: nil, limit: nil)
       ensure_configured!
 
-      response = request do
-        connection.get("/api/feed/audiobooks/") do |req|
-          req.params["format"] = "json"
-          req.params["extended"] = "1"
-          req.params["coverart"] = "1"
-          req.params["limit"] = limit || SettingsService.get(:librivox_search_limit, default: 20)
-          req.params["title"] = title if title.present?
-          req.params["author"] = author_last_name(author) if title.blank? && author.present?
+      # LibriVox often lists a title without its leading article. Keep an exact
+      # match when available, then try one alternative if no usable book is found.
+      titles = [ title ]
+      without_article = title.to_s.sub(/\A(?:a|an|the)\s+/i, "")
+      titles << without_article if without_article.present? && without_article != title.to_s
+
+      titles.each do |search_title|
+        response = request do
+          connection.get("/api/feed/audiobooks/") do |req|
+            req.params["format"] = "json"
+            req.params["extended"] = "1"
+            req.params["coverart"] = "1"
+            req.params["limit"] = limit || SettingsService.get(:librivox_search_limit, default: 20)
+            req.params["title"] = search_title if search_title.present?
+            req.params["author"] = author_last_name(author) if search_title.blank? && author.present?
+          end
         end
+
+        next if response.status == 404
+
+        raise ConnectionError, "LibriVox search failed with status #{response.status}" unless response.status == 200
+
+        results = parse_results(response.body, language: language)
+        return results if results.any?
       end
 
-      return [] if response.status == 404
-
-      raise ConnectionError, "LibriVox search failed with status #{response.status}" unless response.status == 200
-
-      parse_results(response.body, language: language)
+      []
     rescue JSON::ParserError => e
       raise ConnectionError, "Failed to parse LibriVox response: #{e.message}"
     end

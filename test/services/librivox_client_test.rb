@@ -126,6 +126,89 @@ class LibrivoxClientTest < ActiveSupport::TestCase
     assert_empty LibrivoxClient.search(title: "Not A Real Book")
   end
 
+  test "search retries missing titles without one leading English article" do
+    {
+      "A Modest Proposal" => "Modest Proposal",
+      "An Ideal Husband" => "Ideal Husband",
+      "The Time Machine" => "Time Machine",
+      "the Time Machine" => "Time Machine"
+    }.each do |title, alternative|
+      original = stub_title_search(title, status: 404, limit: 3)
+      fallback = stub_title_search(alternative, books: [ audiobook(alternative) ], limit: 3)
+
+      results = LibrivoxClient.search(title: title, language: "en", limit: 3)
+
+      assert_equal [ "177" ], results.map(&:id)
+      assert_requested original, times: 1
+      assert_requested fallback, times: 1
+      WebMock.reset!
+    end
+  end
+
+  test "search keeps an exact title result without trying an alternative" do
+    original = stub_title_search("The Time Machine", books: [ audiobook("The Time Machine") ])
+
+    assert_equal [ "177" ], LibrivoxClient.search(title: "The Time Machine").map(&:id)
+    assert_requested original, times: 1
+    assert_not_requested :get, "https://librivox.org/api/feed/audiobooks/", query: hash_including("title" => "Time Machine")
+  end
+
+  test "search also retries an empty successful response" do
+    original = stub_title_search("A Modest Proposal")
+    fallback = stub_title_search("Modest Proposal", books: [ audiobook("Modest Proposal") ])
+
+    assert_equal [ "177" ], LibrivoxClient.search(title: "A Modest Proposal").map(&:id)
+    assert_requested original, times: 1
+    assert_requested fallback, times: 1
+  end
+
+  test "search stops after one article alternative also returns no books" do
+    original = stub_title_search("The The Book", status: 404)
+    fallback = stub_title_search("The Book", status: 404)
+
+    assert_empty LibrivoxClient.search(title: "The The Book")
+    assert_requested original, times: 1
+    assert_requested fallback, times: 1
+    assert_not_requested :get, "https://librivox.org/api/feed/audiobooks/", query: hash_including("title" => "Book")
+  end
+
+  test "search does not strip parts of words or an entire title" do
+    [ "Theodore", "Another Book", "The", "A" ].each do |title|
+      original = stub_title_search(title, status: 404)
+
+      assert_empty LibrivoxClient.search(title: title)
+      assert_requested original, times: 1
+      WebMock.reset!
+    end
+  end
+
+  test "article alternatives keep the requested language filter" do
+    original = stub_title_search("The Book", status: 404)
+    fallback = stub_title_search("Book", books: [ audiobook("Book").merge(language: "French") ])
+
+    assert_empty LibrivoxClient.search(title: "The Book", language: "en")
+    assert_requested original, times: 1
+    assert_requested fallback, times: 1
+  end
+
+  test "search does not disguise an upstream error as an article retry" do
+    original = stub_title_search("The Time Machine", status: 500)
+
+    assert_raises(LibrivoxClient::ConnectionError) { LibrivoxClient.search(title: "The Time Machine") }
+    assert_requested original, times: 1
+    assert_not_requested :get, "https://librivox.org/api/feed/audiobooks/", query: hash_including("title" => "Time Machine")
+  end
+
+  test "search does not retry a connection failure with a different title" do
+    original = stub_request(:get, "https://librivox.org/api/feed/audiobooks/")
+      .with(query: hash_including("title" => "The Time Machine"))
+      .to_raise(Faraday::TimeoutError.new("offline"))
+
+    assert_raises(LibrivoxClient::ConnectionError) { LibrivoxClient.search(title: "The Time Machine") }
+    assert_requested original, times: 1
+    assert_not_requested :get, "https://librivox.org/api/feed/audiobooks/", query: hash_including("title" => "Time Machine")
+  end
+
   # The jobs process never sees the web process's reset_connection!.
   test "search uses the corrected LibriVox URL without resetting the connection" do
     SettingsService.set(:librivox_url, "https://old-librivox.example")
@@ -182,5 +265,17 @@ class LibrivoxClientTest < ActiveSupport::TestCase
     assert_raises LibrivoxClient::ConfigurationError do
       LibrivoxClient.search(title: "test")
     end
+  end
+
+  private
+
+  def stub_title_search(title, status: 200, books: [], limit: 10)
+    stub_request(:get, "https://librivox.org/api/feed/audiobooks/")
+      .with(query: hash_including("title" => title, "limit" => limit.to_s))
+      .to_return(status: status, headers: { "Content-Type" => "application/json" }, body: { books: books }.to_json)
+  end
+
+  def audiobook(title)
+    { id: "177", title: title, language: "English", url_zip_file: "https://archive.org/download/example/book.zip" }
   end
 end
