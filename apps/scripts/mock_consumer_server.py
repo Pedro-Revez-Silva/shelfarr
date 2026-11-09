@@ -33,6 +33,15 @@ six-page PDF, a ten-page CBZ comic (stored as a comic record, served as an ebook
 content_kind "graphic") and a book with both an EPUB and a PDF. Clients that don't
 send the header see exactly the EPUB and audio library above. Comic reading orders are
 served at reading_order_url, and page places are checked as the server checks them.
+
+Read-along (docs/read-along.md): --read-along adds two narrated fixture books and the
+read-along routes. "The Narrated Garden" is an EPUB 3 with genuine SMIL Media Overlays and
+its WAV narration inside; "The Paired Lighthouse" is a plain EPUB with an imported
+alignment to its separate two-file audiobook. In both, cue N sounds a distinct pitch
+(330 + 110*N Hz) for 1.8 seconds, so what is heard can be matched with what is
+highlighted. Only details requested with X-Shelfarr-Reader-Features: read-along carry
+read_along summaries, and server.json then lists the feature; without the flag every
+response is exactly as before. --read-along-stale answers the imported alignment as stale.
 """
 
 import argparse
@@ -50,7 +59,7 @@ import zipfile
 import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 PREFIX = "/api/consumer/v1"
 BASE_SCOPES = ["library:read", "progress:write"]
@@ -289,9 +298,119 @@ def build_tone(seconds, hertz):
     return buffer.getvalue()
 
 
+READ_ALONG_CUES = 8
+READ_ALONG_WORDS = ["quiet", "river", "lantern", "harbour", "meadow", "orchard", "willow", "ember"]
+READER_FEATURE_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+READ_ALONG_LOCATION_KEYS = {"generation", "audio", "offset_ms"}
+SMIL_TYPE = "application/smil+xml"
+EPUB_AUDIO_TYPES = {"audio/mpeg", "audio/mp4", "audio/ogg", "audio/opus", "audio/aac", "audio/wav", "audio/x-wav",
+                    "audio/wave", "audio/flac"}
+
+
+def build_cue_tones(cues, rate=16000):
+    """WAV narration where cue N sounds 330 + 110*N Hz for 1.8 s, then 0.2 s of silence."""
+    frames = bytearray()
+    for cue in cues:
+        hertz = 330 + 110 * cue
+        for n in range(rate * 2):
+            value = int(6000 * math.sin(2 * math.pi * hertz * n / rate)) if n < rate * 1.8 else 0
+            frames += struct.pack("<h", value)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(bytes(frames))
+    return buffer.getvalue()
+
+
+def cue_sentence(cue, words=70):
+    """Paragraph text for cue N: long enough that a phone page holds about one."""
+    word = READ_ALONG_WORDS[cue % len(READ_ALONG_WORDS)]
+    return f"Cue {cue + 1} sounds the {word} tone. " + " ".join([word] * words) + "."
+
+
+def build_read_along_epub(title, identifier, overlay):
+    """An EPUB 3 with cues c0..c4 in chapter1.xhtml and c5..c7 in chapter2.xhtml. With
+    `overlay`, each chapter names a genuine SMIL Media Overlay over OEBPS/audio/narration.wav
+    (stored, as publishing tools write audio)."""
+    docs = {"chapter1.xhtml": range(0, 5), "chapter2.xhtml": range(5, READ_ALONG_CUES)}
+    manifest = '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+    spine = ""
+    entries = {}
+    for index, (doc, cues) in enumerate(docs.items()):
+        overlay_attr = f' media-overlay="mo{index}"' if overlay else ""
+        manifest += f'<item id="doc{index}" href="{doc}" media-type="application/xhtml+xml"{overlay_attr}/>'
+        spine += f'<itemref idref="doc{index}"/>'
+        paragraphs = "".join(f'<p id="c{cue}">{cue_sentence(cue)}</p>' for cue in cues)
+        entries[f"OEBPS/{doc}"] = (
+            '<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head>'
+            f'<title>Chapter {index + 1}</title><link rel="stylesheet" href="style.css" type="text/css"/></head>'
+            f'<body><h1 id="h{index}">Chapter {index + 1}</h1>{paragraphs}</body></html>')
+        if overlay:
+            smil = doc.replace(".xhtml", ".smil")
+            manifest += f'<item id="mo{index}" href="{smil}" media-type="{SMIL_TYPE}"/>'
+            pars = "".join(
+                f'<par id="par-c{cue}"><text src="{doc}#c{cue}"/><audio src="audio/narration.wav" '
+                f'clipBegin="0:00:{cue * 2:06.3f}" clipEnd="0:00:{cue * 2 + 1.8:06.3f}"/></par>' for cue in cues)
+            entries[f"OEBPS/{smil}"] = (
+                '<?xml version="1.0" encoding="UTF-8"?><smil xmlns="http://www.w3.org/ns/SMIL" '
+                'xmlns:epub="http://www.idpf.org/2007/ops" version="3.0"><body>'
+                f'<seq id="seq-{index}" epub:textref="{doc}">{pars}</seq></body></smil>')
+    manifest += '<item id="css" href="style.css" media-type="text/css"/>'
+    metadata = ""
+    if overlay:
+        manifest += '<item id="narration" href="audio/narration.wav" media-type="audio/wav"/>'
+        metadata = ('<meta property="media:duration">0:00:16.000</meta>'
+                    '<meta property="media:active-class">-epub-media-overlay-active</meta>')
+    toc = "".join(f'<li><a href="{doc}">Chapter {n + 1}</a></li>' for n, doc in enumerate(docs))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as book:
+        book.writestr(zipfile.ZipInfo("mimetype"), "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        book.writestr("META-INF/container.xml",
+                      '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+                      '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                      '</rootfiles></container>')
+        book.writestr("OEBPS/content.opf",
+                      '<?xml version="1.0" encoding="UTF-8"?><package version="3.0" unique-identifier="id" '
+                      'xmlns="http://www.idpf.org/2007/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                      f'<dc:identifier id="id">{identifier}</dc:identifier><dc:title>{title}</dc:title>'
+                      '<dc:language>en</dc:language><meta property="dcterms:modified">2026-11-09T00:00:00Z</meta>'
+                      f'{metadata}</metadata><manifest>{manifest}</manifest><spine>{spine}</spine></package>')
+        book.writestr("OEBPS/nav.xhtml",
+                      '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head>'
+                      f'<title>Contents</title></head><body><nav epub:type="toc"><ol>{toc}</ol></nav></body></html>')
+        book.writestr("OEBPS/style.css", "p { margin: 0 0 1em; }")
+        for name, content in entries.items():
+            book.writestr(name, content)
+        if overlay:
+            book.writestr(zipfile.ZipInfo("OEBPS/audio/narration.wav"), build_cue_tones(range(READ_ALONG_CUES)),
+                          compress_type=zipfile.ZIP_STORED)
+    return buffer.getvalue()
+
+
+def epub_resources(data):
+    """What a streaming reader may load: container, package and manifest items except audio,
+    video and SMIL (as Consumer::ReadAlong#core lists them)."""
+    with zipfile.ZipFile(io.BytesIO(data)) as book:
+        sizes = {info.filename: info.file_size for info in book.infolist()}
+        opf = book.read("OEBPS/content.opf").decode()
+    resources = [{"href": "META-INF/container.xml", "media_type": "application/xml", "size_bytes": sizes["META-INF/container.xml"]},
+                 {"href": "OEBPS/content.opf", "media_type": "application/oebps-package+xml", "size_bytes": sizes["OEBPS/content.opf"]}]
+    audio = []
+    for href, media_type in re.findall(r'<item id="[^"]+" href="([^"]+)" media-type="([^"]+)"', opf):
+        path = "OEBPS/" + href
+        if media_type in EPUB_AUDIO_TYPES:
+            audio.append({"href": path, "media_type": media_type, "size_bytes": sizes[path]})
+        elif media_type != SMIL_TYPE and not media_type.startswith("video/"):
+            resources.append({"href": path, "media_type": media_type, "size_bytes": sizes[path]})
+    return resources, audio
+
+
 class State:
     def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0, conflict_observed="unknown",
-                 grant_requesting=False, old_server=False, request_outcome="available"):
+                 grant_requesting=False, old_server=False, request_outcome="available", read_along=False,
+                 read_along_stale=False):
         self.lock = threading.Lock()
         self.grant_requesting = grant_requesting
         self.old_server = old_server
@@ -337,6 +456,97 @@ class State:
         })
         self.format_books = {"pdf-1", "comic-1", "multi-1"}
         self.orders = {"cbz-1": reading_order(cbz)}
+        # Read-along fixtures exist only with --read-along, so every other run is unchanged.
+        self.read_along = read_along and not old_server
+        self.read_along_stale = read_along_stale
+        self.alignments = {}
+        if self.read_along:
+            garden = build_read_along_epub("The Narrated Garden", "urn:shelfarr:mock-garden", overlay=True)
+            lighthouse = build_read_along_epub("The Paired Lighthouse", "urn:shelfarr:mock-lighthouse", overlay=False)
+            self.files.update({
+                "epub-garden": ("The Narrated Garden.epub", "application/epub+zip", "epub", garden),
+                "epub-lighthouse": ("The Paired Lighthouse.epub", "application/epub+zip", "epub", lighthouse),
+                "lighthouse-1": ("Lighthouse 1.wav", "audio/wav", "wav", build_cue_tones(range(0, 4))),
+                "lighthouse-2": ("Lighthouse 2.wav", "audio/wav", "wav", build_cue_tones(range(4, READ_ALONG_CUES))),
+            })
+            self.books.update({
+                "garden-1": ("The Narrated Garden", "Mock Author", "ebook", ["epub-garden"]),
+                "lighthouse-1": ("The Paired Lighthouse", "Mock Author", "ebook", ["epub-lighthouse"]),
+                "lighthouse-audio-1": ("The Paired Lighthouse", "Mock Narrator", "audiobook", ["lighthouse-1", "lighthouse-2"]),
+            })
+            # An imported alignment: chapter text to the separate audiobook, cue N at 2N s of its file.
+            self.alignments["epub-lighthouse"] = {"audiobook": "lighthouse-audio-1", "cues": [
+                [cue, "lighthouse-1" if cue < 4 else "lighthouse-2", (cue % 4) * 2000, (cue % 4) * 2000 + 1800]
+                for cue in range(READ_ALONG_CUES)]}
+
+    def read_along_status(self, publication_id, asset_id):
+        """(status, source, manifest core or None, reason) for one EPUB asset, as Consumer::ReadAlong decides."""
+        data = self.files[asset_id][3]
+        if asset_id in self.alignments:
+            if self.read_along_stale:
+                return "stale", "imported", None, "The audiobook files changed after the alignment was imported. An administrator can recheck it."
+            alignment = self.alignments[asset_id]
+            tracks = self.books[alignment["audiobook"]][3]
+            audio = [{"kind": "publication_asset", "publication_id": alignment["audiobook"], "asset_id": track,
+                      "filename": self.files[track][0], "media_type": self.files[track][1],
+                      "size_bytes": len(self.files[track][3])} for track in tracks]
+            cues = [[0 if cue < 5 else 1, f"c{cue}", tracks.index(track), begin, end]
+                    for cue, track, begin, end in alignment["cues"]]
+            seed = ["imported", "1", asset_id] + [hashlib.sha256(self.files[t][3]).hexdigest() for t in tracks]
+            return "available", "imported", self.read_along_core(asset_id, data, audio, cues, seed), None
+        resources, epub_audio = epub_resources(data)
+        if not epub_audio:
+            return "unaligned", None, None, None
+        audio = [{"kind": "epub_resource", **track} for track in epub_audio]
+        cues = [[0 if cue < 5 else 1, f"c{cue}", 0, cue * 2000, cue * 2000 + 1800] for cue in range(READ_ALONG_CUES)]
+        return "available", "media_overlay", self.read_along_core(asset_id, data, audio, cues, ["media_overlay", "1", asset_id]), None
+
+    def read_along_core(self, asset_id, data, audio, cues, seed):
+        resources, _ = epub_resources(data)
+        return {"version": 1, "generation": hashlib.sha256("\0".join(seed).encode()).hexdigest(), "ebook_asset_id": asset_id,
+                "package_path": "OEBPS/content.opf",
+                "text": [{"href": "OEBPS/chapter1.xhtml", "media_type": "application/xhtml+xml"},
+                         {"href": "OEBPS/chapter2.xhtml", "media_type": "application/xhtml+xml"}],
+                "audio": audio, "cue_fields": ["text", "fragment", "audio", "begin_ms", "end_ms"], "cues": cues,
+                "coverage": {"complete": True, "text_sections": 2, "aligned_sections": 2, "unaligned_sections": [],
+                             "cues": len(cues), "audio_ms": sum(end - begin for *_, begin, end in cues)},
+                "resources": resources, "resources_bytes": sum(r["size_bytes"] for r in resources)}
+
+    def read_along_summary(self, base, publication_id, asset_id):
+        status, source, core, reason = self.read_along_status(publication_id, asset_id)
+        summary = {"status": status}
+        if source:
+            summary["source"] = source
+        if reason:
+            summary["reason"] = reason
+        if core:
+            coverage = core["coverage"]
+            summary.update(generation=core["generation"],
+                           manifest_url=f"{base}{PREFIX}/library/{publication_id}/assets/{asset_id}/read_along",
+                           coverage={k: coverage[k] for k in ("complete", "text_sections", "aligned_sections", "cues", "audio_ms")},
+                           text_bytes=core["resources_bytes"], audio_bytes=sum(track["size_bytes"] for track in core["audio"]))
+        alignment = self.alignments.get(asset_id)
+        if alignment:
+            summary["audiobook"] = {"id": alignment["audiobook"], "title": self.books[alignment["audiobook"]][0]}
+        return summary
+
+    def read_along_manifest(self, base, publication_id, asset_id):
+        status, source, core, reason = self.read_along_status(publication_id, asset_id)
+        if core is None:
+            return status, {"error": f"read_along_{status}", "status": status, **({"source": source} if source else {}),
+                            **({"reason": reason} if reason else {})}
+        url = f"{base}{PREFIX}/library/{publication_id}/assets/{asset_id}/read_along"
+        manifest = dict(core, publication_id=publication_id, manifest_url=url, resources_url=f"{url}/resources/")
+        manifest["resources"] = [dict(r, url=f"{url}/resources/{escape_href(r['href'])}") for r in core["resources"]]
+        audio = []
+        for track in core["audio"]:
+            if track["kind"] == "epub_resource":
+                audio.append(dict(track, url=f"{url}/resources/{escape_href(track['href'])}"))
+            else:
+                audio.append(dict(track, url=f"{url}/audio/{track['asset_id']}",
+                                  content_url=f"{base}{PREFIX}/assets/{track['asset_id']}/content"))
+        manifest["audio"] = audio
+        return status, manifest
 
     def request_view(self, request_id):
         r = self.requests[request_id]
@@ -411,10 +621,15 @@ class State:
             return True
         return formats != LEGACY_FORMATS and bool(set(formats) & {"pdf", "cbz"})
 
-    def publication(self, base, publication_id, formats=LEGACY_FORMATS):
+    def publication(self, base, publication_id, formats=LEGACY_FORMATS, read_along=False):
         title, author, kind, assets = self.books[publication_id]
         declared = formats != LEGACY_FORMATS
         shown = [a for a in assets if self.files[a][2] in formats or self.files[a][2] not in READER_FORMATS]
+        listed = [self.asset(base, a, n, publication_id) for n, a in enumerate(assets) if a in shown]
+        if read_along and self.read_along:
+            for asset in listed:
+                if asset["format"] == "epub" and kind != "audiobook":
+                    asset["read_along"] = self.read_along_summary(base, publication_id, asset["id"])
         item = {
             "id": publication_id,
             "title": title,
@@ -423,7 +638,7 @@ class State:
             # A comic record is an ebook to every client; no new book_type reaches old apps.
             "book_type": "ebook" if kind == "comicbook" else kind,
             "cover_url": None,
-            "assets": [self.asset(base, a, n, publication_id) for n, a in enumerate(assets) if a in shown],
+            "assets": listed,
             "progress": self.progress.get(publication_id),
             "reading_status": self.status(publication_id),
         }
@@ -499,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         return json.loads(self.raw_body() or b"{}")
 
-    def respond(self, code, payload=None, vary=False):
+    def respond(self, code, payload=None, vary=False, headers=None):
         # Every request body is read before answering, also when a handler doesn't need
         # it (auth/revoke, refusals): on a keep-alive connection an unread body would be
         # parsed as the start of the next request ("{}GET ...", 501).
@@ -509,10 +724,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
         if vary:
-            self.send_header("Vary", "X-Shelfarr-Reader-Formats")
+            self.send_header("Vary", "X-Shelfarr-Reader-Formats" + (", X-Shelfarr-Reader-Features" if vary == "features" else ""))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
+
+    def reader_features(self):
+        """True when read-along is declared; None after answering 400 for a malformed declaration."""
+        value = self.headers.get("X-Shelfarr-Reader-Features")
+        if value is None or not self.state.read_along:
+            return False
+        names = [name.strip() for name in value.split(",")]
+        if not 1 <= len(value.encode()) <= 128 or not all(READER_FEATURE_NAME.fullmatch(name) for name in names):
+            self.respond(400, {"error": "invalid_request", "message": "Reader feature names are lowercase words joined by hyphens"},
+                         vary="features")
+            return None
+        return "read-along" in names
 
     def route(self):
         path = urlparse(self.path).path
@@ -660,6 +889,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.state.old_server:
                 payload["consumer_features"] = ["requests"]
                 payload["reader_formats"] = list(READER_FORMATS)
+            if self.state.read_along:
+                payload["reader_features"] = ["read-along"]
+                payload["read_along_manifest_versions"] = [1]
             return self.respond(200, payload)
         if not self.authorized():
             return
@@ -696,6 +928,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.state.advance(request_id)
                 ordered = sorted(self.state.requests, key=lambda i: self.state.requests[i]["updated_at"], reverse=True)
                 return self.respond(200, {"items": [self.state.request_view(i) for i in ordered]})
+            along = re.fullmatch(PREFIX + r"/library/([^/]+)/assets/([^/]+)/read_along(?:/(resources|audio)/(.+))?", path)
+            if along and self.state.read_along:
+                return self.serve_read_along(along[1], along[2], along[3], along[4])
             order_match = re.fullmatch(PREFIX + r"/library/([^/]+)/assets/([^/]+)/reading_order", path)
             if order_match:
                 book = self.state.books.get(order_match[1])
@@ -737,7 +972,12 @@ class Handler(BaseHTTPRequestHandler):
             if match and match[1] in self.state.books and (match[2] or self.state.visible(match[1], formats)):
                 if match[2]:
                     return self.respond(200, {"progress": self.state.progress.get(match[1])})
-                return self.respond(200, self.state.publication(self.base, match[1], formats), vary=True)
+                features = self.reader_features()
+                if features is None:
+                    return None
+                # Vary names the features header only when this server offers any.
+                vary = "features" if self.state.read_along else True
+                return self.respond(200, self.state.publication(self.base, match[1], formats, read_along=features), vary=vary)
         match = re.fullmatch(PREFIX + r"/assets/([^/]+)/content", path)
         if match and match[1] in self.state.files:
             return self.serve(self.state.files[match[1]])
@@ -780,6 +1020,14 @@ class Handler(BaseHTTPRequestHandler):
             refusal = self.state.fixed_layout_error(match[1], place["asset_id"], place["locator"])
             if refusal:
                 return self.respond(422, {"error": "invalid_progress", "message": refusal})
+            locations = place["locator"].get("locations") if isinstance(place["locator"], dict) else None
+            point = locations.get("readAlong") if isinstance(locations, dict) else None
+            if point is not None and not (
+                    isinstance(point, dict) and set(point) == READ_ALONG_LOCATION_KEYS
+                    and isinstance(point["generation"], str) and re.fullmatch(r"[0-9a-f]{64}", point["generation"])
+                    and type(point["audio"]) is int and 0 <= point["audio"] <= 1999
+                    and type(point["offset_ms"]) is int and 0 <= point["offset_ms"] <= 48 * 3_600_000):
+                return self.respond(422, {"error": "invalid_progress", "message": "A bounded relative ebook locator is required"})
         with self.state.lock:
             current = self.state.progress.get(match[1])
             version = current["version"] if current else 0
@@ -809,6 +1057,37 @@ class Handler(BaseHTTPRequestHandler):
             self.state.touch(match[1], observed)
             self.respond(200, {"progress": saved})
 
+    def serve_read_along(self, publication_id, asset_id, kind, rest):
+        """The manifest, one listed EPUB entry, or an imported alignment's audiobook file."""
+        book = self.state.books.get(publication_id)
+        if book is None:
+            return self.respond(404, {"error": "not_found"})
+        if asset_id not in book[3] or self.state.files[asset_id][2] != "epub":
+            return self.respond(410, {"error": "asset_unavailable"})
+        status, manifest = self.state.read_along_manifest(self.base, publication_id, asset_id)
+        if kind is None:
+            code = {"available": 200, "unaligned": 404, "stale": 409, "invalid": 422}[status]
+            return self.respond(code, manifest, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+        if status != "available":
+            return self.respond(410, {"error": "asset_unavailable"})
+        if kind == "audio":
+            track = next((t for t in manifest["audio"] if t["kind"] == "publication_asset" and t["asset_id"] == rest), None)
+            if track is None:
+                return self.respond(410, {"error": "asset_unavailable"})
+            return self.serve(self.state.files[track["asset_id"]])
+        path = "/".join(unquote(part) for part in rest.split("/"))
+        listed = any(r["href"] == path for r in manifest["resources"]) or any(
+            t["kind"] == "epub_resource" and t["href"] == path for t in manifest["audio"])
+        if not listed:
+            return self.respond(404, {"error": "resource_not_found"})
+        with zipfile.ZipFile(io.BytesIO(self.state.files[asset_id][3])) as epub:
+            data = epub.read(path)
+        media_type = next((r["media_type"] for r in manifest["resources"] + manifest["audio"] if r["href"] == path),
+                          "application/octet-stream")
+        etag = '"' + hashlib.sha256(f"{asset_id}\0{path}".encode()).hexdigest() + '"'
+        return self.serve((path.rsplit("/", 1)[-1], media_type, None, data), etag=etag, attachment=True,
+                          read_along=manifest["generation"])
+
     def approve(self):
         code = parse_qs(urlparse(self.path).query).get("user_code", [""])[0]
         with self.state.lock:
@@ -822,9 +1101,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def serve(self, item):
+    def serve(self, item, etag=None, attachment=False, read_along=None):
+        self.raw_body()
         _, media_type, _, data = item
-        etag = '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
+        etag = etag or '"' + hashlib.sha256(data).hexdigest()[:16] + '"'
         if self.headers.get("If-None-Match") == etag:
             self.send_response(304)
             self.send_header("ETag", etag)
@@ -841,10 +1121,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", media_type)
         self.send_header("Accept-Ranges", "bytes")
-        if media_type in ("application/pdf", "application/vnd.comicbook+zip"):
+        if attachment or media_type in ("application/pdf", "application/vnd.comicbook+zip"):
             # As the server sends them: never rendered in place.
             self.send_header("Content-Disposition", "attachment")
             self.send_header("X-Content-Type-Options", "nosniff")
+        if read_along:
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox; frame-ancestors 'none'; form-action 'none'; base-uri 'none'")
+            self.send_header("X-Shelfarr-Read-Along", read_along)
         self.send_header("ETag", etag)
         self.send_header("Content-Length", str(end - start + 1))
         if status == 206:
@@ -869,10 +1153,13 @@ def main():
     parser.add_argument("--old-server", action="store_true", help="Behave like a server without requesting")
     parser.add_argument("--request-outcome", choices=("available", "not_found", "failed"), default="available",
                         help="Where new requests end after searching")
+    parser.add_argument("--read-along", action="store_true",
+                        help="Add the narrated fixture books and the read-along feature (docs/read-along.md)")
+    parser.add_argument("--read-along-stale", action="store_true", help="Answer the imported alignment as stale")
     args = parser.parse_args()
 
     Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books, args.conflict_observed,
-                          args.grant_requesting, args.old_server, args.request_outcome)
+                          args.grant_requesting, args.old_server, args.request_outcome, args.read_along, args.read_along_stale)
     Handler.base = args.base.rstrip("/")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Mock Shelfarr consumer API on http://{args.host}:{args.port}{Handler.base}", flush=True)
