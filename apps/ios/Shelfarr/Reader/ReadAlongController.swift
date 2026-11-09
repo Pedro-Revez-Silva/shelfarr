@@ -42,6 +42,12 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
     private var followTarget: (href: String, until: Date)?
     private var heardCount = 0
     private var followCount = 0
+    /// Simulator smoke only: every highlight change since narration last began, as
+    /// `cue/follows` (`p1/0,-/0,p2/0`). A fixture cue lasts two seconds, about as long as
+    /// one trace query takes on a hosted simulator, so the order heard is recorded here
+    /// rather than sampled. Bounded; empty unless `traces`.
+    private var shownCues: [String] = []
+    private static let shownLimit = 64
 
     static let followKey = "readAlong.follow"
 
@@ -174,6 +180,7 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
 
     private func began() {
         session.began()
+        shownCues = []
         started = true
         suspended = false
         playing = true
@@ -261,6 +268,11 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
         let tick = session.tick(audio: track, ms: Int64((seconds * 1000).rounded()), playing: playing)
         if self.playing != playing { self.playing = playing }
         if tick.changed {
+            if traces {
+                let shown = tick.highlight.map { manifest.fragments[$0] } ?? "-"
+                shownCues.append("\(shown)/\(followCount)")
+                if shownCues.count > Self.shownLimit { shownCues.removeFirst() }
+            }
             redrawHighlight()
             updateTrace("cue")
         } else if traces {
@@ -354,8 +366,11 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
         guard traces else { return }
         let cue = session.highlighted.map { manifest.fragments[$0] } ?? "-"
         let heard = session.heard.map { "\($0.audio):\($0.ms)" } ?? "-"
-        trace = "read-along event=\(event) cue=\(cue) playing=\(session.playing ? 1 : 0) follow=\(session.follow ? 1 : 0) "
+        let shown = shownCues.isEmpty ? "-" : shownCues.joined(separator: ",")
+        var line = "read-along event=\(event) cue=\(cue) playing=\(session.playing ? 1 : 0) follow=\(session.follow ? 1 : 0) "
             + "suspended=\(session.suspended ? 1 : 0) started=\(session.started ? 1 : 0) heard=\(heard) offer=\(session.offer == nil ? 0 : 1) "
             + "source=\(manifest.source.rawValue) audio=\(fromDevice ? "device" : "stream") generation=\(manifest.generation.prefix(8)) checkpoints=\(heardCount) follows=\(followCount)"
+        line += " shown=\(shown)"
+        trace = line
     }
 }

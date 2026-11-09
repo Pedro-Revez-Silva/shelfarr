@@ -250,7 +250,9 @@ check on progress writes. The shared mock server is unchanged.
 Simulator UI tests (`ReadAlongSmokeTests`, iPhone and iPad via
 `apps/scripts/ios-runtime-smoke.sh --device all`): the quiet page, the highlight on p1,
 nothing in the silence after it, p2, the page following to p4 only when it starts off
-screen, browsing while playing writing nothing, Back to the narration, a pause saving the
+screen (the order heard is read from the Debug trace's record of every highlight change
+since Play, `shown=`, because a two-second cue is shorter than a hosted simulator's
+queries take), browsing while playing writing nothing, Back to the narration, a pause saving the
 element and exact offset, a silent reopen, the five-second resume and a pause in it
 keeping the saved place; an imported pair's offer, accepted without writing, and one
 checkpoint writing both places with one `observed_at`; a download with its narration

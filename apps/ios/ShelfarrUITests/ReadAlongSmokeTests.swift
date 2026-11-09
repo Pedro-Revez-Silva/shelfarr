@@ -67,12 +67,15 @@ final class ReadAlongSmokeTests: XCTestCase {
         try step("The heard cue is highlighted, gaps show nothing, and pages follow only out-of-view cues") {
             showChrome(app, false)
             XCTAssertTrue(app.buttons["read-along-pill"].waitForExistence(timeout: wait), "the pill appears once narration plays")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "p1" }, "p1 is heard first: \(traceLine(app))")
-            screenshot(app, "ra-03-p1")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "-" }, "the silence after p1 highlights nothing")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "p2" })
-            XCTAssertEqual(trace(app)["follows"], "0", "p1 and p2 were already on screen: no page moved")
-            XCTAssertTrue(waitFor(timeout: 20) { self.trace(app)["cue"] == "p4" }, traceLine(app))
+            // A cue lasts two seconds, about as long as reaching this point takes on a
+            // hosted simulator, so the order comes from the controller's record of every
+            // highlight change since Play (Debug UI tests only), not from sampling.
+            XCTAssertTrue(waitFor(timeout: 15) { self.shown(app).count >= 5 }, "p1, its silence, p2, its silence, p3: \(traceLine(app))")
+            let heard = Array(shown(app).prefix(5))
+            XCTAssertEqual(heard.map { $0.cue }, ["p1", "-", "p2", "-", "p3"], "p1 is heard first, and each silence highlights nothing: \(traceLine(app))")
+            XCTAssertEqual(heard.map { $0.follows }, [0, 0, 0, 0, 0], "p1, p2 and p3 were already on screen: no page moved")
+            screenshot(app, "ra-03-heard")
+            XCTAssertTrue(waitFor(timeout: 20) { self.shown(app).contains { $0.cue == "p4" } }, traceLine(app))
             XCTAssertTrue(waitFor(timeout: 10) { Int(self.trace(app)["follows"] ?? "0") ?? 0 >= 1 }, "p4 starts on a later page, so the page followed")
             screenshot(app, "ra-04-followed")
             let writes = try progressWrites(book)
@@ -339,6 +342,22 @@ final class ReadAlongSmokeTests: XCTestCase {
             if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
         }
         return fields
+    }
+
+    /// The highlight changes since narration last began, oldest first (`shown=` in the trace).
+    private struct Shown {
+        let cue: String
+        /// Pages followed to when this highlight began.
+        let follows: Int
+    }
+
+    private func shown(_ app: XCUIApplication) -> [Shown] {
+        guard let value = trace(app)["shown"], value != "-" else { return [] }
+        return value.split(separator: ",").compactMap { entry -> Shown? in
+            let parts = entry.split(separator: "/")
+            guard parts.count == 2, let follows = Int(parts[1]) else { return nil }
+            return Shown(cue: String(parts[0]), follows: follows)
+        }
     }
 
     private func heardMs(_ app: XCUIApplication) -> Int? {
