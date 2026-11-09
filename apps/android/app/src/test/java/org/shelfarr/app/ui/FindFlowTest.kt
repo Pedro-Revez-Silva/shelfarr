@@ -34,9 +34,11 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.shelfarr.app.core.ApiException
+import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.ConsumerApi
 import org.shelfarr.app.core.Credential
 import org.shelfarr.app.core.DeviceAuthorizer
+import org.shelfarr.app.core.FormatState
 import org.shelfarr.app.core.Me
 import org.shelfarr.app.core.NewRequest
 import org.shelfarr.app.core.Publication
@@ -144,6 +146,35 @@ class FindFlowTest {
     }
 
     private fun hasNode(text: String) = compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
+
+    @Test
+    fun `a late tap after acknowledgement cannot submit the same format again`() {
+        signIn(RequestScopes.BASE + RequestScopes.REQUESTING)
+        render()
+        waitFor("search") { hasNode("Title or author") }
+        compose.runOnIdle { find.setQuery("light"); find.search() }
+        waitFor("results") { find.find.value.results.isNotEmpty() }
+        compose.runOnIdle {
+            find.choose(find.find.value.results.first())
+            find.selectFormat(BookType.AUDIOBOOK)
+            find.submit()
+        }
+        waitFor("the acknowledged request") {
+            !find.title.value.submitting && find.title.value.item?.format(BookType.AUDIOBOOK)?.state == FormatState.REQUESTED
+        }
+
+        // The reply can finish before a stale button tap or navigation transition does.
+        compose.runOnIdle { find.submit() }
+        waitFor("the late tap to finish") { !find.title.value.submitting }
+        assertEquals(1, fixture.createRequests.get())
+
+        // The other format is still a separate, deliberate request.
+        compose.runOnIdle { find.selectFormat(BookType.EBOOK); find.submit() }
+        waitFor("the other format") {
+            !find.title.value.submitting && find.title.value.item?.format(BookType.EBOOK)?.state == FormatState.REQUESTED
+        }
+        assertEquals(2, fixture.createRequests.get())
+    }
 
     @Test
     fun `a read-only connection opts in, then finds, requests, follows and opens an audiobook`() {
