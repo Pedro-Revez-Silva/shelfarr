@@ -136,7 +136,7 @@ class ProgressSync(
      * wall-clock time captured when it happened (before any waiting). Cheap enough to call
      * on every page turn or checkpoint.
      */
-    suspend fun update(position: SavedPosition, observedAtEpochMs: Long) = state.withLock {
+    suspend fun update(position: SavedPosition, observedAtEpochMs: Long, send: Boolean = true) = state.withLock {
         val existing = current()
         if (position == reported || existing.position == position) {
             reported = position
@@ -154,6 +154,40 @@ class ProgressSync(
         if (existing.conflict != null || existing.rejected) return@withLock
 
         publish(SyncStatus.Pending)
+        if (dirtySinceMs == null) dirtySinceMs = now()
+        if (send) scheduleDebounced()
+    }
+
+    /**
+     * Schedules sending what [update] saved with `send = false`. Paired places (an ebook and
+     * its audiobook heard together) are both on disk before either is sent.
+     */
+    suspend fun requestSend() = state.withLock {
+        val existing = current()
+        if (!existing.hasUnsyncedChanges || existing.conflict != null || existing.rejected) return@withLock
+        scheduleDebounced()
+    }
+
+    /**
+     * The activity time [update] would record for [observedAtEpochMs] (see [ActivityTime.next]),
+     * so places observed together can be written with one identical time.
+     */
+    suspend fun observationTime(observedAtEpochMs: Long): Long = state.withLock {
+        ActivityTime.next(observedAtEpochMs, current().observedAtEpochMs)
+    }
+
+    /**
+     * Names the assets this publication's places may refer to, without anchoring a session.
+     * A paired audiobook written from read-along needs it to tell a mappable conflict.
+     */
+    suspend fun knowAssets(assets: Collection<String>) = state.withLock {
+        val existing = current()
+        val ids = (existing.assetIds.orEmpty() + assets).distinct()
+        if (existing.assetIds == ids) return@withLock
+        save(existing.copy(assetIds = ids))
+    }
+
+    private fun scheduleDebounced() {
         val started = dirtySinceMs ?: now().also { dirtySinceMs = it }
         val remaining = timing.maxWaitMs - (now() - started)
         schedule(minOf(timing.debounceMs, remaining).coerceAtLeast(0))
@@ -247,7 +281,8 @@ class ProgressSync(
     private suspend fun send() {
         var rebases = 0
         while (true) {
-            val mutation = state.withLock {
+            // Never between the halves of a paired observation (see [together]).
+            val mutation = observation.withLock { state.withLock {
                 val existing = current()
                 if (existing.conflict != null || existing.rejected) return
                 val queued = existing.pending
@@ -261,7 +296,7 @@ class ProgressSync(
                 val created = PendingMutation(position, existing.baseVersion, newMutationId(), existing.observedAtEpochMs)
                 save(existing.copy(pending = created, dirty = false))
                 created
-            }
+            } }
 
             try {
                 accept(mutation, remote.save(publicationId, mutation.toUpdate()))
@@ -404,9 +439,18 @@ class ProgressSync(
         }
     }
 
-    private companion object {
+    companion object {
         /** Rebases in one send before backing off, in case another device keeps writing. */
-        const val MAX_REBASES = 4
+        private const val MAX_REBASES = 4
+
+        private val observation = Mutex()
+
+        /**
+         * Runs [block] as one observation across publications: no sync starts a new send
+         * until it returns, so places heard together (an ebook and its paired audiobook)
+         * are all on this device before any of them is sent. Never call [flush] inside it.
+         */
+        suspend fun <T> together(block: suspend () -> T): T = observation.withLock { block() }
     }
 }
 

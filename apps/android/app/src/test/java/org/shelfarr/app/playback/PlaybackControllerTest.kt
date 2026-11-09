@@ -42,7 +42,7 @@ import org.shelfarr.app.core.TEST_EPOCH
 
 /** A scripted audio player: position advances with Robolectric's clock while playing. */
 @OptIn(UnstableApi::class)
-private class FakeAudioPlayer : SimpleBasePlayer(Looper.getMainLooper()) {
+internal class FakeAudioPlayer : SimpleBasePlayer(Looper.getMainLooper()) {
     private var items: List<MediaItem> = emptyList()
     private var index = 0
     private var basePositionMs = 0L

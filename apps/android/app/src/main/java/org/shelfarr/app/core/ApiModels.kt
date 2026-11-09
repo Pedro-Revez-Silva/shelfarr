@@ -98,6 +98,11 @@ data class Asset(
     @SerialName("page_count") val pageCount: Int? = null,
     /** CBZ only: where this exact generation's page order is. Bound by the same origin and subpath rules as content. */
     @SerialName("reading_order_url") val readingOrderUrl: String? = null,
+    /**
+     * EPUB only, and only in details fetched with [READER_FEATURES_HEADER]: whether real
+     * narration is aligned to this exact file. Absent everywhere else and from older servers.
+     */
+    @SerialName("read_along") val readAlong: ReadAlongSummary? = null,
 ) {
     val isEpub: Boolean get() = format.equals("epub", ignoreCase = true) || mediaType == "application/epub+zip"
 

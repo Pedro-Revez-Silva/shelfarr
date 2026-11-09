@@ -1,6 +1,7 @@
 package org.shelfarr.app.playback
 
 import android.app.PendingIntent
+import android.app.TaskStackBuilder
 import android.content.Intent
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
@@ -23,6 +24,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import org.shelfarr.app.R
 import org.shelfarr.app.ShelfarrApplication
+import org.shelfarr.app.reader.ReaderActivity
 import org.shelfarr.app.ui.MainActivity
 
 /**
@@ -32,6 +34,16 @@ import org.shelfarr.app.ui.MainActivity
 @OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
+    private lateinit var open: PendingIntent
+    private var openedBook: String? = null
+
+    /** The reader for [publicationId], above the app's main screen so Back returns there. */
+    private fun openBook(publicationId: String): PendingIntent =
+        TaskStackBuilder.create(this)
+            .addNextIntent(Intent(this, MainActivity::class.java))
+            .addNextIntent(ReaderActivity.intent(this, publicationId))
+            .getPendingIntent(publicationId.hashCode(), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            ?: open
 
     override fun onCreate() {
         super.onCreate()
@@ -60,9 +72,18 @@ class PlaybackService : MediaSessionService() {
                 val assetId = player.currentMediaItem?.mediaId ?: return
                 container.playback.onChaptersFound(assetId, chapters(tracks))
             }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                // Read-along narration opens its book from the notification and lock screen.
+                val book = mediaItem?.mediaMetadata?.extras?.getString(PlaybackController.EXTRA_READ_ALONG_PUBLICATION)
+                if (book != openedBook) {
+                    openedBook = book
+                    session?.setSessionActivity(book?.let(::openBook) ?: open)
+                }
+            }
         })
 
-        val open = PendingIntent.getActivity(
+        open = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),

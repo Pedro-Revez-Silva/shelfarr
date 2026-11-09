@@ -156,8 +156,66 @@ class ConsumerApi(
         return execute(request).parse()
     }
 
+    /**
+     * One publication's details. Only here does this app also declare the read-along
+     * reader feature, so EPUB assets carry their `read_along` summary; listings, Continue
+     * and status changes stay exactly as before. Older servers ignore the header.
+     */
     suspend fun publication(server: ServerAddress, id: String): Publication =
-        library(server.api("library/${encodePath(id)}")).parse()
+        execute(
+            Request.Builder().url(server.api("library/${encodePath(id)}")).get()
+                .header(READER_FORMATS_HEADER, READER_FORMATS)
+                .header(READER_FEATURES_HEADER, READER_FEATURES)
+                .build(),
+        ).parse()
+
+    /**
+     * The read-along manifest for one EPUB asset generation, from its summary's
+     * `manifest_url`, which must be on this server. The body is read with a size limit and
+     * checked against [ebookAssetId] and [generation] before anything uses it.
+     */
+    suspend fun readAlong(server: ServerAddress, manifestUrl: String, ebookAssetId: String, generation: String?): ReadAlongFetch {
+        val url = server.resolve(manifestUrl)?.takeIf(server::contains) ?: throw ApiException.Protocol()
+        return withContext(io) {
+            val call = client.newCall(Request.Builder().url(url).get().header("Accept", "application/json").build())
+            val response = try {
+                call.await()
+            } catch (error: BlockedRedirectIOException) {
+                throw ApiException.RedirectBlocked(error.location)
+            } catch (error: IOException) {
+                throw ApiException.Offline(error)
+            }
+            response.use {
+                when (it.code) {
+                    200 -> try {
+                        val bytes = it.body.byteStream().use { input -> readBounded(input, ReadAlongLimits.MAX_MANIFEST_BYTES) }
+                        ReadAlongFetch.Available(ReadAlong.read(bytes.inputStream(), ebookAssetId, generation, server), bytes)
+                    } catch (error: ReadAlongRefused) {
+                        ReadAlongFetch.Refused(error.kind, error.message.orEmpty())
+                    } catch (error: IOException) {
+                        throw ApiException.Offline(error)
+                    }
+                    404, 409, 422 -> {
+                        val error = runCatching { ApiJson.decodeFromString<ErrorBody>(it.body.string()) }.getOrNull()
+                        ReadAlongFetch.Unavailable(
+                            when (it.code) {
+                                404 -> ReadAlongSummary.UNALIGNED
+                                409 -> ReadAlongSummary.STALE
+                                else -> ReadAlongSummary.INVALID
+                            },
+                            error?.message,
+                        )
+                    }
+                    // This asset generation no longer exists: the book must be refreshed.
+                    410 -> ReadAlongFetch.Refused(ReadAlongRefused.Kind.CHANGED, "This book changed on your server. Open it again to use the current edition.")
+                    401 -> throw ApiException.Unauthorized()
+                    403 -> throw ApiException.Forbidden()
+                    in 500..599 -> throw ApiException.Server(it.code)
+                    else -> throw ApiException.Protocol()
+                }
+            }
+        }
+    }
 
     suspend fun progress(server: ServerAddress, publicationId: String): Progress? =
         get(server.api("library/${encodePath(publicationId)}/progress"))
@@ -236,6 +294,36 @@ class ConsumerApi(
     private companion object {
         val JSON = "application/json".toMediaType()
     }
+}
+
+/** What fetching a read-along manifest found. Only [Available] ever plays narration. */
+sealed interface ReadAlongFetch {
+    /** A validated manifest, with the exact bytes it was read from (kept with a download). */
+    data class Available(val readAlong: ReadAlong, val body: ByteArray) : ReadAlongFetch {
+        override fun equals(other: Any?): Boolean = other is Available && other.readAlong === readAlong
+        override fun hashCode(): Int = readAlong.hashCode()
+    }
+
+    /** The server says this edition has no usable alignment: unaligned, stale or invalid. */
+    data class Unavailable(val status: String, val message: String?) : ReadAlongFetch
+
+    /** The manifest was refused here, or belongs to another edition. */
+    data class Refused(val kind: ReadAlongRefused.Kind, val message: String) : ReadAlongFetch
+}
+
+/** Reads at most [limit] bytes, failing rather than buffering more. */
+internal fun readBounded(input: java.io.InputStream, limit: Long): ByteArray {
+    val output = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(64 * 1024)
+    var total = 0L
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        if (total > limit) throw IOException("read-along data is too large")
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
 }
 
 private object HttpUrlPathEncoder {

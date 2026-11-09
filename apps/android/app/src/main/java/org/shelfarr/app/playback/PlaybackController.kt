@@ -29,12 +29,52 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.shelfarr.app.core.Asset
+import org.shelfarr.app.core.NarrationPoint
 import org.shelfarr.app.core.ProgressSync
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.SavedPosition
 import org.shelfarr.app.core.ServerAddress
 
 data class AudioChapter(val title: String?, val startMs: Long)
+
+/** Which read-along narration is queued: one ebook publication and manifest generation. */
+data class NarrationInfo(val publicationId: String, val generation: String)
+
+/**
+ * Where listening checkpoints are saved. Each call happens with the time the place was
+ * heard, captured before anything waited, and returns once the place is on this device.
+ */
+interface ListeningSink {
+    suspend fun record(trackIndex: Int, mediaId: String, positionMs: Long, observedAtEpochMs: Long)
+
+    /** Sends whatever is outstanding now. */
+    suspend fun flush()
+}
+
+/** An audiobook's own place: the file and second heard. */
+class AudiobookSink(val sync: ProgressSync) : ListeningSink {
+    override suspend fun record(trackIndex: Int, mediaId: String, positionMs: Long, observedAtEpochMs: Long) {
+        sync.update(SavedPosition(assetId = mediaId, positionSeconds = positionMs.coerceAtLeast(0) / 1_000.0), observedAtEpochMs)
+    }
+
+    override suspend fun flush() = sync.flush()
+}
+
+/** One narration file to queue: where it plays from, and how it is announced. */
+data class NarrationSource(val mediaId: String, val uri: String, val title: String?)
+
+/** An ebook's read-along narration, queued like an audiobook in the one shared player. */
+class NarrationQueue(
+    val publication: Publication,
+    val info: NarrationInfo,
+    val sources: List<NarrationSource>,
+    val sink: ListeningSink,
+    val fromDevice: Boolean,
+    val coverUri: String?,
+)
+
+/** Where narration starts. A resume restarts a little earlier and holds the saved place; a choice plays exactly there. */
+data class NarrationStart(val track: Int, val positionMs: Long, val resume: Boolean)
 
 enum class PlaybackProblem { CONNECTION, SIGN_IN, UNSUPPORTED, UNAVAILABLE }
 
@@ -54,6 +94,8 @@ data class PlaybackSnapshot(
     val problem: PlaybackProblem? = null,
     /** Every track plays from a verified download on this device. */
     val fromDevice: Boolean = false,
+    /** Set while the queue is an ebook's read-along narration rather than an audiobook. */
+    val narration: NarrationInfo? = null,
 ) {
     val isLoaded: Boolean get() = publication != null
     val currentAsset: Asset? get() = tracks.getOrNull(trackIndex)
@@ -80,14 +122,21 @@ class PlaybackController(
     private val elapsed: () -> Long = SystemClock::elapsedRealtime,
 ) {
     private var controller: Player? = null
-    private var sync: ProgressSync? = null
+    private var sink: ListeningSink? = null
     private var ticker: Job? = null
     private var sleepTimer: Job? = null
     private val chapters = HashMap<String, List<AudioChapter>>()
     private val checkpoints = ListeningCheckpoints()
 
-    /** Our own resume rewind, so its seek isn't mistaken for the listener's. */
+    /** Our own resume rewind or restoring seek, so it isn't mistaken for the listener's. */
     private var rewinding: Rewind? = null
+
+    /**
+     * The last point written as heard. A checkpoint of the same point again (paused, then
+     * backgrounded, stopped or switched away) is not new listening: it must not stamp that
+     * old audio with a fresh time over whatever was read meanwhile.
+     */
+    private var lastRecorded: Pair<String, Long>? = null
 
     private data class Rewind(val index: Int, val positionMs: Long, val atElapsedMs: Long)
 
@@ -173,12 +222,14 @@ class PlaybackController(
         check(items.size == tracks.size && items.isNotEmpty()) { "Audio asset outside the configured server" }
 
         val player = connected()
+        val target = (sink as? AudiobookSink)?.takeIf { it.sync === sync } ?: AudiobookSink(sync)
         // Switching books: the one being left gets its last place first.
-        if (this.sync != null && this.sync !== sync) checkpoint(flush = true)
-        this.sync = sync
+        if (sink != null && sink !== target) checkpoint(flush = true)
+        this.sink = target
         chapters.clear()
         val index = tracks.indexOfFirst { it.id == start?.assetId }.coerceAtLeast(0)
         rewinding = null
+        lastRecorded = null
         val positionMs = checkpoints.open(start?.takeIf { tracks[index].id == it.assetId }, tracks[index].id)
         state.update {
             PlaybackSnapshot(publication = publication, tracks = tracks, trackIndex = index, speed = it.speed, fromDevice = local != null)
@@ -186,6 +237,83 @@ class PlaybackController(
         player.setMediaItems(items, index, positionMs)
         player.prepare()
         player.play()
+    }
+
+    /**
+     * Queues an ebook's read-along narration in the same player, session and notification
+     * as audiobooks, and plays it from [start]. Whatever was playing gets its last place first.
+     */
+    suspend fun loadNarration(queue: NarrationQueue, start: NarrationStart, speed: Float? = null) {
+        require(queue.sources.isNotEmpty() && start.track in queue.sources.indices)
+        val player = connected()
+        if (sink != null && sink !== queue.sink) checkpoint(flush = true)
+        this.sink = queue.sink
+        chapters.clear()
+        rewinding = null
+        lastRecorded = null
+        val first = queue.sources[start.track]
+        val positionMs = if (start.resume) {
+            checkpoints.open(SavedPosition(first.mediaId, positionSeconds = start.positionMs / 1_000.0), first.mediaId)
+        } else {
+            // A place the reader chose: no rewind, and real listening from the first moment.
+            checkpoints.open(null, first.mediaId)
+            checkpoints.movedDeliberately()
+            start.positionMs.coerceAtLeast(0)
+        }
+        val tracks = queue.sources.mapIndexed { index, source ->
+            Asset(id = source.mediaId, filename = source.title.orEmpty(), mediaType = "audio/*", contentUrl = source.uri, position = index)
+        }
+        state.update {
+            PlaybackSnapshot(
+                publication = queue.publication,
+                tracks = tracks,
+                trackIndex = start.track,
+                speed = speed ?: it.speed,
+                fromDevice = queue.fromDevice,
+                narration = queue.info,
+            )
+        }
+        val items = queue.sources.map { source -> narrationItem(queue, source) }
+        player.setMediaItems(items, start.track, positionMs)
+        speed?.let { player.playbackParameters = PlaybackParameters(it) }
+        player.prepare()
+        player.play()
+    }
+
+    private fun narrationItem(queue: NarrationQueue, source: NarrationSource): MediaItem {
+        val uri = Uri.parse(source.uri)
+        val extras = android.os.Bundle().apply { putString(EXTRA_READ_ALONG_PUBLICATION, queue.publication.id) }
+        return MediaItem.Builder()
+            .setMediaId(source.mediaId)
+            .setUri(uri)
+            .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(uri).build())
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(queue.publication.title)
+                    .setArtist(queue.publication.author)
+                    .setSubtitle(if (queue.sources.size > 1) "Read along · ${source.title.orEmpty()}".trimEnd(' ', '·') else "Read along")
+                    .setArtworkUri(queue.coverUri?.let(Uri::parse))
+                    .setExtras(extras)
+                    .build(),
+            )
+            .build()
+    }
+
+    /** True while [info]'s narration is the queue, playing or not. */
+    fun isNarrating(info: NarrationInfo): Boolean = state.value.narration == info
+
+    /** The narration point being heard now: file index and offset. Main thread only. */
+    fun heardNow(): NarrationPoint? {
+        val player = controller ?: return null
+        if (state.value.narration == null) return null
+        val index = player.currentMediaItemIndex.takeIf { it >= 0 } ?: return null
+        return NarrationPoint(index, player.currentPosition.coerceAtLeast(0))
+    }
+
+    /** Plays the queued narration from a place the reader chose: never rewound, saved at once. */
+    fun playNarrationAt(track: Int, positionMs: Long) = deliberately {
+        seekTo(track, positionMs.coerceAtLeast(0))
+        play()
     }
 
     private fun mediaItem(publication: Publication, asset: Asset, server: ServerAddress, file: File?): MediaItem? {
@@ -312,11 +440,27 @@ class PlaybackController(
         }
     }
 
-    /** Moves to a place chosen after a conflict. */
+    /**
+     * Moves to a place adopted from another device or the reader (a conflict choice, a later
+     * audiobook place). Like opening it, that is not listening: the player waits a little
+     * before it (the one resume rewind) and the place itself stays the saved one, with its own
+     * activity time, until playback passes it. Any later play, in the app or from the lock
+     * screen or a headset, starts there.
+     */
+    fun restore(trackIndex: Int, positionMs: Long) {
+        val player = controller ?: return
+        val track = state.value.tracks.getOrNull(trackIndex) ?: return
+        val target = checkpoints.open(SavedPosition(track.id, positionSeconds = positionMs.coerceAtLeast(0) / 1_000.0), track.id)
+        rewinding = Rewind(trackIndex, target, elapsed())
+        player.seekTo(trackIndex, target)
+        controller?.let(::refresh)
+    }
+
+    /** Moves to a place chosen after a conflict: restored, not listened to. */
     fun jumpTo(position: SavedPosition) {
         val index = state.value.tracks.indexOfFirst { it.id == position.assetId }
         if (index < 0) return
-        deliberately { seekTo(index, ((position.positionSeconds ?: 0.0) * 1_000).toLong()) }
+        restore(index, ((position.positionSeconds ?: 0.0) * 1_000).toLong())
     }
 
     /**
@@ -329,8 +473,11 @@ class PlaybackController(
     suspend fun stop() = withContext(Dispatchers.Main.immediate) {
         val observedAt = wallClock()
         val position = currentPosition()?.takeIf(checkpoints::isActivity)
-        val target = sync
-        sync = null
+        val index = controller?.currentMediaItemIndex ?: 0
+        val heard = position?.takeIf { it.assetId to it.millis() != lastRecorded }
+        val target = sink
+        sink = null
+        lastRecorded = null
         sleepTimer?.cancel()
         ticker?.cancel()
         controller?.run {
@@ -339,7 +486,7 @@ class PlaybackController(
         }
         state.value = PlaybackSnapshot()
         if (target != null) {
-            position?.let { target.update(it, observedAt) }
+            heard?.let { target.record(index, it.assetId, it.millis(), observedAt) }
             target.flush()
         }
     }
@@ -386,15 +533,22 @@ class PlaybackController(
      */
     private fun checkpoint(flush: Boolean): Job? {
         val observedAt = wallClock()
-        val target = sync ?: return null
+        val target = sink ?: return null
+        val index = controller?.currentMediaItemIndex ?: 0
         val position = currentPosition()?.takeIf(checkpoints::isActivity)
-        if (position != null) checkpoints.checkpointed(elapsed())
+            ?.takeIf { it.assetId to it.millis() != lastRecorded }
+        if (position != null) {
+            checkpoints.checkpointed(elapsed())
+            lastRecorded = position.assetId to position.millis()
+        }
         if (position == null && !flush) return null
         return scope.launch {
-            position?.let { target.update(it, observedAt) }
+            position?.let { target.record(index, it.assetId, it.millis(), observedAt) }
             if (flush) target.flush()
         }
     }
+
+    private fun SavedPosition.millis(): Long = Math.round((positionSeconds ?: 0.0) * 1_000).coerceAtLeast(0)
 
     private fun currentPosition(): SavedPosition? {
         val player = controller ?: return null
@@ -417,11 +571,14 @@ class PlaybackController(
         }
     }
 
-    private companion object {
-        const val TICK_MS = 500L
+    companion object {
+        /** On a narration item's metadata: the ebook it reads along, so the notification can reopen it. */
+        const val EXTRA_READ_ALONG_PUBLICATION = "org.shelfarr.readAlongPublication"
+
+        private const val TICK_MS = 500L
 
         /** How long our own rewind seek may take to be reported back. */
-        const val REWIND_ECHO_MS = 3_000L
+        private const val REWIND_ECHO_MS = 3_000L
     }
 }
 
