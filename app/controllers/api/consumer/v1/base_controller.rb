@@ -23,10 +23,18 @@ class API::Consumer::V1::BaseController < ActionController::API
     render json: { error: "insufficient_scope", required_scope: scope }, status: :forbidden
   end
 
-  def consumer_book
+  # Comic records are reachable by ID for media, progress and status: only a
+  # client that declared a fixed-layout format can have learned one. Listing
+  # them (graphic: false) follows the caller's declared formats.
+  def consumer_book(graphic: true)
     id = params[:id]
     raise ActiveRecord::RecordNotFound unless id.is_a?(String) && id.match?(/\A[1-9]\d{0,18}\z/)
 
-    Book.acquired.where(book_type: %w[ebook audiobook]).find(id)
+    Book.acquired.where(book_type: Consumer::LibraryScope.types(nil, graphic: graphic)).find(id)
+  end
+
+  def reader_formats
+    response.headers["Vary"] = [ response.headers["Vary"], Consumer::ReaderFormats::HEADER ].compact_blank.join(", ")
+    @reader_formats ||= Consumer::ReaderFormats.from(request)
   end
 end

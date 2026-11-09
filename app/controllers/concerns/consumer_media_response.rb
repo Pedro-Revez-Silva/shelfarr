@@ -3,14 +3,21 @@
 module ConsumerMediaResponse
   private
 
+  # A navigation to a PDF or CBZ downloads it instead of rendering it in this
+  # origin; readers fetch the bytes. The policy also denies the document any
+  # script, plugin, form or subresource if a browser renders it anyway.
+  DOCUMENT_POLICY = "default-src 'none'; sandbox; frame-ancestors 'none'; form-action 'none'; base-uri 'none'"
+
   def serve_consumer_asset(book, asset_id)
-    asset, file = Consumer::LibraryAssets.new(book).open(asset_id)
+    asset, file = Consumer::LibraryAssets.new(book, formats: Consumer::ReaderFormats::SUPPORTED).open(asset_id)
     etag = %Q("#{asset.id}")
     headers["Cache-Control"] = "private, no-store"
     headers["Accept-Ranges"] = "bytes"
     headers["ETag"] = etag
     headers["X-Content-Type-Options"] = "nosniff"
-    send_file_headers!(filename: asset.filename, type: asset.media_type, disposition: "inline")
+    fixed_layout = %w[pdf cbz].include?(asset.format)
+    headers["Content-Security-Policy"] = DOCUMENT_POLICY if fixed_layout
+    send_file_headers!(filename: asset.filename, type: asset.media_type, disposition: fixed_layout ? "attachment" : "inline")
     matches = request.headers["If-None-Match"].to_s.split(",").map(&:strip)
     return head :not_modified if matches.any? { |value| value == etag || value == "W/#{etag}" || value == "*" }
 
@@ -36,6 +43,13 @@ module ConsumerMediaResponse
     render json: { error: "asset_unavailable" }, status: :gone
   ensure
     file&.close unless file&.closed?
+  end
+
+  def consumer_reading_order(book, asset_id)
+    asset, pages = Consumer::LibraryAssets.new(book, formats: %w[cbz]).reading_order(asset_id)
+    headers["Cache-Control"] = "private, no-store"
+    headers["X-Content-Type-Options"] = "nosniff"
+    { asset_id: asset.id, format: "cbz", items: pages }
   end
 
   def consumer_byte_range(value, size)

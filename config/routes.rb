@@ -124,6 +124,7 @@ Rails.application.routes.draw do
         get "discover", to: "discover#index"
         resources :requests, only: [ :index, :show, :create, :destroy ]
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
+        get "library/:id/assets/:asset_id/reading_order", to: "library#reading_order", as: :asset_reading_order
         post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
         get "library/:id/assets/:asset_id/transfer", to: "transfers#show", as: :asset_transfer
         resources :library, only: [ :index, :show ] do
