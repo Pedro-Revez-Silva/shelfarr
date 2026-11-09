@@ -204,7 +204,7 @@ class NarrationDownloadTest {
         publications = mapOf("garden-1" to garden())
         routes[GARDEN_MANIFEST] = { MockResponse.Builder().code(500).build() }
         runBlocking { downloads.enqueue(garden(), narration = true) }
-        val failed = downloads.await("garden-1") { it.narrationUpdate?.state == NarrationState.FAILED || it.narration?.state == NarrationState.FAILED }
+        val failed = downloads.await("garden-1") { it.narrationStopProblem != null }
         // The update failed; the complete earlier narration is untouched and still offered.
         assertEquals(ReadAlongFixtures.GENERATION, downloads.narrationFor(failed)!!.generation)
         assertEquals(oldFiles, narrationFiles("garden-1"))
@@ -214,8 +214,8 @@ class NarrationDownloadTest {
         val updated = downloads.await("garden-1") { it.narration?.generation == gardenGeneration && it.narration?.isReady == true }
         assertNull(updated.narrationUpdate)
         assertEquals(gardenGeneration, downloads.narrationFor(updated)!!.generation)
-        // Only now are the old generation's files gone.
-        assertTrue(narrationFiles("garden-1").none { it in oldFiles })
+        // The old files are deleted immediately after the complete replacement is recorded.
+        runBlocking { withTimeout(5_000) { while (narrationFiles("garden-1").any { it in oldFiles }) delay(20) } }
     }
 
     /** Holds the manifest request open until [release], counting down [started] when it arrives. */
@@ -327,6 +327,14 @@ class NarrationDownloadTest {
         assertTrue("a narration refresh cannot make the book ${failed.state}/${failed.problem}", failed.isReady)
         assertNotNull(downloads.fileFor(failed, ReadAlongFixtures.EPUB_ID))
         assertEquals(previous, downloads.narrationFor(failed)?.generation)
+        assertEquals(DownloadProblem.OFFLINE, failed.narrationStopProblem)
+
+        detailsFailure = false
+        runBlocking { downloads.resumeTransient() }
+        val resumed = downloads.await("garden-1") { !it.isActive && it.narrationStopProblem == null }
+        assertTrue(resumed.isReady)
+        assertNotNull(downloads.fileFor(resumed, ReadAlongFixtures.EPUB_ID))
+        assertEquals(previous, downloads.narrationFor(resumed)?.generation)
     }
 
     @Test
