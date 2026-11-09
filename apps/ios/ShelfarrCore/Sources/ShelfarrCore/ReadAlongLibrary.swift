@@ -178,7 +178,16 @@ public actor ReadAlongLibrary {
     /// Returns the stored generation.
     @discardableResult
     public func save(manifestData data: Data, manifest: ReadAlongManifest, publicationId: String) throws -> Stored {
+        // Always stored: the check below never refuses.
+        try save(manifestData: data, manifest: manifest, publicationId: publicationId, while: { true })!
+    }
+
+    /// `save`, only while `valid()` holds when the write starts. It is checked inside this
+    /// actor, so whatever invalidates it (a cancelled download) and then cleans up here is
+    /// ordered after a write that already passed. Nil when it no longer held.
+    public func save(manifestData data: Data, manifest: ReadAlongManifest, publicationId: String, while valid: @Sendable () -> Bool) throws -> Stored? {
         guard !closed else { throw Failure.closed }
+        guard valid() else { return nil }
         let directory = generationFolder(publicationId, manifest.generation)
         let bundle = Bundle(
             publicationId: publicationId, ebookAssetId: manifest.ebookAssetId, generation: manifest.generation,
@@ -204,11 +213,18 @@ public actor ReadAlongLibrary {
     /// generation), streaming each entry and checking its size and CRC-32, then makes the
     /// generation current. A failure leaves the previous current generation in place.
     public func prepareAudio(_ stored: Stored, epub: URL) throws -> Stored {
+        try prepareAudio(stored, epub: epub, while: { true })!
+    }
+
+    /// `prepareAudio`, stopping without promoting as soon as `valid()` no longer holds
+    /// (checked before each file and before the generation becomes current). Nil then; the
+    /// files already copied stay in that generation's folder, which is not current.
+    public func prepareAudio(_ stored: Stored, epub: URL, while valid: @Sendable () -> Bool) throws -> Stored? {
         guard !closed else { throw Failure.closed }
         guard stored.manifest.source == .mediaOverlay else { return stored }
+        guard valid() else { return nil }
         if stored.overlayAudio != nil {
-            try promote(stored)
-            return stored
+            return try promote(stored, while: valid) ? stored : nil
         }
         let archive: ComicArchive
         do {
@@ -220,6 +236,7 @@ public actor ReadAlongLibrary {
         var names: [String] = []
         for (index, track) in stored.manifest.audio.enumerated() {
             guard !closed else { throw Failure.closed }
+            guard valid() else { return nil }
             guard let href = track.href else { throw Failure.audio("Unexpected narration entry.") }
             let name = String(format: "audio-%03d", index) + "." + Self.fileExtension(href)
             let target = stored.directory.appendingPathComponent(name)
@@ -243,19 +260,26 @@ public actor ReadAlongLibrary {
         var bundle = stored.bundle
         bundle.audioFiles = names
         bundle.audioComplete = true
+        guard valid() else { return nil }
         do {
             try JSONEncoder().encode(bundle).write(to: stored.directory.appendingPathComponent("bundle.json"), options: .atomic)
         } catch {
             throw Failure.storage
         }
         let complete = Stored(bundle: bundle, manifest: stored.manifest, directory: stored.directory)
-        try promote(complete)
-        return complete
+        return try promote(complete, while: valid) ? complete : nil
     }
 
     /// Makes `stored` the generation in use, then deletes every other generation of the book.
     public func promote(_ stored: Stored) throws {
+        _ = try promote(stored, while: { true })
+    }
+
+    /// `promote`, only while `valid()` holds when it starts. False when it no longer held.
+    @discardableResult
+    public func promote(_ stored: Stored, while valid: @Sendable () -> Bool) throws -> Bool {
         guard !closed else { throw Failure.closed }
+        guard valid() else { return false }
         let book = folder(stored.bundle.publicationId)
         do {
             try JSONEncoder().encode(["generation": stored.bundle.generation]).write(to: book.appendingPathComponent("current.json"), options: .atomic)
@@ -266,11 +290,28 @@ public actor ReadAlongLibrary {
         for other in others where other.lastPathComponent != stored.bundle.generation && other.lastPathComponent != "current.json" {
             try? files.removeItem(at: other)
         }
+        return true
     }
 
-    /// Deletes everything kept for one book.
-    public func remove(_ publicationId: String) {
+    /// Deletes everything kept for one book, when `valid()` holds at that moment.
+    public func remove(_ publicationId: String, while valid: @Sendable () -> Bool = { true }) {
+        guard valid() else { return }
         try? files.removeItem(at: folder(publicationId))
+    }
+
+    /// Deletes a book's generations that never became current (an update or first
+    /// download that was stopped), keeping the one in use, when `valid()` holds at that moment.
+    public func discardPending(_ publicationId: String, while valid: @Sendable () -> Bool = { true }) {
+        guard valid() else { return }
+        let book = folder(publicationId)
+        guard let current = currentGeneration(publicationId) else {
+            try? files.removeItem(at: book)
+            return
+        }
+        let entries = (try? files.contentsOfDirectory(at: book, includingPropertiesForKeys: nil)) ?? []
+        for entry in entries where entry.lastPathComponent != current && entry.lastPathComponent != "current.json" {
+            try? files.removeItem(at: entry)
+        }
     }
 
     /// Keeps at most `limit` books, dropping the least recently saved (for the reading cache).
