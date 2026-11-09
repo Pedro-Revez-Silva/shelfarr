@@ -5,6 +5,11 @@ request-to-reading/listening experience, starting from the tested consumer and
 Kobo account stack. A checkbox means the behavior has been implemented and
 verified; a build or simulated test alone does not establish device acceptance.
 
+All implementation and further fixes now use the single integration branch
+`feat/consumer-platform` and one PR against `main`. The earlier stacked PRs are
+superseded. Begin with the [upgrade notice and first acceptance pass](consumer-platform-testing.md)
+before working through the full device matrix.
+
 ## Kobo Store coexistence and account-owned books
 
 - [ ] Opt-in coexistence preserves a reader's own Kobo Store authentication,
