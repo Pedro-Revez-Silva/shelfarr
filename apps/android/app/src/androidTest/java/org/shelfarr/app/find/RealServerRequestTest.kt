@@ -17,8 +17,10 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.ComposeTimeoutException
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -43,6 +45,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.abs
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -50,6 +53,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -63,6 +67,7 @@ import org.shelfarr.app.R
 import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.core.ActivityTime
 import org.shelfarr.app.core.ApiJson
+import org.shelfarr.app.core.LocalProgress
 import org.shelfarr.app.core.RequestAccess
 import org.shelfarr.app.core.RequestScopes
 import org.shelfarr.app.core.RequestStage
@@ -81,8 +86,17 @@ import org.shelfarr.app.ui.MainActivity
  * in the production reader. A page turned by a tap is saved to that server, read back from
  * it, and the book reopens on the same text.
  *
+ * The audiobook journey is the same up to the request, which asks for the audiobook while
+ * the server's jobs search LibriVox and file the archive's tracks. *Listen now* streams the
+ * acquired file into the production player, which must decode it in real time, pause from
+ * the visible button with the server holding exactly the paused place and its pause time,
+ * and resume with the documented single five-second rewind, both after reopening the player
+ * screen and after reopening the book from the saved place, without that replay ever being
+ * saved as new listening.
+ *
  * Only the two browser approvals happen outside the app: the harness decides each grant
- * for its synthetic account on the server (see the acceptance report). Run it with
+ * for its synthetic account on the server (see the acceptance report). Run one test
+ * (`-e class …RealServerRequestTest#method`) per fresh harness server with
  * `-e shelfarrRealServer http://127.0.0.1:PORT` against that harness on an emulator;
  * without the argument there is no server to accept against, so it does not run. It
  * refuses, before touching anything, a device that isn't positively an emulator and a
@@ -97,9 +111,22 @@ class RealServerRequestTest {
     private val arguments = InstrumentationRegistry.getArguments()
     private val container get() = app.container
     private val server: String? = arguments.getString("shelfarrRealServer")
-    private val query = arguments.getString("shelfarrRealQuery") ?: "A Modest Proposal"
-    private val title = arguments.getString("shelfarrRealTitle") ?: "A Modest Proposal"
-    private val author = arguments.getString("shelfarrRealAuthor") ?: "Jonathan Swift"
+    private val ebook = Wanted(
+        arguments.getString("shelfarrRealQuery") ?: "A Modest Proposal",
+        arguments.getString("shelfarrRealTitle") ?: "A Modest Proposal",
+        arguments.getString("shelfarrRealAuthor") ?: "Jonathan Swift",
+    )
+    /**
+     * LibriVox files its titles without a leading article, and the server searches it with the
+     * chosen title as it is, so the default row is Open Library's article-free "Modest Proposal".
+     */
+    private val audiobook = Wanted(
+        arguments.getString("shelfarrRealAudioQuery") ?: "Modest Proposal",
+        arguments.getString("shelfarrRealAudioTitle") ?: "Modest Proposal",
+        arguments.getString("shelfarrRealAudioAuthor") ?: "Jonathan Swift",
+    )
+    /** The first track's length as the provider publishes it, when known: checked against what the player decodes. */
+    private val trackSeconds = arguments.getString("shelfarrRealTrackSeconds")?.toLong()
     /** The first words of the body text, reached by turning pages from the cover. */
     private val bodyStart = arguments.getString("shelfarrRealBodyStart") ?: "It is a melancholy object"
     private val readyTimeoutMs = (arguments.getString("shelfarrRealReadyTimeoutSeconds")?.toLong() ?: 600L) * 1_000
@@ -133,6 +160,7 @@ class RealServerRequestTest {
     @After
     fun tearDown() {
         if (!armed) return
+        runBlocking { container.playback.stop() }
         finishActivities()
         // Disconnecting revokes this run's token on the acceptance server.
         runBlocking { container.sessions.signedIn?.let { runCatching { container.currentAccount()?.api?.revoke(it.server) } } }
@@ -161,13 +189,31 @@ class RealServerRequestTest {
         try {
             connect()
             allowRequesting()
-            val publication = findAndRequestOnce()
+            val publication = findAndRequestOnce(ebook, "ebook", "Read now")
             read(publication)
         } catch (failure: Throwable) {
             failureEvidence()
             throw failure
         }
     }
+
+    @Test
+    fun connectFindRequestAndListenToARealAudiobook() {
+        app.startActivity(launcherIntent())
+        awaitCondition("the app opened") { appInFront() }
+        try {
+            connect()
+            allowRequesting()
+            val publication = findAndRequestOnce(audiobook, "audiobook", "Listen now")
+            listen(publication)
+        } catch (failure: Throwable) {
+            failureEvidence()
+            throw failure
+        }
+    }
+
+    /** A title to find: the search typed, and the exact row title and author to choose. */
+    private data class Wanted(val query: String, val title: String, val author: String)
 
     private fun launcherIntent() =
         Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setClass(app, MainActivity::class.java)
@@ -241,8 +287,10 @@ class RealServerRequestTest {
         evidence("requesting allowed in place; scopes=${after.scopes}")
     }
 
-    /** Searches the server's providers, requests the ebook once and follows it until ready. */
-    private fun findAndRequestOnce(): String {
+    /** Searches the server's providers, requests [format] once and follows it until it offers [ready]. */
+    private fun findAndRequestOnce(wanted: Wanted, format: String, ready: String): String {
+        val (query, title, author) = wanted
+        val prefix = if (format == "ebook") "real" else "real-$format"
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("find-query")).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("find-query").performTextInput(query)
         compose.onNodeWithTag("find-submit").performClick()
@@ -252,18 +300,18 @@ class RealServerRequestTest {
             tag?.startsWith("result:") == true && title in texts && texts.any { author in it }
         }
         compose.waitUntil(90_000) { compose.onAllNodes(result).fetchSemanticsNodes().isNotEmpty() }
-        capture("real-find-results.png")
+        capture("$prefix-find-results.png")
         val chosen = compose.onAllNodes(result).onFirst()
         evidence("chose ${chosen.fetchSemanticsNode().config[SemanticsProperties.TestTag]}")
         chosen.performClick()
         waitForText("Choose a format")
-        compose.onNodeWithTag("format:ebook").performClick()
-        capture("real-request-format.png")
+        compose.onNodeWithTag("format:$format").performClick()
+        capture("$prefix-request-format.png")
         compose.onNodeWithTag("request-submit").performClick()
         runCatching { compose.onNodeWithTag("request-submit").performClick() }
         compose.waitUntil(30_000) { compose.onAllNodes(hasTestTag("request-stage")).fetchSemanticsNodes().isNotEmpty() }
 
-        // Follow the server's stages as the page shows them, until it offers Read now.
+        // Follow the server's stages as the page shows them, until it offers [ready].
         val seen = mutableListOf<String>()
         val deadline = SystemClock.elapsedRealtime() + readyTimeoutMs
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -272,16 +320,16 @@ class RealServerRequestTest {
             if (stage != null && stage != seen.lastOrNull()) {
                 seen += stage
                 evidence("stage: $stage")
-                capture("real-request-stage-${seen.size}.png")
+                capture("$prefix-request-stage-${seen.size}.png")
                 for (stop in listOf("No copy found yet", "Available to buy", "Stopped", "Finished", "Waiting for the server's admin")) {
                     assertFalse("the request ended at \"$stage\"", stage.startsWith(stop))
                 }
             }
-            if (compose.onAllNodesWithText("Read now").fetchSemanticsNodes().isNotEmpty()) break
+            if (compose.onAllNodesWithText(ready).fetchSemanticsNodes().isNotEmpty()) break
             SystemClock.sleep(250)
         }
-        assertTrue("Read now offered after $seen", compose.onAllNodesWithText("Read now").fetchSemanticsNodes().isNotEmpty())
-        capture("real-request-ready-ebook.png")
+        assertTrue("$ready offered after $seen", compose.onAllNodesWithText(ready).fetchSemanticsNodes().isNotEmpty())
+        capture("real-request-ready-$format.png")
 
         val account = requireNotNull(container.currentAccount())
         val mine = runBlocking { account.api.requests(account.session.server) }.filter { it.title == title || it.title.equals(title, ignoreCase = true) }
@@ -359,6 +407,205 @@ class RealServerRequestTest {
         readerScreenshot(reopened, "real-read-reopened.png")
         press(reopened, KeyEvent.KEYCODE_BACK)
         awaitCondition("the reopened reader closed") { resumedReader() == null }
+    }
+
+    /** A pause the server acknowledged: the place written at the pause and its activity time. */
+    private data class Paused(val assetId: String, val positionSeconds: Double, val observedAt: Long, val version: Int) {
+        val ms: Long get() = Math.round(positionSeconds * 1_000)
+    }
+
+    private fun listen(publication: String) {
+        val account = requireNotNull(container.currentAccount())
+        val server = account.session.server
+        val item = runBlocking { account.publication(publication) }
+        val tracks = item.audioAssets
+        assertTrue("audio files in ${item.assets}", tracks.isNotEmpty())
+        evidence("publication ${item.title} by ${item.author}: ${tracks.joinToString { "${it.id} ${it.filename} ${it.mediaType} ${it.sizeBytes} bytes" }}")
+        assertNull("no place saved before listening", runBlocking { account.api.progress(server, publication) })
+        val first = tracks.first()
+        val playback = container.playback
+        val sync = account.progress.sync(publication)
+
+        // Listen now streams the server's file into the player, which starts at once.
+        compose.onNodeWithText("Listen now").performClick()
+        awaitUi("the acquired audiobook decoding and advancing", 90_000) {
+            val now = playback.snapshot.value
+            now.publication?.id == publication && now.isPlaying && now.positionMs >= 2_000 && shown("Pause")
+        }
+        playback.snapshot.value.let { now ->
+            assertEquals(tracks.map { it.id }, now.tracks.map { it.id })
+            assertEquals(0, now.trackIndex)
+            assertFalse("streamed from the server, not a download", now.fromDevice)
+            assertNull(now.problem)
+            trackSeconds?.let { assertTrue("decoded ${now.durationMs} ms; the provider lists $it s", abs(now.durationMs - it * 1_000) <= 3_000) }
+            evidence("listening ${now.positionMs}ms of ${now.durationMs}ms in ${now.currentAsset?.id} fromDevice=${now.fromDevice}")
+        }
+        // Decoded audio is consumed as it plays: the position keeps pace with the clock.
+        val rateFrom = playback.snapshot.value.positionMs
+        val rateAt = SystemClock.elapsedRealtime()
+        awaitUi("six seconds of playback", 20_000) { SystemClock.elapsedRealtime() - rateAt >= 6_000 }
+        val rate = (playback.snapshot.value.positionMs - rateFrom).toDouble() / (SystemClock.elapsedRealtime() - rateAt)
+        evidence("playback rate ${"%.2f".format(rate)} (position over elapsed time)")
+        assertTrue("playing in real time, not stalled or racing: $rate", rate in 0.75..1.25)
+        awaitUi("${LISTEN_BEFORE_PAUSE_MS}ms heard", 60_000) { playback.snapshot.value.positionMs >= LISTEN_BEFORE_PAUSE_MS }
+        playerScreenshot(item.title, playing = true, "real-listen-playing.png")
+
+        // Pause from the visible button: that place, with the pause's own time, reaches the server.
+        val firstPause = pause(publication, first.id, sync, "first pause")
+        playerScreenshot(item.title, playing = false, "real-listen-paused.png")
+
+        // Leave the player and come back while the book is still loaded: no rewind, nothing saved.
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitForText("Listen now")
+        assertFalse("still paused after leaving the player", playback.snapshot.value.isPlaying)
+        compose.onNodeWithText("Listen now").performClick()
+        awaitUi("the player shown again, paused") { compose.onAllNodesWithText("Listen now").fetchSemanticsNodes().isEmpty() && shown("Play") }
+        val reshown = playback.snapshot.value
+        assertTrue("reopening the screen kept the paused place: ${reshown.positionMs} vs ${firstPause.ms}", abs(reshown.positionMs - firstPause.ms) <= 300)
+        assertEquals("reopening the screen saved nothing", firstPause.version, runBlocking { account.api.progress(server, publication) }?.version)
+        evidence("player reopened paused at ${reshown.positionMs}ms; server still version ${firstPause.version}")
+        playerScreenshot(item.title, playing = false, "real-listen-reopened-paused.png")
+
+        // Play after a pause: one five-second rewind, and the replay is not new listening.
+        compose.onNode(hasContentDescription("Play")).performClick()
+        resumeFrom(publication, firstPause, sync, "play after pause")
+        awaitUi("well past the first pause", 60_000) { playback.snapshot.value.positionMs >= firstPause.ms + LISTEN_AFTER_RESUME_MS }
+        val secondPause = pause(publication, first.id, sync, "second pause")
+        assertTrue("${secondPause.ms} after ${firstPause.ms}", secondPause.ms > firstPause.ms)
+
+        // Reopen the book from the saved place. The playback service's queue is ended first
+        // (as when the system stops it); stopping after a pause sends nothing new.
+        instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+        waitForText("Listen now")
+        runBlocking { playback.stop() }
+        assertFalse(playback.snapshot.value.isLoaded)
+        SystemClock.sleep(SYNC_SETTLE_MS)
+        runBlocking { account.api.progress(server, publication) }.let { saved ->
+            assertEquals("stopping after the pause saved nothing new: $saved", secondPause.version, saved?.version)
+        }
+        capture("real-listen-request-page.png")
+        val reopenedAt = System.currentTimeMillis()
+        compose.onNodeWithText("Listen now").performClick()
+        resumeFrom(publication, secondPause, sync, "reopened from the saved place")
+        awaitUi("past the reopened place", 60_000) { playback.snapshot.value.positionMs >= secondPause.ms + LISTEN_AFTER_RESUME_MS }
+        // Listening past the held place is new activity, saved with its own time.
+        awaitUi("new listening after the reopened place saved to the server", 60_000) {
+            val saved = runCatching { runBlocking { account.api.progress(server, publication) } }.getOrNull()
+            saved != null && saved.assetId == first.id && (saved.positionSeconds ?: 0.0) * 1_000 > secondPause.ms &&
+                (saved.observedAtEpochMs ?: 0L) >= reopenedAt
+        }
+        evidence("after reopening: server ${runBlocking { account.api.progress(server, publication) }}")
+        playerScreenshot(item.title, playing = true, "real-listen-after-reopen.png")
+        val lastPause = pause(publication, first.id, sync, "last pause")
+        assertTrue(lastPause.ms > secondPause.ms)
+        playerScreenshot(item.title, playing = false, "real-listen-last-paused.png")
+    }
+
+    /**
+     * Taps Pause and waits until the server holds exactly the place this device wrote at that
+     * pause, stamped with the pause's time rather than the upload's.
+     */
+    private fun pause(publication: String, assetId: String, sync: org.shelfarr.app.core.ProgressSync, label: String): Paused {
+        val account = requireNotNull(container.currentAccount())
+        val tappedAt = System.currentTimeMillis()
+        compose.onNode(hasContentDescription("Pause")).performClick()
+        awaitUi("$label: the Pause button stopping playback") { !container.playback.snapshot.value.isPlaying && shown("Play") }
+        val seenAt = System.currentTimeMillis()
+        val shownMs = container.playback.snapshot.value.positionMs
+        var local: LocalProgress? = null
+        awaitCondition("$label: the place written on this device") {
+            local = runBlocking { sync.snapshot() }
+            local?.position?.assetId == assetId && (local?.observedAtEpochMs ?: 0L) >= tappedAt
+        }
+        val written = requireNotNull(local)
+        val place = requireNotNull(written.position?.positionSeconds)
+        val observed = requireNotNull(written.observedAtEpochMs)
+        assertTrue("$label: activity time $observed is the pause (tapped $tappedAt, seen $seenAt)", observed in tappedAt..seenAt + 500)
+        assertTrue("$label: written ${place}s, shown ${shownMs}ms", abs(place * 1_000 - shownMs) <= 300)
+        var ackAt = 0L
+        awaitCondition("$label: the server acknowledging exactly that place and time", 60_000) {
+            val saved = runCatching { runBlocking { account.api.progress(account.session.server, publication) } }.getOrNull()
+            ackAt = System.currentTimeMillis()
+            saved != null && saved.assetId == assetId && abs((saved.positionSeconds ?: -1.0) - place) < 0.001 &&
+                saved.observedAtEpochMs?.let { abs(it - observed) <= 1 } == true && !runBlocking { sync.snapshot() }.hasUnsyncedChanges
+        }
+        val saved = runBlocking { account.api.progress(account.session.server, publication) }!!
+        evidence("$label: tapped $tappedAt, paused at ${shownMs}ms; written ${place}s observed $observed; server version=${saved.version} position=${saved.positionSeconds} observed_at=${saved.observedAt} updated_at=${saved.updatedAt}, seen acknowledged at $ackAt")
+        return Paused(assetId, place, observed, saved.version)
+    }
+
+    /**
+     * Playback resumed toward [from]: it must restart once, five seconds earlier, and replay
+     * up to [from] without the device or the server moving the saved place.
+     */
+    private fun resumeFrom(publication: String, from: Paused, sync: org.shelfarr.app.core.ProgressSync, label: String) {
+        val account = requireNotNull(container.currentAccount())
+        val playback = container.playback
+        val expected = (from.ms - REWIND_MS).coerceAtLeast(0)
+        val samples = mutableListOf<Long>()
+        // Sample the player until it has replayed past the held place. Each poll lets the
+        // Compose test clock advance a frame: opening the player from the request page
+        // navigates on a frame, which a plain sleeping loop would hold back indefinitely.
+        try {
+            compose.waitUntil(60_000) {
+                val now = playback.snapshot.value
+                now.problem?.let { throw AssertionError("$label: playback problem $it") }
+                if (now.publication?.id != publication || now.durationMs <= 0) return@waitUntil false
+                samples += now.positionMs
+                if (now.positionMs < from.ms) {
+                    val held = runBlocking { sync.snapshot() }.position
+                    assertEquals("$label: the replay is not saved on this device", from.assetId, held?.assetId)
+                    assertTrue("$label: the held place stays ${from.positionSeconds}s, not ${held?.positionSeconds}s", abs((held?.positionSeconds ?: -1.0) - from.positionSeconds) < 0.001)
+                }
+                now.isPlaying && now.positionMs >= from.ms + 1_000
+            }
+        } catch (timeout: ComposeTimeoutException) {
+            throw AssertionError("$label: never replayed past ${from.ms}ms: ${samples.takeLast(5)}; playback ${playback.snapshot.value}", timeout)
+        }
+        val lowest = samples.minOrNull()!!
+        val lowestAt = samples.indexOf(lowest)
+        evidence("$label: from ${from.ms}ms restarted at ${lowest}ms (expected $expected); ${samples.size} samples, first ${samples.take(4)}")
+        assertTrue("$label: one rewind to about $expected ms, saw $lowest", lowest in (expected - 300)..(expected + 1_000))
+        // Once: after the restart point the player only moves forward.
+        samples.drop(lowestAt).zipWithNext().forEach { (a, b) -> assertTrue("$label: moved back again $a -> $b", b >= a - 250) }
+        runBlocking { account.api.progress(account.session.server, publication) }.let { saved ->
+            assertEquals("$label: the server's place was not moved by the replay", from.version, saved?.version)
+        }
+    }
+
+    /** Waits on the player UI, failing at once on a screen that says there is nothing to play. */
+    private fun awaitUi(description: String, timeoutMs: Long = 30_000, condition: () -> Boolean) {
+        try {
+            compose.waitUntil(timeoutMs) {
+                for (refusal in listOf("Nothing to play", "Playback stopped")) {
+                    if (compose.onAllNodesWithText(refusal, substring = true).fetchSemanticsNodes().isNotEmpty()) {
+                        throw AssertionError("\"$refusal\" shown while waiting for $description")
+                    }
+                }
+                container.playback.snapshot.value.problem?.let { throw AssertionError("Playback problem $it while waiting for $description") }
+                condition()
+            }
+        } catch (timeout: ComposeTimeoutException) {
+            throw AssertionError("Timed out waiting for $description; playback ${container.playback.snapshot.value}", timeout)
+        }
+    }
+
+    private fun shown(description: String) = compose.onAllNodes(hasContentDescription(description)).fetchSemanticsNodes().isNotEmpty()
+
+    /**
+     * The player as drawn on the display, once Compose has caught up with the player: the
+     * title, the play state's button and no preparing screen in the tree, the position the
+     * slider announces logged beside the player's own.
+     */
+    private fun playerScreenshot(title: String, playing: Boolean, name: String) {
+        compose.waitForIdle()
+        assertEquals("the preparing screen is gone", 0, compose.onAllNodesWithText("Preparing audio").fetchSemanticsNodes().size)
+        assertTrue("the player shows $title", compose.onAllNodesWithText(title).fetchSemanticsNodes().isNotEmpty())
+        assertTrue("the ${if (playing) "Pause" else "Play"} button shown", shown(if (playing) "Pause" else "Play"))
+        val slider = compose.onAllNodes(hasContentDescription("Position")).fetchSemanticsNodes().firstOrNull()
+            ?.config?.getOrElseNullable(SemanticsProperties.StateDescription) { null }
+        evidence("$name: slider \"$slider\"; player ${container.playback.snapshot.value.positionMs}ms playing=${container.playback.snapshot.value.isPlaying}")
+        displayCapture(name, reader = false)
     }
 
     private fun Locator.after(other: Locator): Boolean {
@@ -640,6 +887,15 @@ class RealServerRequestTest {
         const val MIN_COVER_ROWS = 0.15
         const val COVER_TIMEOUT_MS = 30_000L
         const val MAX_TURNS_TO_BODY = 8
+
+        /** Heard before the first pause: long enough that a five-second rewind isn't clamped to the start. */
+        const val LISTEN_BEFORE_PAUSE_MS = 15_000L
+        /** Heard past a held place before pausing again: beyond the replay and at least one periodic checkpoint. */
+        const val LISTEN_AFTER_RESUME_MS = 9_000L
+        /** The documented resume rewind (`ListeningCheckpoints.REWIND_MS`), stated here so a change to it fails. */
+        const val REWIND_MS = 5_000L
+        /** Longer than the five-second send debounce: anything a stop queued would have reached the server. */
+        const val SYNC_SETTLE_MS = 7_000L
 
         /**
          * The first and last visible words: for the first and last text nodes with a line

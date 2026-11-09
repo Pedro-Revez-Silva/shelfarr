@@ -66,7 +66,13 @@ and the book reopens on the same words. It runs only when given
 `-e shelfarrRealServer http://127.0.0.1:PORT` (skipped otherwise, including in CI).
 The two browser approvals must be made for the server's test account while it waits.
 Use a disposable server with its own database and no notifications, never a household
-server.
+server. Its audiobook case (`#connectFindRequestAndListenToARealAudiobook`, one test per
+fresh server) requests the audiobook instead while LibriVox is enabled, then *Listen now*
+must stream and decode the filed track in real time, pause with the server holding that
+exact place and the pause's time, and resume with one five-second rewind after reopening
+the player and after reopening the book, without saving the replay. LibriVox lists titles
+without a leading article and the server searches it with the chosen title as is, so the
+default row is Open Library's "Modest Proposal" by Jonathan Swift.
 The background-transfer test also drives Library → details → Download, notification
 Cancel and Downloads navigation, system interruption/resume, and offline Library
 search. It exercises the real app on the emulator; process death and denied
