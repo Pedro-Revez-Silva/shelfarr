@@ -15,6 +15,9 @@ class KoboSync
     more = deliveries.size > PAGE_SIZE
     deliveries = deliveries.first(PAGE_SIZE)
     next_after = more ? deliveries.last.sync_revision : upper
+    # A shared book whose grant ended is no longer announced. The cursor still
+    # advances past it; no removal is sent, so a downloaded copy is untouched.
+    deliveries = deliveries.select(&:deliverable?)
     token = verifier.generate({ "device" => @device.id, "generation" => @device.token_digest,
       "after" => next_after, "upper" => more ? upper : nil }, purpose: "kobo-sync")
     items = deliveries.map do |delivery|

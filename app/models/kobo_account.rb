@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-# This connection belongs to one Shelfarr user. Catalogue records deliberately
-# do not enter the shared Book library until a separate sharing/delivery flow
-# exists. Authentication uses a virtual device, never the user's physical Kobo.
+# This connection belongs to one Shelfarr user. Catalogue records never enter
+# the shared Book library; the owner may share the catalogue with chosen
+# household users (KoboAccountShare). Credentials stay private to the owner.
+# Authentication uses a virtual device, never anyone's physical Kobo.
 class KoboAccount < ApplicationRecord
   STATUSES = %w[pending connected expired failed reauthorization_required].freeze
   SYNC_STATUSES = %w[idle queued syncing].freeze
@@ -18,6 +19,8 @@ class KoboAccount < ApplicationRecord
   }.freeze
 
   belongs_to :user
+  # Shares (and their recipients' deliveries) are removed before the catalogue.
+  has_many :kobo_account_shares, dependent: :destroy
   has_many :kobo_account_books, dependent: :destroy
   encrypts(*PRIVATE_ATTRIBUTES)
 
@@ -38,6 +41,13 @@ class KoboAccount < ApplicationRecord
 
   def usable?
     connected? && user && !user.deleted?
+  end
+
+  # The owner, or a recipient of an effective share, may see this catalogue.
+  def visible_to?(viewer)
+    return false unless viewer && !viewer.deleted? && user && !user.deleted?
+
+    viewer.id == user_id || kobo_account_shares.effective.exists?(recipient_id: viewer.id)
   end
 
   def pending?

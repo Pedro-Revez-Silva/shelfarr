@@ -53,6 +53,10 @@ module Kobo
 
     def evaluate(bookmark)
       return { "status" => "no_place" } unless bookmark.is_a?(Hash)
+      # A household copy from a Kobo account is not a library edition: there is
+      # no consumer asset it could honestly map to, so its place stays on the
+      # reader. It must never be applied to an unrelated Book.
+      return place(bookmark).except("source", "chapter_percent").merge("status" => "unsupported", "reason" => "private_edition") if @delivery.private_source?
 
       place = place(bookmark)
       return place unless place["status"].nil?

@@ -5,6 +5,8 @@ require "set"
 module Kobo
   # Reads metadata only. Download links, content licences, protected book bytes,
   # bookmarks, and account settings are neither fetched nor persisted here.
+  # Each title records which kind of download Kobo offers (DownloadRights), so
+  # eligibility for household delivery is shown honestly; the signed URL is not kept.
   class CatalogueReader
     MAX_PAGES = 100
     MAX_BOOKS = 20_000
@@ -82,9 +84,11 @@ module Kobo
         name = value.is_a?(Hash) ? value["Name"] : value
         text(name, 1024) if name.present?
       end.join(", ")
+      rights = DownloadRights.classify(metadata["DownloadUrls"])
       { entitlement_id: id, revision_id: metadata["RevisionId"] ? text(metadata["RevisionId"], 200) : nil,
         title: text(metadata["Title"], 4096), author: author, media_type: media_type(metadata),
-        ownership_type: ownership_type(entitlement), archived: entitlement["IsRemoved"] == true }
+        ownership_type: ownership_type(entitlement), archived: entitlement["IsRemoved"] == true,
+        rights: rights.rights, download_format: rights.format, download_size: rights.size, rights_checked_at: Time.current }
     end
 
     def media_type(metadata)

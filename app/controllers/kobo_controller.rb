@@ -75,6 +75,12 @@ class KoboController < ActionController::API
 
     ids = params[:entitlement_id].to_s.split(",")
     selected = @device.kobo_deliveries.where(entitlement_id: ids).index_by(&:entitlement_id)
+    # A shared book whose grant ended is answered by nobody: never the Store.
+    ended = selected.reject { |_, entry| entry.deliverable? }.keys
+    selected.except!(*ended)
+    ids -= ended
+    return head(:not_found) if ids.empty?
+
     store_ids = ids - selected.keys
     return render(json: selected.values.map { |entry| sync_service.metadata(entry) }) if store_ids.empty?
 
@@ -102,15 +108,13 @@ class KoboController < ActionController::API
   def cover
     selected = @device.kobo_deliveries.find_by(entitlement_id: params[:entitlement_id])
     return store_image unless selected
-    file = selected.open_file
-    image = KoboPublication.new(selected.book).cover(file)
+
+    image = selected.cover
     return head :not_found unless image
 
     send_data image.first, type: image.last, disposition: "inline"
   rescue KoboPublication::Unavailable
     head :not_found
-  ensure
-    file&.close unless file&.closed?
   end
 
   # The Kobo state is saved for this physical reader as Kobo sent it. When the
@@ -119,6 +123,7 @@ class KoboController < ActionController::API
   def state
     selected = @device.kobo_deliveries.find_by(entitlement_id: params[:entitlement_id])
     return proxy_store if !selected && coexisting?
+    return head(:not_found) if selected && !selected.deliverable?
 
     selected ||= delivery
     unless request.put?
@@ -253,7 +258,10 @@ class KoboController < ActionController::API
   end
 
   def delivery
-    @device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id])
+    found = @device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id])
+    raise ActiveRecord::RecordNotFound unless found.deliverable?
+
+    found
   end
 
   def bounded_json

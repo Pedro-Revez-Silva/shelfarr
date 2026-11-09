@@ -43,11 +43,33 @@ class KoboDevice < ApplicationRecord
   # The counter is advanced in the same transaction as publication. A sync
   # cursor never skips a delivery committed later with an earlier timestamp.
   def send_book!(book)
-    publication = KoboPublication.new(book).snapshot
+    publish!({ book: book }, KoboPublication.new(book).snapshot)
+  end
+
+  # Queues a household member's (or the owner's own) private DRM-free copy.
+  # Its entitlement ID is a new random UUID, so it can never collide with a
+  # Store entitlement or a library delivery on this reader. The caller has
+  # already checked the grant; it is checked again whenever the reader asks.
+  def send_account_book!(cached, share:)
+    book = cached.kobo_account_book
+    raise KoboPublication::Unavailable, "This copy is not ready" unless cached.ready?
+
+    filename = "#{book.title.gsub(/[^[:alnum:] ._-]+/, ' ').squish.first(120).presence || 'Kobo book'}.epub"
+    publication = {
+      "fingerprint" => KoboDelivery.private_fingerprint(cached), "size" => cached.size_bytes,
+      "filename" => filename, "format" => "EPUB", "epub_version" => cached.epub_version,
+      "title" => book.title, "author" => book.author.to_s, "description" => "", "source" => "kobo_account"
+    }
+    publish!({ kobo_account_book: book }, publication, kobo_account_share: share, kobo_account_book_file: cached)
+  end
+
+  private
+
+  def publish!(identity, publication, **attributes)
     with_lock do
       increment(:sync_revision)
       save!
-      delivery = kobo_deliveries.find_or_initialize_by(book: book)
+      delivery = kobo_deliveries.find_or_initialize_by(identity)
       delivery.entitlement_id ||= SecureRandom.uuid
       changed = delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
       if changed
@@ -56,12 +78,10 @@ class KoboDevice < ApplicationRecord
         delivery.progress_bridge = nil
       end
       delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision,
-        publication: publication, last_download_at: changed ? nil : delivery.last_download_at)
+        publication: publication, last_download_at: changed ? nil : delivery.last_download_at, **attributes)
       delivery
     end
   end
-
-  private
 
   def coexistence_requires_https
     return unless store_coexistence?

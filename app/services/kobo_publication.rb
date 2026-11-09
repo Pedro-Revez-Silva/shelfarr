@@ -8,6 +8,7 @@ class KoboPublication
   include LibraryFileDownload
 
   class Unavailable < StandardError; end
+  class Encrypted < Unavailable; end
   MAX_ENTRIES = 1_000
   MAX_XML_BYTES = 1024 * 1024
   MAX_EPUB_BYTES = 250.megabytes
@@ -49,6 +50,14 @@ class KoboPublication
     raise Unavailable, "This file is not a valid EPUB"
   ensure
     file&.close unless file&.closed?
+  end
+
+  # Validates an already-open file that is not a library Book (a private
+  # Kobo account copy) with the same rules, returning its package version.
+  def self.validate_file(file)
+    new(nil).send(:validate_epub, file)
+  rescue Zip::Error, Nokogiri::XML::SyntaxError, IOError
+    raise Unavailable, "This file is not a valid EPUB"
   end
 
   def open_file(expected_fingerprint: nil)
@@ -175,7 +184,7 @@ class KoboPublication
 
   def validate_epub(file)
     with_archive(file) do |zip|
-      raise Unavailable, "Encrypted EPUBs are not supported" if zip.find_entry("META-INF/encryption.xml")
+      raise Encrypted, "Encrypted EPUBs are not supported" if zip.find_entry("META-INF/encryption.xml")
       raise Unavailable, "This file is not an EPUB" unless read_entry(zip, "mimetype", 64).strip == "application/epub+zip"
 
       _, package = package_document(zip)

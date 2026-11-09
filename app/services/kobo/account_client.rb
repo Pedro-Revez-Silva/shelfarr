@@ -77,6 +77,19 @@ module Kobo
       Page.new(items: items, cursor: next_cursor, more: more, bytes: response.body.bytesize)
     end
 
+    # Current metadata for one owned title, including Kobo's short-lived
+    # signed download links. The caller must never persist or log the links.
+    def book_metadata(entitlement_id)
+      id = entitlement_id.to_s
+      raise HttpClient::Error, "protocol_changed" unless id.match?(/\A[A-Za-z0-9-]{1,80}\z/)
+
+      items = json(@transport.call(origin: :store, path: "/v1/library/#{id}/metadata", headers: authorization), type: Array)
+      metadata = items.select { |item| item.is_a?(Hash) && [ nil, id ].include?(item["EntitlementId"]) }
+      raise HttpClient::Error, "protocol_changed" unless items.size == 1 && metadata.one?
+
+      metadata.first
+    end
+
     private
 
     def validated_poll_path(value)

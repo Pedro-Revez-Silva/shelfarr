@@ -22,6 +22,21 @@ class Kobo::CatalogueReaderTest < ActiveSupport::TestCase
     assert_not_requested :get, /content|download|keys/
   end
 
+  test "records which download Kobo offers without keeping its signed link" do
+    free = kobo_book(id: "free")
+    free["NewEntitlement"]["BookMetadata"]["DownloadUrls"] = [
+      { "Format" => "EPUB3", "DrmType" => "SignedNoDrm", "Size" => 305_879, "Url" => "https://storedownloads.kobo.com/d?sig=private-signature" } ]
+    locked = kobo_book(id: "locked")
+    locked["NewEntitlement"]["BookMetadata"]["DownloadUrls"] = [ { "Format" => "EPUB3", "DrmType" => "KDRM", "Url" => "https://storedownloads.kobo.com/x" } ]
+    stub_kobo_catalogue(items: [ free, locked, kobo_book(id: "kepub") ])
+    entries = Kobo::CatalogueReader.new(@account).call.index_by { |entry| entry.fetch(:entitlement_id) }
+    assert_equal [ "drm_free", "EPUB3", 305_879 ], entries.fetch("free").values_at(:rights, :download_format, :download_size)
+    assert_equal "protected", entries.fetch("locked").fetch(:rights)
+    assert_equal "unsupported", entries.fetch("kepub").fetch(:rights)
+    assert entries.values.all? { |entry| entry[:rights_checked_at] }
+    assert_not_includes entries.to_s, "private-signature"
+  end
+
   test "subscription account events do not prevent importing book entitlements" do
     subscription = { "BookSubscriptionEntitlement" => {} }
     stub_kobo_catalogue(items: [ { "NewEntitlement" => subscription }, kobo_book,
