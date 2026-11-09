@@ -54,7 +54,8 @@ verified; a build or simulated test alone does not establish device acceptance.
 - [ ] Read-along uses real text/audio alignment, with a quiet reading surface,
   usable controls and reliable resume. Unaligned editions are identified honestly.
   Server contract and web reader implemented, online and offline
-  ([read-along](read-along.md)); Android and iOS not yet implemented.
+  ([read-along](read-along.md)); iOS/iPad implementation awaits SDK/runtime checks,
+  and Android implementation is in progress. Physical acceptance remains pending.
 
 ## Distribution and acceptance
 

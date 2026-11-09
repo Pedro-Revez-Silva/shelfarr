@@ -13,8 +13,9 @@ personal progress. Clients that declare it can also open PDFs and CBZ comics:
 see [PDF and comic reading](consumer-formats.md) for the format negotiation,
 CBZ page order, page locators and the web PDF/comic reader. [Read-along](read-along.md)
 follows real narration (EPUB 3 Media Overlays or an imported alignment) in the
-web reader; native read-along, computing alignment, CBR/RAR comics and a new
-acquisition engine are not implemented. The API is a migration boundary:
+web reader. Native iOS/iPad read-along awaits SDK/runtime verification;
+Android implementation is in progress. Computing alignment, CBR/RAR comics
+and a new acquisition engine are not implemented. The API is a migration boundary:
 clients depend on publications, file-generation assets, and locators rather than
 Rails models, paths, or downloader details. A later backend can preserve this
 contract while the acquisition engine is replaced incrementally.

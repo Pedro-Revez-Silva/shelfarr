@@ -8,8 +8,8 @@ narration. Books without alignment read and play exactly as before.
 
 | | Server and consumer API | Web reader | Native apps |
 |---|---|---|---|
-| EPUB 3 Media Overlays (narration inside the EPUB) | Implemented | Implemented, online and offline | Not yet: contract ready |
-| Imported alignment (EPUB + separate audiobook) | Implemented (admin import) | Implemented, online and offline | Not yet: contract ready |
+| EPUB 3 Media Overlays (narration inside the EPUB) | Implemented | Implemented, online and offline | iOS/iPad implemented; SDK/runtime checks pending. Android in progress. |
+| Imported alignment (EPUB + separate audiobook) | Implemented (admin import) | Implemented, online and offline | iOS/iPad implemented; SDK/runtime checks pending. Android in progress. |
 | Computing alignment (forced aligner) | Not implemented | — | — |
 
 Read-along is **not** an ebook format. It adds no asset, does not change how
@@ -249,9 +249,14 @@ Rules every client follows (the web reader does):
   narration file. It is ready only when all are in this account's cache; a
   partly evicted download is shown as removed; a new generation is an update.
 
-## Native follow-ups
+## Native implementations
 
-Server contract is complete; Android and iOS are not implemented. Each needs:
+The [iOS/iPad implementation](native-read-along-ios.md) includes core tests and
+simulator smoke coverage. Its app-side SDK build, rendering and playback still
+need macOS CI; Linux tests and syntax parsing do not verify those paths. Android
+implementation is in progress. Physical-device acceptance remains separate.
+
+Both clients follow these shared integration requirements:
 
 1. Send `X-Shelfarr-Reader-Features: read-along` on publication detail and
    fetch the manifest; cache it with the download (bound to `generation`).
