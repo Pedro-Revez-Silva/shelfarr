@@ -232,7 +232,8 @@ class ReaderActivity : FragmentActivity() {
         }
     }
 
-    private val narrationActions = object : NarrationActions {
+    /** The narration controls as the reading screen calls them; visible to device tests. */
+    internal val narrationActions = object : NarrationActions {
         override fun toggle() {
             lifecycleScope.launch {
                 val page = if (viewModel.narrationNeedsPage) pageCues() else null
