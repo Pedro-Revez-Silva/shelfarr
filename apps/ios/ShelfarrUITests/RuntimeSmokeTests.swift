@@ -16,6 +16,10 @@ final class RuntimeSmokeTests: XCTestCase {
     private var port: UInt16 = 0
     private var controlPort: UInt16 = 0
     private var token = ""
+    /// The test's own credential for reading the server's saved places. The app's `token`
+    /// can be retired by the app itself: allowing requesting adopts a new token and
+    /// revokes the old one (RequestingAccess.settleHandover), as the Find case does.
+    private var observer = ""
     private var userId = ""
     private let wait: TimeInterval = 30
 
@@ -41,6 +45,10 @@ final class RuntimeSmokeTests: XCTestCase {
         token = try XCTUnwrap(issued["access_token"] as? String)
         let me = try json(request(port, "GET", "/api/consumer/v1/me", bearer: token))
         userId = try XCTUnwrap(me["id"] as? String)
+        let observing = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS smoke observer"]))
+        let observed = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": observing["device_code"] as? String ?? ""]))
+        observer = try XCTUnwrap(observed["access_token"] as? String)
+        XCTAssertEqual(try json(request(port, "GET", "/api/consumer/v1/me", bearer: observer))["id"] as? String, userId, "the observer reads the same account")
     }
 
     override func tearDownWithError() throws {
@@ -644,7 +652,7 @@ final class RuntimeSmokeTests: XCTestCase {
     }
 
     private func savedProgress(_ publication: String) throws -> SavedProgress {
-        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: token))
+        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: observer))
         let progress = try XCTUnwrap(body["progress"] as? [String: Any], "the server has a saved place")
         return SavedProgress(
             version: progress["version"] as? Int,
@@ -675,7 +683,7 @@ final class RuntimeSmokeTests: XCTestCase {
 
     /// The server's saved audio place for one publication.
     private func savedSeconds(_ publication: String) throws -> Double {
-        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: token))
+        let body = try json(request(port, "GET", "/api/consumer/v1/library/\(publication)/progress", bearer: observer))
         return try XCTUnwrap((body["progress"] as? [String: Any])?["position_seconds"] as? Double)
     }
 

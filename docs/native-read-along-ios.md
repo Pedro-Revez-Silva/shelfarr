@@ -274,8 +274,10 @@ nothing in the silence after it, p2, the page following to p4 only when it start
 screen (the order heard is read from the Debug trace's record of every highlight change
 since Play, `shown=`, because a two-second cue is shorter than a hosted simulator's
 queries take), browsing while playing writing nothing, Back to the narration, a pause saving the
-element and exact offset, a silent reopen, the five-second resume and a pause in it
-keeping the saved place; an imported pair's offer, accepted without writing, and one
+element and exact offset (paused at least 3.5 s into its file and 2.5 s before its end,
+so the replay, clamped to the file's start, is long enough to pause in), a silent reopen,
+the five-second resume and a pause in it keeping the saved place, then listening on past
+it saving the new place with its own `observed_at`; an imported pair's offer, accepted without writing, and one
 checkpoint writing both places with one `observed_at`; a download with its narration
 reopened and played offline from the device; and a stale alignment reading as an ordinary
 EPUB. A further case pauses narration, reads a page, backgrounds and closes the reader,
