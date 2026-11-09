@@ -169,7 +169,14 @@ taller than 30,000 pixels. Nothing is ever extracted to disk.
   only by a page turn; a comic page with a bad checksum is never saved and Page Down
   goes past it; a CBZ and a PDF download, then open offline from the download,
   with the comic's page kept locally. Each check reads the pixels on screen and saves a
-  screenshot.
+  screenshot. The invalid-place choice is a dialog in its own window, so its text is
+  read from the windows on screen, the whole display is photographed and the choice is
+  answered with a real tap.
+  Keys are pressed only once the reader's window has input focus. Hiding the bars shows
+  Android's one-time "Viewing full screen" hint until it is acknowledged; from Android 15
+  that system window takes input focus, so a key pressed while it is up never reaches the
+  reader. The test marks the hint as seen on the fixture emulator and restores the setting
+  afterwards; a reader sees it once, on first full-screen use.
 
 ## Limits
 

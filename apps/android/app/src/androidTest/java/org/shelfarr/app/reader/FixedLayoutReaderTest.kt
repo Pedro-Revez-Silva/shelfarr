@@ -1,15 +1,21 @@
 package org.shelfarr.app.reader
 
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.PixelCopy
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -39,9 +45,11 @@ import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
 import okhttp3.Headers
 import okio.Buffer
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.shelfarr.app.ShelfarrApplication
@@ -70,6 +78,32 @@ import org.shelfarr.app.core.Session
 class FixedLayoutReaderTest {
     private val app = ApplicationProvider.getApplicationContext<ShelfarrApplication>()
     private val bands = intArrayOf(Color.rgb(211, 47, 47), Color.rgb(21, 101, 192), Color.rgb(46, 125, 50))
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private var confirmations: String? = null
+
+    /**
+     * Hiding the bars shows Android's one-time "Viewing full screen" hint until someone
+     * taps Got it. From Android 15 that system window takes input focus, so a key pressed
+     * while it is up never reaches the reader. A reader who has seen it once never sees it
+     * again; this fixture emulator never taps it, so it is marked as seen and put back after.
+     */
+    @Before
+    fun markFullScreenHintSeen() {
+        confirmations = shell("settings get secure $FULL_SCREEN_HINT").trim()
+        shell("settings put secure $FULL_SCREEN_HINT confirmed")
+    }
+
+    @After
+    fun restoreFullScreenHint() {
+        val previous = confirmations
+        if (previous.isNullOrEmpty() || previous == "null") shell("settings delete secure $FULL_SCREEN_HINT")
+        else shell("settings put secure $FULL_SCREEN_HINT $previous")
+    }
+
+    private fun shell(command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use {
+            it.readBytes().decodeToString()
+        }
 
     private class Fixture(val web: MockWebServer, val writes: CopyOnWriteArrayList<ProgressUpdate>, val session: Session)
 
@@ -139,7 +173,7 @@ class FixedLayoutReaderTest {
                 awaitPaged(scenario, ReadingFormat.PDF, page = 0)
                 awaitBand(scenario, 0, "pdf-page-one.png")
                 // A real hardware key, through the Activity, as a keyboard reader would turn.
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                press(scenario, KeyEvent.KEYCODE_PAGE_DOWN)
                 awaitPaged(scenario, ReadingFormat.PDF, page = 1)
                 awaitBand(scenario, 1, "pdf-page-two.png")
                 await("page two reached the server") { fixture.writes.isNotEmpty() }
@@ -185,17 +219,27 @@ class FixedLayoutReaderTest {
             ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "pdf-book")).use { scenario ->
                 val state = awaitPaged(scenario, ReadingFormat.PDF, page = 0)
                 assertNotNull("The reader is asked where to look", state.invalidPlace)
-                screenshot(scenario, "pdf-invalid-place.png")
+                // The choice is a dialog in its own window: read it from what is on screen and
+                // photograph the whole display, not only the reader's window beneath it.
+                listOf(
+                    "Your saved place isn't in this file",
+                    "Your place was saved at page 40, but this PDF has 3 pages.",
+                    "Your saved place is kept until you turn a page.",
+                    "Start at page 1",
+                    "Go to page 3",
+                ).forEach(::awaitOnScreen)
+                screen("pdf-invalid-place.png")
                 SystemClock.sleep(6_000)
                 assertTrue("Nothing replaced the saved place", fixture.writes.isEmpty())
-                // Choosing where to look is not reading either.
-                scenario.onActivity { viewModel(it).resolveInvalidPlace(2) }
+                // Choosing where to look, with a real tap on the choice, is not reading either.
+                tap(requireNotNull(onScreen("Go to page 3")))
+                await("the choice to close") { onScreen("Your saved place isn't in this file") == null }
                 awaitPaged(scenario, ReadingFormat.PDF, page = 2)
                 awaitBand(scenario, 2, "pdf-invalid-place-last-page.png")
                 SystemClock.sleep(6_000)
                 assertTrue(fixture.writes.isEmpty())
                 // An actual page turn is, and it replaces the impossible place.
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_UP)
+                press(scenario, KeyEvent.KEYCODE_PAGE_UP)
                 await("the turn reached the server") { fixture.writes.isNotEmpty() }
                 assertEquals(2, fixture.writes.last().locator!!["locations"]!!.jsonObject["position"]!!.jsonPrimitive.content.toInt())
             }
@@ -235,7 +279,7 @@ class FixedLayoutReaderTest {
                 awaitPaged(scenario, ReadingFormat.CBZ, page = 0)
                 scenario.onActivity { assertEquals(ReaderSource.DOWNLOAD, viewModel(it).fileSource) }
                 awaitBand(scenario, 0, "comic-offline-page-one.png")
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                press(scenario, KeyEvent.KEYCODE_PAGE_DOWN)
                 awaitPaged(scenario, ReadingFormat.CBZ, page = 1)
                 awaitBand(scenario, 1, "comic-offline-page-two.png")
             }
@@ -275,7 +319,7 @@ class FixedLayoutReaderTest {
                 awaitPaged(scenario, ReadingFormat.CBZ, page = 0)
                 awaitBand(scenario, 0, "comic-damaged-page-one.png")
                 // Page Down onto the damaged page: the reader is there, but it was never seen.
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                press(scenario, KeyEvent.KEYCODE_PAGE_DOWN)
                 awaitPaged(scenario, ReadingFormat.CBZ, page = 1)
                 SystemClock.sleep(1_500)
                 screenshot(scenario, "comic-damaged-page-two.png")
@@ -287,7 +331,7 @@ class FixedLayoutReaderTest {
 
                 // Page Down again turns from the page on screen, past the damaged one.
                 val before = System.currentTimeMillis()
-                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                press(scenario, KeyEvent.KEYCODE_PAGE_DOWN)
                 awaitPaged(scenario, ReadingFormat.CBZ, page = 2)
                 awaitBand(scenario, 2, "comic-damaged-page-three.png")
                 await("page three reached the server") { fixture.writes.isNotEmpty() }
@@ -303,6 +347,19 @@ class FixedLayoutReaderTest {
     }
 
     private fun viewModel(activity: ReaderActivity) = ViewModelProvider(activity)[ReaderViewModel::class.java]
+
+    /**
+     * A hardware key goes to the window with input focus. Wait until that is the reader
+     * (not a dialog closing or a system window) and then press it, as a keyboard would.
+     */
+    private fun press(scenario: ActivityScenario<ReaderActivity>, keyCode: Int) {
+        await("the reader window to have input focus before ${KeyEvent.keyCodeToString(keyCode)}") {
+            var focused = false
+            scenario.onActivity { focused = it.hasWindowFocus() }
+            focused
+        }
+        instrumentation.sendKeyDownUpSync(keyCode)
+    }
 
     private fun awaitPaged(scenario: ActivityScenario<ReaderActivity>, format: ReadingFormat, page: Int): ReaderState.Paged {
         val found = AtomicReference<ReaderState.Paged>()
@@ -338,6 +395,62 @@ class FixedLayoutReaderTest {
         var shown: Bitmap? = null
         await("a window for $name") { captureWindow(scenario)?.also { shown = it } != null }
         save(requireNotNull(shown), name)
+    }
+
+    /** The whole display, dialogs and system windows included, once the UI is idle. */
+    private fun screen(name: String) {
+        instrumentation.waitForIdleSync()
+        runCatching { instrumentation.uiAutomation.waitForIdle(500, 10_000) }
+        save(requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "No screenshot for $name" }, name)
+    }
+
+    /** A node showing exactly [text] to the user, in any window on screen. */
+    private fun onScreen(text: String): AccessibilityNodeInfo? = shownNodes().firstOrNull { it.text?.toString() == text }
+
+    private fun awaitOnScreen(text: String) {
+        val deadline = SystemClock.elapsedRealtime() + 30_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (onScreen(text) != null) return
+            SystemClock.sleep(150)
+        }
+        assertNotNull("\"$text\" on screen; showing ${shownNodes().mapNotNull { it.text?.toString() }.toList()}", onScreen(text))
+    }
+
+    /**
+     * Every node visible to the user, walked window by window. Compose draws its nodes as
+     * virtual views, which the platform's search by text does not reach.
+     */
+    private fun shownNodes(): Sequence<AccessibilityNodeInfo> {
+        val automation = instrumentation.uiAutomation
+        val info = automation.serviceInfo
+        if (info.flags and AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS == 0) {
+            automation.serviceInfo = info.apply { flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
+        }
+        val roots = automation.windows.mapNotNull { it.root }.ifEmpty { listOfNotNull(automation.rootInActiveWindow) }
+        return sequence {
+            val pending = ArrayDeque(roots)
+            while (pending.isNotEmpty()) {
+                val node = pending.removeFirst()
+                if (node.isVisibleToUser) yield(node)
+                for (index in 0 until node.childCount) node.getChild(index)?.let(pending::addLast)
+            }
+        }
+    }
+
+    /** A finger on the middle of [node], through the input system, as a reader would tap it. */
+    private fun tap(node: AccessibilityNodeInfo) {
+        val bounds = Rect().also(node::getBoundsInScreen)
+        val x = bounds.exactCenterX()
+        val y = bounds.exactCenterY()
+        val down = SystemClock.uptimeMillis()
+        listOf(MotionEvent.ACTION_DOWN to down, MotionEvent.ACTION_UP to down + 80).forEach { (action, time) ->
+            val event = MotionEvent.obtain(down, time, action, x, y, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
+            try {
+                assertTrue("The tap at ($x, $y) was not delivered", instrumentation.uiAutomation.injectInputEvent(event, true))
+            } finally {
+                event.recycle()
+            }
+        }
     }
 
     private fun save(bitmap: Bitmap, name: String) {
@@ -473,3 +586,5 @@ class FixedLayoutReaderTest {
 }
 
 private operator fun <T> List<T>.component6(): T = this[5]
+
+private const val FULL_SCREEN_HINT = "immersive_mode_confirmations"
