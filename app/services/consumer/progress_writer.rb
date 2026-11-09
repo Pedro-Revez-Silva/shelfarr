@@ -29,6 +29,9 @@ class Consumer::ProgressWriter
   FIXED_LOCATOR_KEYS = %w[href type title locations text].freeze
   FIXED_LOCATION_KEYS = %w[position progression totalProgression fragments].freeze
   MAX_PAGES = 100_000
+  # A read-along place may say exactly where in the narration it was heard:
+  # the manifest generation, its audio index and the offset in milliseconds.
+  READ_ALONG_KEYS = %w[generation audio offset_ms].freeze
 
   # Strong parameters drop nested or array values silently. An optional field
   # that was sent but dropped must be refused, not read as "not supplied".
@@ -176,6 +179,13 @@ class Consumer::ProgressWriter
 
     %w[progression totalProgression].all? do |key|
       !locations.key?(key) || (locations[key].is_a?(Numeric) && locations[key].finite? && locations[key].between?(0, 1))
-    end && (!locations.key?("position") || (locations["position"].is_a?(Integer) && locations["position"].positive?))
+    end && (!locations.key?("position") || (locations["position"].is_a?(Integer) && locations["position"].positive?)) &&
+      (!locations.key?("readAlong") || valid_read_along?(locations["readAlong"]))
+  end
+
+  def valid_read_along?(value)
+    value.is_a?(Hash) && value.keys.sort == READ_ALONG_KEYS.sort && value["generation"].is_a?(String) && value["generation"].match?(/\A[0-9a-f]{64}\z/) &&
+      value["audio"].is_a?(Integer) && value["audio"].between?(0, 1_999) &&
+      value["offset_ms"].is_a?(Integer) && value["offset_ms"].between?(0, Consumer::ReadAlong::Clock::MAX_MS)
   end
 end

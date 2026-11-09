@@ -3,6 +3,7 @@
 class Consumer::LibraryController < ApplicationController
   include ConsumerMediaResponse
   include ConsumerWebPublication
+  include ConsumerReadAlongResponse
   layout "consumer"
   before_action :private_response
   before_action :verify_progress_account, only: :progress
@@ -25,7 +26,7 @@ class Consumer::LibraryController < ApplicationController
   def show
     @book = find_book
     # Binds this browser's progress outbox and downloads to the account and deployment subpath.
-    @publication = web_publication(@book, Consumer::Publication.new(@book, user: Current.user, routes: self, reader_formats: web_reader_formats).representation)
+    @publication = web_publication(@book, Consumer::Publication.new(@book, user: Current.user, routes: self, reader_formats: web_reader_formats, read_along: true).representation)
   end
 
   def asset
@@ -37,6 +38,19 @@ class Consumer::LibraryController < ApplicationController
     render json: consumer_reading_order(find_book, params[:asset_id])
   rescue Consumer::LibraryAssets::Unavailable
     render json: { error: "asset_unavailable" }, status: :gone
+  end
+
+  # The read-along manifest for this exact EPUB generation (docs/read-along.md).
+  def read_along
+    render_read_along_manifest(find_book, params[:asset_id], routes: :web)
+  end
+
+  def read_along_resource
+    serve_read_along_resource(find_book, params[:asset_id], params[:path])
+  end
+
+  def read_along_audio
+    serve_read_along_audio(find_book, params[:asset_id], params[:audio_asset_id])
   end
 
   def progress

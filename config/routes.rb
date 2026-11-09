@@ -138,6 +138,9 @@ Rails.application.routes.draw do
         resources :requests, only: [ :index, :show, :create, :destroy ]
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
         get "library/:id/assets/:asset_id/reading_order", to: "library#reading_order", as: :asset_reading_order
+        get "library/:id/assets/:asset_id/read_along", to: "library#read_along", as: :asset_read_along
+        get "library/:id/assets/:asset_id/read_along/resources/*path", to: "library#read_along_resource", as: :asset_read_along_resource, format: false
+        get "library/:id/assets/:asset_id/read_along/audio/:audio_asset_id", to: "library#read_along_audio", as: :asset_read_along_audio
         post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
         get "library/:id/assets/:asset_id/transfer", to: "transfers#show", as: :asset_transfer
         resources :library, only: [ :index, :show ] do
@@ -180,6 +183,9 @@ Rails.application.routes.draw do
   get "read/:id", to: "consumer/library#show", as: :consumer_publication
   get "read/:id/assets/:asset_id", to: "consumer/library#asset", as: :consumer_asset
   get "read/:id/assets/:asset_id/reading_order", to: "consumer/library#reading_order", as: :consumer_asset_reading_order
+  get "read/:id/assets/:asset_id/read_along", to: "consumer/library#read_along", as: :consumer_read_along
+  get "read/:id/assets/:asset_id/read_along/resources/*path", to: "consumer/library#read_along_resource", as: :consumer_read_along_resource, format: false
+  get "read/:id/assets/:asset_id/read_along/audio/:audio_asset_id", to: "consumer/library#read_along_audio", as: :consumer_read_along_audio
   put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress
   put "read/:id/reading_status", to: "consumer/library#reading_status", as: :consumer_reading_status
 

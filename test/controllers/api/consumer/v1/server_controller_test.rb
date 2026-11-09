@@ -19,6 +19,8 @@ class API::Consumer::V1::ServerControllerTest < ActionDispatch::IntegrationTest
       "consumer_api_versions" => [ 1 ],
       "consumer_features" => [ "requests" ],
       "reader_formats" => %w[cbz epub pdf],
+      "reader_features" => [ "read-along" ],
+      "read_along_manifest_versions" => [ 1 ],
       "android" => {
         "release" => {
           "feed_url" => "/apps/android/release.json",

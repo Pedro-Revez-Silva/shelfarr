@@ -626,6 +626,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
     t.index ["upload_id"], name: "index_owned_media_imports_on_upload_id"
   end
 
+  create_table "read_along_alignments", force: :cascade do |t|
+    t.integer "ebook_book_id", null: false
+    t.integer "audiobook_book_id", null: false
+    t.integer "imported_by_id"
+    t.string "ebook_asset_id", null: false
+    t.string "ebook_sha256", null: false
+    t.json "audio", null: false
+    t.string "document_sha256", null: false
+    t.string "tool"
+    t.integer "cue_count", null: false
+    t.binary "cues_gzip", null: false
+    t.json "coverage", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["audiobook_book_id"], name: "index_read_along_alignments_on_audiobook_book_id"
+    t.index ["ebook_book_id"], name: "index_read_along_alignments_on_ebook_book_id", unique: true
+    t.index ["imported_by_id"], name: "index_read_along_alignments_on_imported_by_id"
+  end
+
   create_table "request_events", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.json "details", default: {}
@@ -905,6 +924,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
   add_foreign_key "owned_media_imports", "requests", on_delete: :nullify
   add_foreign_key "owned_media_imports", "uploads", on_delete: :nullify
   add_foreign_key "owned_media_imports", "users", column: "requested_by_id", on_delete: :nullify
+  add_foreign_key "read_along_alignments", "books", column: "audiobook_book_id", on_delete: :cascade
+  add_foreign_key "read_along_alignments", "books", column: "ebook_book_id", on_delete: :cascade
+  add_foreign_key "read_along_alignments", "users", column: "imported_by_id", on_delete: :nullify
   add_foreign_key "request_events", "downloads"
   add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"

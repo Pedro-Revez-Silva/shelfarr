@@ -3,9 +3,10 @@
 class API::Consumer::V1::LibraryController < API::Consumer::V1::BaseController
   include ActionController::DataStreaming
   include ConsumerMediaResponse
+  include ConsumerReadAlongResponse
   before_action -> { consumer_scope("library:read") }
 
-  rescue_from Consumer::ReaderFormats::Invalid, with: ->(error) { render json: { error: "invalid_request", message: error.message }, status: :bad_request }
+  rescue_from Consumer::ReaderFormats::Invalid, Consumer::ReaderFeatures::Invalid, with: ->(error) { render json: { error: "invalid_request", message: error.message }, status: :bad_request }
 
   def index
     result = Consumer::Catalog.new(user: Current.user, reader_formats: reader_formats).call(query: params[:q] || "", type: params[:type], cursor: params[:cursor], limit: params[:limit], status: params[:status], sort: params[:sort])
@@ -21,7 +22,8 @@ class API::Consumer::V1::LibraryController < API::Consumer::V1::BaseController
 
   def show
     formats = reader_formats
-    render json: Consumer::Publication.new(consumer_book(graphic: formats.graphic?), user: Current.user, routes: self, reader_formats: formats).representation
+    render json: Consumer::Publication.new(consumer_book(graphic: formats.graphic?), user: Current.user, routes: self, reader_formats: formats,
+      read_along: reader_features.read_along?).representation
   end
 
   def asset
@@ -35,6 +37,21 @@ class API::Consumer::V1::LibraryController < API::Consumer::V1::BaseController
     render json: { error: "asset_unavailable" }, status: :gone
   end
 
+  # The read-along manifest for this exact EPUB generation (docs/read-along.md).
+  def read_along
+    render_read_along_manifest(consumer_book, params[:asset_id], routes: :api)
+  end
+
+  # One EPUB entry the manifest lists: text, styles, images, fonts or narration.
+  def read_along_resource
+    serve_read_along_resource(consumer_book, params[:asset_id], params[:path])
+  end
+
+  # An audiobook file an imported alignment is bound to.
+  def read_along_audio
+    serve_read_along_audio(consumer_book, params[:asset_id], params[:audio_asset_id])
+  end
+
   # Mints a grant that fetches only this asset generation, with GET or HEAD,
   # from a transfer that must not hold the bearer.
   def transfer_grant
@@ -45,5 +62,12 @@ class API::Consumer::V1::LibraryController < API::Consumer::V1::BaseController
     render json: { url: api_consumer_v1_asset_transfer_path(book, asset.id, grant: grant), expires_at: expires_at.utc.iso8601 }, status: :created
   rescue Consumer::LibraryAssets::Unavailable
     render json: { error: "asset_unavailable" }, status: :gone
+  end
+
+  private
+
+  def reader_features
+    response.headers["Vary"] = [ response.headers["Vary"], Consumer::ReaderFeatures::HEADER ].compact_blank.join(", ")
+    @reader_features ||= Consumer::ReaderFeatures.from(request)
   end
 end
