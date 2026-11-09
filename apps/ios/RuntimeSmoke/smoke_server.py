@@ -165,13 +165,13 @@ class SmokeHandler(mock.Handler):
             PROGRESS_LOG.record(match[1], data)
         return data
 
-    def authorized(self):
+    def authorized(self, scope=None):
         grant = parse_qs(urlparse(self.path).query).get("grant", [None])[0]
         path = self.route()
         if grant is None:
             if CONTENT.fullmatch(path) and self.command == "GET":
                 STATS.bump("bearer_content_requests")
-            return super().authorized()
+            return super().authorized(scope)
         STATS.bump("grant_requests")
         if "Authorization" in self.headers:
             STATS.bump("grant_requests_with_bearer")

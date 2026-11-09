@@ -107,7 +107,7 @@ final class SetupModel: ObservableObject {
                 let outcome = try await authorizer.await(pending)
                 self?.countdown?.cancel()
                 switch outcome {
-                case let .approved(token): await self?.finish(pending.server, token.accessToken)
+                case let .approved(token): await self?.finish(pending.server, token.accessToken, scope: token.scope)
                 case .denied: self?.end(pending.server, denied: true)
                 case .expired: self?.end(pending.server, denied: false)
                 }
@@ -122,11 +122,11 @@ final class SetupModel: ObservableObject {
         }
     }
 
-    private func finish(_ server: ServerAddress, _ token: String) async {
+    private func finish(_ server: ServerAddress, _ token: String, scope: String?) async {
         app.sessions.useProvisional(Credential(server: server, accessToken: token))
         do {
             let user = try await app.api.me(server: server)
-            app.sessions.signIn(Session(server: server, user: user, accessToken: token))
+            app.sessions.signIn(Session(server: server, user: user, accessToken: token, grantedScopes: scope.map { $0.split(separator: " ").map(String.init) }))
         } catch {
             app.sessions.useProvisional(nil)
             app.sessions.clearPendingAuthorization()

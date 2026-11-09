@@ -11,11 +11,26 @@ public struct Session: Equatable, Sendable, CustomStringConvertible {
     public let server: ServerAddress
     public let user: Me
     public let accessToken: String
+    /// The `scope` the token response named; nil for sessions saved before it was kept.
+    public let grantedScopes: [String]?
 
-    public init(server: ServerAddress, user: Me, accessToken: String) {
+    public init(server: ServerAddress, user: Me, accessToken: String, grantedScopes: [String]? = nil) {
         self.server = server
         self.user = user
         self.accessToken = accessToken
+        self.grantedScopes = grantedScopes
+    }
+
+    /// What this credential may do: the server's current answer, else what it granted.
+    public var scopes: [String] { user.scopes ?? grantedScopes ?? RequestScopes.base }
+
+    /// Whether this connection was explicitly approved for finding and requesting titles.
+    public var canRequest: Bool { RequestScopes.allows(scopes) }
+
+    /// Same account and token; display details and scopes may differ.
+    public func hasSameAccountAndToken(_ other: Session?) -> Bool {
+        guard let other else { return false }
+        return accountKey == other.accountKey && accessToken == other.accessToken
     }
 
     /// Scopes every local file, so accounts and servers can never mix.
@@ -46,17 +61,32 @@ public struct PendingAuthorization: Codable, Equatable, Sendable {
     }
 }
 
+/// An unfinished request for more permission on the signed-in account's connection.
+public struct PendingUpgrade: Codable, Equatable, Sendable {
+    public let accountKey: String
+    public let grant: DeviceGrant
+    public let expiresAt: Date
+
+    public init(accountKey: String, grant: DeviceGrant, expiresAt: Date) {
+        self.accountKey = accountKey
+        self.grant = grant
+        self.expiresAt = expiresAt
+    }
+}
+
 /// Owns the session secret. Nothing else reads or writes the token.
 public final class SessionManager: @unchecked Sendable {
     private struct Stored: Codable {
         let server: ServerAddress
         let accessToken: String
         let user: Me
+        var scopes: [String]?
     }
 
     private enum Keys {
         static let session = "session"
         static let authorization = "pending_authorization"
+        static let upgrade = "pending_upgrade"
     }
 
     private let store: SecretStore
@@ -76,7 +106,7 @@ public final class SessionManager: @unchecked Sendable {
               let stored = try? JSONDecoder().decode(Stored.self, from: data)
         else { return .signedOut }
         if stored.accessToken.isEmpty { return .expired(stored.server, stored.user.displayName) }
-        return .signedIn(Session(server: stored.server, user: stored.user, accessToken: stored.accessToken))
+        return .signedIn(Session(server: stored.server, user: stored.user, accessToken: stored.accessToken, grantedScopes: stored.scopes))
     }
 
     public var state: SessionState { lock.withLock { current } }
@@ -102,21 +132,57 @@ public final class SessionManager: @unchecked Sendable {
     }
 
     public func signIn(_ session: Session) {
-        persist(Stored(server: session.server, accessToken: session.accessToken, user: session.user))
+        persist(Stored(server: session.server, accessToken: session.accessToken, user: session.user, scopes: session.grantedScopes))
         store.delete(Keys.authorization)
         update(.signedIn(session))
     }
 
+    /// Keeps fresher display details and scopes for the same account and token.
+    public func refreshUser(_ user: Me, expected: Session) {
+        guard let current = signedIn, current.hasSameAccountAndToken(expected), current.user.id == user.id, current.user != user else { return }
+        signIn(Session(server: current.server, user: user, accessToken: current.accessToken, grantedScopes: current.grantedScopes))
+    }
+
+    /// Swaps in a newly approved credential for the same account, keeping everything
+    /// stored for it. Refused unless `expected` is still the live session and `upgraded`
+    /// is the same user on the same server.
+    @discardableResult
+    public func replaceToken(expected: Session, upgraded: Session) -> Bool {
+        guard let current = signedIn, current.hasSameAccountAndToken(expected), upgraded.accountKey == current.accountKey else { return false }
+        persist(Stored(server: upgraded.server, accessToken: upgraded.accessToken, user: upgraded.user, scopes: upgraded.grantedScopes))
+        store.delete(Keys.upgrade)
+        update(.signedIn(upgraded))
+        return true
+    }
+
+    public func savePendingUpgrade(_ pending: PendingUpgrade) {
+        if let data = try? JSONEncoder().encode(pending) { store.write(Keys.upgrade, data) }
+    }
+
+    /// The unfinished upgrade for `accountKey`; one for any other account is discarded.
+    public func pendingUpgrade(accountKey: String, now: Date = Date()) -> PendingUpgrade? {
+        guard let data = store.read(Keys.upgrade), let pending = try? JSONDecoder().decode(PendingUpgrade.self, from: data) else { return nil }
+        if pending.accountKey != accountKey || pending.expiresAt <= now {
+            store.delete(Keys.upgrade)
+            return nil
+        }
+        return pending
+    }
+
+    public func clearPendingUpgrade() { store.delete(Keys.upgrade) }
+
     /// The server refused the token. Forget it, keep the address for re-authorizing.
     public func markExpired(_ rejected: Credential) {
         guard let session = signedIn, session.server == rejected.server, session.accessToken == rejected.accessToken else { return }
-        persist(Stored(server: session.server, accessToken: "", user: session.user))
+        persist(Stored(server: session.server, accessToken: "", user: session.user, scopes: session.grantedScopes))
+        store.delete(Keys.upgrade)
         update(.expired(session.server, session.user.displayName))
     }
 
     public func clear() {
         store.delete(Keys.session)
         store.delete(Keys.authorization)
+        store.delete(Keys.upgrade)
         update(.signedOut)
     }
 

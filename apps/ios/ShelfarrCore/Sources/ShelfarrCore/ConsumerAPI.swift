@@ -53,6 +53,12 @@ public final class ConsumerAPI: Sendable {
     private struct ErrorBody: Decodable {
         let error: String?
         let progress: ReadingProgress?
+        var message: String?
+        var publication_id: String?
+    }
+
+    private struct RequestEnvelope: Decodable {
+        let request: RequestItem
     }
 
     private struct ProgressEnvelope: Decodable {
@@ -74,9 +80,66 @@ public final class ConsumerAPI: Sendable {
         return request
     }
 
-    public func startDeviceAuthorization(server: ServerAddress, clientName: String) async throws -> DeviceGrant {
-        let body = try JSONEncoder().encode(["client_name": clientName])
+    /// Starts a browser approval. With `scope`, an app asks for more than reading and
+    /// listening; when already signed in, its bearer is sent, so the server adds the
+    /// permission to this connection and only its own account may approve it.
+    public func startDeviceAuthorization(server: ServerAddress, clientName: String, scope: String? = nil) async throws -> DeviceGrant {
+        var fields = ["client_name": clientName]
+        if let scope { fields["scope"] = scope }
+        let body = try JSONEncoder().encode(fields)
         return try await decode(perform(authorized(server.api("auth/device"), method: "POST", body: body)))
+    }
+
+    /// Public, bearer-free server facts. A server without the file answers 404.
+    public func serverFacts(server: ServerAddress) async throws -> ServerFacts {
+        try await decode(perform(authorized(server.api("server.json"))))
+    }
+
+    private struct DiscoverPage: Decodable { let items: [DiscoverItem] }
+    private struct RequestList: Decodable { let items: [RequestItem] }
+
+    /// Metadata search beyond the library. Needs `search:read`.
+    public func discover(server: ServerAddress, query: String, limit: Int = 12) async throws -> [DiscoverItem] {
+        let page: DiscoverPage = try await decode(perform(authorized(server.api("discover", query: [("q", query), ("limit", String(limit))]))))
+        return page.items
+    }
+
+    /// This account's requests, most recently changed first.
+    public func requests(server: ServerAddress, limit: Int = 30) async throws -> [RequestItem] {
+        let list: RequestList = try await decode(perform(authorized(server.api("requests", query: [("limit", String(limit))]))))
+        return list.items
+    }
+
+    public func request(server: ServerAddress, id: String) async throws -> RequestItem {
+        let envelope: RequestEnvelope = try await decode(perform(authorized(server.api("requests/\(ServerAddress.pathSegment(id))"))))
+        return envelope.request
+    }
+
+    /// Asks for one format of a title. A duplicate is never an error: the server answers
+    /// with what already exists, reported as anything but `.created`.
+    public func createRequest(server: ServerAddress, _ request: NewRequest) async throws -> RequestOutcome {
+        let (data, response) = try await send(authorized(server.api("requests"), method: "POST", body: try JSONEncoder().encode(request)))
+        let error = try? JSONDecoder().decode(ErrorBody.self, from: data)
+        switch (response.statusCode, error?.error) {
+        case (201, _): return .created(try (decode(data) as RequestEnvelope).request)
+        case (200 ..< 300, _): return .existing(try (decode(data) as RequestEnvelope).request)
+        case (409, "already_in_library"): return .inLibrary(publicationId: error?.publication_id, message: error?.message)
+        case (409, "already_requested"): return .requestedBySomeone(message: error?.message)
+        case (422, "request_rejected"): return .refused(message: error?.message)
+        default:
+            try check(data, response)
+            throw APIError.protocolError
+        }
+    }
+
+    /// Stops a request that hasn't finished. The server decides whether it still can be.
+    public func cancelRequest(server: ServerAddress, id: String) async throws -> RequestItem {
+        let (data, response) = try await send(authorized(server.api("requests/\(ServerAddress.pathSegment(id))"), method: "DELETE"))
+        if response.statusCode == 422 {
+            throw APIError.rejected((try? JSONDecoder().decode(ErrorBody.self, from: data))?.message ?? "This request can't be cancelled now.")
+        }
+        try check(data, response)
+        return try (decode(data) as RequestEnvelope).request
     }
 
     /// Polls once. Pending and terminal states arrive as `APIError.authorization`.
