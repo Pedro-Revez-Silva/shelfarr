@@ -12,6 +12,17 @@ internal class ReadingRestoration(opening: JsonObject?) {
     private var established = false
     private var reading = false
 
+    /**
+     * [current] is on screen for a reason other than reading (following narration, a
+     * layout change, a place shown on request). It becomes the place to move away from:
+     * only a later, different report is reading again.
+     */
+    fun adopt(current: JsonObject) {
+        anchor = current
+        established = true
+        reading = false
+    }
+
     fun isReading(current: JsonObject): Boolean {
         if (reading) return true
         val start = anchor
@@ -44,12 +55,19 @@ private const val RESTORE_AFTER = 0.0005
 internal fun isRestoredPlace(start: JsonObject, current: JsonObject): Boolean {
     val href = current.string("href") ?: return false
     if (href.trimStart('/') != start.string("href")?.trimStart('/')) return false
+    // A place saved by element (read-along, or another reader's fragment) has no
+    // progression: Readium opens on the page holding that element, wherever it is.
+    if (start.progression() == null && start.hasFragment()) return true
     val opened = start.progression() ?: 0.0
     val now = current.progression() ?: 0.0
     return now >= opened - RESTORE_BEFORE && now <= opened + RESTORE_AFTER
 }
 
 private fun JsonObject.string(key: String): String? = runCatching { this[key]?.jsonPrimitive?.contentOrNull }.getOrNull()
+
+private fun JsonObject.hasFragment(): Boolean = runCatching {
+    (this["locations"]?.jsonObject?.get("fragments") as? kotlinx.serialization.json.JsonArray)?.isNotEmpty() == true
+}.getOrDefault(false)
 
 private fun JsonObject.progression(): Double? =
     runCatching { this["locations"]?.jsonObject?.get("progression")?.jsonPrimitive?.doubleOrNull }.getOrNull()

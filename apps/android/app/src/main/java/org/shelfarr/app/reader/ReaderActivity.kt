@@ -28,7 +28,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.CreationExtras
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
 import org.readium.r2.navigator.epub.css.FontStyle
 import org.readium.r2.navigator.epub.css.FontWeight
@@ -89,9 +93,13 @@ class ReaderActivity : FragmentActivity() {
                         },
                         onUseOtherPlace = {
                             lifecycleScope.launch {
-                                viewModel.useOtherPlace()?.let { navigator?.go(it, animated = false) }
+                                viewModel.useOtherPlace()?.let { locator ->
+                                    viewModel.onDisplayMove(locator.href.toString())
+                                    navigator?.go(locator, animated = false)
+                                }
                             }
                         },
+                        narration = narrationActions,
                     )
                 }
             }
@@ -120,7 +128,11 @@ class ReaderActivity : FragmentActivity() {
         }
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var applied: ReaderSettings? = null
                 viewModel.settings.collect { settings ->
+                    // New text settings re-lay out the page; what Readium reports next isn't reading.
+                    if (applied != null && applied?.toPreferences() != settings.toPreferences()) viewModel.onLayoutChanged()
+                    applied = settings
                     navigator?.submitPreferences(settings.toPreferences())
                     window.decorView.setBackgroundColor(settings.theme.page.toInt())
                     updateBars()
@@ -174,6 +186,72 @@ class ReaderActivity : FragmentActivity() {
                 fragment.currentLocator.collect(viewModel::onLocatorChanged)
             }
         }
+        // The element being narrated, drawn by Readium under the text in the page's own colours.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                combine(viewModel.narrationHighlight, viewModel.settings) { locator, settings -> locator to settings.theme }
+                    .distinctUntilChanged()
+                    .collect { (locator, theme) ->
+                        val decoration = locator?.let {
+                            Decoration(id = NARRATION_DECORATION, locator = it, style = Decoration.Style.Highlight(tint = theme.narration.toInt(), isActive = false))
+                        }
+                        fragment.applyDecorations(listOfNotNull(decoration), NARRATION_GROUP)
+                    }
+            }
+        }
+        // Page-follow and requested places: display only, never reading.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.narrationShow.collectLatest { request -> show(fragment, request) }
+            }
+        }
+    }
+
+    private suspend fun show(fragment: EpubNavigatorFragment, request: ReadAlongCoordinator.ShowRequest) {
+        val target = request.locator
+        val href = target.href.toString()
+        if (request.onlyIfHidden && fragment.currentLocator.value.href.toString() == href) {
+            val id = target.locations.fragments.firstOrNull() ?: return
+            if (NarrationScripts.decode(fragment.evaluateJavascript(NarrationScripts.isVisible(id))) == "1") return
+        }
+        viewModel.onDisplayMove(href)
+        fragment.go(target, animated = false)
+    }
+
+    /** What the page on screen shows of the narration: the first narrated element in view, or the next one after it. */
+    private suspend fun pageCues(): PageCues? {
+        val fragment = navigator ?: return null
+        val href = fragment.currentLocator.value.href.toString()
+        val ids = viewModel.narrationFragments(href)
+        if (ids.isEmpty()) return PageCues(href, null, null)
+        val found = NarrationScripts.decode(fragment.evaluateJavascript(NarrationScripts.pageCues(ids))).orEmpty()
+        return when {
+            found.startsWith("v:") -> PageCues(href, found.removePrefix("v:"), null)
+            found.startsWith("a:") -> PageCues(href, null, found.removePrefix("a:"))
+            else -> PageCues(href, null, null)
+        }
+    }
+
+    private val narrationActions = object : NarrationActions {
+        override fun toggle() {
+            lifecycleScope.launch {
+                val page = if (viewModel.narrationNeedsPage) pageCues() else null
+                viewModel.toggleNarration(page)
+            }
+        }
+
+        override fun skip(back: Boolean) { viewModel.skipNarration(back) }
+        override fun setSpeed(speed: Float) { viewModel.setNarrationSpeed(speed) }
+        override fun setFollow(follow: Boolean) { viewModel.setFollowNarration(follow) }
+        override fun backToNarration() { viewModel.backToNarration() }
+        override fun useAudiobookPlace() { viewModel.useAudiobookPlace() }
+        override fun dismissAudiobookPlace() { viewModel.dismissAudiobookPlace() }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        // Rotation and resizing re-lay out the page: not reading.
+        viewModel.onLayoutChanged()
+        super.onConfigurationChanged(newConfig)
     }
 
     private fun toggleChrome() {
@@ -231,6 +309,8 @@ class ReaderActivity : FragmentActivity() {
     companion object {
         private const val EXTRA_PUBLICATION = "publication"
         private const val NAVIGATOR_TAG = "navigator"
+        private const val NARRATION_GROUP = "read-along"
+        private const val NARRATION_DECORATION = "narration"
 
         fun intent(context: Context, publicationId: String): Intent =
             Intent(context, ReaderActivity::class.java).putExtra(EXTRA_PUBLICATION, publicationId)

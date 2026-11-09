@@ -2,6 +2,7 @@ package org.shelfarr.app.reader
 
 import android.app.Application
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -132,6 +133,20 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
 
     private val sync: ProgressSync? = account?.progress?.sync(publicationId)
     val syncStatus: StateFlow<SyncStatus> = sync?.status ?: MutableStateFlow(SyncStatus.Idle)
+
+    /** Read-along narration for this book, when the server has a real alignment for the open EPUB. */
+    private val readAlong: ReadAlongCoordinator? = account?.let { services ->
+        sync?.let { ReadAlongCoordinator(viewModelScope, container.playback, services, it, container.readerSettings) }
+    }
+    val readAlongUi: StateFlow<ReadAlongUi> = readAlong?.ui ?: MutableStateFlow(ReadAlongUi.Off)
+    val narrationHighlight: StateFlow<Locator?> = readAlong?.highlight ?: MutableStateFlow(null)
+    val narrationShow: SharedFlow<ReadAlongCoordinator.ShowRequest> =
+        readAlong?.show ?: kotlinx.coroutines.flow.MutableSharedFlow()
+
+    /** A display-only move the reader is about to make: its reports are not reading. */
+    private var displayHref: String? = null
+    private var displayAtMs = Long.MIN_VALUE / 2
+    private var layoutAtMs = Long.MIN_VALUE / 2
 
     private var asset: Asset? = null
     private var details: Publication? = null
@@ -307,6 +322,14 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             Locator.fromJSON(JSONObject(json.toString()))
         }
         val positions = publication.positions()
+        val openAsset = asset
+        val book = details
+        if (readAlong != null && openAsset != null && book != null) {
+            // Never in the way of reading: the text is shown whatever narration turns out to be.
+            viewModelScope.launch {
+                readAlong.open(book, openAsset, publication, download, offline, start?.locator)
+            }
+        }
         mutableState.value = ReaderState.Ready(
             title = details?.title ?: publication.metadata.title.orEmpty(),
             publication = publication,
@@ -409,6 +432,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     fun onLocatorChanged(locator: Locator) {
         // Captured before anything waits: this is when the page was reached.
         val observedAt = System.currentTimeMillis()
+        val atMs = SystemClock.elapsedRealtime()
         val total = locator.locations.totalProgression ?: locator.locations.progression ?: 0.0
         mutablePlace.update {
             ReadingPlace(
@@ -419,9 +443,58 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         }
         val id = asset?.id ?: return
         val json = Json.parseToJsonElement(locator.toJSON().toString()) as JsonObject
+        val echo = isDisplayEcho(json, atMs)
+        when {
+            // While narration plays, the place heard is the activity: turning pages is browsing.
+            readAlong?.isPlayingHere == true -> {
+                restoration.adopt(json)
+                if (!echo) readAlong.onUserMoved()
+                return
+            }
+            // Following narration, showing a chosen place, or a re-layout: on screen, not read.
+            echo || atMs - layoutAtMs < LAYOUT_SETTLE_MS -> {
+                restoration.adopt(json)
+                return
+            }
+        }
         if (!restoration.isReading(json)) return
+        readAlong?.onRead()
         viewModelScope.launch { sync?.update(SavedPosition(id, json), observedAt) }
     }
+
+    private fun isDisplayEcho(json: JsonObject, atMs: Long): Boolean {
+        val target = displayHref ?: return false
+        if (atMs - displayAtMs > DISPLAY_SETTLE_MS) {
+            displayHref = null
+            return false
+        }
+        val href = (json["href"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.trimStart('/')
+        return href == target
+    }
+
+    /** The reader is about to show [href] for narration or on request; what it reports next isn't reading. */
+    fun onDisplayMove(href: String) {
+        displayHref = href.trimStart('/')
+        displayAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /** Rotation, resizing or new text settings: the page re-lays out, which is never reading. */
+    fun onLayoutChanged() {
+        layoutAtMs = SystemClock.elapsedRealtime()
+    }
+
+    /** Whether Play first needs to know which narration the page on screen shows. */
+    val narrationNeedsPage: Boolean get() = readAlong?.needsPageCues == true
+
+    fun narrationFragments(href: String): List<String> = readAlong?.fragmentsOf(href).orEmpty()
+
+    fun toggleNarration(page: PageCues?) = readAlong?.toggle(page)
+    fun skipNarration(back: Boolean) = readAlong?.skip(back)
+    fun setNarrationSpeed(speed: Float) = readAlong?.setSpeed(speed)
+    fun setFollowNarration(follow: Boolean) = readAlong?.setFollow(follow)
+    fun backToNarration() = readAlong?.backToNarration()
+    fun useAudiobookPlace() = readAlong?.useOffer()
+    fun dismissAudiobookPlace() = readAlong?.dismissOffer()
 
     suspend fun locatorFor(fraction: Float): Locator? = opened?.locateProgression(fraction.toDouble())
 
@@ -437,6 +510,16 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
 
     /** Adopts the other device's place and hands back where to go. */
     suspend fun useOtherPlace(): Locator? {
+        readAlong?.restoreStarting()
+        try {
+            return adoptOtherPlace()
+        } finally {
+            // Whatever was adopted (or nothing) is in place before any Play goes on.
+            readAlong?.restoreAbandoned()
+        }
+    }
+
+    private suspend fun adoptOtherPlace(): Locator? {
         val position = sync?.useServer() ?: return null
         val paged = mutableState.value as? ReaderState.Paged
         if (paged != null) {
@@ -454,6 +537,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         if (position.assetId != asset?.id) return null
         // Going there is the reader's choice of a saved place, not new reading.
         restoration = ReadingRestoration(position.locator)
+        readAlong?.restoredTo(position.locator)
         return position.locator?.let { Locator.fromJSON(JSONObject(it.toString())) }
     }
 
@@ -475,9 +559,18 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     }
 
     override fun onCleared() {
+        readAlong?.close()
         opened?.close()
         document?.close()
         bitmaps.clear()
         flush()
+    }
+
+    private companion object {
+        /** How long a display-only move may take to be reported back by Readium. */
+        const val DISPLAY_SETTLE_MS = 2_500L
+
+        /** How long Readium may keep reporting a re-laid-out page. */
+        const val LAYOUT_SETTLE_MS = 1_500L
     }
 }

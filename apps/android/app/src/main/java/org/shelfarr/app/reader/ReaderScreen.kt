@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -81,8 +82,10 @@ fun ReaderScreen(
     onGo: (Link) -> Unit,
     onScrub: (Float) -> Unit,
     onUseOtherPlace: () -> Unit,
+    narration: NarrationActions = NarrationActions.None,
 ) {
     val state by viewModel.state.collectAsState()
+    val readAlong by viewModel.readAlongUi.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val place by viewModel.place.collectAsState()
     val sync by viewModel.syncStatus.collectAsState()
@@ -146,6 +149,8 @@ fun ReaderScreen(
                 onGo = onGo,
                 onScrub = onScrub,
                 onSettings = { change -> viewModel.updateSettings(change) },
+                readAlong = readAlong,
+                narration = narration,
             )
             SyncOverlays(sync, theme, viewModel::keepThisPlace, onUseOtherPlace)
         }
@@ -300,6 +305,8 @@ fun BoxScope.ReaderBars(
     onContents: () -> Unit,
     onAppearance: () -> Unit,
     onScrub: (Float) -> Unit,
+    /** Above the place and slider: read-along controls, when the book has narration. */
+    extra: @Composable () -> Unit = {},
 ) {
     val theme = settings.theme
     Column(Modifier.align(Alignment.TopCenter).background(theme.barColor).statusBarsPadding()) {
@@ -330,6 +337,7 @@ fun BoxScope.ReaderBars(
     Column(Modifier.align(Alignment.BottomCenter).background(theme.barColor).navigationBarsPadding()) {
         HorizontalDivider(color = theme.hairlineColor)
         Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 10.dp)) {
+            extra()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     place.chapter.orEmpty(),
@@ -378,6 +386,8 @@ private fun ReaderChrome(
     onGo: (Link) -> Unit,
     onScrub: (Float) -> Unit,
     onSettings: ((ReaderSettings) -> ReaderSettings) -> Unit,
+    readAlong: ReadAlongUi = ReadAlongUi.Off,
+    narration: NarrationActions = NarrationActions.None,
 ) {
     var sheet by remember { mutableStateOf(ReaderSheet.NONE) }
     var notice by remember(ready) { mutableStateOf(ready.notice) }
@@ -399,6 +409,18 @@ private fun ReaderChrome(
                 color = theme.mutedColor,
                 modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 10.dp),
             )
+            // Read-along adds nothing to the page until narration is used, or a later audiobook place is offered.
+            val ready = readAlong as? ReadAlongUi.Ready
+            if (ready != null && (ready.started || ready.offer != null)) {
+                Column(
+                    Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 30.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ready.offer?.let { OfferCard(it, theme, narration, Modifier.widthIn(max = 480.dp)) }
+                    if (ready.started) NarrationPill(ready, theme, narration)
+                }
+            }
         }
 
         AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {
@@ -412,6 +434,7 @@ private fun ReaderChrome(
                     onContents = { sheet = ReaderSheet.CONTENTS },
                     onAppearance = { sheet = ReaderSheet.SETTINGS },
                     onScrub = onScrub,
+                    extra = { NarrationPanel(readAlong, theme, narration) },
                 )
             }
         }

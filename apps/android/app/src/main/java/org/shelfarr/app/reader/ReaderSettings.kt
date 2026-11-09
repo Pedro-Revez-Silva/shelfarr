@@ -26,10 +26,12 @@ enum class ReaderTheme(
     val hairline: Long,
     val accent: Long,
     val readium: Theme,
+    /** Behind the words being narrated. Readium draws it at 30% under the text, so the text keeps its own contrast. */
+    val narration: Long,
 ) {
-    PAPER("Paper", 0xFFFBF7F0, 0xFF2A241D, 0xFF665B4E, 0xFFFFFDF9, 0xFFE6DCCB, 0xFFA33A22, Theme.LIGHT),
-    SEPIA("Sepia", 0xFFF0E5D0, 0xFF3A2E21, 0xFF65553F, 0xFFF7EEDD, 0xFFDCCDB1, 0xFF96351F, Theme.SEPIA),
-    NIGHT("Night", 0xFF16130F, 0xFFD9CFC0, 0xFFA99D8D, 0xFF211C17, 0xFF38302A, 0xFFEE9270, Theme.DARK),
+    PAPER("Paper", 0xFFFBF7F0, 0xFF2A241D, 0xFF665B4E, 0xFFFFFDF9, 0xFFE6DCCB, 0xFFA33A22, Theme.LIGHT, 0xFFE8A93A),
+    SEPIA("Sepia", 0xFFF0E5D0, 0xFF3A2E21, 0xFF65553F, 0xFFF7EEDD, 0xFFDCCDB1, 0xFF96351F, Theme.SEPIA, 0xFFD9902B),
+    NIGHT("Night", 0xFF16130F, 0xFFD9CFC0, 0xFFA99D8D, 0xFF211C17, 0xFF38302A, 0xFFEE9270, Theme.DARK, 0xFFC98A2E),
     ;
 
     val pageColor: ComposeColor get() = ComposeColor(page)
@@ -55,6 +57,10 @@ data class ReaderSettings(
     val margins: Double = 1.0,
     val justify: Boolean = false,
     val scroll: Boolean = false,
+    /** Read-along: turn pages to follow the narration. */
+    val followNarration: Boolean = true,
+    /** Read-along narration speed. */
+    val narrationSpeed: Float = 1f,
 ) {
     @OptIn(ExperimentalReadiumApi::class)
     fun toPreferences(): EpubPreferences {
@@ -78,6 +84,7 @@ data class ReaderSettings(
     companion object {
         val FontSizes = 0.75..2.5
         const val FontStep = 0.1
+        val NarrationSpeeds = listOf(0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
     }
 }
 

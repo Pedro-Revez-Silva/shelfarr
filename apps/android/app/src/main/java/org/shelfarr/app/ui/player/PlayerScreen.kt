@@ -522,7 +522,13 @@ fun MiniPlayer(snapshot: PlaybackSnapshot, onOpen: () -> Unit, onToggle: () -> U
         modifier = modifier
             .fillMaxWidth()
             .clickable(role = Role.Button, onClick = onOpen)
-            .semantics { contentDescription = "Now playing: ${publication.title}. Open player." },
+            .semantics {
+                contentDescription = if (snapshot.narration != null) {
+                    "Reading along: ${publication.title}. Open the book."
+                } else {
+                    "Now playing: ${publication.title}. Open player."
+                }
+            },
     ) {
         Column {
             val fraction = if (snapshot.durationMs > 0) snapshot.positionMs.toFloat() / snapshot.durationMs else 0f
