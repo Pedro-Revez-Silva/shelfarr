@@ -40,6 +40,7 @@ This controller runs outside the device because it kills the app:
 import argparse
 import hashlib
 import json
+import queue
 import subprocess
 import sys
 import threading
@@ -128,6 +129,14 @@ class Controller:
 
     def play(self, uid):
         watcher = subprocess.Popen(self.adb_base + ["logcat", "-v", "epoch", "-s", "ADUR:I"], stdout=subprocess.PIPE, text=True)
+        incoming = queue.Queue()
+
+        def read_events():
+            for line in watcher.stdout:
+                incoming.put(line)
+            incoming.put(None)
+
+        threading.Thread(target=read_events, daemon=True).start()
         lines = []
         process, output = self.instrument("play", "-e", "shelfarrKillAfterCheckpointMs", str(self.args.kill_after_checkpoint_ms))
         window = None
@@ -137,7 +146,12 @@ class Controller:
             while window is None:
                 if time.monotonic() > deadline:
                     raise Failure("No kill window within 240s")
-                line = watcher.stdout.readline()
+                try:
+                    line = incoming.get(timeout=1)
+                except queue.Empty:
+                    if process.poll() is not None:
+                        raise Failure(f"The play stage ended before its kill window: {output}")
+                    continue
                 if not line:
                     raise Failure("logcat ended")
                 lines.append(line)

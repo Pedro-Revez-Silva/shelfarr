@@ -142,6 +142,15 @@ Instrumentation (`apps/scripts/android-reader-smoke.sh`, run by CI's emulator):
 case reopens at an exactly equal locator, checks the saved paragraphs are visible,
 then requires a small backward page turn to save immediately with its own time.
 
+The optional emulator-only
+[`audio-durability-acceptance.py`](../apps/android/tools/audio-durability-acceptance.py)
+experiment compiles its companion probe into a temporary instrumentation build,
+plays generated AAC through the real service, kills the process between disk
+checkpoints and verifies recovery in a fresh process. Its source header describes
+the build and invocation. It uninstalls fixture packages before starting and refuses
+a physical device; it is separate from normal CI because killing the test runner is
+an intentional part of the experiment.
+
 ## Limits
 
 - The reader instrumentation and an abrupt-process-death audio experiment have run on
