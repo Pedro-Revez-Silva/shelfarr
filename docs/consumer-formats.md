@@ -7,13 +7,17 @@ clients opt in, and what stays out of scope.
 | Format | Consumer API | Web reader | Native apps |
 |---|---|---|---|
 | EPUB | Yes (default) | Yes, ≤ 32 MiB | Yes |
-| PDF (`application/pdf`) | Opt-in, ≤ 500 MiB | Yes, page rendering with text selection | Separate client work |
-| CBZ (`application/vnd.comicbook+zip`) | Opt-in, ≤ 2 GiB, JPEG/PNG/WebP pages | Yes, page images | Separate client work |
+| PDF (`application/pdf`) | Opt-in, ≤ 500 MiB | Yes, page rendering with text selection | Android implemented; iOS implemented, SDK/runtime verification pending |
+| CBZ (`application/vnd.comicbook+zip`) | Opt-in, ≤ 2 GiB, JPEG/PNG/WebP pages | Yes, page images | Android implemented; iOS implemented, SDK/runtime verification pending |
 | CBR/RAR, CB7, MOBI/AZW | Not supported | Not supported | Not supported |
 | Read-along (text + narration) | Not implemented | Not implemented | Not implemented |
 
 Read-along is a separate, unimplemented proposal. Nothing here aligns text with
 audio or pairs an ebook with an audiobook.
+
+Native behavior and verification limits are documented for
+[Android](native-formats-android.md) and [iPhone/iPad](native-formats-ios.md).
+Native rendering on physical devices remains a separate acceptance gate.
 
 ## Format negotiation
 
