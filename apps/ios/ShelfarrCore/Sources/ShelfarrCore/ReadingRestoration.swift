@@ -70,6 +70,10 @@ public struct ReadingRestoration: Sendable {
         /// The saved place could not be shown: enable input. It stays saved until the
         /// reader moves.
         case gaveUp
+        /// The saved place names an element (a place reached by listening has no
+        /// progression) and its document is on screen: check whether the element itself
+        /// is, then call `elementShown(_:for:)` with the observation this answered.
+        case confirm(target: JSONValue)
     }
 
     private enum Phase: Sendable {
@@ -83,6 +87,10 @@ public struct ReadingRestoration: Sendable {
         case anchored(ReadingObservation, target: JSONValue?, failed: Bool)
         /// Gave up before any report: the next one anchors.
         case unanchored(target: JSONValue)
+        /// Waiting for the app to say whether the saved element is on screen in `current`.
+        /// `attempt` is the correcting attempt under way (0 before any), `afterGivingUp`
+        /// when restoring already gave up.
+        case confirming(target: JSONValue, attempt: Int, current: ReadingObservation, last: ReadingObservation?, afterGivingUp: Bool)
         /// The reader has moved; every report is reading.
         case reading
     }
@@ -96,8 +104,11 @@ public struct ReadingRestoration: Sendable {
 
     /// True while the reader is being sent back to the saved place.
     public var isCorrecting: Bool {
-        if case .correcting = phase { return true }
-        return false
+        switch phase {
+        case .correcting: return true
+        case let .confirming(_, attempt, _, _, _): return attempt > 0
+        default: return false
+        }
     }
 
     /// The reader is being sent to a saved place it chose (another device's). Arriving
@@ -117,13 +128,41 @@ public struct ReadingRestoration: Sendable {
             phase = .anchored(current, target: nil, failed: false)
             return .none
         case let .awaiting(target):
+            if Self.isElementTarget(target) {
+                if Self.documentShown(target, in: current) {
+                    phase = .confirming(target: target, attempt: 0, current: current, last: current, afterGivingUp: false)
+                    return .confirm(target: target)
+                }
+                phase = .correcting(target: target, attempt: 1, last: current)
+                return .correct(target: target, attempt: 1)
+            }
             if Self.shows(target, in: current) {
                 phase = .anchored(current, target: target, failed: false)
                 return .settled
             }
             phase = .correcting(target: target, attempt: 1, last: current)
             return .correct(target: target, attempt: 1)
+        case let .confirming(target, attempt, _, last, afterGivingUp):
+            // A newer report replaces the one being checked; its answer is what counts.
+            if Self.documentShown(target, in: current) {
+                phase = .confirming(target: target, attempt: attempt, current: current, last: last, afterGivingUp: afterGivingUp)
+                return .confirm(target: target)
+            }
+            if afterGivingUp {
+                phase = .anchored(current, target: target, failed: true)
+                return .none
+            }
+            phase = .correcting(target: target, attempt: max(attempt, 1), last: current)
+            return attempt == 0 ? .correct(target: target, attempt: 1) : .none
         case let .correcting(target, attempt, _):
+            if Self.isElementTarget(target) {
+                if Self.documentShown(target, in: current) {
+                    phase = .confirming(target: target, attempt: attempt, current: current, last: current, afterGivingUp: false)
+                    return .confirm(target: target)
+                }
+                phase = .correcting(target: target, attempt: attempt, last: current)
+                return .none
+            }
             if Self.shows(target, in: current) {
                 phase = .anchored(current, target: target, failed: false)
                 return .settled
@@ -132,12 +171,16 @@ public struct ReadingRestoration: Sendable {
             phase = .correcting(target: target, attempt: attempt, last: current)
             return .none
         case let .unanchored(target):
+            if Self.isElementTarget(target), Self.documentShown(target, in: current) {
+                phase = .confirming(target: target, attempt: 0, current: current, last: current, afterGivingUp: true)
+                return .confirm(target: target)
+            }
             let shown = Self.shows(target, in: current)
             phase = .anchored(current, target: target, failed: !shown)
             return shown ? .settled : .none
         case let .anchored(anchor, target, failed):
             if Self.samePage(anchor, current) { return .none }
-            if let target, Self.shows(target, in: current) {
+            if let target, !Self.isElementTarget(target), Self.shows(target, in: current) {
                 // The saved place arrived late; still not reading.
                 phase = .anchored(current, target: target, failed: false)
                 return failed ? .settled : .none
@@ -147,8 +190,32 @@ public struct ReadingRestoration: Sendable {
         }
     }
 
+    /// The app's answer to `.confirm` for the report `observation`: whether the saved
+    /// element is on screen. An answer about an older report changes nothing.
+    public mutating func elementShown(_ visible: Bool, for observation: ReadingObservation) -> Action {
+        guard case let .confirming(target, attempt, current, _, afterGivingUp) = phase, current == observation else { return .none }
+        if visible {
+            phase = .anchored(current, target: target, failed: false)
+            return .settled
+        }
+        if afterGivingUp {
+            phase = .anchored(current, target: target, failed: true)
+            return .none
+        }
+        if attempt == 0 {
+            phase = .correcting(target: target, attempt: 1, last: current)
+            return .correct(target: target, attempt: 1)
+        }
+        // Input is disabled and the jump is under way: wait for the next report or the timeout.
+        phase = .correcting(target: target, attempt: attempt, last: current)
+        return .none
+    }
+
     /// The attempt's timeout elapsed without a report showing the saved place.
     public mutating func timedOut(attempt: Int) -> Action {
+        if case let .confirming(target, current, observation, _, false) = phase, current == attempt, current > 0 {
+            phase = .correcting(target: target, attempt: current, last: observation)
+        }
         guard case let .correcting(target, current, last) = phase, current == attempt else { return .none }
         if attempt < Self.attempts {
             phase = .correcting(target: target, attempt: attempt + 1, last: last)
@@ -164,6 +231,25 @@ public struct ReadingRestoration: Sendable {
     }
 
     // MARK: Geometry
+
+    /// A place that names an element and no progression, as a place reached by listening
+    /// does: only the app can tell whether that element is on screen.
+    public static func isElementTarget(_ target: JSONValue) -> Bool {
+        guard target["locations"]?["progression"]?.doubleValue == nil,
+              case let .array(fragments)? = target["locations"]?["fragments"],
+              case let .string(first)? = fragments.first
+        else { return false }
+        return !first.isEmpty && !first.contains("=")
+    }
+
+    /// Whether the target's document is on screen at all.
+    static func documentShown(_ target: JSONValue, in current: ReadingObservation) -> Bool {
+        guard let href = target["href"]?.stringValue else { return false }
+        if let viewport = current.viewport {
+            return viewport.resources.contains { same($0.href, href) }
+        }
+        return current.locator["href"]?.stringValue.map { same($0, href) } ?? false
+    }
 
     /// True when `current` puts `target` on screen: same resource, and the target's
     /// progression inside the measured visible range. Without a measured viewport only the
@@ -207,7 +293,7 @@ public struct ReadingRestoration: Sendable {
     }
 
     /// Reading order hrefs compare without a leading slash, fragment, query or escaping.
-    static func same(_ a: String, _ b: String) -> Bool {
+    public static func same(_ a: String, _ b: String) -> Bool {
         normalized(a) == normalized(b)
     }
 

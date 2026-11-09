@@ -414,11 +414,21 @@ public actor ProgressSync {
     /// wall-clock time captured when it happened (before any waiting). Cheap enough to
     /// call on every page turn or checkpoint.
     public func update(_ position: SavedPosition, observedAt: Int64) async {
-        guard !stopped else { return }
+        guard await record(position, observedAt: observedAt) else { return }
+        sendSoon()
+    }
+
+    /// The local half of `update`: writes the place to disk with its activity time and
+    /// sends nothing. Returns true when the place is new and may be sent; follow it with
+    /// `sendSoon()`. Two places observed together (an ebook and its paired audiobook)
+    /// are both written this way before either is scheduled.
+    @discardableResult
+    public func record(_ position: SavedPosition, observedAt: Int64) async -> Bool {
+        guard !stopped else { return false }
         var existing = await current()
         if position == reported || existing.position == position {
             reported = position
-            return
+            return false
         }
         reported = position
         existing.position = position
@@ -426,8 +436,12 @@ public actor ProgressSync {
         existing.touched = true
         existing.observedAt = ActivityTime.next(observedAt, after: existing.observedAt)
         await save(existing)
-        if existing.conflict != nil || existing.rejected { return }
+        return existing.conflict == nil && !existing.rejected
+    }
 
+    /// Schedules the debounced send of what `record` wrote.
+    public func sendSoon() {
+        guard !stopped else { return }
         publish(.pending)
         let instant = clock.now
         let started = dirtySince ?? instant

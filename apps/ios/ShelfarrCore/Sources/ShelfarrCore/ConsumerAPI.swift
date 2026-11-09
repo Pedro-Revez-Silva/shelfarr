@@ -224,8 +224,12 @@ public final class ConsumerAPI: Sendable {
         return try await decode(perform(authorized(url, method: "POST", body: Data("{}".utf8))))
     }
 
+    /// Details declare the read-along feature too, so EPUB assets carry their summary.
+    /// A server that predates it ignores the header and answers exactly as before.
     public func publication(server: ServerAddress, id: String) async throws -> Publication {
-        try await decode(perform(authorized(server.api("library/\(ServerAddress.pathSegment(id))"), readerFormats: true)))
+        var request = authorized(server.api("library/\(ServerAddress.pathSegment(id))"), readerFormats: true)
+        request.setValue(ReaderFeatures.declared, forHTTPHeaderField: ReaderFeatures.header)
+        return try await decode(perform(request))
     }
 
     public func saveProgress(server: ServerAddress, publicationId: String, update: ProgressUpdate) async throws -> ReadingProgress {

@@ -359,3 +359,87 @@ public final class ComicArchive: @unchecked Sendable {
         return archive
     }
 }
+
+// MARK: Copying one entry
+
+/// Why one archive entry couldn't be copied out.
+public enum ArchiveEntryError: Error, Equatable, Sendable {
+    case missing
+    case tooLarge
+    case damaged
+    case unwritable
+}
+
+extension ComicArchive {
+    /// The uncompressed size of `name`, when the archive has exactly that entry.
+    public func entrySize(_ name: String) -> Int64? {
+        entries.first { $0.name == name && !$0.isDirectory }?.size
+    }
+
+    /// Copies the entry `name` to `destination`, streaming in bounded chunks: a stored
+    /// entry is copied as it is, a deflated one is inflated with a 32 KiB window. It must
+    /// produce exactly its declared size and CRC-32, and be at most `maxBytes`. Nothing is
+    /// left at `destination` unless the whole entry verified; the copy is written beside
+    /// it and moved into place.
+    @discardableResult
+    public func copyEntry(_ name: String, to destination: URL, maxBytes: Int64) throws -> Int64 {
+        guard let entry = entries.first(where: { $0.name == name && !$0.isDirectory }) else { throw ArchiveEntryError.missing }
+        guard entry.size <= maxBytes, entry.compressedSize <= max(maxBytes, entry.size) + (1 << 20) else { throw ArchiveEntryError.tooLarge }
+        let files = FileManager.default
+        let partial = destination.appendingPathExtension("part")
+        try? files.removeItem(at: partial)
+        guard files.createFile(atPath: partial.path, contents: nil), let output = try? FileHandle(forWritingTo: partial) else {
+            throw ArchiveEntryError.unwritable
+        }
+        var finished = false
+        defer {
+            try? output.close()
+            if !finished { try? files.removeItem(at: partial) }
+        }
+        var offset = entry.dataStart
+        let end = entry.dataStart + entry.compressedSize
+        let readNext: (Int) throws -> Data = { limit in
+            let length = Int(min(Int64(limit), end - offset))
+            guard length > 0 else { return Data() }
+            let bytes = try self.read(length, at: offset)
+            offset += Int64(length)
+            return Data(bytes)
+        }
+        let writeNext: (Data) throws -> Void = { data in
+            do {
+                try output.write(contentsOf: data)
+            } catch {
+                throw ArchiveEntryError.unwritable
+            }
+        }
+        let crc: UInt32
+        do {
+            if entry.method == 0 {
+                var running: UInt32 = 0
+                while offset < end {
+                    let chunk = try readNext(1 << 20)
+                    running = CRC32.checksum(chunk, initial: running)
+                    try writeNext(chunk)
+                }
+                crc = running
+            } else {
+                crc = try Inflate.stream(compressedSize: entry.compressedSize, expectedSize: entry.size, read: readNext, write: writeNext)
+            }
+        } catch let error as ArchiveEntryError {
+            throw error
+        } catch {
+            throw ArchiveEntryError.damaged
+        }
+        guard crc == entry.crc else { throw ArchiveEntryError.damaged }
+        do {
+            try output.synchronize()
+            try output.close()
+            try? files.removeItem(at: destination)
+            try files.moveItem(at: partial, to: destination)
+        } catch {
+            throw ArchiveEntryError.unwritable
+        }
+        finished = true
+        return entry.size
+    }
+}

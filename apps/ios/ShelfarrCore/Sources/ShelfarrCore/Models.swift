@@ -157,8 +157,10 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
     public let pageCount: Int?
     /// Where a CBZ's authoritative page order is, for this exact file generation.
     public let readingOrderUrl: String?
+    /// An EPUB's read-along summary, only in details requested with `ReaderFeatures.header`.
+    public let readAlong: ReadAlongSummary?
 
-    public init(id: String, filename: String = "", mediaType: String = "", format: String = "", sizeBytes: Int64 = 0, contentUrl: String, position: Int = 0, pageCount: Int? = nil, readingOrderUrl: String? = nil) {
+    public init(id: String, filename: String = "", mediaType: String = "", format: String = "", sizeBytes: Int64 = 0, contentUrl: String, position: Int = 0, pageCount: Int? = nil, readingOrderUrl: String? = nil, readAlong: ReadAlongSummary? = nil) {
         self.id = id
         self.filename = filename
         self.mediaType = mediaType
@@ -168,6 +170,7 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         self.position = position
         self.pageCount = pageCount
         self.readingOrderUrl = readingOrderUrl
+        self.readAlong = readAlong
     }
 
     enum CodingKeys: String, CodingKey {
@@ -177,6 +180,7 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         case contentUrl = "content_url"
         case pageCount = "page_count"
         case readingOrderUrl = "reading_order_url"
+        case readAlong = "read_along"
     }
 
     public init(from decoder: Decoder) throws {
@@ -191,6 +195,10 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         // Optional and additive: a malformed value is treated as absent, never a failed listing.
         pageCount = (try? container.decodeIfPresent(Int.self, forKey: .pageCount)) ?? nil
         readingOrderUrl = (try? container.decodeIfPresent(String.self, forKey: .readingOrderUrl)) ?? nil
+        // Only an EPUB carries one; anything malformed reads as no read-along at all.
+        let summary = (try? container.decodeIfPresent(ReadAlongSummary.self, forKey: .readAlong)) ?? nil
+        let epub = format.lowercased() == "epub" || mediaType == "application/epub+zip"
+        readAlong = epub ? summary : nil
     }
 
     public var isEpub: Bool { format.lowercased() == "epub" || mediaType == "application/epub+zip" }

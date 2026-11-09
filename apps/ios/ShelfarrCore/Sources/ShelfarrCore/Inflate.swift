@@ -256,3 +256,204 @@ public enum Inflate {
         }
     }
 }
+
+// MARK: Streaming
+
+extension Inflate {
+    /// Decodes one raw DEFLATE entry from `read` to `write` without holding it in memory:
+    /// a 32 KiB window and small buffers only, so a narration file of any size inside an
+    /// EPUB can be copied out. The same refusals as `decode(_:expectedSize:)` apply:
+    /// more or less output than `expectedSize`, compressed bytes left over after the
+    /// final block, truncation, invalid codes and distances before the start.
+    ///
+    /// - Parameters:
+    ///   - compressedSize: the entry's compressed length; exactly this much is read.
+    ///   - read: returns up to the given number of further compressed bytes (never more).
+    ///   - write: receives the output in order, in chunks of at most 64 KiB.
+    /// - Returns: the CRC-32 of the output.
+    public static func stream(compressedSize: Int64, expectedSize: Int64, read: (Int) throws -> Data, write: (Data) throws -> Void) throws -> UInt32 {
+        guard compressedSize >= 0, expectedSize >= 0 else { throw Failure.invalid("size") }
+        return try withoutActuallyEscaping(read) { read in
+            try withoutActuallyEscaping(write) { write in
+                var decoder = StreamDecoder(remaining: compressedSize, expected: expectedSize, read: read, write: write)
+                try decoder.run()
+                try decoder.flush()
+                guard decoder.written == expectedSize else { throw Failure.tooShort }
+                return decoder.crc
+            }
+        }
+    }
+
+    private struct StreamDecoder {
+        static let windowSize = 1 << 15
+        static let chunk = 1 << 16
+
+        var remaining: Int64
+        let expected: Int64
+        let read: (Int) throws -> Data
+        let write: (Data) throws -> Void
+        var input: [UInt8] = []
+        var position = 0
+        var bits: UInt64 = 0
+        var count = 0
+        var window = [UInt8](repeating: 0, count: windowSize)
+        var pending: [UInt8] = []
+        var written: Int64 = 0
+        var crc: UInt32 = 0
+
+        init(remaining: Int64, expected: Int64, read: @escaping (Int) throws -> Data, write: @escaping (Data) throws -> Void) {
+            self.remaining = remaining
+            self.expected = expected
+            self.read = read
+            self.write = write
+            pending.reserveCapacity(Self.chunk)
+        }
+
+        /// Fetches the next compressed chunk when the buffer is used up. False at the end.
+        mutating func more() throws -> Bool {
+            guard position == input.count else { return true }
+            guard remaining > 0 else { return false }
+            let next = try read(Int(min(remaining, Int64(Self.chunk))))
+            guard !next.isEmpty, Int64(next.count) <= remaining else { throw Failure.truncated }
+            remaining -= Int64(next.count)
+            input = [UInt8](next)
+            position = 0
+            return true
+        }
+
+        mutating func refill() throws {
+            while count <= 56 {
+                guard try more() else { return }
+                bits |= UInt64(input[position]) << UInt64(count)
+                position += 1
+                count += 8
+            }
+        }
+
+        mutating func take(_ n: Int) throws -> Int {
+            if n == 0 { return 0 }
+            if count < n { try refill() }
+            guard count >= n else { throw Failure.truncated }
+            let value = Int(bits & ((1 << UInt64(n)) - 1))
+            bits >>= UInt64(n)
+            count -= n
+            return value
+        }
+
+        mutating func symbol(_ code: Huffman) throws -> Int {
+            if count < code.maxBits { try refill() }
+            let entry = code.table[Int(bits & ((1 << UInt64(code.maxBits)) - 1))]
+            let length = Int(entry & 0xF)
+            guard length > 0 else { throw Failure.invalid("unused code") }
+            guard length <= count else { throw Failure.truncated }
+            bits >>= UInt64(length)
+            count -= length
+            return Int(entry >> 4)
+        }
+
+        mutating func emit(_ byte: UInt8) throws {
+            guard written < expected else { throw Failure.tooLong }
+            window[Int(written & Int64(Self.windowSize - 1))] = byte
+            written += 1
+            pending.append(byte)
+            if pending.count >= Self.chunk { try flush() }
+        }
+
+        mutating func flush() throws {
+            guard !pending.isEmpty else { return }
+            let data = Data(pending)
+            crc = CRC32.checksum(data, initial: crc)
+            try write(data)
+            pending.removeAll(keepingCapacity: true)
+        }
+
+        mutating func run() throws {
+            var final = false
+            while !final {
+                final = try take(1) == 1
+                switch try take(2) {
+                case 0: try stored()
+                case 1: try compressed(Inflate.fixedLiterals, Inflate.fixedDistances)
+                case 2:
+                    let (literals, distances) = try dynamicCodes()
+                    try compressed(literals, distances)
+                default: throw Failure.invalid("block type")
+                }
+            }
+            // Only the final byte's padding may be left; any further byte is not this entry.
+            guard remaining == 0, position == input.count, count < 8 else { throw Failure.trailingData }
+        }
+
+        mutating func stored() throws {
+            _ = try take(count % 8)
+            let length = try take(16)
+            let complement = try take(16)
+            guard length == ~complement & 0xFFFF else { throw Failure.invalid("stored length") }
+            var left = length
+            while left > 0, count >= 8 {
+                try emit(UInt8(try take(8)))
+                left -= 1
+            }
+            while left > 0 {
+                guard try more() else { throw Failure.truncated }
+                let available = min(left, input.count - position)
+                for index in position ..< position + available { try emit(input[index]) }
+                position += available
+                left -= available
+            }
+        }
+
+        mutating func compressed(_ literals: Huffman, _ distances: Huffman) throws {
+            let mask = Int64(Self.windowSize - 1)
+            while true {
+                let symbol = try self.symbol(literals)
+                if symbol < 256 {
+                    try emit(UInt8(symbol))
+                    continue
+                }
+                if symbol == 256 { return }
+                let index = symbol - 257
+                guard index < Inflate.lengthBase.count else { throw Failure.invalid("length code") }
+                let length = Inflate.lengthBase[index] + (try take(Inflate.lengthExtra[index]))
+                let code = try self.symbol(distances)
+                guard code < Inflate.distanceBase.count else { throw Failure.invalid("distance code") }
+                let distance = Int64(Inflate.distanceBase[code] + (try take(Inflate.distanceExtra[code])))
+                guard distance <= written, distance <= Int64(Self.windowSize) else { throw Failure.invalid("distance") }
+                guard Int64(length) <= expected - written else { throw Failure.tooLong }
+                for _ in 0 ..< length {
+                    try emit(window[Int((written - distance) & mask)])
+                }
+            }
+        }
+
+        mutating func dynamicCodes() throws -> (Huffman, Huffman) {
+            let literalCount = try take(5) + 257
+            let distanceCount = try take(5) + 1
+            let lengthCount = try take(4) + 4
+            guard literalCount <= 286, distanceCount <= 30 else { throw Failure.invalid("code counts") }
+            var codeLengths = [Int](repeating: 0, count: 19)
+            for index in 0 ..< lengthCount { codeLengths[Inflate.codeLengthOrder[index]] = try take(3) }
+            let lengthCode = try Huffman(lengths: codeLengths)
+            var lengths: [Int] = []
+            lengths.reserveCapacity(literalCount + distanceCount)
+            while lengths.count < literalCount + distanceCount {
+                let symbol = try self.symbol(lengthCode)
+                switch symbol {
+                case 0 ... 15:
+                    lengths.append(symbol)
+                case 16:
+                    guard let previous = lengths.last else { throw Failure.invalid("repeat without a length") }
+                    lengths += [Int](repeating: previous, count: 3 + (try take(2)))
+                case 17:
+                    lengths += [Int](repeating: 0, count: 3 + (try take(3)))
+                default:
+                    lengths += [Int](repeating: 0, count: 11 + (try take(7)))
+                }
+            }
+            guard lengths.count == literalCount + distanceCount else { throw Failure.invalid("too many lengths") }
+            let literalLengths = Array(lengths[0 ..< literalCount])
+            guard literalLengths[256] > 0 else { throw Failure.invalid("no end of block") }
+            return (try Huffman(lengths: literalLengths), try Huffman(lengths: Array(lengths[literalCount...])))
+        }
+    }
+}
