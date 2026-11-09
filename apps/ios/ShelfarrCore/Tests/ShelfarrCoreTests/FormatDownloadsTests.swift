@@ -195,6 +195,20 @@ final class FormatDownloadsTests: DownloadTestCase {
         XCTAssertFalse(transport.allRequests.contains { $0.url?.host == "elsewhere.example" }, "the token never leaves the server")
     }
 
+    func testWithoutAFormatAComicDownloadsItsPages() async throws {
+        let both = Publication(id: "comic", title: "Comic", bookType: .ebook, assets: [
+            Asset(id: "p1", filename: "b.pdf", mediaType: "application/pdf", format: "pdf", sizeBytes: Int64(pdfBytes.count), contentUrl: "/files/p1"),
+            comicBook().assets[0],
+        ], contentKind: "graphic")
+        publications["comic"] = both
+        let downloads = manager()
+        await downloads.start()
+        await downloads.enqueue(both)
+        let record = try await wait(downloads, "comic", [.ready, .failed])
+        XCTAssertEqual(record.state, .ready)
+        XCTAssertEqual(record.format, "cbz", "a comic suggests its pages, never a missing EPUB")
+    }
+
     func testAnEditionUpdateKeepsTheDownloadsFormat() async throws {
         publications["book"] = twoFormats
         let downloads = manager()

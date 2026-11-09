@@ -404,15 +404,17 @@ public actor DownloadManager: TransferSink {
     /// download never pins details that were already stale on screen.
     ///
     /// A book's download holds one `format`. Without one it keeps the format it already
-    /// has, else the only one there is, else EPUB. Choosing another format replaces it.
+    /// has, else the suggested one (`FormatDecision.suggestedOrder`). Choosing another
+    /// format replaces it.
     public func enqueue(_ publication: Publication, format: ReaderFormat? = nil) {
         guard !closed else { return }
         load()
         let existing = records[publication.id]
         if let existing, existing.isActive { return }
         grantRejections[publication.id] = nil
+        let suggested = FormatDecision.suggestedOrder(publication).first(where: publication.readerFormats.contains)
         let chosen: ReaderFormat? = publication.bookType == .ebook
-            ? format ?? existing?.readerFormat ?? (publication.readerFormats.count == 1 ? publication.readerFormats[0] : .epub)
+            ? format ?? existing?.readerFormat ?? suggested ?? .epub
             : nil
         if let existing, existing.readerFormat == chosen, existing.matches(publication), existing.state != .cancelled {
             var record = existing
