@@ -213,6 +213,10 @@ final class ReaderModel: ObservableObject {
         Task { [weak self] in
             let accepted = await book.go(toLocatorJSON: json)
             self?.note("go #\(attempt) accepted=\(accepted)")
+            // A jump to where the page already is reports nothing; have Readium measure it.
+            guard accepted else { return }
+            await book.remeasure()
+            self?.note("remeasure #\(attempt)")
         }
     }
 
