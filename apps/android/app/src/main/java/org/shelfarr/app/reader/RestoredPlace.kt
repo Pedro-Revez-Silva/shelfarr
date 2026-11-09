@@ -51,20 +51,6 @@ internal class ReadingRestoration(opening: JsonObject?) {
 }
 
 /**
- * Readium's navigator starts out reporting the place it was asked to open (or the first
- * document's start) before any page has been laid out. That first value says nothing about
- * where the page landed, so it must not use up [ReadingRestoration]'s tolerance for the
- * restored report that follows. Only the very first report can be that echo.
- */
-internal class OpeningEcho<T>(private var opening: T?) {
-    fun isEcho(report: T): Boolean {
-        val requested = opening
-        opening = null
-        return requested != null && requested == report
-    }
-}
-
-/**
  * Readium lands on the start of the page holding a saved progression, so a restored
  * report can be up to a page earlier, never later. Any forward page turn is reading.
  */

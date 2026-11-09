@@ -29,8 +29,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.CreationExtras
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import org.readium.r2.navigator.Decoration
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
@@ -41,6 +43,7 @@ import org.readium.r2.navigator.input.TapEvent
 import org.readium.r2.navigator.preferences.FontFamily
 import org.readium.r2.navigator.util.DirectionalNavigationAdapter
 import org.readium.r2.shared.ExperimentalReadiumApi
+import org.readium.r2.shared.publication.Locator
 import org.shelfarr.app.R
 import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.ui.theme.ShelfarrTheme
@@ -143,9 +146,17 @@ class ReaderActivity : FragmentActivity() {
     }
 
     private fun attachNavigator(state: ReaderState.Ready) {
+        // currentLocator starts with the requested place, before a page exists. Pagination
+        // reports actual layout even when that locator equals the requested one.
+        val renderedLocations = MutableStateFlow<Locator?>(null)
         supportFragmentManager.fragmentFactory = state.navigatorFactory.createFragmentFactory(
             initialLocator = state.initialLocator,
             initialPreferences = viewModel.settings.value.toPreferences(),
+            paginationListener = object : EpubNavigatorFragment.PaginationListener {
+                override fun onPageChanged(pageIndex: Int, totalPages: Int, locator: Locator) {
+                    renderedLocations.value = locator
+                }
+            },
             configuration = EpubNavigatorFragment.Configuration {
                 servedAssets = listOf("fonts/.*")
                 addFontFamilyDeclaration(FontFamily("Newsreader")) {
@@ -181,9 +192,16 @@ class ReaderActivity : FragmentActivity() {
             }
         })
 
+        var lastReported: Locator? = null
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                fragment.currentLocator.collect(viewModel::onLocatorChanged)
+                renderedLocations.filterNotNull().collect { locator ->
+                    // Resubscribing after backgrounding is not another page turn.
+                    if (locator != lastReported) {
+                        lastReported = locator
+                        viewModel.onLocatorChanged(locator)
+                    }
+                }
             }
         }
         // The element being narrated, drawn by Readium under the text in the page's own colours.

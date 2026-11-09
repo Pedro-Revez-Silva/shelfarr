@@ -72,9 +72,8 @@ again first, it is rebased like any other place, without the flag. **Use other
 device** adopts the server place and its time.
 
 Nothing creates activity by itself: opening a book, restoring the saved place
-(Readium's first restored report, which can land at the start of the page holding the
-saved progression; the navigator's initial value, which only repeats the locator it was
-opened with, is not that report), choosing the other device's place, acknowledgements and the resume
+(Readium's measured pagination report, which can land at the start of the page holding the
+saved progression), choosing the other device's place, acknowledgements and the resume
 rewind do not write a new checkpoint.
 Once the actual restored page is established, even a short backward page turn counts
 as reading; repeated reports of that same page remain silent.
@@ -139,18 +138,24 @@ Unit tests (`apps/scripts/android-check.sh`):
 
 Instrumentation (`apps/scripts/android-reader-smoke.sh`, run by CI's emulator):
 `ReaderSmokeTest` now also checks that the real reader sends a plausible
-`observed_at` and that reopening the saved page sends nothing.
+`observed_at` and that reopening the saved page sends nothing. Its long-chapter
+case reopens at an exactly equal locator, checks the saved paragraphs are visible,
+then requires a small backward page turn to save immediately with its own time.
 
 ## Limits
 
-- Instrumentation is compiled locally (`assembleDebugAndroidTest`) but not run here:
-  this machine has no KVM, so it runs on CI's emulator only. Real-device checks of
-  lock-screen controls, Bluetooth buttons, process death between checkpoints, and two
-  physical devices offline remain in the acceptance flow.
-- Without an audio device the CI emulator cannot advance playback, so audio cadence and
-  rewind are verified with the scripted player rather than ExoPlayer decoding.
-- Restoration detection relies on Readium's first restored report, after its initial
-  repetition of the opening locator, identifying the actual page. The initial page-start tolerance does not apply to subsequent turns.
+- The reader instrumentation and an abrupt-process-death audio experiment have run on
+  an API 35 KVM emulator. The audio experiment used downloaded, generated AAC decoded
+  by the real Media3 service and sampled the actual progress file. Across three runs,
+  maximum on-disk lag was 4.2 seconds and the most listening lost at death was 3.6
+  seconds; restart retained the original activity time and rewound once without saving
+  the replay. These runs had no CPU or memory stress, so they do not establish a bound
+  under main-thread starvation or power loss. Physical-device checks of lock-screen
+  controls, Bluetooth, process death and two devices offline remain pending.
+- Restoration uses Readium's pagination callback, which reports the measured page even
+  when its locator exactly equals the requested place. The navigator's initial synthetic
+  locator is never treated as a measured page. The initial page-start tolerance does not
+  apply to subsequent turns, including short backward turns.
 - A device whose clock is wrong by more than five minutes asks on most conflicts; the
   server refuses its future times (kept locally) until the clock is fixed.
 - An adopted later place is not shown in an open session; it is used on the next open.

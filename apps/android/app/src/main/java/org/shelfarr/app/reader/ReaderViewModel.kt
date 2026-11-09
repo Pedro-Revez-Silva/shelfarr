@@ -321,8 +321,6 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         val locator = start?.locator?.let { json ->
             Locator.fromJSON(JSONObject(json.toString()))
         }
-        // What the navigator reports before laying out a page: the locator it is given, or its own first-document start.
-        openingEcho = OpeningEcho(locator ?: publication.readingOrder.firstOrNull()?.let(publication::locatorFromLink))
         val positions = publication.positions()
         val openAsset = asset
         val book = details
@@ -430,7 +428,6 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
      * reports the restored locator after opening; that is not new reading.
      */
     private var restoration = ReadingRestoration(null)
-    private var openingEcho = OpeningEcho<Locator>(null)
 
     fun onLocatorChanged(locator: Locator) {
         // Captured before anything waits: this is when the page was reached.
@@ -445,8 +442,6 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             )
         }
         val id = asset?.id ?: return
-        // The opening place repeated back, not a page Readium landed on: neither reading nor a move.
-        if (openingEcho.isEcho(locator)) return
         val json = Json.parseToJsonElement(locator.toJSON().toString()) as JsonObject
         val echo = isDisplayEcho(json, atMs)
         when {

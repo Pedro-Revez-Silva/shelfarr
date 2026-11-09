@@ -45,14 +45,13 @@ class ReadAlongReadingTest {
     }
 
     @Test
-    fun `reopening at a narration place stays silent after Readium repeats the opening`() {
-        // As on a device: the navigator first reports the very locator it was opened with,
-        // then the page it actually laid out, with a progression the saved place never had.
+    fun `the measured narration page restores silently before a real turn`() {
+        // The pagination callback reports the page actually laid out, without the
+        // currentLocator flow's synthetic opening value.
         val saved = place("OEBPS/chapter2.xhtml", fragment = "c7", generation = ReadAlongFixtures.GENERATION)
-        val echo = OpeningEcho(saved)
         val restoration = ReadingRestoration(saved)
-        val reports = listOf(saved, place("OEBPS/chapter2.xhtml", progression = 0.5), place("OEBPS/chapter2.xhtml", progression = 0.5))
-        val read = reports.filterNot(echo::isEcho).map(restoration::isReading)
+        val reports = listOf(place("OEBPS/chapter2.xhtml", progression = 0.5), place("OEBPS/chapter2.xhtml", progression = 0.5))
+        val read = reports.map(restoration::isReading)
         assertEquals(listOf(false, false), read)
         // Turning on from the restored page is still reading.
         assertTrue(restoration.isReading(place("OEBPS/chapter2.xhtml", progression = 0.75)))
@@ -73,18 +72,12 @@ class ReadAlongReadingTest {
     }
 
     @Test
-    fun `only the first report can be the opening repeated`() {
-        val saved = place("OEBPS/chapter1.xhtml", progression = 0.25)
-        // A first report that already moved is not the echo, and the chance is gone.
-        val moved = OpeningEcho(saved)
-        assertFalse(moved.isEcho(place("OEBPS/chapter1.xhtml", progression = 0.2)))
-        assertFalse(moved.isEcho(saved))
-        // Coming back to the opening later is an ordinary report.
-        val repeated = OpeningEcho(saved)
-        assertTrue(repeated.isEcho(saved))
-        assertFalse(repeated.isEcho(saved))
-        // A new book has no opening locator of its own to compare until one is given.
-        assertFalse(OpeningEcho<JsonObject>(null).isEcho(saved))
+    fun `an exactly restored measured page establishes small backward reading`() {
+        val saved = place("OEBPS/chapter1.xhtml", progression = 0.08968609865470852)
+        val restoration = ReadingRestoration(saved)
+        assertFalse(restoration.isReading(saved))
+        assertFalse(restoration.isReading(saved))
+        assertTrue(restoration.isReading(place("OEBPS/chapter1.xhtml", progression = 0.08520179372197309)))
     }
 
     @Test

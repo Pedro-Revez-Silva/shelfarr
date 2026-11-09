@@ -65,39 +65,7 @@ class ReaderSmokeTest {
         val epub = epub()
         val saved = AtomicReference<Progress?>(null)
         val writes = java.util.concurrent.CopyOnWriteArrayList<ProgressUpdate>()
-        val web = MockWebServer()
-        web.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse {
-                if (request.headers["Authorization"] != "Bearer reader-smoke") {
-                    return MockResponse.Builder().code(401).build()
-                }
-                return when (request.target.substringBefore('?')) {
-                    "/api/consumer/v1/me" -> json(ApiJson.encodeToString(Me("reader-smoke")))
-                    "/api/consumer/v1/library/book" -> json(ApiJson.encodeToString(Publication(
-                        id = "book", title = "Reader smoke", bookType = BookType.EBOOK,
-                        assets = listOf(Asset("epub", filename = "smoke.epub", mediaType = "application/epub+zip", format = "epub", sizeBytes = epub.size.toLong(), contentUrl = "/book.epub")),
-                        progress = saved.get(),
-                    )))
-                    "/book.epub" -> if (request.headers["If-None-Match"] == "\"smoke\"") {
-                        MockResponse.Builder().code(304).build()
-                    } else {
-                        MockResponse.Builder().code(200).headers(Headers.headersOf("ETag", "\"smoke\"", "Content-Type", "application/epub+zip"))
-                            .body(Buffer().write(epub)).build()
-                    }
-                    "/api/consumer/v1/library/book/progress" -> {
-                        val update = ApiJson.decodeFromString<ProgressUpdate>(request.body!!.utf8())
-                        writes += update
-                        val progress = Progress(
-                            update.assetId, update.locator, update.positionSeconds, (saved.get()?.version ?: 0) + 1,
-                            clientMutationId = update.clientMutationId, observedAt = update.observedAt,
-                        )
-                        saved.set(progress)
-                        json("{\"progress\":${ApiJson.encodeToString(progress)}}")
-                    }
-                    else -> MockResponse.Builder().code(404).build()
-                }
-            }
-        }
+        val web = epubServer(epub, saved, writes)
         web.start()
         val server = (ServerAddress.parse(web.url("/").toString(), true) as ServerAddress.ParseResult.Valid).address
         app.container.sessions.signIn(Session(server, Me("reader-smoke"), "reader-smoke"))
@@ -134,6 +102,83 @@ class ReaderSmokeTest {
                 app.container.currentAccount()?.close()
                 app.container.epubCache.clear(Session(server, Me("reader-smoke"), "reader-smoke").accountKey)
             }
+            app.container.sessions.clear()
+            web.close()
+        }
+    }
+
+    @Test
+    fun anExactRestoredLocatorStillSavesASmallBackwardTurn() {
+        val app = ApplicationProvider.getApplicationContext<ShelfarrApplication>()
+        val bytes = epub(paragraphs = 2_000)
+        val saved = AtomicReference<Progress?>(null)
+        val writes = java.util.concurrent.CopyOnWriteArrayList<ProgressUpdate>()
+        val web = epubServer(bytes, saved, writes)
+        web.start()
+        val server = (ServerAddress.parse(web.url("/").toString(), true) as ServerAddress.ParseResult.Valid).address
+        val session = Session(server, Me("reader-smoke"), "reader-smoke")
+        app.container.sessions.signIn(session)
+        val sync = requireNotNull(app.container.currentAccount()).progress.sync("book")
+        var opened: org.readium.r2.shared.publication.Locator? = null
+        var visibleParagraphs = ""
+        fun shown(scenario: ActivityScenario<ReaderActivity>): org.readium.r2.shared.publication.Locator {
+            val found = AtomicReference<org.readium.r2.shared.publication.Locator>()
+            scenario.onActivity { found.set((it.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment).currentLocator.value) }
+            return found.get()
+        }
+        fun place(locator: org.readium.r2.shared.publication.Locator) = ApiJson.parseToJsonElement(locator.toJSON().toString())
+        fun turn(scenario: ActivityScenario<ReaderActivity>, forward: Boolean) {
+            val before = shown(scenario)
+            scenario.onActivity {
+                val navigator = it.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment
+                assertTrue(if (forward) navigator.goForward(false) else navigator.goBackward(false))
+            }
+            await("the navigator to show a different page") { shown(scenario) != before }
+        }
+        val visible = """JSON.stringify(Array.from(document.querySelectorAll('p[id]')).filter(p => { const r = p.getBoundingClientRect(); return r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight; }).map(p => p.id))"""
+        try {
+            ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
+                awaitText(scenario, "First chapter is rendered")
+                await("the opening page to be measured") { shown(scenario).locations.position != null }
+                repeat(20) {
+                    turn(scenario, true)
+                    val reached = shown(scenario)
+                    await("the forward page saved locally") { runBlocking { sync.snapshot() }.position?.locator == place(reached) }
+                }
+                opened = shown(scenario)
+                visibleParagraphs = evaluate(scenario, visible)
+                assertTrue("the deep page has visible fixture paragraphs", visibleParagraphs.contains("paragraph-"))
+            }
+            await("the deep page acknowledged") { saved.get()?.locator == place(requireNotNull(opened)) && !runBlocking { sync.snapshot() }.hasUnsyncedChanges }
+            val prior = runBlocking { sync.snapshot() }
+            val beforeReopen = writes.size
+            var backward: org.readium.r2.shared.publication.Locator? = null
+            var turnedAt = 0L
+            ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "book")).use { scenario ->
+                awaitText(scenario, "First chapter is rendered")
+                await("the saved paragraphs actually visible") { evaluate(scenario, visible) == visibleParagraphs }
+                screenshot(scenario, "exact-place-restored.png")
+                // The existing quiet observation window also proves reopening invents no activity.
+                SystemClock.sleep(6_000)
+                assertEquals(opened, shown(scenario))
+                val restored = runBlocking { sync.snapshot() }
+                assertEquals(prior.position, restored.position)
+                assertEquals(prior.observedAtEpochMs, restored.observedAtEpochMs)
+                assertEquals(beforeReopen, writes.size)
+                assertTrue(!restored.hasUnsyncedChanges)
+                turnedAt = System.currentTimeMillis()
+                turn(scenario, false)
+                backward = shown(scenario)
+                val delta = requireNotNull(opened).locations.progression!! - requireNotNull(backward).locations.progression!!
+                assertTrue("a real backward turn smaller than the initial 2% tolerance", delta > 0 && delta < 0.02)
+                await("the real backward page saved locally") { runBlocking { sync.snapshot() }.position?.locator == place(requireNotNull(backward)) }
+                assertTrue((runBlocking { sync.snapshot() }.observedAtEpochMs ?: 0L) >= turnedAt)
+                screenshot(scenario, "exact-place-backward.png")
+            }
+            await("the backward page acknowledged") { saved.get()?.locator == place(requireNotNull(backward)) && !runBlocking { sync.snapshot() }.hasUnsyncedChanges }
+            assertTrue((ActivityTime.parse(saved.get()?.observedAt) ?: 0L) >= turnedAt)
+        } finally {
+            runBlocking { app.container.currentAccount()?.close(); app.container.epubCache.clear(session.accountKey) }
             app.container.sessions.clear()
             web.close()
         }
@@ -243,18 +288,21 @@ class ReaderSmokeTest {
 
     private fun json(body: String) = MockResponse.Builder().code(200).addHeader("Content-Type", "application/json").body(body).build()
 
-    private fun awaitText(scenario: ActivityScenario<ReaderActivity>, text: String) = await("EPUB text: $text") {
+    private fun evaluate(scenario: ActivityScenario<ReaderActivity>, script: String): String {
         val views = mutableListOf<WebView>()
         scenario.onActivity { activity -> collectWebViews(activity.window.decorView, views) }
-        views.any { view ->
+        return views.firstNotNullOfOrNull { view ->
             val result = AtomicReference<String>()
             val done = CountDownLatch(1)
             InstrumentationRegistry.getInstrumentation().runOnMainSync {
-                view.evaluateJavascript("document.body ? document.body.innerText : ''") { result.set(it); done.countDown() }
+                view.evaluateJavascript(script) { result.set(it); done.countDown() }
             }
-            done.await(2, TimeUnit.SECONDS) && result.get().orEmpty().contains(text)
-        }
+            if (done.await(2, TimeUnit.SECONDS)) result.get()?.takeIf { it != "null" && it != "\"\"" } else null
+        }.orEmpty()
     }
+
+    private fun awaitText(scenario: ActivityScenario<ReaderActivity>, text: String) =
+        await("EPUB text: $text") { evaluate(scenario, "document.body ? document.body.innerText : ''").contains(text) }
 
     private fun collectWebViews(view: View, found: MutableList<WebView>) {
         if (view is WebView && view.isShown && view.alpha > 0 && view.getGlobalVisibleRect(Rect())) found += view
@@ -323,7 +371,44 @@ class ReaderSmokeTest {
         return false
     }
 
-    private fun epub(): ByteArray {
+    private fun epubServer(epub: ByteArray, saved: AtomicReference<Progress?>, writes: MutableList<ProgressUpdate>): MockWebServer {
+        val web = MockWebServer()
+        web.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.headers["Authorization"] != "Bearer reader-smoke") {
+                    return MockResponse.Builder().code(401).build()
+                }
+                return when (request.target.substringBefore('?')) {
+                    "/api/consumer/v1/me" -> json(ApiJson.encodeToString(Me("reader-smoke")))
+                    "/api/consumer/v1/library/book" -> json(ApiJson.encodeToString(Publication(
+                        id = "book", title = "Reader smoke", bookType = BookType.EBOOK,
+                        assets = listOf(Asset("epub", filename = "smoke.epub", mediaType = "application/epub+zip", format = "epub", sizeBytes = epub.size.toLong(), contentUrl = "/book.epub")),
+                        progress = saved.get(),
+                    )))
+                    "/book.epub" -> if (request.headers["If-None-Match"] == "\"smoke\"") {
+                        MockResponse.Builder().code(304).build()
+                    } else {
+                        MockResponse.Builder().code(200).headers(Headers.headersOf("ETag", "\"smoke\"", "Content-Type", "application/epub+zip"))
+                            .body(Buffer().write(epub)).build()
+                    }
+                    "/api/consumer/v1/library/book/progress" -> {
+                        val update = ApiJson.decodeFromString<ProgressUpdate>(request.body!!.utf8())
+                        writes += update
+                        val progress = Progress(
+                            update.assetId, update.locator, update.positionSeconds, (saved.get()?.version ?: 0) + 1,
+                            clientMutationId = update.clientMutationId, observedAt = update.observedAt,
+                        )
+                        saved.set(progress)
+                        json("{\"progress\":${ApiJson.encodeToString(progress)}}")
+                    }
+                    else -> MockResponse.Builder().code(404).build()
+                }
+            }
+        }
+        return web
+    }
+
+    private fun epub(paragraphs: Int = 0): ByteArray {
         val output = ByteArrayOutputStream()
         ZipOutputStream(output).use { zip ->
             fun entry(name: String, value: String, stored: Boolean = false) {
@@ -344,7 +429,8 @@ class ReaderSmokeTest {
             entry("OEBPS/content.opf", """<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">urn:shelfarr:smoke</dc:identifier><dc:title>Reader smoke</dc:title><dc:language>en</dc:language><meta property="dcterms:modified">2026-11-07T00:00:00Z</meta></metadata><manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/><item id="c2" href="c2.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>""")
             entry("OEBPS/nav.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head><body><nav epub:type="toc"><ol><li><a href="c1.xhtml">First</a></li><li><a href="c2.xhtml">Second</a></li></ol></nav></body></html>""")
             for ((id, text) in listOf("c1" to "First chapter is rendered", "c2" to "Second chapter is rendered")) {
-                entry("OEBPS/$id.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>$text</title></head><body><h1>$text</h1><p>This is an original fixture for testing a real EPUB page.</p></body></html>""")
+                val extra = (0 until paragraphs).joinToString("") { "<p id=\"paragraph-$it\">Original paragraph $it gives the reader enough pages to test a short backward turn.</p>" }
+                entry("OEBPS/$id.xhtml", """<html xmlns="http://www.w3.org/1999/xhtml"><head><title>$text</title></head><body><h1>$text</h1><p>This is an original fixture for testing a real EPUB page.</p>$extra</body></html>""")
             }
         }
         return output.toByteArray()
