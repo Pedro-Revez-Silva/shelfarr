@@ -134,12 +134,45 @@ final class PageRestorationTests: XCTestCase {
         XCTAssertEqual(restoration.observe(2), .record(2))
     }
 
+    func testASpreadKeepsTheAnchorUntilTheReaderTurnsAway() {
+        var restoration = PageRestoration(opening: 5)
+        XCTAssertEqual(restoration.observe(4 ... 5), .settled, "page 5 is the right half of a spread")
+        XCTAssertEqual(restoration.anchor, 5)
+        XCTAssertEqual(restoration.observe(5), .none, "back to one page: still page 5")
+        XCTAssertEqual(restoration.observe(4 ... 5), .none, "and two again")
+        XCTAssertEqual(restoration.observe(6 ... 7), .record(6))
+        XCTAssertEqual(restoration.observe(6), .none, "a narrower layout shows the page being read")
+        XCTAssertEqual(restoration.observe(7), .record(7), "showing another page alone is a turn")
+        XCTAssertEqual(restoration.observe(4 ... 5), .record(4))
+    }
+
+    func testAnOpeningPageThatCantDisplayIsAbandonedWithoutRecording() {
+        var restoration = PageRestoration(opening: 4)
+        restoration.abandonTarget()
+        XCTAssertFalse(restoration.isRestoring)
+        XCTAssertNil(restoration.anchor, "nothing was shown, so nothing is anchored or saved")
+        XCTAssertEqual(restoration.observe(5), .record(5), "the next page that displays is a turn")
+    }
+
     func testGoingToAnotherDevicesPlaceIsNotReading() {
         var restoration = PageRestoration(opening: 2)
         _ = restoration.observe(2)
         XCTAssertEqual(restoration.reopen(at: 7), .correct(7))
         XCTAssertEqual(restoration.observe(7), .settled)
         XCTAssertEqual(restoration.observe(8), .record(8))
+    }
+}
+
+final class PageSpreadsTests: XCTestCase {
+    func testTheCoverStandsAloneThenPagesPair() {
+        XCTAssertEqual(PageSpreads.layout(pageCount: 6, paired: true), [1 ... 1, 2 ... 3, 4 ... 5, 6 ... 6])
+        XCTAssertEqual(PageSpreads.layout(pageCount: 3, paired: false), [1 ... 1, 2 ... 2, 3 ... 3])
+        XCTAssertEqual(PageSpreads.layout(pageCount: 1, paired: true), [1 ... 1])
+        XCTAssertEqual(PageSpreads.layout(pageCount: 0, paired: true), [])
+        let spreads = PageSpreads.layout(pageCount: 6, paired: true)
+        XCTAssertEqual(PageSpreads.index(of: 5, in: spreads), 2)
+        XCTAssertEqual(PageSpreads.index(of: 1, in: spreads), 0)
+        XCTAssertEqual(PageSpreads.index(of: 99, in: spreads), 3)
     }
 }
 

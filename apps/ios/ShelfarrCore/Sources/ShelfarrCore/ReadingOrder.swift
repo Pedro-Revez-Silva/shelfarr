@@ -104,7 +104,7 @@ public struct ReadingOrder: Codable, Equatable, Sendable {
                   (0 ..< 0xFFFF_FFFF).contains(item.compressedSize),
                   (0 ..< 0xFFFF_FFFF).contains(item.localHeaderOffset),
                   item.compressionMethod == 8 || item.compressedSize == item.sizeBytes,
-                  item.compressedSize <= ComicArchive.maxCompressedBytes(forSize: item.sizeBytes)
+                  item.compressedSize <= ComicArchive.maxCompressedPageBytes
             else { throw Invalid.shape("compression") }
             guard item.crcValue != nil else { throw Invalid.shape("crc32") }
         }

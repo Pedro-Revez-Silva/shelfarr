@@ -27,7 +27,8 @@ func downloadCopy(_ record: DownloadRecord) -> DownloadCopy {
         let title = record.fraction.map { "Downloading \(Int($0 * 100))%" } ?? "Downloading"
         return DownloadCopy(title: title, detail: detail)
     case .ready:
-        return DownloadCopy(title: "Downloaded", detail: "\(bytes(record.bytesDone)) on this device. Opens without a connection.")
+        let format = record.readerFormat.map { "\($0.label) · " } ?? ""
+        return DownloadCopy(title: "Downloaded", detail: "\(format)\(bytes(record.bytesDone)) on this device. Opens without a connection.")
     case .cancelled:
         return DownloadCopy(title: "Download cancelled", detail: "Nothing is kept on this device.", canRetry: true)
     case .failed:
@@ -42,7 +43,7 @@ func downloadCopy(_ record: DownloadRecord) -> DownloadCopy {
         case .redirect: return DownloadCopy(title: "Server moved", detail: "Your server redirected elsewhere, so Shelfarr stopped.", canRetry: true)
         case .changed: return DownloadCopy(title: "Changed on your server", detail: "The file was replaced while downloading. Download again for the new edition.", canRetry: true)
         case .storage: return DownloadCopy(title: "Not enough space", detail: "Free some space on this device, then try again.\(kept)", canRetry: true)
-        case .missing: return DownloadCopy(title: "Files missing", detail: "Some downloaded files are no longer on this device.", canRetry: true)
+        case .missing: return DownloadCopy(title: "Files missing", detail: "Some downloaded files, or a comic's page list, are no longer on this device.", canRetry: true)
         case .unsupported: return DownloadCopy(title: "Can't be downloaded", detail: "There's no file here the app can open.")
         case .invalid, .none: return DownloadCopy(title: "Download failed", detail: "Your server sent an unexpected file.", canRetry: true)
         }
@@ -55,6 +56,21 @@ struct DownloadPanel: View {
     let publication: ShelfarrCore.Publication
     let offline: Bool
     @State private var confirmRemove = false
+    @State private var choosingFormat = false
+
+    /// One format is kept per book. With several, which one is always the reader's choice.
+    private var formats: [ReaderFormat] {
+        let all = publication.readerFormats
+        // The saved place's format first.
+        guard let placed = publication.progress.flatMap({ progress in publication.readableAssets.first { $0.id == progress.assetId }?.readerFormat }) else {
+            return FormatDecision.suggestedOrder(publication).filter(all.contains)
+        }
+        return [placed] + FormatDecision.suggestedOrder(publication).filter { all.contains($0) && $0 != placed }
+    }
+
+    private func download() {
+        if formats.count > 1 { choosingFormat = true } else { downloads.enqueue(publication, format: formats.first) }
+    }
 
     var body: some View {
         let record = downloads.records[publication.id]
@@ -80,15 +96,22 @@ struct DownloadPanel: View {
                     Button("Update download") { downloads.enqueue(publication) }.tint(Palette.accent).padding(.top, 4)
                 } else if copy.canRetry, !offline {
                     Button(record.state == .cancelled ? "Download again" : "Try again") {
-                        if record.state == .cancelled { downloads.enqueue(publication) } else { downloads.retry(publication.id) }
+                        if record.state == .cancelled { downloads.enqueue(publication, format: record.readerFormat) } else { downloads.retry(publication.id) }
                     }
                     .tint(Palette.accent)
                     .padding(.top, 4)
                 }
+                if !record.isActive, !offline, formats.count > 1 {
+                    Button("Download another format") { choosingFormat = true }
+                        .tint(Palette.accent)
+                        .padding(.top, 4)
+                }
             } else {
-                let size = publication.playableAssets.reduce(Int64(0)) { $0 + $1.sizeBytes }
+                let size = formats.count == 1
+                    ? publication.downloadableAssets(format: formats.first).reduce(Int64(0)) { $0 + $1.sizeBytes }
+                    : publication.bookType == .audiobook ? publication.audioAssets.reduce(Int64(0)) { $0 + $1.sizeBytes } : 0
                 Button {
-                    downloads.enqueue(publication)
+                    download()
                 } label: {
                     Label(size > 0 ? "Download · \(bytes(size))" : "Download", systemImage: "arrow.down.circle")
                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -100,6 +123,21 @@ struct DownloadPanel: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .confirmationDialog("Download which format?", isPresented: $choosingFormat, titleVisibility: .visible) {
+            ForEach(formats, id: \.self) { format in
+                let size = publication.asset(for: format)?.sizeBytes ?? 0
+                let current = downloads.records[publication.id]?.readerFormat == format && downloads.records[publication.id]?.isReady == true
+                Button("\(format.label)\(size > 0 ? " · \(bytes(size))" : "")\(current ? " (on this device)" : "")") {
+                    downloads.enqueue(publication, format: format)
+                }
+                .disabled(current)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(downloads.records[publication.id] == nil
+                ? "One format of this book is kept on this device."
+                : "One format of this book is kept on this device. Downloading another replaces the one there now.")
+        }
         .confirmationDialog("Remove download?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) { downloads.remove(publication.id) }
             Button("Keep", role: .cancel) {}
@@ -209,7 +247,7 @@ struct DownloadsView: View {
                     } else {
                         if copy.canRetry {
                             Button(record.state == .cancelled ? "Download again" : "Try again") {
-                                if record.state == .cancelled { downloads.enqueue(record.publication) } else { downloads.retry(record.publicationId) }
+                                if record.state == .cancelled { downloads.enqueue(record.publication, format: record.readerFormat) } else { downloads.retry(record.publicationId) }
                             }
                         }
                         Button("Remove") { removing = record }

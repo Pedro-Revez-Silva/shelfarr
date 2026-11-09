@@ -25,6 +25,8 @@ struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var sheet: ReaderSheet?
+    @State private var goToPage = false
+    @State private var pageEntry = ""
     private let host: String?
 
     init(publicationId: String, app: AppModel) {
@@ -53,7 +55,10 @@ struct ReaderView: View {
         }
         .statusBarHidden(isReady && !model.chromeVisible)
         .task { await model.open() }
-        .onChange(of: settingsStore.settings) { model.book?.apply($0) }
+        .onChange(of: settingsStore.settings) {
+            model.book?.apply($0)
+            model.applyTheme($0.theme)
+        }
         .onChange(of: scenePhase) { if $0 != .active { model.flush() } }
         .onDisappear { model.flush() }
         .sheet(item: $sheet) { which in
@@ -67,13 +72,30 @@ struct ReaderView: View {
             case .settings:
                 ReaderSettingsSheet(settings: $settingsStore.settings)
                     .presentationDetents([.medium, .large])
+            case .pageLayout:
+                PageLayoutSheet(layout: $model.layout, theme: $settingsStore.settings.theme, format: model.format)
+                    .presentationDetents([.medium, .large])
             }
+        }
+        .alert("Go to page", isPresented: $goToPage) {
+            TextField("Page", text: $pageEntry)
+                .keyboardType(.numberPad)
+                .accessibilityIdentifier("go-to-page-field")
+            Button("Go") {
+                if let target = Int(pageEntry.trimmingCharacters(in: .whitespaces)) { model.goToPage(min(max(target, 1), model.pageCount)) }
+                pageEntry = ""
+            }
+            Button("Cancel", role: .cancel) { pageEntry = "" }
+        } message: {
+            Text("Pages 1 to \(model.pageCount)")
         }
     }
 
     private var isReady: Bool {
-        if case .ready = model.state { return true }
-        return false
+        switch model.state {
+        case .ready, .pages: return true
+        default: return false
+        }
     }
 
     @ViewBuilder
@@ -100,20 +122,136 @@ struct ReaderView: View {
                 Task { await model.open() }
             }
             .overlay(alignment: .topLeading) { closeButton }
-        case .unreadable:
-            MessageState(title: "Can't open this book", message: "This file isn't a readable EPUB, or it's protected by DRM.")
+        case let .unreadable(title, message):
+            MessageState(title: title, message: message)
+                .overlay(alignment: .topLeading) { closeButton }
+        case let .chooseFormat(options):
+            FormatChoice(options: options, theme: theme) { format in Task { await model.pick(format) } }
+                .overlay(alignment: .topLeading) { closeButton }
+        case let .formatUnavailable(saved, alternatives):
+            FormatUnavailable(saved: saved, alternatives: alternatives, theme: theme, host: host) { format in
+                Task { await model.pick(format) }
+            } retry: {
+                Task { await model.open() }
+            }
+            .overlay(alignment: .topLeading) { closeButton }
+        case let .invalidPlace(format, count):
+            InvalidPlace(format: format, pageCount: count, theme: theme) { last in model.startLooking(atLastPage: last) }
                 .overlay(alignment: .topLeading) { closeButton }
         case let .ready(title, navigator):
             NavigatorHost(navigator: navigator).ignoresSafeArea()
             chrome(title)
-            if case let .conflict(local?, server) = model.syncStatus {
-                Color.clear.alert("Where would you like to continue?", isPresented: .constant(true)) {
-                    Button("Use other device", action: model.useOtherPlace)
-                    Button("Keep this device", action: model.keepThisPlace)
-                } message: {
-                    Text(choiceMessage(local, server))
-                }
+            conflictAlert
+        case let .pages(title, reader):
+            NavigatorHost(navigator: reader)
+                .id(ObjectIdentifier(reader))
+                .ignoresSafeArea()
+            pageChrome(title)
+            conflictAlert
+        }
+    }
+
+    @ViewBuilder
+    private var conflictAlert: some View {
+        if case let .conflict(local?, server) = model.syncStatus {
+            Color.clear.alert("Where would you like to continue?", isPresented: .constant(true)) {
+                Button("Use other device", action: model.useOtherPlace)
+                Button("Keep this device", action: model.keepThisPlace)
+            } message: {
+                Text(choiceMessage(local, server))
             }
+        }
+    }
+
+    /// Another format of this book, opened at its beginning. Shown only with several.
+    @ViewBuilder
+    private var formatMenu: some View {
+        if model.formats.count > 1 {
+            Menu {
+                ForEach(model.formats, id: \.self) { format in
+                    Button {
+                        Task { await model.switchFormat(format) }
+                    } label: {
+                        if format == model.format {
+                            Label(format.label, systemImage: "checkmark")
+                        } else {
+                            Text(format.label)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "doc.on.doc").frame(width: 44, height: 44)
+            }
+            .tint(theme.text)
+            .accessibilityLabel("Format")
+            .accessibilityValue(model.format?.label ?? "")
+        }
+    }
+
+    /// Quiet by default: only a small folio. A tap in the middle shows the bars.
+    private func pageChrome(_ title: String) -> some View {
+        VStack(spacing: 0) {
+            if model.chromeVisible {
+                HStack(spacing: 4) {
+                    closeButton
+                    Text(title).font(Typeface.serifBold(15)).foregroundStyle(theme.text).lineLimit(1)
+                    Spacer()
+                    formatMenu
+                    Button { sheet = .pageLayout } label: {
+                        Image(systemName: "rectangle.split.2x1").frame(width: 44, height: 44)
+                    }
+                    .tint(theme.text)
+                    .accessibilityLabel("Page layout")
+                }
+                .padding(.horizontal, 4)
+                .background(theme.bar.ignoresSafeArea(edges: .top))
+                .overlay(alignment: .bottom) { theme.hairline.frame(height: 1) }
+                .transition(.opacity)
+            }
+            Spacer()
+            if model.chromeVisible {
+                PageScrubber(model: model, theme: theme) {
+                    pageEntry = ""
+                    goToPage = true
+                }
+                .transition(.opacity)
+            } else {
+                Text("\(model.page) / \(model.pageCount)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(theme.muted)
+                    .padding(.bottom, 6)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel("Page \(model.page) of \(model.pageCount)")
+                    .accessibilityIdentifier("reader-page")
+            }
+            notices
+        }
+        .animation(.easeOut(duration: 0.2), value: model.chromeVisible)
+    }
+
+    @ViewBuilder
+    private var notices: some View {
+        if model.syncStatus == .storageFailed {
+            Text(storageFailedMessage)
+                .font(.footnote)
+                .foregroundStyle(theme.text)
+                .padding(12)
+                .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 16)
+                .accessibilityIdentifier("progress-storage-failed")
+        }
+        if let notice = model.notice {
+            Text(notice)
+                .font(.footnote)
+                .foregroundStyle(theme.text)
+                .padding(12)
+                .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(16)
+                .accessibilityIdentifier("reader-notice")
+                .task(id: notice) {
+                    try? await Task.sleep(nanoseconds: 7_000_000_000)
+                    model.clearNotice()
+                }
         }
     }
 
@@ -137,6 +275,7 @@ struct ReaderView: View {
                     closeButton
                     Text(title).font(Typeface.serifBold(15)).foregroundStyle(theme.text).lineLimit(1)
                     Spacer()
+                    formatMenu
                     Button { sheet = .contents } label: {
                         Image(systemName: "list.bullet").frame(width: 44, height: 44)
                     }
@@ -165,34 +304,14 @@ struct ReaderView: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("reader-progress")
             }
-            if model.syncStatus == .storageFailed {
-                Text(storageFailedMessage)
-                    .font(.footnote)
-                    .foregroundStyle(theme.text)
-                    .padding(12)
-                    .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .padding(.horizontal, 16)
-                    .accessibilityIdentifier("progress-storage-failed")
-            }
-            if let notice = model.notice {
-                Text(notice)
-                    .font(.footnote)
-                    .foregroundStyle(theme.text)
-                    .padding(12)
-                    .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .padding(16)
-                    .task {
-                        try? await Task.sleep(nanoseconds: 7_000_000_000)
-                        model.clearNotice()
-                    }
-            }
+            notices
         }
         .animation(.easeOut(duration: 0.2), value: model.chromeVisible)
     }
 }
 
 private enum ReaderSheet: String, Identifiable {
-    case contents, settings
+    case contents, settings, pageLayout
     var id: String { rawValue }
 }
 

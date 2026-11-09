@@ -163,10 +163,11 @@ struct DetailsView: View {
             Divider().overlay(Palette.hairline)
             row("Format", formats.isEmpty ? "Unknown" : formats)
             if assets.count > 1 { row("Files", String(assets.count)) }
+            if let pages = publication.asset(for: .cbz)?.pageCount, pages > 0 { row("Pages", String(pages)) }
             if total > 0 { row("Size", ByteCountFormatter.string(fromByteCount: total, countStyle: .file)) }
-            row("Availability", downloads.records[publication.id]?.isReady == true
-                ? "Downloaded to this device"
-                : publication.bookType == .audiobook ? "Streams from your server" : "Opens from your server")
+            row("Availability", downloads.records[publication.id].flatMap { record -> String? in
+                record.isReady ? "Downloaded to this device" + (publication.readerFormats.count > 1 ? (record.readerFormat.map { " (\($0.label))" } ?? "") : "") : nil
+            } ?? (publication.bookType == .audiobook ? "Streams from your server" : "Opens from your server"))
         }
     }
 

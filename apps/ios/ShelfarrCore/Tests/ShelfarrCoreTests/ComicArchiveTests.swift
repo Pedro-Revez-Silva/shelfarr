@@ -116,7 +116,10 @@ final class ReadingOrderTests: XCTestCase {
     }
 
     func testAcceptsTheContractShape() throws {
-        let order = ReadingOrder(assetId: "a", items: [item(1, "p1.png"), item(2, "p%202.jpg", type: "image/jpeg", method: 8, compressed: 8)])
+        let order = ReadingOrder(assetId: "a", items: [
+            item(1, "p1.png"), item(2, "p%202.jpg", type: "image/jpeg", method: 8, compressed: 8),
+            item(3, "p3.png", size: 100, method: 8, compressed: (32 << 20) + (64 << 10)),
+        ])
         let data = try JSONEncoder().encode(order)
         XCTAssertEqual(try ReadingOrder.decode(data, assetId: "a"), order)
         let json = String(decoding: data, as: UTF8.self)
@@ -137,6 +140,7 @@ final class ReadingOrderTests: XCTestCase {
             ("an empty page", ReadingOrder(assetId: "a", items: [item(1, "p1.png", size: 0)])),
             ("a page over 32 MiB", ReadingOrder(assetId: "a", items: [item(1, "p1.png", size: (32 << 20) + 1)])),
             ("an unknown method", ReadingOrder(assetId: "a", items: [item(1, "p1.png", method: 12)])),
+            ("compressed past 32 MiB + 64 KiB", ReadingOrder(assetId: "a", items: [item(1, "p1.png", size: 32 << 20, method: 8, compressed: (32 << 20) + (64 << 10) + 1)])),
             ("stored with another size", ReadingOrder(assetId: "a", items: [item(1, "p1.png", compressed: 11)])),
             ("an upper-case CRC", ReadingOrder(assetId: "a", items: [item(1, "p1.png", crc: "0000ABCD")])),
             ("a short CRC", ReadingOrder(assetId: "a", items: [item(1, "p1.png", crc: "abcd")])),
@@ -364,6 +368,36 @@ final class ComicArchiveTests: XCTestCase {
         var commented = ZipBuilder.comic()
         commented.comment = Data("Scanned by nobody".utf8)
         XCTAssertNoThrow(try open(commented), "an ordinary comment is fine")
+    }
+
+    func testHiddenMetadataIsNotAPageButIsStillChecked() throws {
+        var zip = ZipBuilder()
+        zip.add(ZipBuilder.Entry("p1.png", DeflateVectors.pngHeader(width: 1, height: 1)))
+        zip.add(ZipBuilder.Entry(".cover.png", DeflateVectors.pngHeader(width: 1, height: 1)))
+        zip.add(ZipBuilder.Entry("Extras/.hidden/p2.png", DeflateVectors.pngHeader(width: 1, height: 1)))
+        zip.add(ZipBuilder.Entry("__MACOSX/._p1.png", Data(count: 4)))
+        zip.add(ZipBuilder.Entry("__MACOSXfiles/p3.png", DeflateVectors.pngHeader(width: 1, height: 1)))
+        XCTAssertEqual(zip.order().items.map(\.href), ["p1.png", "__MACOSXfiles/p3.png"], "only exact __MACOSX and dot components are metadata")
+        XCTAssertEqual(try ComicArchive(file: write(zip.build().data)).pageEntries().count, 2)
+        XCTAssertNoThrow(try open(zip))
+
+        var encrypted = zip
+        encrypted.entries[3].flags |= 0x0001
+        assertRefused(encrypted, "an encrypted metadata entry still refuses the archive")
+        var unsafe = zip
+        unsafe.entries[2].name = Array("Extras/.hidden/../p2.png".utf8)
+        unsafe.entries[2].localName = unsafe.entries[2].name
+        assertRefused(unsafe, "a hidden entry's name is still checked")
+    }
+
+    func testRefusesPagesCompressedPastTheCap() throws {
+        var zip = ZipBuilder()
+        var entry = ZipBuilder.Entry("p1.png", DeflateVectors.pngHeader(width: 1, height: 1), method: 8)
+        // A stream that claims to be bigger than the cap; the bytes are never read.
+        entry.compressed = DeflateVectors.stored(DeflateVectors.noise(Int(ComicArchive.maxCompressedPageBytes) + 1))
+        zip.add(entry)
+        let archive = try ComicArchive(file: write(zip.build().data))
+        XCTAssertThrowsError(try archive.pageEntries()) { XCTAssertEqual($0 as? ComicArchiveError, .unsupported("page size")) }
     }
 
     func testRefusesOverlappingEntries() throws {

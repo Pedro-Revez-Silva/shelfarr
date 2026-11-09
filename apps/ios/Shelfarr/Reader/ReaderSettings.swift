@@ -1,4 +1,5 @@
 import Foundation
+import ShelfarrCore
 import SwiftUI
 
 /// Page colours. These apply to the book and its chrome, independent of the app theme.
@@ -67,5 +68,46 @@ final class ReaderSettingsStore: ObservableObject {
     init() {
         settings = UserDefaults.standard.data(forKey: Self.key)
             .flatMap { try? JSONDecoder().decode(ReaderSettings.self, from: $0) } ?? ReaderSettings()
+    }
+}
+
+/// Page layout for PDFs and comics. Fit and spreads apply to every book; the reading
+/// direction is chosen per book (a manga reads right to left, most comics don't), and is
+/// never guessed from the language or the file. Display preferences only.
+@MainActor
+final class PageLayoutStore {
+    private static let layoutKey = "page_layout"
+    private static let directionKey = "page_direction_rtl"
+    private static let maxRemembered = 500
+
+    func layout(accountKey: String, publicationId: String) -> PageLayout {
+        var layout = UserDefaults.standard.data(forKey: Self.layoutKey)
+            .flatMap { try? JSONDecoder().decode(PageLayout.self, from: $0) } ?? PageLayout()
+        layout.rightToLeft = rightToLeft.contains(Self.bookKey(accountKey, publicationId))
+        return layout
+    }
+
+    func save(_ layout: PageLayout, accountKey: String, publicationId: String) {
+        var shared = layout
+        shared.rightToLeft = false
+        if let data = try? JSONEncoder().encode(shared) { UserDefaults.standard.set(data, forKey: Self.layoutKey) }
+        let key = Self.bookKey(accountKey, publicationId)
+        var books = rightToLeft.filter { $0 != key }
+        if layout.rightToLeft { books.append(key) }
+        UserDefaults.standard.set(Array(books.suffix(Self.maxRemembered)), forKey: Self.directionKey)
+    }
+
+    /// Forgets an account's per-book choices when it is disconnected.
+    func forget(accountKey: String) {
+        UserDefaults.standard.set(rightToLeft.filter { !$0.hasPrefix(accountKey + ":") }, forKey: Self.directionKey)
+    }
+
+    private var rightToLeft: [String] {
+        UserDefaults.standard.stringArray(forKey: Self.directionKey) ?? []
+    }
+
+    /// The account and a digest of the publication id: no title or id is stored in the clear.
+    private static func bookKey(_ accountKey: String, _ publicationId: String) -> String {
+        accountKey + ":" + String(SHA256.hexDigest(Data(publicationId.utf8)).prefix(24))
     }
 }

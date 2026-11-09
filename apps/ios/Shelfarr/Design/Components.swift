@@ -99,8 +99,13 @@ func formatDuration(_ seconds: Double) -> String {
         : String(format: "%d:%02d", minutes, rest)
 }
 
-/// A saved place in words: a percentage for books, a timestamp for audio.
+/// A saved place in words: a page for PDFs and comics, a percentage for other books, a
+/// timestamp for audio.
 func describePlace(locator: JSONValue?, seconds: Double?) -> String {
+    if let type = locator?["type"]?.stringValue, type == ReaderFormat.pdfMediaType || type.hasPrefix("image/"),
+       let page = locator?["locations"]?["position"]?.doubleValue {
+        return "page \(Int(page))"
+    }
     if let total = locator?["locations"]?["totalProgression"]?.doubleValue {
         return "\(Int((total * 100).rounded()))% through"
     }

@@ -12,8 +12,16 @@ public struct ImageProbe: Equatable, Sendable {
     public static let maxSide = 30_000
     public static let maxPixels = 40_000_000
 
-    public var withinLimits: Bool {
-        width > 0 && height > 0 && width <= Self.maxSide && height <= Self.maxSide && width * height <= Self.maxPixels
+    public init(mediaType: String, width: Int, height: Int) {
+        self.mediaType = mediaType
+        self.width = width
+        self.height = height
+    }
+
+    public var withinLimits: Bool { Self.withinLimits(width: width, height: height) }
+
+    public static func withinLimits(width: Int, height: Int) -> Bool {
+        width > 0 && height > 0 && width <= maxSide && height <= maxSide && width * height <= maxPixels
     }
 
     /// Nil when the bytes are not a JPEG, PNG or WebP with a readable size.

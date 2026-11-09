@@ -94,9 +94,11 @@ public enum PageLocator {
 /// Tells a page reader settling on the restored page apart from the reader turning one.
 ///
 /// Opening, restoring, rotating, zooming, re-rendering and changing between one and two
-/// pages are not reading. The view reports the page it shows whenever it changes or is
-/// laid out again; only a report of a page other than the one already shown, after the
-/// opening page has been seen, is a page turn to save.
+/// pages are not reading. The view reports the pages it shows (one, or a spread)
+/// whenever they change or are laid out again. The page being read is the anchor: it
+/// stays the anchor while it is on screen, so a layout change never moves it. Only after
+/// the opening page has been seen does a report without the anchor count as a page
+/// turn, and its first page becomes the one saved.
 public struct PageRestoration: Equatable, Sendable {
     public enum Action: Equatable, Sendable {
         case none
@@ -114,8 +116,8 @@ public struct PageRestoration: Equatable, Sendable {
 
     /// The page being restored, until the view shows it.
     public private(set) var target: Int?
-    /// The page on screen once restored.
-    public private(set) var shown: Int?
+    /// The page being read once restored: what the reader saves and comes back to.
+    public private(set) var anchor: Int?
     private var corrections = 0
 
     public init(opening page: Int) {
@@ -124,24 +126,33 @@ public struct PageRestoration: Equatable, Sendable {
 
     public var isRestoring: Bool { target != nil }
 
-    public mutating func observe(_ page: Int) -> Action {
+    public mutating func observe(_ page: Int) -> Action { observe(page ... page) }
+
+    public mutating func observe(_ visible: ClosedRange<Int>) -> Action {
         if let target {
-            if page == target {
+            if visible.contains(target) {
                 self.target = nil
-                shown = page
+                anchor = target
                 return .settled
             }
             guard corrections < Self.maxCorrections else {
                 self.target = nil
-                shown = page
+                anchor = visible.lowerBound
                 return .gaveUp
             }
             corrections += 1
             return .correct(target)
         }
-        guard page != shown else { return .none }
-        shown = page
-        return .record(page)
+        if let anchor, visible.contains(anchor) { return .none }
+        anchor = visible.lowerBound
+        return .record(visible.lowerBound)
+    }
+
+    /// The opening page can't be displayed (a damaged comic page): stop waiting for it.
+    /// The saved place stays as it was; the next page that does display is a turn.
+    public mutating func abandonTarget() {
+        target = nil
+        anchor = nil
     }
 
     /// Going to a chosen saved place (another device's) is restoring too, not reading.
@@ -149,5 +160,28 @@ public struct PageRestoration: Equatable, Sendable {
         target = page
         corrections = 0
         return .correct(page)
+    }
+}
+
+/// Pages grouped for display: one at a time, or as two-page spreads with the first page
+/// (the cover) on its own, as printed books and comics are bound. Purely a layout: which
+/// spread shows never changes the page being read.
+public enum PageSpreads {
+    public static func layout(pageCount: Int, paired: Bool) -> [ClosedRange<Int>] {
+        guard pageCount > 0 else { return [] }
+        guard paired, pageCount > 1 else { return (1 ... pageCount).map { $0 ... $0 } }
+        var spreads: [ClosedRange<Int>] = [1 ... 1]
+        var page = 2
+        while page <= pageCount {
+            spreads.append(page ... min(page + 1, pageCount))
+            page += 2
+        }
+        return spreads
+    }
+
+    /// The index of the spread showing `page`, clamped to the layout.
+    public static func index(of page: Int, in spreads: [ClosedRange<Int>]) -> Int {
+        guard let last = spreads.indices.last else { return 0 }
+        return spreads.firstIndex { $0.contains(page) } ?? (page < 1 ? 0 : last)
     }
 }

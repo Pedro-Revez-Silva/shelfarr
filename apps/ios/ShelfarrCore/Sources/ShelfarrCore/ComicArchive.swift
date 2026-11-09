@@ -33,10 +33,9 @@ public final class ComicArchive: @unchecked Sendable {
     public static let maxTotalBytes: Int64 = 2 << 30
     public static let maxNameBytes = 1024
 
-    /// Deflate can grow incompressible data slightly; anything beyond this isn't a page.
-    public static func maxCompressedBytes(forSize size: Int64) -> Int64 {
-        size + size / 100 + 1024
-    }
+    /// The server's cap on a page's compressed bytes: deflate may grow incompressible
+    /// data slightly past the 32 MiB page cap, never further. Checked before anything is read.
+    public static let maxCompressedPageBytes: Int64 = (32 << 20) + (64 << 10)
 
     struct Entry {
         let name: String
@@ -287,7 +286,9 @@ public final class ComicArchive: @unchecked Sendable {
         var total: Int64 = 0
         for entry in entries where !entry.isDirectory && !Self.hidden(entry.name) {
             guard ComicNames.mediaType(forName: entry.rawName) != nil else { continue }
-            guard (1 ... Self.maxImageBytes).contains(entry.size) else { throw ComicArchiveError.unsupported("page size") }
+            guard (1 ... Self.maxImageBytes).contains(entry.size), entry.compressedSize <= Self.maxCompressedPageBytes else {
+                throw ComicArchiveError.unsupported("page size")
+            }
             total += entry.size
             guard total <= Self.maxTotalBytes else { throw ComicArchiveError.unsupported("total size") }
             result[ComicNames.escape(entry.rawName)] = entry
@@ -307,8 +308,7 @@ public final class ComicArchive: @unchecked Sendable {
             guard let entry = available[item.href] else { throw ComicArchiveError.orderMismatch("href") }
             guard ComicNames.mediaType(forName: entry.rawName) == item.mediaType, entry.size == item.sizeBytes,
                   entry.compressedSize == item.compressedSize, Int(entry.method) == item.compressionMethod,
-                  entry.offset == item.localHeaderOffset, item.crcValue == entry.crc,
-                  entry.compressedSize <= Self.maxCompressedBytes(forSize: entry.size)
+                  entry.offset == item.localHeaderOffset, item.crcValue == entry.crc
             else { throw ComicArchiveError.orderMismatch("page \(item.position)") }
         }
         lock.withLock {
@@ -324,6 +324,10 @@ public final class ComicArchive: @unchecked Sendable {
                   let entry = pages[order.items[position - 1].href]
             else { throw ComicArchiveError.orderMismatch("unverified") }
             return (order.items[position - 1], entry)
+        }
+        // Bounds again before allocating: verified at opening, cheap to repeat.
+        guard entry.compressedSize <= Self.maxCompressedPageBytes, entry.size <= Self.maxImageBytes else {
+            throw ComicArchiveError.damagedPage(position)
         }
         let compressed = Data(try read(Int(entry.compressedSize), at: entry.dataStart))
         let data: Data

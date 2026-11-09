@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     let epubCache: EpubCache
     let playback = PlaybackEngine()
     let readerSettings = ReaderSettingsStore()
+    let pageLayouts = PageLayoutStore()
     let downloads = DownloadsModel()
     let transferRouter: TransferRouter
     let backgroundDownloads: BackgroundDownloadSession
@@ -327,6 +328,7 @@ final class AppModel: ObservableObject {
         await downloads.attach(nil)
         sessions.clear()
         await epubCache.clear(accountKey: session.accountKey)
+        pageLayouts.forget(accountKey: session.accountKey)
         // No late write may recreate the account folder.
         await libraryCaches.removeValue(forKey: session.accountKey)?.close()
         try? FileManager.default.removeItem(at: accountDirectory(session))
@@ -359,9 +361,10 @@ final class DownloadsModel: ObservableObject {
         records.values.filter(\.isReady).sorted { $0.updatedAt > $1.updatedAt }.map(\.publication)
     }
 
-    func enqueue(_ publication: ShelfarrCore.Publication) {
+    /// A book's download holds one format; without one it keeps the format it has.
+    func enqueue(_ publication: ShelfarrCore.Publication, format: ReaderFormat? = nil) {
         guard let manager else { return }
-        Task { await manager.enqueue(publication) }
+        Task { await manager.enqueue(publication, format: format) }
     }
 
     func cancel(_ id: String) {

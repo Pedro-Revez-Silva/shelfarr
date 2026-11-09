@@ -55,6 +55,16 @@ final class RestoreTrace {
         }
     }
 
+    static func describe(_ action: PageRestoration.Action) -> String {
+        switch action {
+        case .none: return "none"
+        case let .record(page): return "record \(page)"
+        case let .correct(page): return "correct \(page)"
+        case .settled: return "settled"
+        case .gaveUp: return "gave-up"
+        }
+    }
+
     /// Only the file name of a reading order path.
     private static func path(_ href: String) -> String {
         let name = href.split(separator: "/").last.map(String.init) ?? href
