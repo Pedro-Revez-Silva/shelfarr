@@ -27,7 +27,10 @@ An unavailable job queue leaves the connection saved and offers a refresh retry.
 
 Connections are owned by the signed-in Shelfarr user, including for admins.
 Another user cannot view, poll, refresh, or disconnect them. Nothing is added
-to the shared acquisition library, and there are no sharing controls yet.
+to the shared acquisition library. The owner can explicitly share a catalogue
+with chosen household members and revoke that at any time; see
+[Household sharing](kobo-household.md). Shared users see titles and delivery
+eligibility only, never the sign-in or credentials.
 
 Screenshots below use a synthetic test account and an example approval code:
 
@@ -37,10 +40,13 @@ Screenshots below use a synthetic test account and an example approval code:
 
 ## What this step does and does not test
 
-This preview requests account authorization and catalogue metadata only. It
-does not request content-access keys, download protected files, remove DRM,
-purchase anything, or send Store books to a reader. A catalogue entry is not
-evidence that a protected book can open on a different account's Kobo.
+Account connection requests authorization and catalogue metadata. Catalogue
+refreshes also record which download variant Kobo offers for each title (never
+the signed link). Book bytes are fetched only when someone prepares a DRM-free
+purchase for [household delivery](kobo-household.md). Shelfarr never requests
+content-access keys, downloads protected files, removes DRM, or purchases
+anything. A catalogue entry is not evidence that a protected book can open on a
+different account's Kobo.
 
 Reader delivery is separate. A [reader that keeps its Kobo Store](kobo.md#kobo-store-coexistence)
 uses its own sign-in, never these account credentials, and an account
@@ -72,7 +78,8 @@ Authentication, activation workflow, device identity, and email fields are
 encrypted using Shelfarr's existing Active Record encryption configuration.
 Keep the server's persistent encryption keys and database backups together.
 These credentials authorize the account at Kobo; they are not read-only-scoped
-credentials, even though Shelfarr currently uses only the catalogue operations.
+credentials. Shelfarr uses them only for the catalogue and for fresh links to
+DRM-free purchases being prepared for household delivery.
 They never appear in catalogue pages or API responses. Pending activation
 codes appear only on their owner's no-store approval page.
 
@@ -80,7 +87,10 @@ Outgoing requests use only two fixed HTTPS hosts, do not use environment proxy
 settings or browser cookies, and never follow redirects. A response cannot
 choose an arbitrary poll host or library URL. Provider error bodies and account
 tokens are not logged. Catalogue writes suppress SQL DEBUG bindings, matching
-the existing private-library synchronization behavior.
+the existing private-library synchronization behavior. Book downloads for
+household delivery use separate fixed download hosts, carry no account
+credentials, and follow only Kobo's own HTTPS redirect; see
+[Household sharing](kobo-household.md#privacy-and-safety).
 
 A connection is limited to ten minutes for approval, polling is throttled on
 the server, and transient polling failures back off. Each user can have up to
@@ -94,7 +104,8 @@ Optimistic locking prevents late sign-in, refresh, and catalogue responses from
 reviving a disconnected account or overwriting a newer request. Jobs carry an
 account id and a random request id, never provider credentials.
 
-**Disconnect** deletes Shelfarr's connection credentials and catalogue. It does
+**Disconnect** deletes Shelfarr's connection credentials, catalogue, prepared
+copies and shares, and everyone's pending deliveries of its books. It does
 not revoke the credential at Kobo or reset any Kobo device. Kobo's private
 protocol can change; if approval fails, report the step and sanitized error
 category, not an activation page, token, or raw provider response.

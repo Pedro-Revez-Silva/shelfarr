@@ -77,6 +77,8 @@ on the reader to disconnect it fully.
 - Single-file library items and book-specific folders containing exactly one
   EPUB (up to five nested levels and 1,000 entries). Shared library-root folders
   and folders with multiple EPUBs must be disambiguated before sending.
+- DRM-free purchases from a Kobo account shared with you can also be sent; see
+  [Household sharing](kobo-household.md). Their reading places stay on the reader.
 - Copy and reference imports use the same root authorization as web downloads.
   Original library files are kept. PDFs, comics, audiobooks, remote-only owned
   library listings, and arbitrary filesystem paths are not sent.
