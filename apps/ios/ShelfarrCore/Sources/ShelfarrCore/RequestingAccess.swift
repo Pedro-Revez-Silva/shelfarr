@@ -44,6 +44,7 @@ public final class RequestingAccess {
     private let backend: RequestingBackend
     private let clientName: String
     private var polling: Task<Void, Never>?
+    private var pollingID: UUID?
     private var starting = false
     private var facts: [String: Bool] = [:]
 
@@ -129,6 +130,7 @@ public final class RequestingAccess {
     public func cancel() {
         polling?.cancel()
         polling = nil
+        pollingID = nil
         backend.sessions.clearPendingUpgrade()
         state = .notAllowed(notice: nil)
     }
@@ -137,6 +139,7 @@ public final class RequestingAccess {
     public func detach() {
         polling?.cancel()
         polling = nil
+        pollingID = nil
         facts = [:]
         state = .checking
     }
@@ -148,6 +151,8 @@ public final class RequestingAccess {
 
     private func poll(_ session: Session, _ pending: PendingUpgrade) {
         polling?.cancel()
+        let id = UUID()
+        pollingID = id
         let server = session.server
         state = .approving(
             userCode: pending.grant.userCode,
@@ -161,6 +166,7 @@ public final class RequestingAccess {
             sleep: backend.sleep
         )
         polling = Task { [weak self] in
+            defer { self?.finishedPolling(id) }
             let ended: RequestAccess
             do {
                 switch try await authorizer.await(PendingAuthorization(server: server, grant: pending.grant, expiresAt: pending.expiresAt)) {
@@ -184,12 +190,22 @@ public final class RequestingAccess {
     /// Confirms a replacement issued before, without asking the person again.
     private func confirm(_ session: Session) {
         polling?.cancel()
+        let id = UUID()
+        pollingID = id
         state = .checking
         polling = Task { [weak self] in
+            defer { self?.finishedPolling(id) }
             guard let ended = await self?.settleHandover(session), let self, !Task.isCancelled else { return }
             self.backend.sessions.clearPendingUpgrade()
             self.state = ended
         }
+    }
+
+    private func finishedPolling(_ id: UUID) {
+        // An older cancelled attempt may finish after its replacement has started.
+        guard pollingID == id else { return }
+        polling = nil
+        pollingID = nil
     }
 
     private func adopt(_ session: Session, _ pending: PendingUpgrade, _ token: TokenResponse) async -> RequestAccess {

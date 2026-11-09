@@ -13,6 +13,26 @@ private final class Secrets: SecretStore, @unchecked Sendable {
     func delete(_ name: String) { _ = lock.withLock { values.removeValue(forKey: name) } }
 }
 
+@MainActor
+extension HandoverTests {
+    func testRetriesIssuedHandoverAfterLostConfirmation() async throws {
+        let harness = Harness()
+        let before = harness.signIn()
+        harness.server.meDrops = true
+        _ = await harness.requesting.start(before)
+        await harness.requesting.settle()
+        XCTAssertTrue(harness.sessions.hasPendingHandover(for: before))
+        let count = harness.server.seen.filter { $0.path == "me" }.count
+        harness.server.meDrops = false
+        _ = await harness.requesting.start(before)
+        await harness.requesting.settle()
+        XCTAssertGreaterThan(harness.server.seen.filter { $0.path == "me" }.count, count)
+        XCTAssertTrue(harness.sessions.signedIn!.canRequest)
+        XCTAssertFalse(harness.sessions.hasPendingHandover(for: before))
+        XCTAssertEqual(harness.requesting.state, .allowed)
+    }
+}
+
 /// Holds requests until the test lets them go.
 final class Gate: @unchecked Sendable {
     private let lock = NSLock()
