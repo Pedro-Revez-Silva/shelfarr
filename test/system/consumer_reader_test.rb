@@ -290,20 +290,22 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_selector "[data-consumer-reader-target=notice]", text: "Saved on this device. It will sync when you're back online.", wait: 12
     turned = Time.current
     target = reader_place[:start]
-    marker = reader_place(target)[:marker]
+    reached = reader_place(target)
+    marker, offset = reached.values_at(:marker, :offset)
+    assert reached[:inside], "the saved character was reached before closing"
     assert_match(/\ACoastal note \d+\z/, marker)
     assert_equal earlier, saved_cfi
 
     visit consumer_publication_path(@ebook)
-    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2", offset: offset)
     wait_until("the outbox place is acknowledged") { saved_cfi == target && outbox_size.zero? }
     saved = users(:one).consumer_progresses.find_by!(book: @ebook)
     assert_in_delta turned.to_f, saved.observed_at.to_f, 15
-    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2", offset: offset)
 
     # Reopening an acknowledged place is not a new checkpoint.
     visit consumer_publication_path(@ebook)
-    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2")
+    assert_place_on_screen(target, marker, "#{total - 1} / #{total} · chapter 2", offset: offset)
     after = users(:one).consumer_progresses.find_by!(book: @ebook)
     assert_equal saved.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator"),
       after.attributes.slice("version", "observed_at", "updated_at", "client_mutation_id", "locator")
@@ -420,20 +422,26 @@ class ConsumerReaderTest < ApplicationSystemTestCase
         const view = document.querySelector("[data-consumer-reader-target=viewport]").getBoundingClientRect()
         const within = rect => frame.left + rect.left >= view.left && frame.left + rect.right <= view.right &&
           frame.top + rect.top >= view.top && frame.top + rect.top < view.bottom
-        // A page that starts with a paragraph shows that paragraph's first line.
+        // At a column boundary Firefox places a collapsed caret at the prior
+        // line's end. Measure the next actual character, preserving the CFI.
+        const measured = range.cloneRange()
+        if (measured.collapsed && measured.startContainer.nodeType === Node.TEXT_NODE && measured.startOffset < measured.startContainer.length)
+          measured.setEnd(measured.startContainer, measured.startOffset + 1)
+        // Firefox may split a paragraph between columns; its visible fragment
+        // need not be the first one, and the saved offset need not be zero.
         const paragraph = range.startContainer.parentElement.closest("p")
         return { start, marker: paragraph?.textContent.match(/Coastal note \\d+/)?.[0], offset: range.startOffset,
-          inside: within(range.getBoundingClientRect()), paragraphInside: !!paragraph && within(paragraph.getClientRects()[0]) }
+          inside: within(measured.getBoundingClientRect()), paragraphInside: !!paragraph && Array.from(paragraph.getClientRects()).some(within) }
       })()
     JS
   end
 
-  def assert_place_on_screen(cfi, marker, label)
+  def assert_place_on_screen(cfi, marker, label, offset:)
     place = nil
     wait_until("#{marker} is on screen at #{label}", timeout: 20, detail: -> { "; the reader shows #{location_text.inspect} with #{place.inspect}" }) do
       (place = reader_place(cfi)) && place[:inside] && location_text == label
     end
-    assert_equal({ marker: marker, offset: 0, inside: true, paragraphInside: true }, place.slice(:marker, :offset, :inside, :paragraphInside))
+    assert_equal({ marker: marker, offset: offset, inside: true, paragraphInside: true }, place.slice(:marker, :offset, :inside, :paragraphInside))
   end
 
   def wait_for_reader_layout

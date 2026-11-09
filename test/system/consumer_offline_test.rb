@@ -379,7 +379,10 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
       page.evaluate_async_script(<<~JS)
         const done = arguments[arguments.length - 1];
         (async () => {
-          const offline = await import("consumer_offline");
+          // WebDriver's Firefox script realm does not apply the page's import
+          // map to bare imports. Load the same mapped module by its real URL.
+          const address = JSON.parse(document.querySelector('script[type="importmap"]').textContent).imports.consumer_offline;
+          const offline = await import(new URL(address, document.baseURI).href);
           const publication = JSON.parse(document.querySelector("script[data-consumer-reader-target=publication]").textContent);
           await offline.confirmAccount({base: "/shelf", account: publication.progress_scope.account, maxAgeDays: 30});
           let release, started;
