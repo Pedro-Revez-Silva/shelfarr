@@ -76,13 +76,28 @@ verified; a build or simulated test alone does not establish device acceptance.
 - [ ] The oldest, middle and newest stock Kobo generations pass the acceptance
   matrix in `kobo.md`, including coexistence and progress behavior.
 
-The development Android build `2026.11.09.1-debug` (code 5, source `e47144f`)
+The development Android build `2026.11.09.2-debug` (code 6, source `73e8faa`)
 has been published through the compatibility catalogue and verified server cache.
-The exact APK passes real emulator reading and playback after a request, and an
-actual code 4 to 5 replacement preserves the Keystore sign-in, settings,
-downloaded bytes and queued place. A separate in-app code 3 to 4 update exercised
-Android's permission and installer screens. These establish development-channel
-behavior, not the production-publication or physical-device checkboxes above.
+The same APK is available from the server's
+[install page](https://shelfarr.alguidar.org/apps/android?channel=development)
+and the legacy update feed. All three public downloads, including the immutable
+GitHub asset, match the tested APK's SHA-256.
+
+The exact APK passes the API 35 emulator suite: 23 passed cases and two expected
+skips. This includes opening a requested ebook and audiobook in the real reader
+and player. A separate real-provider ebook request acquired a Gutenberg EPUB
+and reopened its saved page; audiobook acquisition from a real provider remains
+unverified.
+
+The published code 5 to 6 update passed through the app's own download and
+Android's permission and installer confirmation screens. Android records
+Shelfarr as the installer and initiating package. The first-install time,
+Keystore sign-in, preferences, downloaded file and queued place survived. A
+separate `adb install -r` pass also compared the original queued observation
+times before and after the same update. The in-app run used a synthetic offline
+account and the legacy HTTPS feed; it does not establish signed-in HTTPS
+discovery or physical-device acceptance. These results establish development
+channel behavior; the production-publication and hardware checkboxes remain open.
 
 The permanent production Android key is outside the repository and backed up in
 the owner's secret manager. Backup recovery, real APK signing, signature and
