@@ -1,4 +1,4 @@
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -432,6 +432,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
     t.integer "kobo_account_book_id"
     t.integer "kobo_account_share_id"
     t.integer "kobo_account_book_file_id"
+    t.integer "file_sync_revision"
+    t.json "progress_outbound"
     t.index ["book_id"], name: "index_kobo_deliveries_on_book_id"
     t.index ["entitlement_id"], name: "index_kobo_deliveries_on_entitlement_id", unique: true
     t.index ["kobo_account_book_file_id"], name: "index_kobo_deliveries_on_kobo_account_book_file_id"
@@ -457,6 +459,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
     t.string "store_status"
     t.datetime "store_checked_at"
     t.datetime "placeholder_auth_at"
+    t.boolean "receive_progress", default: false, null: false
     t.index ["token_digest"], name: "index_kobo_devices_on_token_digest", unique: true
     t.index ["user_id"], name: "index_kobo_devices_on_user_id"
   end

@@ -133,10 +133,80 @@ class KoboDevicesTest < ApplicationSystemTestCase
     assert_equal asset, users(:one).consumer_progresses.sole.asset_id
   end
 
+  test "turn on Shelfarr places for a reader and send one that needs a choice, at phone width with doubled text" do
+    prepare_kobo_kepub
+    @device.update!(share_progress: true)
+    delivery = @device.send_book!(@book)
+    delivery.update!(last_download_at: 1.hour.ago)
+    asset = Consumer::LibraryAssets.new(@book).list.sole.id
+    Consumer::ProgressWriter.new(user: users(:one), book: @book).call("asset_id" => asset, "expected_version" => 0,
+      "client_mutation_id" => SecureRandom.uuid, "observed_at" => 20.minutes.ago.utc.iso8601(3),
+      "locator" => { "href" => "OEBPS/Text/ch2.xhtml", "locations" => { "progression" => 0.5, "totalProgression" => 0.4 } })
+
+    visit kobo_device_path(@device)
+    assert_checked_field "Share reading places with Shelfarr"
+    assert_unchecked_field "Receive Shelfarr reading places"
+    assert_text "Only KEPUB files sent from your library can receive places"
+    assert_no_selector "[data-testid=kobo-outbound]"
+    check "Receive Shelfarr reading places"
+    click_button "Save settings"
+    assert_text "My Kobo receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync."
+    assert_checked_field "Receive Shelfarr reading places"
+    assert_selector "[data-testid=kobo-outbound]", text: "Shelfarr place (chapter 2 of 3, 40% of the book, read 20 minutes ago) waits for this Kobo's next Wi-Fi sync."
+    assert_no_button "Send Shelfarr place"
+    capture("kobo-receive-places.png")
+    assert_equal "queued", delivery.reload.progress_outbound["status"]
+
+    # The Kobo then reports a newer place of its own: Shelfarr's older one waits for a choice.
+    @device.update!(share_progress: false)
+    delivery.update_columns(reading_state: { "CurrentBookmark" => { "LastModified" => 5.minutes.ago.utc.iso8601(7),
+      "Location" => { "Type" => "KoboSpan", "Source" => "OEBPS/Text/ch3.xhtml", "Value" => "kobo.4.1" } } }, progress_outbound: nil)
+    page.current_window.resize_to(390, 844)
+    visit kobo_device_path(@device)
+    assert_selector "[data-testid=kobo-outbound]", text: "This Kobo has a newer place (read 5 minutes ago), so Shelfarr's older place (chapter 2 of 3, 40% of the book, read 20 minutes ago) wasn't sent."
+    assert_no_horizontal_overflow
+    capture("kobo-send-place-choice-mobile.png")
+    page.execute_script("document.documentElement.style.fontSize = '200%'")
+    assert_no_horizontal_overflow
+    scroll_to(find("[data-testid=kobo-outbound]"), align: :center)
+    capture("kobo-send-place-choice-mobile-large-text.png")
+    accept_confirm(/Move A Library Book on My Kobo to the Shelfarr place at its next sync\?/) { click_button "Send Shelfarr place" }
+    assert_text "My Kobo moves A Library Book to the Shelfarr place at its next Wi-Fi sync."
+    assert_selector "[data-testid=kobo-outbound]", text: "Your chosen Shelfarr place (chapter 2 of 3, 40% of the book) waits for this Kobo's next Wi-Fi sync."
+    assert_no_button "Send Shelfarr place"
+    page.execute_script("document.documentElement.style.fontSize = '200%'")
+    assert_no_horizontal_overflow
+    scroll_to(find("[data-testid=kobo-outbound]"), align: :center)
+    capture("kobo-sent-place-mobile-large-text.png")
+    assert_equal %w[queued chosen], delivery.reload.progress_outbound.values_at("status", "reason")
+    visit kobo_devices_path
+    page.execute_script("document.documentElement.style.fontSize = '200%'")
+    assert_unchecked_field "Receive Shelfarr reading places"
+    assert_no_horizontal_overflow
+    scroll_to(find("#kobo-receive-help"), align: :center)
+    capture("kobo-connect-mobile-large-text.png")
+    assert_in_delta 20.minutes.ago, users(:one).consumer_progresses.sole.observed_at, 60, "choosing never changes Shelfarr's reading time"
+  end
+
+  test "a plain EPUB explains that it keeps its Kobo place" do
+    @device.update!(receive_progress: true)
+    delivery = @device.send_book!(@book)
+    delivery.update!(last_download_at: 1.hour.ago)
+    Consumer::ProgressWriter.new(user: users(:one), book: @book).call("asset_id" => Consumer::LibraryAssets.new(@book).list.sole.id,
+      "expected_version" => 0, "client_mutation_id" => SecureRandom.uuid, "observed_at" => 1.minute.ago.utc.iso8601(3),
+      "locator" => { "href" => "OEBPS/a.xhtml", "locations" => { "progression" => 0.1 } })
+    page.current_window.resize_to(390, 844)
+    visit kobo_device_path(@device)
+    assert_selector "[data-testid=kobo-outbound]", text: "This is a plain EPUB. Kobo reads it with an engine whose places Shelfarr can't name"
+    assert_no_button "Send Shelfarr place"
+    assert_no_horizontal_overflow
+  end
+
   private
 
   def assert_no_horizontal_overflow
-    assert page.evaluate_script("document.documentElement.scrollWidth <= window.innerWidth")
+    # clientWidth excludes the scrollbar, which innerWidth would hide.
+    assert page.evaluate_script("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
   end
 
   def capture(filename)

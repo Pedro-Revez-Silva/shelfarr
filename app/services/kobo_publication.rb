@@ -9,6 +9,7 @@ class KoboPublication
 
   class Unavailable < StandardError; end
   class Encrypted < Unavailable; end
+  class TooLarge < Unavailable; end
   MAX_ENTRIES = 1_000
   MAX_XML_BYTES = 1024 * 1024
   MAX_EPUB_BYTES = 250.megabytes
@@ -128,6 +129,20 @@ class KoboPublication
     end
   rescue Zip::Error, Nokogiri::XML::SyntaxError, IOError, ArgumentError, EncodingError
     raise Unavailable, "This EPUB's reading order is unavailable"
+  end
+
+  # The bytes of one resource of the open edition, by its decoded ZIP path.
+  # The declared size is checked first and the read itself stops at the limit.
+  def resource(file, path, limit:)
+    with_archive(file) do |zip|
+      entry = zip.find_entry(path)
+      raise Unavailable, "This EPUB resource is missing" unless entry && !entry.encrypted?
+      raise TooLarge, "This EPUB resource is too large" if entry.size > limit
+
+      read_entry(zip, path, limit)
+    end
+  rescue Zip::Error, IOError, ArgumentError
+    raise Unavailable, "This EPUB resource is unavailable"
   end
 
   private

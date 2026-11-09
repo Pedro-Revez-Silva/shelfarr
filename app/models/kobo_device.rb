@@ -77,8 +77,9 @@ class KoboDevice < ApplicationRecord
         delivery.progress_generation_ambiguous = true if delivery.persisted? && delivery.last_download_at.present?
         delivery.reading_state = nil
         delivery.progress_bridge = nil
+        delivery.progress_outbound = nil
       end
-      delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision,
+      delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision, file_sync_revision: sync_revision,
         publication: publication, last_download_at: changed ? nil : delivery.last_download_at, **attributes)
       kobo_local_entitlements.create_or_find_by!(entitlement_id: delivery.entitlement_id)
       delivery

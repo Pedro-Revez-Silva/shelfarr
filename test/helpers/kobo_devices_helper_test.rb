@@ -3,7 +3,7 @@
 require "test_helper"
 
 class KoboDevicesHelperTest < ActionView::TestCase
-  Delivery = Struct.new(:progress_bridge)
+  Delivery = Struct.new(:progress_bridge, :progress_outbound)
   Device = Struct.new(:store_status, :store_checked_at, :store_coexistence) do
     def store_coexistence? = store_coexistence
   end
@@ -43,7 +43,8 @@ class KoboDevicesHelperTest < ActionView::TestCase
       { "status" => "edition_changed" } => [ :warning, /file changed after it was sent/, false ],
       { "status" => "edition_changed", "reason" => "not_downloaded" } => [ :warning, /Waiting for this reader to download/, false ],
       { "status" => "unavailable" } => [ :warning, /couldn't check/, false ],
-      { "status" => "superseded", "percent" => 35.0 } => [ :warning, /newer place/, false ]
+      { "status" => "superseded", "percent" => 35.0 } => [ :warning, /newer place/, false ],
+      place.merge("status" => "echo") => [ :ok, /reported the place Shelfarr sent it \(35%.*nothing new to share/, false ]
     }
     cases.each do |bridge, (tone, text, choosable)|
       notice = kobo_place_notice(Delivery.new(bridge), saved)
@@ -51,5 +52,42 @@ class KoboDevicesHelperTest < ActionView::TestCase
       assert_match text, notice.text, bridge.inspect
     end
     assert_match(/Kept a newer place from another device\. Kobo place/, kobo_place_notice(Delivery.new(place.merge("status" => "superseded")), nil).text)
+  end
+
+  test "every Shelfarr place status for a Kobo says why, and only comparable places can be sent by choice" do
+    progress = ConsumerProgress.new(version: 3, client_mutation_id: "m")
+    place = { "progress_version" => 3, "progress_mutation_id" => "m", "chapter" => 2, "chapters" => 9, "percent" => 40,
+      "observed_at" => 2.hours.ago.utc.iso8601(3), "span" => "kobo.5.2" }
+    cases = {
+      nil => [ :info, /No Shelfarr reading place to send yet/, false ],
+      place.merge("progress_version" => 2, "status" => "queued") => [ :info, /newer place for this book.*next sync/, false ],
+      place.merge("status" => "queued") => [ :ok, /\(chapter 2 of 9, 40% of the book, read about 2 hours ago\) waits for this Kobo's next Wi-Fi sync.*nearest sentence/, false ],
+      place.merge("status" => "queued", "reason" => "chosen") => [ :ok, /Your chosen Shelfarr place \(chapter 2 of 9, 40% of the book\)/, false ],
+      place.merge("status" => "sent", "sent_at" => 3.minutes.ago.utc.iso8601(3)) => [ :ok, /sent with the sync 3 minutes ago.*next open the book/, false ],
+      place.merge("status" => "at_place") => [ :ok, /already at Shelfarr's place/, false ],
+      place.merge("status" => "kobo_place") => [ :info, /came from this Kobo, so it isn't sent back/, false ],
+      place.merge("status" => "waiting", "reason" => "not_downloaded") => [ :info, /download the book before sending/, false ],
+      place.merge("status" => "needs_choice", "reason" => "kobo_newer", "kobo_at" => 5.minutes.ago.utc.iso8601(3)) =>
+        [ :choice, /newer place \(read 5 minutes ago\), so Shelfarr's older place/, true ],
+      place.merge("status" => "needs_choice", "reason" => "same_time") => [ :choice, /same moment/, true ],
+      place.merge("status" => "needs_choice", "reason" => "unknown_time") => [ :choice, /no reading time, so it can't be compared/, true ],
+      place.merge("status" => "needs_choice", "reason" => "kobo_time_unknown") => [ :choice, /This Kobo's place has no reading time/, true ],
+      place.merge("status" => "needs_choice", "reason" => "edition_unverified") => [ :choice, /previous edition.*current file/, true ],
+      place.except("span").merge("status" => "needs_choice", "reason" => "same_time") => [ :warning, /same moment/, false ],
+      place.merge("status" => "unsupported", "reason" => "plain_epub") => [ :warning, /plain EPUB.*KEPUB file of this book can receive them/, false ],
+      place.merge("status" => "unsupported", "reason" => "different_edition") => [ :warning, /different file of this book/, false ],
+      place.merge("status" => "unsupported", "reason" => "file_changed") => [ :warning, /Send it again/, false ],
+      place.merge("status" => "unsupported", "reason" => "location_not_in_edition") => [ :warning, /chapter this edition doesn't have/, false ],
+      place.merge("status" => "unsupported", "reason" => "no_kobo_spans") => [ :warning, /no Kobo sentence markers/, false ],
+      place.merge("status" => "unsupported", "reason" => "not_an_ebook") => [ :warning, /isn't a text place/, false ],
+      place.merge("status" => "unsupported", "reason" => "unsafe_resource") => [ :warning, /too large or can't be read safely/, false ],
+      place.merge("status" => "unavailable") => [ :warning, /couldn't check this book's file/, false ]
+    }
+    cases.each do |outbound, (tone, text, choosable)|
+      notice = kobo_outbound_notice(Delivery.new(nil, outbound), progress)
+      assert_equal [ tone, choosable ], [ notice.tone, notice.choosable ], outbound.inspect
+      assert_match text, notice.text, outbound.inspect
+    end
+    assert_match(/No Shelfarr reading place/, kobo_outbound_notice(Delivery.new(nil, place.merge("status" => "queued")), nil).text)
   end
 end

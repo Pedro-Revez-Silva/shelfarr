@@ -5,7 +5,8 @@ class KoboDevicesController < ApplicationController
     @devices = Current.user.kobo_devices.order(:name)
     base_url = request.base_url + request.script_name
     # New readers keep their Kobo Store by default where that is possible.
-    @device = Current.user.kobo_devices.new(base_url: base_url, share_progress: true,
+    # Receiving Shelfarr places stays off until physical-reader acceptance.
+    @device = Current.user.kobo_devices.new(base_url: base_url, share_progress: true, receive_progress: false,
       store_coexistence: URI.parse(base_url).scheme == "https")
   end
 
@@ -21,14 +22,18 @@ class KoboDevicesController < ApplicationController
 
   def show
     @device = Current.user.kobo_devices.find(params[:id])
+    # The same bounded evaluation the next sync runs, so the page says what
+    # that sync will send. It is idempotent and never changes reading times.
+    Kobo::OutboundProgress.refresh(@device)
     load_deliveries
   end
 
   def update
     @device = Current.user.kobo_devices.find(params[:id])
     was_coexisting = @device.store_coexistence?
-    if @device.update(params.require(:kobo_device).permit(:store_coexistence, :share_progress))
-      redirect_to kobo_device_path(@device), notice: update_notice(was_coexisting)
+    was_receiving = @device.receive_progress?
+    if @device.update(params.require(:kobo_device).permit(:store_coexistence, :share_progress, :receive_progress))
+      redirect_to kobo_device_path(@device), notice: update_notice(was_coexisting, was_receiving)
     else
       load_deliveries
       render :show, status: :unprocessable_entity
@@ -47,6 +52,19 @@ class KoboDevicesController < ApplicationController
     redirect_to kobo_device_path(device), alert: "Another device saved a place just now. Review the places and choose again."
   rescue Consumer::ProgressWriter::Invalid
     redirect_to kobo_device_path(device), alert: "That Kobo place belongs to an edition that is no longer in the library."
+  end
+
+  # An explicit choice to send Shelfarr's place although it could not be
+  # compared with this reader's place automatically.
+  def send_shelfarr_place
+    device = Current.user.kobo_devices.find(params[:id])
+    delivery = device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id].to_s)
+    progress = Kobo::OutboundProgress.progresses_for(device, [ delivery ])[delivery.book_id]
+    raise Kobo::OutboundProgress::NothingToSend unless Kobo::OutboundProgress.new(delivery, progress).choose!
+
+    redirect_to kobo_device_path(device), notice: "#{device.name} moves #{delivery.publication['title']} to the Shelfarr place at its next Wi-Fi sync."
+  rescue Kobo::OutboundProgress::NothingToSend
+    redirect_to kobo_device_path(device), alert: "There is no Shelfarr place waiting for a choice for this book. Its place may have changed; review it again."
   end
 
   def rotate
@@ -71,7 +89,7 @@ class KoboDevicesController < ApplicationController
   private
 
   def device_params
-    params.require(:kobo_device).permit(:name, :base_url, :store_coexistence, :share_progress)
+    params.require(:kobo_device).permit(:name, :base_url, :store_coexistence, :share_progress, :receive_progress)
   end
 
   def load_deliveries
@@ -80,8 +98,12 @@ class KoboDevicesController < ApplicationController
     @progresses = Current.user.consumer_progresses.where(book_id: @deliveries.map(&:book_id).compact).index_by(&:book_id)
   end
 
-  def update_notice(was_coexisting)
-    if @device.store_coexistence? && !was_coexisting
+  def update_notice(was_coexisting, was_receiving)
+    if @device.receive_progress? && !was_receiving
+      "#{@device.name} receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync."
+    elsif !@device.receive_progress? && was_receiving
+      "#{@device.name} no longer receives Shelfarr reading places. Places it already has stay on the reader."
+    elsif @device.store_coexistence? && !was_coexisting
       "Kobo Store kept on #{@device.name}. Sync the reader over Wi-Fi: your Store library and Shelfarr books both arrive."
     elsif !@device.store_coexistence? && was_coexisting
       "#{@device.name} now syncs Shelfarr books only. Books already on the reader are kept; new Store purchases wait until you restore the original endpoint."

@@ -382,4 +382,77 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal read_at.floor(3), saved.observed_at
     assert_equal "kobo.4.2", delivery.reload.reading_state.dig("CurrentBookmark", "Location", "Value")
   end
+
+  # The Kobo side of the reverse path: a place saved through the consumer API,
+  # then the stock protocol requests a reader makes after it.
+  def receive_shelfarr_places!
+    prepare_kobo_kepub
+    @device.update!(share_progress: true, receive_progress: true)
+    @delivery = @device.send_book!(@book)
+    get "#{@base}/download/#{@delivery.entitlement_id}/#{@delivery.revision_id}"
+    assert_response :success
+    @asset_id = Consumer::LibraryAssets.new(@book).list.sole.id
+  end
+
+  def read_in_shelfarr(href: "OEBPS/Text/ch2.xhtml", progression: 0.5, at: 1.hour.ago)
+    current = users(:one).consumer_progresses.find_by(book: @book)
+    Consumer::ProgressWriter.new(user: users(:one), book: @book).call("asset_id" => @asset_id, "expected_version" => current&.version || 0,
+      "client_mutation_id" => SecureRandom.uuid, "observed_at" => at.utc.iso8601(3),
+      "locator" => { "href" => href, "type" => "application/xhtml+xml", "locations" => { "progression" => progression, "totalProgression" => 0.4 } })
+  end
+
+  test "an incremental sync and GET state give the Kobo its Shelfarr place, and its echo changes nothing" do
+    receive_shelfarr_places!
+    get "#{@base}/v1/library/sync"
+    cursor = response.headers.fetch("x-kobo-synctoken")
+    read_at = 1.hour.ago.utc.floor(3)
+    saved = read_in_shelfarr(at: read_at)
+
+    head "#{@base}/v1/library/#{@delivery.entitlement_id}/state"
+    assert_response :success
+    assert_nil @delivery.reload.progress_outbound, "HEAD has no side effects"
+
+    get "#{@base}/v1/library/sync", headers: { "X-Kobo-Synctoken" => cursor }
+    assert_response :success
+    state = response.parsed_body.sole.fetch("ChangedReadingState").fetch("ReadingState")
+    assert_equal({ "Type" => "KoboSpan", "Source" => "OEBPS/Text/ch2.xhtml", "Value" => "kobo.5.2" }, state.dig("CurrentBookmark", "Location"))
+    assert_equal read_at.iso8601(3), state.dig("CurrentBookmark", "LastModified")
+    cursor = response.headers.fetch("x-kobo-synctoken")
+
+    get "#{@base}/v1/library/#{@delivery.entitlement_id}/state"
+    assert_equal state, response.parsed_body.sole, "GET state serves the same place"
+    get "#{@base}/v1/library/sync", headers: { "X-Kobo-Synctoken" => cursor }
+    assert_equal [], response.parsed_body
+
+    put "#{@base}/v1/library/#{@delivery.entitlement_id}/state", as: :json, params: { ReadingStates: [ {
+      EntitlementId: @delivery.entitlement_id, CurrentBookmark: state.fetch("CurrentBookmark").merge("LastModified" => Time.current.utc.iso8601(7),
+        "Location" => state.dig("CurrentBookmark", "Location").merge("Source" => "#{@delivery.entitlement_id}!OEBPS!Text/ch2.xhtml")) } ] }
+    assert_response :success
+    assert_equal "Success", response.parsed_body.fetch("RequestResult")
+    assert_equal saved.attributes, users(:one).consumer_progresses.find_by!(book: @book).attributes
+    assert_equal "echo", @delivery.reload.progress_bridge["status"]
+    get "#{@base}/v1/library/sync", headers: { "X-Kobo-Synctoken" => cursor }
+    assert_equal [], response.parsed_body, "an echo never requeues itself"
+  end
+
+  test "coexistence adds the Shelfarr place to sync without any reading-state request to the Kobo Store" do
+    receive_shelfarr_places!
+    coexist!
+    stub_request(:get, "#{STORE}/v1/library/sync").to_return(headers: { "Content-Type" => "application/json", "X-Kobo-Synctoken" => "store-next" },
+      body: [ { "ChangedReadingState" => { "ReadingState" => { "EntitlementId" => @delivery.entitlement_id, "CurrentBookmark" => {} } } },
+        { "ChangedReadingState" => { "ReadingState" => { "EntitlementId" => "store-book", "CurrentBookmark" => {} } } } ].to_json)
+    get "#{@base}/v1/library/sync", headers: kobo_headers
+    cursor = response.headers.fetch("x-kobo-synctoken")
+    read_in_shelfarr
+    get "#{@base}/v1/library/sync", headers: kobo_headers.merge("X-Kobo-Synctoken" => cursor)
+    assert_response :success
+    ids = response.parsed_body.map { |item| item.fetch("ChangedReadingState").dig("ReadingState", "EntitlementId") }
+    assert_equal [ @delivery.entitlement_id, "store-book" ], ids, "Kobo's own records never replace Shelfarr's"
+    assert_equal "kobo.5.2", response.parsed_body.first.dig("ChangedReadingState", "ReadingState", "CurrentBookmark", "Location", "Value")
+    get "#{@base}/v1/library/#{@delivery.entitlement_id}/state", headers: kobo_headers
+    assert_response :success
+    assert_not_requested :any, %r{#{STORE}/v1/library/.*/state}
+    assert_not_requested :post, /#{STORE}/
+    assert_not_requested :put, /#{STORE}/
+  end
 end

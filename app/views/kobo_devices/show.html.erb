@@ -33,12 +33,21 @@
           <% unless delivery.private_source? %>
             <p class="text-sm text-gray-400 mt-1"><%= delivery.book&.acquired? ? (delivery.last_download_at ? "Download requested #{time_ago_in_words(delivery.last_download_at)} ago" : "Queued · waiting for download") : "Source removed from library · copy on reader kept" %></p>
           <% end %>
+          <% place = nil %>
           <% if @device.share_progress? || delivery.progress_bridge.present? %>
             <% place = kobo_place_notice(delivery, @progresses[delivery.book_id]) %>
             <p class="text-sm mt-1 <%= tones.fetch(place.tone) %>" data-testid="kobo-place"><%= place.text %></p>
           <% end %>
+          <% outbound = nil %>
+          <% if @device.receive_progress? && !delivery.private_source? && delivery.book_id %>
+            <% outbound = kobo_outbound_notice(delivery, @progresses[delivery.book_id]) %>
+            <p class="text-sm mt-1 <%= tones.fetch(outbound.tone) %>" data-testid="kobo-outbound"><%= outbound.text %></p>
+          <% end %>
         </div>
         <div class="flex flex-wrap items-start gap-2">
+          <% if outbound&.choosable %>
+            <%= button_to "Send Shelfarr place", send_shelfarr_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }, form: { data: { turbo_confirm: "Move #{delivery.publication['title']} on #{@device.name} to the Shelfarr place at its next sync?" } }, class: "rounded-lg bg-sky-800 px-3 py-2 text-sm text-white hover:bg-sky-700" %>
+          <% end %>
           <% if place&.choosable %>
             <%= button_to "Use Kobo place", use_kobo_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }, form: { data: { turbo_confirm: "Resume #{delivery.publication['title']} at the Kobo place in Shelfarr's web and mobile readers?" } }, class: "rounded-lg bg-sky-800 px-3 py-2 text-sm text-white hover:bg-sky-700" %>
           <% end %>
@@ -60,7 +69,7 @@
         <p class="text-sm text-amber-300">This reader received Shelfarr's placeholder sign-in <%= time_ago_in_words(@device.placeholder_auth_at) %> ago. After keeping the Kobo Store, Kobo may ask it to sign in again; use the same Kobo account.</p>
       <% end %>
       <p class="text-sm text-gray-400">Changes apply at the reader's next sync. The connection address stays the same.</p>
-      <%= form.submit "Save settings", class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 cursor-pointer" %>
+      <%= form.submit "Save settings", class: "max-w-full whitespace-normal rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 cursor-pointer" %>
     <% end %>
   </section>
   <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">

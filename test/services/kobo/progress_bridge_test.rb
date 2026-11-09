@@ -165,4 +165,20 @@ class Kobo::ProgressBridgeTest < ActiveSupport::TestCase
     end
     assert_not @delivery.reload.progress_bridge.to_json.include?("private/path")
   end
+
+  test "this reader's own shared and chosen places stay recognisable after later notices and resends" do
+    bridge(bookmark(at: 2.hours.ago))
+    shared = progress
+    assert Kobo::ProgressBridge.written_by?(@delivery.reload, shared)
+    assert_equal "superseded", bridge(bookmark(source: "Text/chapter%201.xhtml", at: 3.hours.ago))["status"]
+    @device.send_book!(@book)
+    assert Kobo::ProgressBridge.written_by?(@delivery.reload, shared), "a later notice or a resend of the same file keeps the record"
+
+    Consumer::ProgressWriter.new(user: @user, book: @book).call("asset_id" => @asset_id, "expected_version" => shared.version,
+      "client_mutation_id" => SecureRandom.uuid, "observed_at" => 1.minute.ago.utc.iso8601(3),
+      "locator" => { "href" => "OEBPS/Text/chapter%201.xhtml", "locations" => {} })
+    assert_not Kobo::ProgressBridge.written_by?(@delivery.reload, progress), "another device's place is not this reader's"
+    assert_not Kobo::ProgressBridge.written_by?(@delivery, nil)
+    assert_operator Array(@delivery.progress_bridge["mutations"]).size, :<=, Kobo::ProgressBridge::MUTATION_HISTORY
+  end
 end

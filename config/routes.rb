@@ -85,6 +85,7 @@ Rails.application.routes.draw do
     post :rotate, on: :member
     post :send_book, on: :member
     post :use_kobo_place, on: :member
+    post :send_shelfarr_place, on: :member
   end
 
   scope "kobo/:kobo_token", controller: :kobo, defaults: { format: :json } do

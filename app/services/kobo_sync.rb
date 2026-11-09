@@ -10,6 +10,8 @@ class KoboSync
   end
 
   def call(raw_cursor)
+    # A Shelfarr place queued now gets a revision inside this sync's bounds.
+    Kobo::OutboundProgress.refresh(@device)
     after, upper = cursor_bounds(raw_cursor)
     deliveries = @device.kobo_deliveries.where(sync_revision: (after + 1)..upper).order(:sync_revision).limit(PAGE_SIZE + 1).to_a
     more = deliveries.size > PAGE_SIZE
@@ -20,14 +22,25 @@ class KoboSync
     deliveries = deliveries.select(&:deliverable?)
     token = verifier.generate({ "device" => @device.id, "generation" => @device.token_digest,
       "after" => next_after, "upper" => more ? upper : nil }, purpose: "kobo-sync")
-    items = deliveries.map do |delivery|
-      # Full upserts with stable entitlement IDs are replayable. Kobo ignores
-      # ChangedEntitlement for an unknown book: a resend between pages must
-      # still announce it if the earlier revision was never received.
-      payload = { "BookEntitlement" => entitlement(delivery), "BookMetadata" => metadata(delivery) }
-      payload["ReadingState"] = delivery.reading_state if delivery.reading_state
-      { "NewEntitlement" => payload }
+    progresses = @device.receive_progress? ? Kobo::OutboundProgress.progresses_for(@device, deliveries) : {}
+    sent = []
+    items = deliveries.filter_map do |delivery|
+      state, shelfarr = Kobo::OutboundProgress.serve(delivery, progresses[delivery.book_id])
+      sent << delivery if shelfarr
+      if (delivery.file_sync_revision || delivery.sync_revision) > after
+        # Full upserts with stable entitlement IDs are replayable. Kobo ignores
+        # ChangedEntitlement for an unknown book: a resend between pages must
+        # still announce it if the earlier revision was never received.
+        payload = { "BookEntitlement" => entitlement(delivery), "BookMetadata" => metadata(delivery) }
+        payload["ReadingState"] = state if state
+        { "NewEntitlement" => payload }
+      elsif shelfarr
+        # Only the reading state changed since this cursor: the book is not
+        # announced again, so its entitlement, file and download stay as they are.
+        { "ChangedReadingState" => { "ReadingState" => state } }
+      end
     end
+    Kobo::OutboundProgress.sent!(sent)
     @device.update_columns(last_sync_at: Time.current)
     Result.new(items: items, token: token, more: more)
   end

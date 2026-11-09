@@ -14,10 +14,45 @@ module Kobo
   # on the delivery with its reason so the owner can choose it explicitly.
   class ProgressBridge
     CHOICE_STATUSES = %w[superseded needs_choice unknown_time clock_ahead].freeze
-    STATUSES = (%w[shared no_place unsupported edition_changed unavailable] + CHOICE_STATUSES).freeze
+    STATUSES = (%w[shared echo no_place unsupported edition_changed unavailable] + CHOICE_STATUSES).freeze
     MAX_SOURCE_BYTES = 2048
+    MUTATION_HISTORY = 8
     EARLIEST = Time.utc(2000, 1, 1)
     class NothingToChoose < StandardError; end
+
+    class << self
+      # The same strict ISO-8601 rule as Consumer::ProgressWriter, at
+      # millisecond precision. An absent, zone-less or implausible time is
+      # unknown, not now.
+      def activity_time(value)
+        match = Consumer::ProgressWriter::TIMESTAMP.match(value) if value.is_a?(String)
+        return unless match && Date.valid_date?(*match.captures.map(&:to_i))
+
+        time = Time.iso8601(value).utc.floor(3)
+        time.iso8601(3) if time >= EARLIEST
+      end
+
+      # Whether this delivery's Kobo place is the saved progress. A shared
+      # place has a deterministic mutation; a chosen one is remembered.
+      def written_by?(delivery, progress)
+        return false unless progress&.locator.is_a?(Hash)
+
+        observed = progress.observed_at&.utc&.iso8601(3)
+        progress.client_mutation_id == mutation_for(delivery, progress.asset_id, observed, progress.locator) ||
+          Array(delivery.progress_bridge&.fetch("mutations", nil)).include?(progress.client_mutation_id)
+      end
+
+      # The same Kobo place always produces the same mutation, so a repeated
+      # state upload is an idempotent retry rather than new activity.
+      def mutation_for(delivery, asset_id, observed_at, locator)
+        digest = Digest::SHA256.hexdigest([ "kobo-progress-v1", delivery.entitlement_id, delivery.revision_id,
+          asset_id, observed_at, locator.to_json ].join("\0"))
+        hex = digest[0, 32]
+        hex[12] = "8"
+        hex[16] = ((hex[16].to_i(16) & 0x3) | 0x8).to_s(16)
+        [ hex[0, 8], hex[8, 4], hex[12, 4], hex[16, 4], hex[20, 12] ].join("-")
+      end
+    end
 
     def initialize(delivery)
       @delivery = delivery
@@ -28,6 +63,9 @@ module Kobo
 
     def call(bookmark)
       return unless @device.share_progress?
+      # The Kobo reporting a place Shelfarr sent it is not new reading: it
+      # never becomes a new version, a new time, or a place to send back.
+      return save(place(bookmark).except("source", "chapter_percent").merge("status" => "echo")) if OutboundProgress.echo?(@delivery, bookmark)
 
       save(evaluate(bookmark))
     rescue StandardError => error
@@ -43,10 +81,11 @@ module Kobo
       raise NothingToChoose unless CHOICE_STATUSES.include?(bridge["status"]) && bridge["locator"]
 
       current = @user.consumer_progresses.find_by(book: @book)
+      mutation = SecureRandom.uuid
       Consumer::ProgressWriter.new(user: @user, book: @book).call(
         "asset_id" => bridge["asset_id"], "locator" => bridge["locator"], "expected_version" => current&.version || 0,
-        "client_mutation_id" => SecureRandom.uuid, "observed_at" => Time.current.utc.iso8601(3), "resolve_conflict" => true)
-      save(bridge.merge("status" => "shared", "reason" => "chosen"))
+        "client_mutation_id" => mutation, "observed_at" => Time.current.utc.iso8601(3), "resolve_conflict" => true)
+      save(bridge.merge("status" => "shared", "reason" => "chosen", "mutation_id" => mutation))
     end
 
     private
@@ -108,14 +147,8 @@ module Kobo
       value.to_f
     end
 
-    # The same strict ISO-8601 rule as Consumer::ProgressWriter, at millisecond
-    # precision. An absent, zone-less or implausible time is unknown, not now.
     def activity_time(value)
-      match = Consumer::ProgressWriter::TIMESTAMP.match(value) if value.is_a?(String)
-      return unless match && Date.valid_date?(*match.captures.map(&:to_i))
-
-      time = Time.iso8601(value).utc.floor(3)
-      time.iso8601(3) if time >= EARLIEST
+      self.class.activity_time(value)
     end
 
     # Proof that the place belongs to the publication's current consumer asset:
@@ -164,10 +197,11 @@ module Kobo
         return candidate.merge("status" => "shared") if same_place && (progress.observed_at.nil? || progress.observed_at == time)
       end
 
+      mutation = self.class.mutation_for(@delivery, candidate["asset_id"], candidate["observed_at"], candidate["locator"])
       Consumer::ProgressWriter.new(user: @user, book: @book).call(
         "asset_id" => candidate["asset_id"], "locator" => candidate["locator"], "expected_version" => progress&.version || 0,
-        "client_mutation_id" => mutation_id(candidate), "observed_at" => candidate["observed_at"])
-      candidate.merge("status" => "shared")
+        "client_mutation_id" => mutation, "observed_at" => candidate["observed_at"])
+      candidate.merge("status" => "shared", "mutation_id" => mutation)
     rescue Consumer::ProgressWriter::Conflict
       # Another device saved a place in between: compare again once.
       attempt == 1 ? write(candidate, time, attempt: 2) : candidate.merge("status" => "needs_choice", "reason" => "concurrent")
@@ -175,19 +209,13 @@ module Kobo
       candidate.merge("status" => "edition_changed", "reason" => "not_a_current_asset")
     end
 
-    # The same Kobo place always produces the same mutation, so a repeated
-    # state upload is an idempotent retry rather than new activity.
-    def mutation_id(candidate)
-      digest = Digest::SHA256.hexdigest([ "kobo-progress-v1", @delivery.entitlement_id, @delivery.revision_id,
-        candidate["asset_id"], candidate["observed_at"], candidate["locator"].to_json ].join("\0"))
-      hex = digest[0, 32]
-      hex[12] = "8"
-      hex[16] = ((hex[16].to_i(16) & 0x3) | 0x8).to_s(16)
-      [ hex[0, 8], hex[8, 4], hex[12, 4], hex[16, 4], hex[20, 12] ].join("-")
-    end
-
+    # Mutations this reader wrote are kept across later notices, so its own
+    # place is never mistaken for another device's and sent back to it.
     def save(bridge)
-      bridge = bridge.except("source").merge("checked_at" => Time.current.utc.iso8601(3))
+      mutations = Array(@delivery.progress_bridge&.fetch("mutations", nil))
+      mutations = (mutations - [ bridge["mutation_id"] ] + [ bridge["mutation_id"] ]).last(MUTATION_HISTORY) if bridge["mutation_id"]
+      bridge = bridge.except("source", "mutation_id").merge("checked_at" => Time.current.utc.iso8601(3))
+      bridge["mutations"] = mutations if mutations.any?
       @delivery.update_columns(progress_bridge: bridge)
       bridge
     end

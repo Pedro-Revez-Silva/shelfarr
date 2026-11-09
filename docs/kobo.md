@@ -43,7 +43,7 @@ by [Komga](https://komga.org/docs/guides/kobo/) and
 
 1. In Shelfarr, open **My Profile → Kobo readers**. Enter a recognisable name
    and the Shelfarr address reachable from that Kobo. Choose the Store mode and
-   whether to share reading places.
+   which reading places to share.
 2. Select **Create connection**. The private connection address appears once.
    It grants access to books selected for this reader; treat it like a password.
 3. Connect the Kobo to a computer by USB. Back up
@@ -94,6 +94,9 @@ on the reader to disconnect it fully.
 - Reading state received from a Kobo is retained for that reader as sent. With
   **Share reading places with Shelfarr**, a supported place is also offered to
   the owner's shared progress; see [Shared reading places](#shared-reading-places).
+  With **Receive Shelfarr reading places**, the owner's place from the web
+  reader or the mobile apps is sent to the reader for KEPUB books; see
+  [Shelfarr places on the Kobo](#shelfarr-places-on-the-kobo-preview).
   Read-along is not offered.
 
 ## Kobo Store coexistence
@@ -173,8 +176,69 @@ update the owner's progress for the web reader and the Android and iOS apps.
   place. **Use Kobo place** is an explicit choice: it saves the place with the
   time of the choice. Percentage-only places and unknown chapters are shown as
   not shareable.
-- Places from other devices are not sent to the Kobo. A Kobo position needs
-  Kobo's own span location, which Shelfarr cannot derive honestly.
+- The other direction is a separate option; see
+  [Shelfarr places on the Kobo](#shelfarr-places-on-the-kobo-preview).
+
+## Shelfarr places on the Kobo (preview)
+
+With **Receive Shelfarr reading places** (off for every reader, new or existing,
+until physical-reader acceptance), a place you reach in Shelfarr's web reader
+or the Android or iOS app is offered to that Kobo at its next Wi-Fi sync. When
+you then read further on the Kobo, **Share reading places with Shelfarr**
+brings that later place back as before. Each option works on its own.
+
+- **Only KEPUB library files.** Kobo's KEPUB engine names a place by chapter
+  resource and the id of a `koboSpan` sentence marker that exists in the file
+  (`Location {Type: "KoboSpan", Source, Value: "kobo.P.S"}`). Shelfarr reads
+  those markers from the exact file generation it delivered and sends one of
+  them; it never constructs an id such as `kobo.1.1` from a percentage. Plain
+  EPUB files are opened by Kobo's other engine, whose place format has not been
+  established, so they are not sent places; Shelfarr does not convert EPUB to
+  KEPUB. Books shared from Kobo accounts, Kobo Store books, PDFs and comics keep
+  their Kobo place.
+- **Approximate, chapter-accurate.** The chapter is exact. Inside it, the place
+  is the marker whose sentence holds the same point: the web reader's EPUB CFI
+  for that file when it resolves inside the chapter, otherwise a fragment id,
+  otherwise the chapter progression measured in characters of body text. The
+  Kobo opens the page containing that sentence, so the page can differ from the
+  one you left. A chapter without markers, larger than 4 MiB, with more than
+  50,000 markers, or with declarations inside its document type is not sent.
+- **Same edition only.** The place must name the reader's delivered file as the
+  current consumer asset, and the reader must have downloaded it. A place in a
+  different file, a changed library file, or a reader that may still have an
+  earlier file generation is not sent automatically.
+- **Original reading time.** The bookmark's `LastModified` and the state's
+  `PriorityTimestamp` are the time the place was read in Shelfarr. Queuing,
+  syncing, retries and GET requests never change it or Shelfarr's own progress.
+- **Newer wins.** A Kobo place from a later time is never replaced, including
+  between queuing and the sync. Equal times, a Shelfarr place with no reading
+  time, a Kobo place with no time, an older Shelfarr place and an unverified
+  edition are shown on the reader page with their reason. **Send Shelfarr
+  place** is an explicit choice: the bookmark then carries the time of the
+  choice (Shelfarr's own progress is not changed).
+- **No echo.** Every marker sent is remembered for that delivery. When the Kobo
+  reports one back, even with its own later clock, it is recorded as the place
+  Shelfarr sent and creates no new version, time or send. A place this Kobo
+  shared itself is never sent back to it; the owner's other opted-in Kobo
+  readers receive it.
+- **Protocol.** A queued place advances the reader's sync revision while its
+  entitlement ID, revision and file stay the same. An incremental sync past the
+  book receives `{"ChangedReadingState": {"ReadingState": …}}` — the shape
+  Calibre-Web and Komga use for state-only changes — and no new entitlement or
+  download. A full replay embeds the state in `NewEntitlement` as before.
+  `GET …/state` answers with the same place. Opt-in, ownership and the newer-place
+  rule are checked again whenever it is served, so turning the option off
+  withdraws an unsynced place.
+- **Store and household rules are unchanged.** Places are sent only from
+  Shelfarr's own state endpoint and sync entries. Nothing is written to the Kobo
+  Store, Store records never replace Shelfarr's, and a revoked household copy
+  is never given a place.
+
+The reader page lists each book's outbound status: waiting for the next sync,
+sent with a sync, already there, from this Kobo, or why it was not sent.
+Whether a given firmware applies a state-only change while the book is closed,
+open, or only after reopening it is pending physical acceptance; see the matrix
+below.
 
 ## Deployment and secret handling
 
@@ -200,7 +264,8 @@ log `Authorization` headers there.
 Automated tests cover legacy User-Agent handling, per-device authorization,
 token rotation, replay/pagination, file changes, references, range/HEAD responses,
 state isolation, embedded covers, and the browser setup/send flows. Coexistence
-and shared places are covered against simulated Store responses. The relay
+and shared places in both directions are covered against simulated Store
+responses and synthetic multi-chapter KEPUB files. The relay
 code was also run read-only against the live Store with a connected account's
 credentials: initialization (181 resources, all overridden keys present, Kobo
 sign-in kept), a three-page combined sync with the encrypted cursor (under
@@ -226,6 +291,9 @@ reader and complete the following on the oldest, middle, and newest generation:
 | Coexistence: Store library, purchase sync and Store book opens beside Shelfarr books | Pending | Pending | Pending |
 | Coexistence: token refresh, Store outage keeps Shelfarr books, mode switch | Pending | Pending | Pending |
 | Shared places: KEPUB and EPUB place reaches web/app; older place offered | Pending | Pending | Pending |
+| Shelfarr places: KEPUB place from web/app opens at the sent chapter and sentence after an incremental sync (book closed and open) | Pending | Pending | Pending |
+| Shelfarr places: no duplicate book or re-download; later Kobo reading flows back; echo creates no new Shelfarr version | Pending | Pending | Pending |
+| Shelfarr places: newer Kobo place kept; option off withdraws an unsynced place; plain EPUB unchanged | Pending | Pending | Pending |
 
 No physical-device results have been recorded yet. In a failure report, include
 model, firmware, whether HTTP/HTTPS and a subpath were used, the failing step,

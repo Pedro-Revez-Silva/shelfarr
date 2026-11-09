@@ -191,4 +191,57 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_match(/belongs to an edition/, flash[:alert])
     assert_equal "b.xhtml", users(:one).consumer_progresses.find_by!(book: @book).locator["href"]
   end
+
+  test "receiving Shelfarr places is off for new and existing readers until the owner turns it on" do
+    assert_not @device.receive_progress?
+    get kobo_devices_path
+    assert_select "input[type=checkbox][name='kobo_device[receive_progress]']:not([checked])"
+    assert_select "#kobo-receive-help", text: /next Wi-Fi sync.*Only KEPUB files.*Plain EPUB files, books shared from Kobo accounts and Kobo Store books keep their Kobo place.*Not yet tested on a physical Kobo/
+    post kobo_devices_path, params: { kobo_device: { name: "Fresh", base_url: "https://shelfarr.example" } }
+    assert_not users(:one).kobo_devices.find_by!(name: "Fresh").receive_progress?
+
+    patch kobo_device_path(@device), params: { kobo_device: { receive_progress: "1" } }
+    assert_redirected_to kobo_device_path(@device)
+    assert_match(/receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync/, flash[:notice])
+    assert @device.reload.receive_progress?
+    assert_not @device.share_progress?, "the two directions are independent"
+    patch kobo_device_path(@device), params: { kobo_device: { receive_progress: "0" } }
+    assert_match(/no longer receives Shelfarr reading places/, flash[:notice])
+
+    other, = KoboDevice.issue(user: users(:two), name: "Theirs", base_url: "https://shelfarr.example")
+    other.save!
+    patch kobo_device_path(other), params: { kobo_device: { receive_progress: "1" } }
+    assert_response :not_found
+    assert_not other.reload.receive_progress?
+  end
+
+  test "a Shelfarr place that needs a choice is explained and can be sent explicitly" do
+    prepare_kobo_kepub
+    @device.update!(receive_progress: true)
+    delivery = @device.send_book!(@book)
+    delivery.update!(last_download_at: 1.hour.ago)
+    asset = Consumer::LibraryAssets.new(@book).list.sole.id
+    Consumer::ProgressWriter.new(user: users(:one), book: @book).call("asset_id" => asset, "expected_version" => 0,
+      "client_mutation_id" => SecureRandom.uuid, "locator" => { "href" => "OEBPS/Text/ch2.xhtml", "locations" => { "progression" => 0.5, "totalProgression" => 0.4 } })
+    Kobo::OutboundProgress.refresh(@device)
+    get kobo_device_path(@device)
+    assert_select "[data-testid=kobo-outbound]", text: /Shelfarr's place \(chapter 2 of 3, 40% of the book\) has no reading time/
+    assert_select "button", text: "Send Shelfarr place"
+
+    other, = KoboDevice.issue(user: users(:two), name: "Theirs", base_url: "https://shelfarr.example")
+    other.save!
+    post send_shelfarr_place_kobo_device_path(other), params: { entitlement_id: delivery.entitlement_id }
+    assert_response :not_found
+    assert_equal "needs_choice", delivery.reload.progress_outbound["status"]
+
+    post send_shelfarr_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }
+    assert_redirected_to kobo_device_path(@device)
+    assert_match(/moves A Library Book to the Shelfarr place at its next Wi-Fi sync/, flash[:notice])
+    follow_redirect!
+    assert_select "[data-testid=kobo-outbound]", text: /Your chosen Shelfarr place \(chapter 2 of 3, 40% of the book\) waits for this Kobo's next Wi-Fi sync/
+    assert_select "button", text: "Send Shelfarr place", count: 0
+    post send_shelfarr_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }
+    assert_match(/no Shelfarr place waiting for a choice/, flash[:alert])
+    assert_nil users(:one).consumer_progresses.sole.observed_at, "choosing never invents a Shelfarr reading time"
+  end
 end

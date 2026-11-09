@@ -121,6 +121,8 @@ class KoboController < ActionController::API
   # The Kobo state is saved for this physical reader as Kobo sent it. When the
   # owner shares reading places, a supported place is also offered to shared
   # progress; Kobo's own location values are never treated as app locators.
+  # When the reader receives Shelfarr places, GET answers with the owner's
+  # current Shelfarr place where it is newer and maps to a real Kobo span.
   def state
     selected = @device.kobo_deliveries.find_by(entitlement_id: params[:entitlement_id])
     return proxy_store if !selected && coexisting?
@@ -128,7 +130,11 @@ class KoboController < ActionController::API
 
     selected ||= delivery
     unless request.put?
-      render json: selected.reading_state ? [ selected.reading_state ] : []
+      Kobo::OutboundProgress.refresh(@device, only: selected) unless request.head?
+      progress = Kobo::OutboundProgress.progresses_for(@device, [ selected ])[selected.book_id] if @device.receive_progress?
+      reading_state, shelfarr = Kobo::OutboundProgress.serve(selected, progress)
+      Kobo::OutboundProgress.sent!([ selected ]) if shelfarr && !request.head?
+      render json: reading_state ? [ reading_state ] : []
     else
       body = bounded_json
       return if performed?

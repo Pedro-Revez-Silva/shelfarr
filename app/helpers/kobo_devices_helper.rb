@@ -31,6 +31,7 @@ module KoboDevicesHelper
       case [ bridge["status"], bridge["reason"] ]
       in [ "shared", "chosen" ] then "Shelfarr resumes at the Kobo place you chose (#{place})."
       in [ "shared", _ ] then "Reading place shared with Shelfarr: #{place}."
+      in [ "echo", _ ] then "This Kobo reported the place Shelfarr sent it (#{place}); nothing new to share."
       in [ "superseded", _ ] then "Kept a newer place from another device#{saved_place_text(progress)}. Kobo place: #{place}."
       in [ "needs_choice", "same_time" ] then "Kobo and another device saved different places at the same moment. Kobo place: #{place}#{saved_place_text(progress, prefix: '; Shelfarr place')}."
       in [ "needs_choice", "saved_time_unknown" ] then "Shelfarr's saved place has no reading time, so it can't be compared with the Kobo place (#{place})."
@@ -46,7 +47,43 @@ module KoboDevicesHelper
       in [ "edition_changed", _ ] then "The library file changed after it was sent. Send it again to share reading places."
       else "Shelfarr couldn't check this book's file. It tries again when the Kobo next saves a place."
       end
-    tone = bridge["status"] == "shared" ? :ok : (choosable ? :choice : :warning)
+    tone = %w[shared echo].include?(bridge["status"]) ? :ok : (choosable ? :choice : :warning)
+    Notice.new(tone, text, choosable)
+  end
+
+  # What happened to the owner's Shelfarr place for this reader.
+  def kobo_outbound_notice(delivery, progress)
+    outbound = delivery.progress_outbound
+    return Notice.new(:info, "No Shelfarr reading place to send yet. Read this book in Shelfarr, then sync this Kobo.", false) if outbound.blank? || progress.nil?
+
+    stale = outbound["progress_version"] != progress.version || outbound["progress_mutation_id"] != progress.client_mutation_id
+    return Notice.new(:info, "Shelfarr has a newer place for this book. It is checked at this Kobo's next sync.", false) if stale
+
+    place = shelfarr_place_text(outbound)
+    choosable = outbound["status"] == "needs_choice" && outbound["span"].present?
+    text =
+      case [ outbound["status"], outbound["reason"] ]
+      in [ "queued", "chosen" ] then "Your chosen Shelfarr place (#{place}) waits for this Kobo's next Wi-Fi sync."
+      in [ "queued", _ ] then "Shelfarr place (#{place}) waits for this Kobo's next Wi-Fi sync. Kobo opens the nearest sentence, so the page can differ slightly."
+      in [ "sent", _ ] then "Shelfarr place (#{place}) sent with the sync #{time_ago_in_words(Time.iso8601(outbound['sent_at']))} ago. The Kobo shows it when you next open the book."
+      in [ "at_place", _ ] then "This Kobo is already at Shelfarr's place (#{place})."
+      in [ "kobo_place", _ ] then "Shelfarr's latest place came from this Kobo, so it isn't sent back."
+      in [ "waiting", _ ] then "Waiting for this Kobo to download the book before sending Shelfarr's place."
+      in [ "needs_choice", "kobo_newer" ] then "This Kobo has a newer place#{kobo_time_text(outbound['kobo_at'])}, so Shelfarr's older place (#{place}) wasn't sent."
+      in [ "needs_choice", "same_time" ] then "This Kobo and Shelfarr saved different places at the same moment. Shelfarr place: #{place}."
+      in [ "needs_choice", "unknown_time" ] then "Shelfarr's place (#{place}) has no reading time, so it can't be compared with this Kobo's place."
+      in [ "needs_choice", "kobo_time_unknown" ] then "This Kobo's place has no reading time, so Shelfarr's place (#{place}) wasn't sent automatically."
+      in [ "needs_choice", "edition_unverified" ] then "This reader may still have the previous edition, so Shelfarr's place (#{place}) wasn't sent automatically. Send it only if the reader has the current file."
+      in [ "unsupported", "plain_epub" ] then "This is a plain EPUB. Kobo reads it with an engine whose places Shelfarr can't name, so Shelfarr places aren't sent. A KEPUB file of this book can receive them."
+      in [ "unsupported", "different_edition" ] then "Shelfarr's place is in a different file of this book, so it isn't sent to this reader."
+      in [ "unsupported", "file_changed" ] then "The library file changed after it was sent. Send it again to receive Shelfarr places."
+      in [ "unsupported", "location_not_in_edition" ] then "Shelfarr's place names a chapter this edition doesn't have, so it wasn't sent."
+      in [ "unsupported", "no_kobo_spans" ] then "This chapter has no Kobo sentence markers, so Shelfarr's place can't be named for the Kobo."
+      in [ "unsupported", "not_an_ebook" ] then "Shelfarr's place isn't a text place, so it isn't sent."
+      in [ "unsupported", _ ] then "This chapter is too large or can't be read safely, so Shelfarr's place wasn't sent."
+      else "Shelfarr couldn't check this book's file. It tries again when Shelfarr's place next changes."
+      end
+    tone = %w[queued sent at_place].include?(outbound["status"]) ? :ok : (choosable ? :choice : (%w[kobo_place waiting].include?(outbound["status"]) ? :info : :warning))
     Notice.new(tone, text, choosable)
   end
 
@@ -59,6 +96,19 @@ module KoboDevicesHelper
       parts << "read #{time_ago_in_words(Time.iso8601(bridge['observed_at']))} ago"
     end
     parts.presence&.join(", ") || "no percentage"
+  end
+
+  def shelfarr_place_text(outbound)
+    parts = []
+    parts << "chapter #{outbound['chapter']} of #{outbound['chapters']}" if outbound["chapter"] && outbound["chapters"]
+    parts << "#{outbound['percent']}% of the book" if outbound["percent"]
+    at = outbound["reason"] == "chosen" ? nil : outbound["observed_at"]
+    parts << "read #{time_ago_in_words(Time.iso8601(at))} ago" if at
+    parts.presence&.join(", ") || "no percentage"
+  end
+
+  def kobo_time_text(at)
+    at ? " (read #{time_ago_in_words(Time.iso8601(at))} ago)" : ""
   end
 
   def saved_place_text(progress, prefix: " (")
