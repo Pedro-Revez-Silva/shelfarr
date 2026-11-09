@@ -11,8 +11,10 @@ experience; acquired book details also link to its reader or player.
 The preview reads DRM-free EPUBs, plays supported local audio files, and saves
 personal progress. Clients that declare it can also open PDFs and CBZ comics:
 see [PDF and comic reading](consumer-formats.md) for the format negotiation,
-CBZ page order, page locators and the web PDF/comic reader. Read-along, edition
-alignment, CBR/RAR comics and a new acquisition engine are not implemented. The API is a migration boundary:
+CBZ page order, page locators and the web PDF/comic reader. [Read-along](read-along.md)
+follows real narration (EPUB 3 Media Overlays or an imported alignment) in the
+web reader; native read-along, computing alignment, CBR/RAR comics and a new
+acquisition engine are not implemented. The API is a migration boundary:
 clients depend on publications, file-generation assets, and locators rather than
 Rails models, paths, or downloader details. A later backend can preserve this
 contract while the acquisition engine is replaced incrementally.
@@ -67,6 +69,9 @@ Personal responses use `Cache-Control: private, no-store`.
 | `PUT /library/:id/reading_status` with `{status}` | Updated publication; requires `progress:write` |
 | `GET /library/:id/assets/:asset_id` | Original media bytes; GET, HEAD, single byte ranges, strong ETag, If-Range |
 | `GET /library/:id/assets/:asset_id/reading_order` | `{asset_id,format:"cbz",items:[page]}`: a CBZ asset's page order; see [formats](consumer-formats.md#cbz-reading-order) |
+| `GET /library/:id/assets/:asset_id/read_along` | An EPUB asset's read-along manifest; see [read-along](read-along.md#manifest-version-1) |
+| `GET /library/:id/assets/:asset_id/read_along/resources/*path` | One archive entry that manifest lists (text or narration); single byte ranges |
+| `GET /library/:id/assets/:asset_id/read_along/audio/:audio_asset_id` | An imported alignment's audiobook file, while that alignment is current |
 | `POST /library/:id/assets/:asset_id/transfer_grant` with `{}` | 201 `{url,expires_at}`: a bearer-free URL for that asset, described below |
 | `GET /library/:id/assets/:asset_id/transfer?grant=...` | The same media bytes, authorized only by the grant in the URL |
 | `GET /library/:id/progress` | `{progress:null\|progress}` |
@@ -313,7 +318,9 @@ positions carry a Readium-style locator with ZIP-root-relative `href` and bounde
 the locator rather than converting it to a percentage-only position. Reflowable
 text has no universal page count: cross-engine resume uses resource/progression
 and can be approximate. The web reader also saves its EPUB CFI for exact resume
-within that renderer. Read-along and alignment remain separate future work.
+within that renderer. A place reached by listening may also carry
+`locations.readAlong` (`generation`, `audio`, `offset_ms`): see
+[saved places in read-along](read-along.md#saved-places).
 
 ```json
 {

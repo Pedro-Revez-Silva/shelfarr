@@ -218,6 +218,24 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
     within(".consumer-offline") { assert_text "an older edition", wait: 15 }
   end
 
+  test "an interrupted read-along download is paused, not ready, and resumes to a complete copy" do
+    open_reader
+    reveal_reading_controls
+    ConsumerReachability.drop = %r{/read_along/resources/OEBPS/audio/narration\.mp3\z}
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Download paused", wait: 20
+    end
+    assert_selector ".consumer-offline:not([data-offline-state=ready])"
+    assert(media_entries.none? { |url| url.end_with?("/read_along") }, "the manifest is stored only after every file it lists")
+    ConsumerReachability.drop = nil
+    within(".consumer-offline") do
+      click_button "Resume"
+      assert_text "Available offline", wait: 20
+    end
+    assert(media_entries.any? { |url| url.end_with?("/narration.mp3") })
+  end
+
   test "an imported alignment narrates a separate audiobook and saves both places at the hearing time" do
     write_read_along_epub(@epub_path, overlay: false)
     FileUtils.cp(TONES, @audio_path)

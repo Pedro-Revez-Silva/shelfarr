@@ -544,7 +544,7 @@ export default class extends Controller {
     if (!target || !fragment || !this.active) return
     const element = this.elementFor(locator.href, fragment)
     const contents = element && this.contentsFor(locator.href)
-    if (contents) await this.showPlace(contents.cfiFromNode(element))
+    if (contents) await this.showPlace(this.elementCfi(contents, element))
   }
 
   // The loaded document (EPUB.js contents) for an archive path, if shown.
@@ -553,6 +553,15 @@ export default class extends Controller {
       const section = this.book.spine.get(contents.sectionIndex)
       return section && this.zipHref(section.href) === href
     }) || null
+  }
+
+  // A CFI for the start of an element's text. EPUB.js positions a collapsed
+  // text range cleanly; an element CFI makes it log range errors.
+  elementCfi(contents, element) {
+    const range = element.ownerDocument.createRange()
+    range.selectNodeContents(element)
+    range.collapse(true)
+    return contents.cfiFromRange(range)
   }
 
   // Sanitized documents prefix IDs ("user-content-"); look up both.
@@ -935,7 +944,7 @@ export default class extends Controller {
       const element = this.elementFor(href, prepared.fragments[cue])
       const contents = element && this.contentsFor(href)
       const sectionIndex = this.book.spine.get(this.bookTarget(href))?.index
-      const extra = { cfi: contents ? contents.cfiFromNode(element) : undefined,
+      const extra = { cfi: contents ? this.elementCfi(contents, element) : undefined,
         totalProgression: Number.isInteger(sectionIndex) ? Math.min(1, sectionIndex / Math.max(1, this.book.spine.length)) : undefined }
       this.recordPlace({ asset_id: readAlong.assetId, locator: module.locatorFor(prepared, track, ms, extra) }, observedAt)
       readAlong.readSinceHeard = false
@@ -955,7 +964,11 @@ export default class extends Controller {
     this.element.classList.toggle("consumer-reading-session--narrating", playing)
     this.readAlongPillTarget.hidden = !playing && !this.readAlong.pillAfterPause
     this.readAlongReturnTarget.hidden = !this.readAlong.suspended
-    if (playing) this.readAlong.pillAfterPause = true
+    if (playing) {
+      this.readAlong.pillAfterPause = true
+      // Choosing to play here answers the audiobook-place offer.
+      this.dismissAudiobookPlace()
+    }
     if (state === "finished") this.readAlong.finished = true
   }
 
@@ -1063,7 +1076,7 @@ export default class extends Controller {
       const contents = element && this.contentsFor(href)
       if (contents && !this.elementVisible(element)) {
         this.userMoved = false
-        await this.rendition.display(contents.cfiFromNode(element))
+        await this.rendition.display(this.elementCfi(contents, element))
       }
       this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
     }
