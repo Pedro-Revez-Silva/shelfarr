@@ -343,8 +343,27 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert reader_place(target)[:inside]
     assert_silent_layout(saved)
 
-    # Suppression ends with the next deliberate turn.
+    # Each layout starts its page before the saved text. Several in a row (a
+    # phone turned both ways, with a text size change between) must keep the
+    # saved place itself, not the start of the page the last layout produced.
     find("[data-consumer-reader-target=hide]").click
+    { [ 390, 844 ] => "Larger text", [ 844, 390 ] => "Smaller text" }.each do |(width, height), button|
+      before_turn = location_text
+      page.current_window.resize_to(width, height)
+      wait_until("the #{width}px page contains the saved text") { location_text != before_turn && reader_place(target)&.dig(:inside) }
+      wait_for_reader_layout
+      assert reader_place(target)[:inside], "the saved text stays visible at #{width}x#{height}"
+      assert_silent_layout(saved)
+      reveal_reading_controls
+      find("button[aria-label='#{button}']").click
+      wait_for_reader_layout
+      find("[data-consumer-reader-target=hide]").click
+      assert reader_place(target)[:inside], "the saved text stays visible after #{button} at #{width}x#{height}"
+      assert_silent_layout(saved)
+      capture("consumer-reading-reflowed-#{width}x#{height}.png")
+    end
+
+    # Suppression ends with the next deliberate turn.
     find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
     assert_operator wait_for_progress(@ebook, version: saved.version + 1).version, :>, saved.version
   end

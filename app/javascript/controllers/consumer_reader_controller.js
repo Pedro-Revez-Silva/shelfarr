@@ -286,6 +286,7 @@ export default class extends Controller {
     this.pageReader?.destroy()
     this.pageReader = null
     this.readerReady = false
+    this.readingAnchor = null
     this.deferredPlace = null
     if (this.hasErrorTarget) this.errorTarget.hidden = true
     this.assetIndex = index
@@ -579,23 +580,37 @@ export default class extends Controller {
   // section, which is now shown at its final width.
   async showPlace(target) {
     await this.rendition.display(target)
-    if (!target || !this.active) return
-    await this.settleFrames()
-    if (this.active) await this.rendition.display(target)
+    if (target && this.active) {
+      await this.settleFrames()
+      if (this.active) await this.rendition.display(target)
+    }
+    if (this.active) this.anchorAt(target)
+  }
+
+  // The reading anchor is the exact place being read: a restored CFI, the
+  // start of a page the reader turned to, or the element narration followed.
+  // Layout changes show it again and never replace it with the start of the
+  // page they produced. That start lies before the place, so re-anchoring on it
+  // let each change drift earlier until the saved text left the page.
+  anchorAt(target) {
+    const cfi = typeof target === "string" && target.startsWith("epubcfi(") ? target : this.rendition.currentLocation()?.start?.cfi
+    if (cfi) this.readingAnchor = cfi
+  }
+
+  layoutAnchor() {
+    return this.readingAnchor || this.rendition.location?.start?.cfi || this.rendition.currentLocation()?.start?.cfi
   }
 
   // A window or orientation change re-renders the section the same way. EPUB.js
   // queues its own display of the place right after this event; settle after
-  // it. The first place is kept through a burst of resizes.
+  // it. The anchor is kept through a burst of resizes.
   reflowed() {
     if (!this.readerReady) return
-    const cfi = this.reflowAnchor || this.rendition.location?.start?.cfi
+    const cfi = this.layoutAnchor()
     if (!cfi) return
-    this.reflowAnchor = cfi
     this.userMoved = false
     const reflow = this.readerReflow.then(() => this.active && this.showPlace(cfi))
       .catch(() => {})
-      .finally(() => { if (this.readerReflow === reflow) this.reflowAnchor = null })
     this.readerReflow = reflow
   }
 
@@ -717,6 +732,7 @@ export default class extends Controller {
     // Only the reader's own moves are activity; restoring or reflowing is not.
     if (!this.readerReady) return
     if (!this.userMoved) { this.lastEbookCfi = start.cfi; return }
+    this.readingAnchor = start.cfi
     if (start.cfi === this.lastEbookCfi) return
     this.lastEbookCfi = start.cfi
     // While narration plays, the place heard is the activity; turning pages
@@ -788,7 +804,7 @@ export default class extends Controller {
     const reflow = this.readerReflow.then(async () => {
       if (!this.active || !this.rendition || !this.readerReady) return
       this.userMoved = false
-      const cfi = this.reflowAnchor || this.rendition.currentLocation()?.start?.cfi
+      const cfi = this.layoutAnchor()
       this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
       this.savePreferences()
       this.rendition.themes.fontSize(`${this.fontSize}%`)
@@ -797,7 +813,6 @@ export default class extends Controller {
       if (cfi) await this.rendition.display(cfi)
       await this.rendition.reportLocation()
     }).catch(() => { if (this.active) this.showError("Text size couldn't be changed. Try again.") })
-      .finally(() => { if (this.readerReflow === reflow) this.reflowAnchor = null })
     this.readerReflow = reflow
   }
   savePreferences() {
@@ -1076,7 +1091,9 @@ export default class extends Controller {
       const contents = element && this.contentsFor(href)
       if (contents && !this.elementVisible(element)) {
         this.userMoved = false
-        await this.rendition.display(this.elementCfi(contents, element))
+        const cfi = this.elementCfi(contents, element)
+        await this.rendition.display(cfi)
+        this.readingAnchor = cfi
       }
       this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
     }
