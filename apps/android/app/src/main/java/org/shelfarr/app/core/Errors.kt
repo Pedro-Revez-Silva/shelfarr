@@ -13,14 +13,14 @@ sealed class ApiException(message: String, cause: Throwable? = null) : Exception
     class Unauthorized : ApiException("Sign-in is no longer valid")
 
     /** The token lacks a scope this call needs. */
-    class Forbidden : ApiException("This account cannot do that")
+    class Forbidden(val requiredScope: String? = null) : ApiException("This account cannot do that")
 
     class NotFound : ApiException("Not found")
 
     /** Someone else moved the shared position on. */
     class ProgressConflict(val current: Progress?) : ApiException("Progress changed on another device")
 
-    class Rejected(val code: String?) : ApiException("The server rejected this request")
+    class Rejected(val code: String?, val detail: String? = null) : ApiException("The server rejected this request")
 
     class Server(val status: Int) : ApiException("Server error $status")
 

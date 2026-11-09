@@ -90,6 +90,7 @@ import org.shelfarr.app.ui.details.DetailsActions
 import org.shelfarr.app.ui.details.DetailsScreen
 import org.shelfarr.app.ui.details.DetailsViewModel
 import org.shelfarr.app.ui.downloads.DownloadsScreen
+import org.shelfarr.app.ui.find.FindViewModel
 import org.shelfarr.app.ui.home.HomeScreen
 import org.shelfarr.app.ui.home.HomeViewModel
 import org.shelfarr.app.ui.home.LibraryScreen
@@ -116,6 +117,9 @@ internal const val SETTINGS = "settings"
 internal const val DETAILS = "details/{id}"
 internal const val PLAYER = "player/{id}"
 internal const val DOWNLOADS = "downloads"
+internal const val FIND = "find"
+internal const val FIND_TITLE = "find/title"
+internal const val REQUEST = "request/{id}"
 
 @Composable
 fun ShelfarrApp(
@@ -307,6 +311,7 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 private val TABS = listOf(
     Tab(HOME, "Home", ShelfarrIcons.Home),
     Tab(LIBRARY, "Library", ShelfarrIcons.Library),
+    Tab(FIND, "Find", ShelfarrIcons.Search),
     Tab(SETTINGS, "Settings", ShelfarrIcons.Settings),
 )
 
@@ -356,6 +361,10 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
         null
     }
 
+    // One Find model for the tab, the title page and the request page, scoped to the shell.
+    val find: FindViewModel = viewModel { FindViewModel(container) }
+    FindNavigation(find, navController, openBrowser = { context.openInBrowser(it) })
+
     MainShellLayout(navController, miniPlayer, badges = if (update.hasUpdate) setOf(SETTINGS) else emptySet()) {
         screen(HOME) {
             val viewModel: HomeViewModel = viewModel { HomeViewModel(container) }
@@ -385,6 +394,14 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
                 onSort = viewModel::setSort,
             )
         }
+        findScreens(
+            find = find,
+            navController = navController,
+            host = session.server.host,
+            accountName = session.user.displayName,
+            openWebsite = { context.openInBrowser(session.server.display) },
+            openPublication = { start(it) },
+        )
         screen(SETTINGS) {
             val appearance by container.appearance.collectAsState()
             var disconnecting by remember { mutableStateOf(false) }

@@ -9,9 +9,21 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 
 /** A signed-in account: one user on one server. */
-data class Session(val server: ServerAddress, val user: Me, val accessToken: String) {
+data class Session(
+    val server: ServerAddress,
+    val user: Me,
+    val accessToken: String,
+    /** The `scope` the token response named; null for sessions saved before it was kept. */
+    val grantedScopes: List<String>? = null,
+) {
     /** Scopes every local file, so accounts and servers can never mix. */
     val accountKey: String = accountKey(server, user.id)
+
+    /** What this credential may do: the server's current answer, else what it granted. */
+    val scopes: List<String> get() = user.scopes ?: grantedScopes ?: RequestScopes.BASE
+
+    /** Whether this connection was explicitly approved for finding and requesting titles. */
+    val canRequest: Boolean get() = RequestScopes.allows(scopes)
 
     /** Display names may change without replacing the account's services. */
     fun hasSameAccountAndToken(other: Session?): Boolean =
@@ -40,6 +52,7 @@ private data class StoredSession(
     val server: String,
     val accessToken: String,
     val user: Me,
+    val scopes: List<String>? = null,
 )
 
 @Serializable
@@ -48,6 +61,16 @@ private data class StoredAuthorization(
     val grant: DeviceGrant,
     val expiresAtEpochMs: Long,
 )
+
+@Serializable
+private data class StoredUpgrade(
+    val accountKey: String,
+    val grant: DeviceGrant,
+    val expiresAtEpochMs: Long,
+)
+
+/** An unfinished request for more permission on the signed-in account's connection. */
+data class PendingUpgrade(val accountKey: String, val grant: DeviceGrant, val expiresAtEpochMs: Long)
 
 /** An unfinished device authorization, kept so the app can survive being killed while the browser is open. */
 data class PendingAuthorization(val server: ServerAddress, val grant: DeviceGrant, val expiresAtEpochMs: Long)
@@ -80,23 +103,59 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
             return SessionState.SignedOut
         }
         if (stored.accessToken.isEmpty()) return SessionState.Expired(server, stored.user.displayName)
-        return SessionState.SignedIn(Session(server, stored.user, stored.accessToken))
+        return SessionState.SignedIn(Session(server, stored.user, stored.accessToken, stored.scopes))
     }
 
     @Synchronized
     fun signIn(session: Session) {
-        store.write(SESSION, ApiJson.encodeToString(StoredSession(session.server.display, session.accessToken, session.user)))
+        persist(session)
         store.delete(AUTHORIZATION)
         provisional = null
         state.value = SessionState.SignedIn(session)
     }
+
+    private fun persist(session: Session) {
+        store.write(SESSION, ApiJson.encodeToString(StoredSession(session.server.display, session.accessToken, session.user, session.grantedScopes)))
+    }
+
+    /**
+     * Swaps in a newly approved credential for the same account, keeping everything
+     * stored for it. Refused unless [expected] is still the live session and
+     * [upgraded] is the same user on the same server.
+     */
+    @Synchronized
+    fun replaceToken(expected: Session, upgraded: Session): Boolean {
+        val current = signedIn ?: return false
+        if (!current.hasSameAccountAndToken(expected) || upgraded.accountKey != current.accountKey) return false
+        persist(upgraded)
+        store.delete(UPGRADE)
+        state.value = SessionState.SignedIn(upgraded)
+        return true
+    }
+
+    fun savePendingUpgrade(pending: PendingUpgrade) {
+        store.write(UPGRADE, ApiJson.encodeToString(StoredUpgrade(pending.accountKey, pending.grant, pending.expiresAtEpochMs)))
+    }
+
+    /** The unfinished upgrade for [accountKey]; one for any other account is discarded. */
+    fun pendingUpgrade(accountKey: String, nowEpochMs: Long): PendingUpgrade? {
+        val stored = store.read(UPGRADE)?.let { decode<StoredUpgrade>(it) } ?: return null
+        if (stored.accountKey != accountKey || stored.expiresAtEpochMs <= nowEpochMs) {
+            store.delete(UPGRADE)
+            return null
+        }
+        return PendingUpgrade(stored.accountKey, stored.grant, stored.expiresAtEpochMs)
+    }
+
+    fun clearPendingUpgrade() = store.delete(UPGRADE)
 
     /** The server refused the token. Forget it, keep the address for re-authorizing. */
     @Synchronized
     fun markExpired(rejected: Credential) {
         val current = signedIn ?: return
         if (current.server != rejected.server || current.accessToken != rejected.accessToken) return
-        store.write(SESSION, ApiJson.encodeToString(StoredSession(current.server.display, "", current.user)))
+        store.write(SESSION, ApiJson.encodeToString(StoredSession(current.server.display, "", current.user, current.grantedScopes)))
+        store.delete(UPGRADE)
         state.value = SessionState.Expired(current.server, current.user.displayName)
     }
 
@@ -112,6 +171,7 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
     fun clear() {
         store.delete(SESSION)
         store.delete(AUTHORIZATION)
+        store.delete(UPGRADE)
         provisional = null
         state.value = SessionState.SignedOut
     }
@@ -144,5 +204,6 @@ class SessionManager(private val store: SecureStore) : CredentialSource {
     private companion object {
         const val SESSION = "session"
         const val AUTHORIZATION = "pending_authorization"
+        const val UPGRADE = "pending_upgrade"
     }
 }

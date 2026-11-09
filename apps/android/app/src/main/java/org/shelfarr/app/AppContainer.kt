@@ -8,6 +8,7 @@ import coil3.disk.directory
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -35,6 +36,8 @@ import org.shelfarr.app.core.SessionState
 import org.shelfarr.app.core.ConsumerApi
 import org.shelfarr.app.core.Credential
 import org.shelfarr.app.core.DeviceAuthorizer
+import org.shelfarr.app.core.RequestingAccess
+import org.shelfarr.app.core.RequestingBackend
 import org.shelfarr.app.core.DownloadManager
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.ReadingStatus
@@ -65,7 +68,7 @@ import org.shelfarr.app.update.buildUpdateHttpClient
 
 /** Everything tied to one signed-in account. Replaced wholesale when the account changes. */
 class AccountServices(
-    val session: Session,
+    private val live: AtomicReference<Session>,
     val api: ConsumerApi,
     val progress: ProgressRegistry,
     override val downloads: DownloadManager,
@@ -78,7 +81,21 @@ class AccountServices(
     val ready: Job,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : TransferAccount {
+    /** The account's live session. Its token may be replaced in place by [adopt]. */
+    val session: Session get() = live.get()
+
     override val accountKey: String get() = session.accountKey
+
+    /**
+     * Takes a newly approved credential for this same account (more permission, same
+     * user and server). Downloads, saved places, the title cache and playback continue;
+     * transfers stopped by an earlier sign-in problem resume with the new credential.
+     */
+    fun adopt(next: Session) {
+        require(next.accountKey == session.accountKey && next.server == session.server)
+        live.set(next)
+        scope.launch { downloads.resumeAfterSignIn() }
+    }
 
     /**
      * Stops transfers, timers and writes; the caller may then delete [directory].
@@ -146,6 +163,18 @@ class AppContainer(context: Context) {
     val httpClient: OkHttpClient = buildHttpClient(sessions) { rejected -> sessions.markExpired(rejected) }
     val api = ConsumerApi(httpClient)
     val authorizer = DeviceAuthorizer(api)
+
+    /** Adding the opt-in requesting permission to this connection, in place. */
+    val requesting = RequestingAccess(
+        object : RequestingBackend {
+            override val sessions get() = this@AppContainer.sessions
+            override val api get() = this@AppContainer.api
+            override val authorizer get() = this@AppContainer.authorizer
+            override fun apiFor(credential: Credential) = ConsumerApi(buildHttpClient({ credential }))
+        },
+        scope,
+        CLIENT_NAME,
+    )
     val epubCache = EpubCache(File(appContext.cacheDir, StorageLayout.EPUB_CACHE_DIRECTORY), httpClient)
     val playback = PlaybackController(appContext, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
 
@@ -192,6 +221,9 @@ class AppContainer(context: Context) {
 
     private var account: AccountServices? = null
 
+    /** The account an interrupted requesting approval was last resumed for. */
+    private var resumedUpgradeFor: String? = null
+
     private val autoDownloadUpdatesState = MutableStateFlow(preferences.getBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, false))
 
     /** Whether a found update may download on its own over an unmetered network. Installing always waits. */
@@ -231,6 +263,7 @@ class AppContainer(context: Context) {
         scope.launch {
             sessions.session.collect { state ->
                 val live = sessions.signedIn
+                if (live != null) adoptable(live)
                 val previous = synchronized(this@AppContainer) {
                     account?.takeIf { !it.session.hasSameAccountAndToken(live) }?.also {
                         account = null
@@ -243,6 +276,13 @@ class AppContainer(context: Context) {
                 if (live == null || previous != null) playback.stop()
                 // Resume this account's unfinished downloads as soon as it is signed in.
                 if (live != null) account(live)
+                if (live == null) {
+                    requesting.detach()
+                    resumedUpgradeFor = null
+                } else if (resumedUpgradeFor != live.accountKey) {
+                    resumedUpgradeFor = live.accountKey
+                    requesting.resume(live)
+                }
             }
         }
     }
@@ -251,18 +291,20 @@ class AppContainer(context: Context) {
     @Synchronized
     fun account(session: Session): AccountServices {
         account?.takeIf { it.session.hasSameAccountAndToken(session) }?.let { return it }
+        adoptable(session)?.let { return it }
         // The next account's downloads wait until the previous transfers have stopped.
         val closing = account?.let { previous -> scope.launch { previous.close() } }
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = StorageLayout.accountDirectory(appContext, session.accountKey)
         val store = FileProgressStore(File(directory, StorageLayout.PROGRESS_FILE))
         // Bound to this account's credential, so its retries and downloads can't borrow another token.
-        val accountClient = buildHttpClient({ Credential(session.server, session.accessToken) }) { sessions.markExpired(it) }
+        val live = AtomicReference(session)
+        val accountClient = buildHttpClient({ live.get().let { Credential(it.server, it.accessToken) } }) { sessions.markExpired(it) }
         val accountApi = ConsumerApi(accountClient)
         val registry = ProgressRegistry(
             store = store,
             remote = { id, update ->
-                if (!session.hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
+                if (!live.get().hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
                 accountApi.saveProgress(session.server, id, update)
             },
             scope = accountScope,
@@ -273,7 +315,7 @@ class AppContainer(context: Context) {
             client = accountClient,
             server = session.server,
             fetchPublication = { id ->
-                if (!session.hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
+                if (!live.get().hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
                 accountApi.publication(session.server, id)
             },
             scope = accountScope,
@@ -293,7 +335,7 @@ class AppContainer(context: Context) {
             if (!transfers.hasScheduledWork()) downloads.interruptInherited()
             downloads.resumeAfterSignIn()
         }
-        return AccountServices(session, accountApi, registry, downloads, directory, titles, store, accountScope, ready)
+        return AccountServices(live, accountApi, registry, downloads, directory, titles, store, accountScope, ready)
             .also {
                 account = it
                 accountState.value = it
@@ -301,6 +343,20 @@ class AppContainer(context: Context) {
     }
 
     fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
+
+    /**
+     * The live services, updated in place, when [session] is only a new credential for
+     * the signed-in account: requesting was added without signing out.
+     */
+    @Synchronized
+    private fun adoptable(session: Session): AccountServices? {
+        val existing = account ?: return null
+        val live = sessions.signedIn ?: return null
+        if (!live.hasSameAccountAndToken(session)) return null
+        if (existing.session.accountKey != session.accountKey || existing.session.server != session.server) return null
+        existing.adopt(session)
+        return existing
+    }
 
     fun setAutoDownloadUpdates(enabled: Boolean) {
         preferences.edit().putBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, enabled).apply()
@@ -405,6 +461,7 @@ class AppContainer(context: Context) {
         const val KEY_APPEARANCE = StorageLayout.KEY_APPEARANCE
         const val KEY_ASKED_NOTIFICATIONS = StorageLayout.KEY_ASKED_NOTIFICATIONS
         const val NETWORK_GRACE_MS = 5_000L
+        const val CLIENT_NAME = "Shelfarr Android"
 
         /** The server to ask for updates: the signed-in one, or the one whose sign-in ended. */
         fun updateServer(state: SessionState): ServerAddress? = when (state) {

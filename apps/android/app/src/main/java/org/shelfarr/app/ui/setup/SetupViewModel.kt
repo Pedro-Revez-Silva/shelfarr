@@ -185,7 +185,7 @@ class SetupViewModel(private val container: AppContainer) : ViewModel() {
             }
             try {
                 when (val outcome = container.authorizer.await(pending)) {
-                    is AuthorizationOutcome.Approved -> finish(pending.server, outcome.token.accessToken)
+                    is AuthorizationOutcome.Approved -> finish(pending.server, outcome.token.accessToken, outcome.token.scope)
                     AuthorizationOutcome.Denied -> end(pending.server, denied = true)
                     AuthorizationOutcome.Expired -> end(pending.server, denied = false)
                 }
@@ -198,11 +198,11 @@ class SetupViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    private suspend fun finish(server: ServerAddress, token: String) {
+    private suspend fun finish(server: ServerAddress, token: String, scope: String) {
         container.sessions.useProvisional(Credential(server, token))
         try {
             val user = container.api.me(server)
-            container.sessions.signIn(Session(server, user, token))
+            container.sessions.signIn(Session(server, user, token, scope.split(' ').filter(String::isNotBlank)))
         } catch (error: ApiException) {
             container.sessions.useProvisional(null)
             container.sessions.clearPendingAuthorization()
