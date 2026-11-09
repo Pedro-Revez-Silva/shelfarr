@@ -12,7 +12,7 @@ data class StageCopy(val headline: String, val detail: String)
 fun RequestItem.stageCopy(): StageCopy = when (stage) {
     RequestStage.QUEUED -> StageCopy("Requested", "Waiting for Shelfarr to start looking.")
     RequestStage.SEARCHING -> if (attentionNeeded) {
-        StageCopy("Waiting for the server's admin", "Copies were found, but someone needs to choose one.")
+        StageCopy("Waiting for the server's admin", "Shelfarr needs someone to look at this request.")
     } else {
         StageCopy("Looking for a copy", "This can take a few minutes.")
     }

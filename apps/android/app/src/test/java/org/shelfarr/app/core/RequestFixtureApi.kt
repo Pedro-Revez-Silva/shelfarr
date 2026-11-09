@@ -25,7 +25,11 @@ class RequestFixtureApi(
     val server = MockWebServer()
     @Volatile var decision = Decision.APPROVE
     @Volatile var searchFails = false
-    /** Where new requests end after searching: "available", "not_found" or "failed". */
+    /**
+     * Where new requests end after searching: "available", "not_found" or "failed", or
+     * "attention": still searching, flagged for the server's admin without a reason, as a
+     * real server with no acquisition source reports it.
+     */
     @Volatile var outcome = "available"
 
     val tokens = java.util.concurrent.ConcurrentHashMap<String, Pair<String, List<String>>>()
@@ -147,6 +151,10 @@ class RequestFixtureApi(
         val r = requests.getValue(id)
         val stage = r["stage"]
         if (stage in setOf("available", "failed", "not_found")) return id
+        if (stage == "searching" && outcome == "attention") {
+            r["attention"] = true
+            return id
+        }
         if (stage == "searching" && outcome != "available") {
             r["stage"] = outcome
             return id
@@ -165,7 +173,7 @@ class RequestFixtureApi(
         val stage = r["stage"]
         val publication = if (stage == "available") "\"${r["publication"]}\"" else "null"
         val percent = if (stage == "downloading") r["percent"].toString() else "null"
-        return """{"id":"$id","stage":"$stage","title":"${r["title"]}","author":"Fixture Author","book_type":"${r["type"]}","download_percent":$percent,"can_cancel":${stage !in setOf("available", "failed")},"publication_id":$publication}"""
+        return """{"id":"$id","stage":"$stage","title":"${r["title"]}","author":"Fixture Author","book_type":"${r["type"]}","download_percent":$percent,"can_cancel":${stage !in setOf("available", "failed")},"attention_needed":${r["attention"] == true},"publication_id":$publication}"""
     }
 
     private fun state(work: String, type: String): String = when {

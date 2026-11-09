@@ -291,6 +291,39 @@ class FindFlowTest {
     }
 
     @Test
+    fun `a request the server can't progress alone waits for its admin without claiming copies`() =
+        attentionFlow(fontScale = 1f, shot = "30-request-attention")
+
+    @Test
+    fun `at the largest text size a request waiting for the admin stays readable and cancellable`() =
+        attentionFlow(fontScale = 2f, shot = "31-request-attention-large-text")
+
+    /** As a real server with no acquisition source reports it: still searching, flagged, no reason given. */
+    private fun attentionFlow(fontScale: Float, shot: String) {
+        RuntimeEnvironment.setFontScale(fontScale)
+        signIn(RequestScopes.BASE + RequestScopes.REQUESTING)
+        fixture.outcome = "attention"
+        render()
+        waitFor("search") { hasNode("Title or author") }
+        compose.onNodeWithTag("find-query").performTextInput("light")
+        compose.onNodeWithTag("find-submit").performClick()
+        waitFor("results") { hasNode("The Lighthouse Keeper") }
+        compose.onNodeWithTag("result:fx:lighthouse").performClick()
+        waitFor("title") { hasNode("Choose a format") }
+        compose.onNodeWithTag("request-submit").performScrollTo().performClick()
+        waitFor("the admin's attention") { hasNode("Waiting for the server's admin") }
+        compose.onNodeWithTag("request-stage").performScrollTo().assertIsDisplayed()
+        // The API doesn't say why, and a real server with no source looked the same:
+        // the page must not claim copies were found, and offers nothing to open.
+        assertTrue(hasNode("Shelfarr needs someone to look at this request."))
+        assertTrue(!hasNode("found"))
+        assertTrue(!hasNode("Read now") && !hasNode("Listen now"))
+        compose.onNodeWithTag("request-cancel").performScrollTo().assertIsDisplayed().assertIsEnabled()
+        compose.onRoot().captureRoboImage("build/screenshots/$shot.png")
+        assertEquals("following the request never sends another", 1, fixture.createRequests.get())
+    }
+
+    @Test
     fun `an older server explains itself and a lost permission returns to the opt-in`() {
         fixture.oldServer = true
         signIn()
