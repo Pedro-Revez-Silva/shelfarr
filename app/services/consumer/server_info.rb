@@ -6,6 +6,9 @@ module Consumer
     # Consumer API generations this server implements. Independent of the
     # server's and the apps' release labels.
     API_VERSIONS = [ 1 ].freeze
+    # Optional consumer capabilities. "requests": apps may ask for the
+    # opt-in requesting permission and use /discover and /requests.
+    FEATURES = %w[requests].freeze
 
     module_function
 

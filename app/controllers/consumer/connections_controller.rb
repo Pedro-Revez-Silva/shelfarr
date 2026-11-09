@@ -16,6 +16,9 @@ class Consumer::ConnectionsController < ApplicationController
     if @grant&.decide!(actor: Current.user, allow: params[:decision] == "allow")
       @allowed = params[:decision] == "allow"
       render :complete
+    elsif @grant&.pending? && !@grant.decidable_by?(Current.user)
+      flash.now[:alert] = "This app is connected to a different Shelfarr account. Nothing was changed."
+      render :show, status: :forbidden
     else
       flash.now[:alert] = "This connection code has expired or has already been used. Start again in the app."
       render :show, status: :unprocessable_entity

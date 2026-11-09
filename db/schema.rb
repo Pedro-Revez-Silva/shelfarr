@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_08_190000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_002000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -46,6 +46,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_190000) do
     t.string "token_prefix", null: false
     t.datetime "updated_at", null: false
     t.integer "user_id"
+    t.string "issued_via"
+    t.integer "replaces_api_token_id"
     t.index ["revoked_at"], name: "index_api_tokens_on_revoked_at"
     t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
     t.index ["token_prefix"], name: "index_api_tokens_on_token_prefix"
@@ -110,6 +112,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_08_190000) do
     t.integer "poll_interval", default: 5, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.text "scopes"
+    t.integer "replaces_api_token_id"
     t.index ["device_code_digest"], name: "index_consumer_device_grants_on_device_code_digest", unique: true
     t.index ["expires_at"], name: "index_consumer_device_grants_on_expires_at"
     t.index ["user_code_digest"], name: "index_consumer_device_grants_on_user_code_digest", unique: true
