@@ -574,9 +574,9 @@ class DownloadManager(
 
     /** Stops a transfer and deletes what it wrote. The entry stays, marked cancelled. */
     suspend fun cancel(publicationId: String) {
-        // A ready book whose narration is still coming: only that transfer stops (from the
-        // Downloads list or the notification). The book, and any complete narration, stay.
-        record(publicationId)?.takeIf { it.isReady && it.narrationActive }?.let {
+        // A Stop narration action can arrive after that transfer has finished. A ready
+        // book is never deleted by Cancel; removing it is a separate, explicit action.
+        record(publicationId)?.takeIf { it.isReady }?.let {
             removeNarration(publicationId, removeAll = false)
             return
         }
@@ -696,11 +696,13 @@ class DownloadManager(
     private suspend fun run(publicationId: String) {
         var record = record(publicationId) ?: return
         if (!record.isActive && !record.stoppedForSignIn) return
+        var readyFilesRetained = record.isReady
         val current: Publication
         try {
             // Re-pin against the server's current edition before moving any bytes.
             current = fetchPublication(publicationId)
             if (!record.matches(current)) {
+                readyFilesRetained = false
                 folder(publicationId).deleteRecursively()
                 record = record.copy(files = pin(downloadableAssets(current, record.pinnedFormat)), narration = null, narrationUpdate = null)
             }
@@ -737,6 +739,10 @@ class DownloadManager(
             withContext(NonCancellable) {
                 if (problem == DownloadProblem.CHANGED) folder(publicationId).deleteRecursively()
                 val latest = record(publicationId) ?: return@withContext
+                if (readyFilesRetained && latest.isReady && problem != DownloadProblem.CHANGED) {
+                    save(latest.stopped(problem, clock()))
+                    return@withContext
+                }
                 val files = if (problem == DownloadProblem.CHANGED) {
                     latest.files.map { it.copy(complete = false, bytesDone = 0, etag = null) }
                 } else {

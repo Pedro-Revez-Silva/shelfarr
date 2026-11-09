@@ -49,6 +49,7 @@ class NarrationDownloadTest {
 
     private var gardenGeneration = ReadAlongFixtures.GENERATION
     private var publications = mapOf<String, Publication>()
+    @Volatile private var detailsFailure = false
 
     private fun summary(source: String, generation: String, manifest: String, audio: Long) =
         ReadAlongSummary("available", source, generation, manifest, audioBytes = audio)
@@ -112,7 +113,10 @@ class NarrationDownloadTest {
             root = root,
             client = buildHttpClient({ Credential(server, "secret") }),
             server = server,
-            fetchPublication = { id -> publications[id] ?: throw ApiException.NotFound() },
+            fetchPublication = { id ->
+                if (detailsFailure) throw ApiException.Offline()
+                publications[id] ?: throw ApiException.NotFound()
+            },
             scope = scope,
             usableSpace = { Long.MAX_VALUE },
         ).also { runBlocking { it.start() } }
@@ -307,6 +311,56 @@ class NarrationDownloadTest {
         assertNull(downloads.narrationFor(record))
         assertTrue(narrationFiles("garden-1").isEmpty())
         assertNotNull(downloads.fileFor(record, ReadAlongFixtures.EPUB_ID))
+    }
+
+    @Test
+    fun `failed details refresh during narration update keeps the ready book and narration`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val ready = downloads.await("garden-1") { it.narration?.isReady == true }
+        assertNotNull(downloads.fileFor(ready, ReadAlongFixtures.EPUB_ID))
+        val previous = requireNotNull(downloads.narrationFor(ready)).generation
+
+        detailsFailure = true
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val failed = downloads.await("garden-1") { !it.isActive }
+        assertTrue("a narration refresh cannot make the book ${failed.state}/${failed.problem}", failed.isReady)
+        assertNotNull(downloads.fileFor(failed, ReadAlongFixtures.EPUB_ID))
+        assertEquals(previous, downloads.narrationFor(failed)?.generation)
+    }
+
+    @Test
+    fun `an unusable replacement cannot keep removed book files marked ready`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        downloads.await("garden-1") { it.narration?.isReady == true }
+
+        // The edition disappears between the details screen and the refresh.
+        publications = publications + ("garden-1" to garden().copy(assets = emptyList()))
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val failed = downloads.await("garden-1") { !it.isActive }
+        assertEquals(DownloadState.FAILED, failed.state)
+        assertNull(downloads.fileFor(failed, ReadAlongFixtures.EPUB_ID))
+        assertNull(downloads.narrationFor(failed))
+    }
+
+    @Test
+    fun `stop narration delivered after its completion keeps all ready files`() {
+        val downloads = manager()
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        val displayed = requireNotNull(downloads.record("garden-1"))
+        assertTrue(displayed.isReady && displayed.isActive)
+        val delayedClick: suspend () -> Unit = { downloads.cancel(displayed.publicationId) }
+
+        release.countDown()
+        downloads.await("garden-1") { it.narration?.isReady == true }
+        runBlocking { delayedClick() }
+        val kept = requireNotNull(downloads.record("garden-1"))
+        assertTrue("the delayed Stop narration must keep the EPUB", kept.isReady)
+        assertArrayEquals(gardenEpub, requireNotNull(downloads.fileFor(kept, ReadAlongFixtures.EPUB_ID)).readBytes())
+        assertArrayEquals(ReadAlongFixtures.narration, requireNotNull(downloads.narrationFor(kept)).tracks.single().readBytes())
     }
 
     private companion object {
