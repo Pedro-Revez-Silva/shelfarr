@@ -52,6 +52,7 @@ final class RestoreTrace {
         case let .correct(_, attempt): return "correct#\(attempt)"
         case .settled: return "settled"
         case .gaveUp: return "gave-up"
+        case .confirm: return "confirm-element"
         }
     }
 

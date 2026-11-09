@@ -21,6 +21,41 @@ enum PlaybackProblem {
     }
 }
 
+/// Narration a reader follows (read-along): its files in order and where its places go.
+/// The engine plays it with everything an audiobook gets (background audio, lock-screen
+/// and headset controls, interruptions, the sleep timer, checkpoint cadence and the
+/// resume rewind); only where checkpoints are written differs.
+struct ReadAlongProgram {
+    struct Track {
+        /// The key `ListeningCheckpoints` knows this file by (`read-along:<audio index>`).
+        let key: String
+        /// A verified file on this device, or else
+        let local: URL?
+        /// an authenticated stream from the configured server.
+        let remote: URL?
+    }
+
+    let title: String
+    let author: String?
+    let tracks: [Track]
+    /// The narrated file after a given one, or nil after the last.
+    let next: (Int) -> Int?
+}
+
+/// Receives what the engine does with read-along narration.
+@MainActor
+protocol ReadAlongListener: AnyObject {
+    /// Listening actually happened at `seconds` of `track`, at `observedAt` (captured
+    /// before anything waits). Opened places and the replayed pre-roll are never reported.
+    /// `flush` for pause, seek, file change, errors, background and stop.
+    func narration(heard track: Int, seconds: Double, observedAt: Int64, flush: Bool)
+    /// About ten times a second while narration is loaded.
+    func narration(at track: Int, seconds: Double, playing: Bool)
+    /// The last narrated file finished.
+    func narrationEnded()
+    func narrationFailed(_ problem: PlaybackProblem)
+}
+
 /// Plays a publication's ordered files with background audio and lock-screen controls.
 /// It holds no UI, so the position keeps saving while the app is in the background.
 ///
@@ -43,6 +78,8 @@ final class PlaybackEngine: ObservableObject {
     @Published private(set) var sleepEndsAt: Date?
     /// Every track plays from a verified download on this device.
     @Published private(set) var fromDevice = false
+    /// A reader's narration is loaded instead of an audiobook.
+    @Published private(set) var readAlongActive = false
 
     private let player = AVPlayer()
     private var api: ConsumerAPI?
@@ -61,6 +98,10 @@ final class PlaybackEngine: ObservableObject {
     /// While a seek is under way the player may still report the old time; it is not playback.
     private var seeking = false
     private var seekGeneration = 0
+    // Read-along narration, when a reader is following one.
+    private var program: ReadAlongProgram?
+    private weak var listener: ReadAlongListener?
+    private var fineObserver: Any?
 
     static let skipBack = 15.0
     static let skipForward = 30.0
@@ -104,7 +145,8 @@ final class PlaybackEngine: ObservableObject {
         localFiles: [String: URL]? = nil
     ) {
         // Switching books: the one playing until now keeps its last place.
-        if self.publication != nil { recordAndFlush() }
+        if self.publication != nil || program != nil { recordAndFlush() }
+        endReadAlong()
         self.api = api
         self.server = server
         self.sync = sync
@@ -132,15 +174,137 @@ final class PlaybackEngine: ObservableObject {
         try? session.setActive(true)
     }
 
+    // MARK: Read-along
+
+    /// Loads a reader's narration and plays it from `seconds` of `track`.
+    ///
+    /// - `.resume`: this device's saved place; it starts five seconds earlier and stays the
+    ///   checkpoint until playback passes it.
+    /// - `.adopted`: a place chosen from elsewhere, played from exactly there, not activity.
+    /// - `.deliberate`: the listener chose it (Play from this page); saved at once.
+    enum ReadAlongStart { case resume, adopted, deliberate }
+
+    func loadReadAlong(_ program: ReadAlongProgram, listener: ReadAlongListener, server: ServerAddress, api: ConsumerAPI, track: Int, seconds: Double, start: ReadAlongStart) {
+        if self.publication != nil || self.program != nil { recordAndFlush() }
+        publication = nil
+        tracks = []
+        localFiles = [:]
+        sync = nil
+        self.api = api
+        self.server = server
+        self.program = program
+        self.listener = listener
+        readAlongActive = true
+        fromDevice = program.tracks.allSatisfy { $0.local != nil }
+        problem = nil
+        configureSession()
+        configureRemoteCommands()
+        installFineObserver()
+        let index = program.tracks.indices.contains(track) ? track : 0
+        let saved = SavedPosition(assetId: program.tracks[index].key, positionSeconds: max(0, seconds))
+        var at = checkpoints.open(saved, firstTrack: program.tracks[index].key)
+        switch start {
+        case .resume: break
+        case .adopted:
+            checkpoints.hold(saved)
+            at = max(0, seconds)
+        case .deliberate:
+            checkpoints.movedDeliberately()
+            at = max(0, seconds)
+        }
+        open(track: index, at: at, play: true)
+        if start == .deliberate { recordAndFlush() }
+    }
+
+    /// A deliberate move within the loaded narration (Play from this page, a chosen place):
+    /// no rewind, saved at once.
+    func readAlongMove(track: Int, seconds: Double, play: Bool) {
+        guard let program, program.tracks.indices.contains(track) else { return }
+        checkpoints.movedDeliberately()
+        if track == trackIndex {
+            position = max(0, seconds)
+            exactSeek(to: position)
+        } else {
+            open(track: track, at: max(0, seconds), play: play)
+        }
+        if play { player.playImmediately(atRate: speed) }
+        recordAndFlush()
+        updateNowPlaying()
+    }
+
+    /// Saves the narration's place and unloads it. The audio session stays as it was.
+    func stopReadAlong() async {
+        guard program != nil else { return }
+        let observedAt = ActivityTime.now()
+        if let last = currentPosition(), checkpoints.isActivity(last) {
+            listener?.narration(heard: trackIndex, seconds: last.positionSeconds ?? 0, observedAt: observedAt, flush: true)
+        }
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        loader?.cancelAll()
+        loader = nil
+        endReadAlong()
+        problem = nil
+        setSleepTimer(minutes: nil)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        await lastWrite?.value
+    }
+
+    private func endReadAlong() {
+        if let fineObserver { player.removeTimeObserver(fineObserver) }
+        fineObserver = nil
+        program = nil
+        listener = nil
+        readAlongActive = false
+    }
+
+    private func installFineObserver() {
+        guard fineObserver == nil else { return }
+        // The highlight follows the words more closely than the half-second checkpoint tick.
+        fineObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { [weak self] time in
+            MainActor.assumeIsolated {
+                guard let self, self.program != nil, time.isNumeric, !self.seeking else { return }
+                self.listener?.narration(at: self.trackIndex, seconds: time.seconds, playing: self.isPlaying)
+            }
+        }
+    }
+
+    /// True while `listener`'s narration is the one loaded.
+    func isNarrating(for listener: ReadAlongListener) -> Bool {
+        program != nil && self.listener === listener
+    }
+
+    private var trackCount: Int { program?.tracks.count ?? tracks.count }
+
+    private func trackKey(_ index: Int) -> String {
+        program?.tracks[index].key ?? tracks[index].id
+    }
+
+    private var isLoaded: Bool { publication != nil || program != nil }
+
     private func open(track index: Int, at seconds: Double, play: Bool) {
-        guard tracks.indices.contains(index) else {
+        guard (0 ..< trackCount).contains(index) else {
             failed(.connection)
             return
         }
         loader?.cancelAll()
         loader = nil
         let asset: AVURLAsset
-        if let file = localFiles[tracks[index].id] {
+        if let program {
+            let track = program.tracks[index]
+            if let file = track.local {
+                asset = AVURLAsset(url: file)
+            } else if let server, let api, let source = track.remote, server.contains(source) {
+                // The bearer goes only to the configured server, in a header, never in the URL.
+                let loader = AuthenticatedAudioLoader(source: source, api: api)
+                self.loader = loader
+                asset = AVURLAsset(url: loader.assetURL)
+                asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+            } else {
+                failed(.connection)
+                return
+            }
+        } else if let file = localFiles[tracks[index].id] {
             // A verified download plays straight from disk, with no credential involved.
             asset = AVURLAsset(url: file)
         } else {
@@ -202,7 +366,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func tick(_ time: CMTime) {
-        guard publication != nil, time.isNumeric, !seeking else { return }
+        guard isLoaded, time.isNumeric, !seeking else { return }
         position = time.seconds
         let elapsed = ProcessInfo.processInfo.systemUptime
         if isPlaying, checkpoints.due(at: elapsed) {
@@ -221,10 +385,25 @@ final class PlaybackEngine: ObservableObject {
             checkpoints.paused()
             recordAndFlush()
         }
+        if program != nil, wasPlaying != isPlaying {
+            listener?.narration(at: trackIndex, seconds: position, playing: isPlaying)
+        }
     }
 
     private func itemEnded(_ item: AVPlayerItem?) {
         guard item === player.currentItem else { return }
+        if let program {
+            if let next = program.next(trackIndex) {
+                checkpoints.carriedOn()
+                recordAndFlush()
+                open(track: next, at: 0, play: true)
+                record()
+            } else {
+                recordAndFlush()
+                listener?.narrationEnded()
+            }
+            return
+        }
         if tracks.indices.contains(trackIndex + 1) {
             // A natural move into the next track: no rewind, and a checkpoint at once.
             checkpoints.carriedOn()
@@ -248,6 +427,7 @@ final class PlaybackEngine: ObservableObject {
         problem = reason
         isBuffering = false
         recordAndFlush()
+        if program != nil { listener?.narrationFailed(reason) }
     }
 
     func togglePlay() {
@@ -264,7 +444,7 @@ final class PlaybackEngine: ObservableObject {
 
     /// Plays again after a pause, a little earlier than where it stopped, once.
     private func resume() {
-        guard !isPlaying, publication != nil else { return }
+        guard !isPlaying, isLoaded else { return }
         configureSession()
         if let current = currentPosition(), let target = checkpoints.resumed(at: current) {
             position = target
@@ -286,6 +466,15 @@ final class PlaybackEngine: ObservableObject {
 
     func skip(by seconds: Double) {
         seek(to: position + seconds)
+    }
+
+    /// Plays after a pause (a resume, rewound once) or pauses; no-op when nothing is loaded.
+    func play() {
+        if !isPlaying { togglePlay() }
+    }
+
+    func pause() {
+        player.pause()
     }
 
     func playTrack(_ index: Int) {
@@ -338,6 +527,7 @@ final class PlaybackEngine: ObservableObject {
 
     /// Saves the final position, then stops and forgets the queue.
     func stop() async {
+        if program != nil { return await stopReadAlong() }
         let observedAt = ActivityTime.now()
         let last = currentPosition().flatMap { checkpoints.isActivity($0) ? $0 : nil }
         let previousWrite = lastWrite
@@ -363,20 +553,30 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func currentPosition() -> SavedPosition? {
-        guard tracks.indices.contains(trackIndex), publication != nil else { return nil }
-        return SavedPosition(assetId: tracks[trackIndex].id, positionSeconds: position)
+        guard (0 ..< trackCount).contains(trackIndex), isLoaded else { return nil }
+        return SavedPosition(assetId: trackKey(trackIndex), positionSeconds: position)
     }
 
     /// Writes the current place locally, stamped now. The opened place and the replayed
     /// pre-roll before it are not new listening and are skipped.
     private func record() {
         let observedAt = ActivityTime.now()
+        if program != nil {
+            guard let saved = currentPosition(), checkpoints.isActivity(saved) else { return }
+            listener?.narration(heard: trackIndex, seconds: saved.positionSeconds ?? 0, observedAt: observedAt, flush: false)
+            return
+        }
         guard let saved = currentPosition(), let sync, checkpoints.isActivity(saved) else { return }
         enqueue { await sync.update(saved, observedAt: observedAt) }
     }
 
     private func recordAndFlush() {
         let observedAt = ActivityTime.now()
+        if program != nil {
+            guard let saved = currentPosition(), checkpoints.isActivity(saved) else { return }
+            listener?.narration(heard: trackIndex, seconds: saved.positionSeconds ?? 0, observedAt: observedAt, flush: true)
+            return
+        }
         guard let sync else { return }
         let saved = currentPosition().flatMap { checkpoints.isActivity($0) ? $0 : nil }
         enqueue {
@@ -394,18 +594,19 @@ final class PlaybackEngine: ObservableObject {
     }
 
     private func updateNowPlaying() {
-        guard let publication else { return }
+        guard let title = publication?.title ?? program?.title else { return }
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: publication.title,
+            MPMediaItemPropertyTitle: title,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
             MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(speed) : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(speed),
         ]
-        if let author = publication.author { info[MPMediaItemPropertyArtist] = author }
+        if let author = publication?.author ?? program?.author { info[MPMediaItemPropertyArtist] = author }
+        if program != nil { info[MPMediaItemPropertyAlbumTitle] = "Read along" }
         if duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
-        if tracks.count > 1 {
+        if trackCount > 1 {
             info[MPNowPlayingInfoPropertyChapterNumber] = trackIndex + 1
-            info[MPNowPlayingInfoPropertyChapterCount] = tracks.count
+            info[MPNowPlayingInfoPropertyChapterCount] = trackCount
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }

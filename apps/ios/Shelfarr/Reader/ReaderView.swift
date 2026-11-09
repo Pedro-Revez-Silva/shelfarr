@@ -56,11 +56,15 @@ struct ReaderView: View {
         .statusBarHidden(isReady && !model.chromeVisible)
         .task { await model.open() }
         .onChange(of: settingsStore.settings) {
+            model.layoutChanged()
             model.book?.apply($0)
             model.applyTheme($0.theme)
         }
+        .background(GeometryReader { proxy in
+            Color.clear.onChange(of: proxy.size) { _ in model.layoutChanged() }
+        })
         .onChange(of: scenePhase) { if $0 != .active { model.flush() } }
-        .onDisappear { model.flush() }
+        .onDisappear { model.leave() }
         .sheet(item: $sheet) { which in
             switch which {
             case .contents:
@@ -142,6 +146,9 @@ struct ReaderView: View {
             NavigatorHost(navigator: navigator).ignoresSafeArea()
             chrome(title)
             conflictAlert
+            if let readAlong = model.readAlong {
+                ReadAlongTrace(controller: readAlong)
+            }
         case let .pages(title, reader):
             NavigatorHost(navigator: reader)
                 .id(ObjectIdentifier(reader))
@@ -293,10 +300,30 @@ struct ReaderView: View {
                 .transition(.opacity)
             }
             Spacer()
+            if let readAlong = model.readAlong {
+                ReadAlongOffer(controller: readAlong, theme: theme)
+            }
             if model.chromeVisible {
-                ReaderScrubber(model: model, theme: theme)
-                    .transition(.opacity)
+                VStack(spacing: 0) {
+                    if let readAlong = model.readAlong {
+                        ReadAlongBar(controller: readAlong, theme: theme)
+                    } else if let note = model.readAlongNote {
+                        Text(note)
+                            .font(.footnote)
+                            .foregroundStyle(theme.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 12)
+                            .accessibilityIdentifier("read-along-note")
+                    }
+                    ReaderScrubber(model: model, theme: theme)
+                }
+                .background(theme.bar.ignoresSafeArea(edges: .bottom))
+                .transition(.opacity)
             } else {
+                if let readAlong = model.readAlong {
+                    ReadAlongPill(controller: readAlong, theme: theme)
+                }
                 Text("\(Int((model.fraction * 100).rounded()))%")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(theme.muted)
@@ -307,6 +334,196 @@ struct ReaderView: View {
             notices
         }
         .animation(.easeOut(duration: 0.2), value: model.chromeVisible)
+    }
+}
+
+// MARK: Read-along
+
+/// The narration controls, in the reading-controls overlay: back 15 / play / forward 30
+/// (Play is the only filled control), Follow the text and speed in quiet ink, then the
+/// coverage line. Wraps onto two rows when the text is large or the window narrow.
+private struct ReadAlongBar: View {
+    @ObservedObject var controller: ReadAlongController
+    let theme: ReaderTheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    private static let speeds: [Float] = [0.75, 1, 1.25, 1.5, 1.75, 2]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    transport
+                    Spacer(minLength: 12)
+                    follow.fixedSize()
+                    speed
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    transport
+                    HStack(spacing: 16) {
+                        follow
+                        Spacer(minLength: 8)
+                        speed
+                    }
+                }
+            }
+            if let problem = controller.problem {
+                Text(problem).font(.footnote).foregroundStyle(theme.text).accessibilityIdentifier("read-along-problem")
+            }
+            Text(controller.note)
+                .font(.footnote)
+                .foregroundStyle(theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("read-along-note")
+        }
+        .frame(maxWidth: sizeClass == .regular ? 640 : .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .top) { theme.hairline.frame(height: 1) }
+    }
+
+    private var transport: some View {
+        HStack(spacing: 18) {
+            Button { controller.skip(by: -PlaybackEngine.skipBack) } label: {
+                Image(systemName: "gobackward.15").font(.title3).frame(width: 44, height: 44)
+            }
+            .disabled(!controller.started)
+            .accessibilityLabel("Back 15 seconds")
+            Button { controller.togglePlay() } label: {
+                Image(systemName: controller.playing ? "pause.fill" : "play.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color(hex: theme == .night ? 0x2B1208 : 0xFFF9F2))
+                    .frame(width: 54, height: 54)
+                    .background(theme.accent, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(controller.playing ? "Pause narration" : "Play narration")
+            .accessibilityIdentifier("read-along-play")
+            Button { controller.skip(by: PlaybackEngine.skipForward) } label: {
+                Image(systemName: "goforward.30").font(.title3).frame(width: 44, height: 44)
+            }
+            .disabled(!controller.started)
+            .accessibilityLabel("Forward 30 seconds")
+        }
+        .tint(theme.text)
+    }
+
+    private var follow: some View {
+        Toggle("Follow the text", isOn: Binding(get: { controller.follow }, set: { controller.setFollow($0) }))
+            .toggleStyle(.switch)
+            .tint(theme.accent)
+            .font(.subheadline)
+            .foregroundStyle(theme.text)
+            .accessibilityIdentifier("read-along-follow")
+    }
+
+    private var speed: some View {
+        Menu {
+            ForEach(Self.speeds, id: \.self) { value in
+                Button {
+                    controller.setSpeed(value)
+                } label: {
+                    if value == controller.speed { Label(Self.label(value), systemImage: "checkmark") } else { Text(Self.label(value)) }
+                }
+            }
+        } label: {
+            Text(Self.label(controller.speed)).font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+        }
+        .tint(theme.text)
+        .accessibilityLabel("Narration speed")
+        .accessibilityValue(Self.label(controller.speed))
+    }
+
+    private static func label(_ value: Float) -> String {
+        value == value.rounded() ? "\(Int(value))×" : String(format: "%g×", value)
+    }
+}
+
+/// The only addition to the page itself, and only once narration has started: a small
+/// Pause/Play pill, and "Back to the narration" after browsing away from it.
+private struct ReadAlongPill: View {
+    @ObservedObject var controller: ReadAlongController
+    let theme: ReaderTheme
+
+    var body: some View {
+        if controller.started {
+            HStack(spacing: 6) {
+                Button { controller.togglePlay() } label: {
+                    Label(controller.playing ? "Pause" : "Play", systemImage: controller.playing ? "pause.fill" : "play.fill")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                }
+                .accessibilityLabel(controller.playing ? "Pause narration" : "Play narration")
+                .accessibilityIdentifier("read-along-pill")
+                if controller.suspended {
+                    theme.hairline.frame(width: 1, height: 22)
+                    Button { controller.returnToNarration() } label: {
+                        Text("Back to the narration")
+                            .font(.footnote.weight(.semibold))
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("read-along-return")
+                }
+            }
+            .tint(theme.text)
+            .background(theme.bar, in: Capsule())
+            .overlay(Capsule().stroke(theme.hairline, lineWidth: 1))
+            .padding(.bottom, 6)
+            .transition(.opacity)
+        }
+    }
+}
+
+/// A later place heard on the paired audiobook, offered and never applied by itself.
+private struct ReadAlongOffer: View {
+    @ObservedObject var controller: ReadAlongController
+    let theme: ReaderTheme
+
+    var body: some View {
+        if let offer = controller.offer {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(offer).font(.footnote).foregroundStyle(theme.text)
+                HStack(spacing: 12) {
+                    Button("Go to the audiobook's place") { controller.acceptOffer() }
+                        .font(.footnote.weight(.semibold))
+                        .tint(theme.accent)
+                        .accessibilityIdentifier("read-along-offer-accept")
+                    Button("Not now") { controller.dismissOffer() }
+                        .font(.footnote)
+                        .tint(theme.text)
+                }
+                .frame(minHeight: 44)
+            }
+            .padding(12)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(theme.bar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.hairline, lineWidth: 1))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("read-along-offer")
+        }
+    }
+}
+
+/// Simulator smoke only (see `RestoreTrace`): the session in fixture terms.
+private struct ReadAlongTrace: View {
+    @ObservedObject var controller: ReadAlongController
+
+    var body: some View {
+        if let trace = controller.trace {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("read-along-trace")
+                .accessibilityLabel(trace)
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .allowsHitTesting(false)
+        }
     }
 }
 

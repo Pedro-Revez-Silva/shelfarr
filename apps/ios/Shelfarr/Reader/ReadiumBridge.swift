@@ -44,6 +44,11 @@ final class ReadiumBook: NSObject {
 
     private(set) var contents: [ContentsEntry] = []
     private(set) var positionCount = 0
+    /// Reading order hrefs (archive paths), in spine order.
+    private(set) var spine: [String] = []
+    /// Where each reading order resource starts in the whole book (0–1), from Readium's positions.
+    private var resourceStarts: [String: Double] = [:]
+    private static let readAlongGroup = "read-along"
 
     private init(publication: ReadiumShared.Publication) {
         self.publication = publication
@@ -69,7 +74,11 @@ final class ReadiumBook: NSObject {
         }
         if case let .success(positions) = await publication.positions() {
             book.positionCount = positions.count
+            for locator in positions where book.resourceStarts[locator.href.string] == nil {
+                book.resourceStarts[locator.href.string] = locator.locations.totalProgression
+            }
         }
+        book.spine = publication.readingOrder.map(\.href)
         return book
     }
 
@@ -158,6 +167,107 @@ final class ReadiumBook: NSObject {
     /// saved place.
     func setInputEnabled(_ enabled: Bool) {
         navigator?.view.isUserInteractionEnabled = enabled
+    }
+
+    // MARK: Read-along
+
+    /// Where a reading order resource starts in the book, as Readium measured it.
+    func startProgression(ofHref href: String) -> Double? {
+        if let exact = resourceStarts[href] { return exact }
+        return resourceStarts.first { Self.sameHref($0.key, href) }?.value
+    }
+
+    /// The href of the resource on screen now.
+    var currentHref: String? {
+        navigator?.currentLocation?.href.string
+    }
+
+    /// Highlights exactly one element (the cue being heard) with a Readium decoration, or
+    /// clears it with nil. Decorations follow the element across pages and layouts.
+    func highlight(href: String?, fragment: String?, tint: UIColor) {
+        guard let navigator else { return }
+        guard let href, let fragment, let locator = Self.elementLocator(href: href, fragment: fragment) else {
+            navigator.apply(decorations: [], in: Self.readAlongGroup)
+            return
+        }
+        let decoration = Decoration(id: "read-along-cue", locator: locator, style: .highlight(tint: tint, isActive: false))
+        navigator.apply(decorations: [decoration], in: Self.readAlongGroup)
+    }
+
+    /// Whether the start of element `fragment` of `href` is on screen. Nil when that
+    /// document isn't the one shown, or the page couldn't answer.
+    func isElementVisible(href: String, fragment: String) async -> Bool? {
+        guard let navigator, let current = currentHref, Self.sameHref(current, href) else { return currentHref == nil ? nil : false }
+        let script = """
+        (function (id) {
+          var element = document.getElementById(id);
+          if (!element) { return "missing"; }
+          var rects = element.getClientRects();
+          var first = rects.length ? rects[0] : element.getBoundingClientRect();
+          var width = window.innerWidth, height = window.innerHeight;
+          return (first.left >= -1 && first.left < width - 1 && first.top >= -1 && first.top < height - 1) ? "visible" : "hidden";
+        })(\(Self.jsString(fragment)))
+        """
+        guard case let .success(value) = await navigator.evaluateJavaScript(script), let answer = value as? String else { return nil }
+        return answer == "visible"
+    }
+
+    /// Of `fragments` (one document's cue elements in reading order), the first that
+    /// starts on the page shown, else the last that started before it (the narration the
+    /// page continues). Nil when the page shows another document or none of them.
+    func firstVisibleElement(href: String, fragments: [String]) async -> String? {
+        guard let navigator, !fragments.isEmpty, let current = currentHref, Self.sameHref(current, href),
+              let ids = String(data: (try? JSONEncoder().encode(fragments)) ?? Data(), encoding: .utf8)
+        else { return nil }
+        let script = """
+        (function (ids) {
+          var width = window.innerWidth, height = window.innerHeight, before = null;
+          for (var i = 0; i < ids.length; i++) {
+            var element = document.getElementById(ids[i]);
+            if (!element) { continue; }
+            var rects = element.getClientRects();
+            if (!rects.length) { continue; }
+            var first = rects[0];
+            if (first.left >= -1 && first.left < width - 1 && first.top >= -1 && first.top < height - 1) { return ids[i]; }
+            if (first.left < -1 || first.top < -1) { before = ids[i]; }
+          }
+          return before;
+        })(\(ids))
+        """
+        guard case let .success(value) = await navigator.evaluateJavaScript(script) else { return nil }
+        return value as? String
+    }
+
+    /// Brings element `fragment` of `href` into view: Readium scrolls to the element's page.
+    /// Display only; the reader treats the report it causes as not reading.
+    func go(toElement fragment: String, href: String, animated: Bool) async -> Bool {
+        guard let navigator, let locator = Self.elementLocator(href: href, fragment: fragment) else { return false }
+        return await navigator.go(to: locator, options: NavigatorGoOptions(animated: animated))
+    }
+
+    private static func elementLocator(href: String, fragment: String) -> ReadiumShared.Locator? {
+        let value: [String: Any] = ["href": href, "type": "application/xhtml+xml", "locations": ["fragments": [fragment]]]
+        guard let data = try? JSONSerialization.data(withJSONObject: value), let json = String(data: data, encoding: .utf8) else { return nil }
+        return locator(json: json)
+    }
+
+    /// Reading order hrefs compare without a leading slash, fragment, query or escaping
+    /// (as `ReadingRestoration.same` does).
+    static func sameHref(_ a: String, _ b: String) -> Bool {
+        func normalized(_ href: String) -> String {
+            var path = Substring(href)
+            if let cut = path.firstIndex(where: { $0 == "#" || $0 == "?" }) { path = path[..<cut] }
+            let trimmed = String(path.drop { $0 == "/" })
+            return trimmed.removingPercentEncoding ?? trimmed
+        }
+        return normalized(a) == normalized(b)
+    }
+
+    /// A JavaScript string literal for any text.
+    private static func jsString(_ text: String) -> String {
+        let data = (try? JSONEncoder().encode([text])) ?? Data("[\"\"]".utf8)
+        let array = String(data: data, encoding: .utf8) ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
     }
 
     private static func locator(json: String) -> ReadiumShared.Locator? {

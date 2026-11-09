@@ -15,7 +15,13 @@ It serves apps/scripts/mock_consumer_server.py unchanged and adds, for the smoke
   writes nothing;
 * `POST /place` on the control port, which saves a page place as another device would
   (`{"publication", "asset", "page"}`), including a page the file doesn't have (a PDF
-  page past the end, or a comic page from a replaced archive).
+  page past the end, or a comic page from a replaced archive);
+* read-along books with known alignment (read_along_fixture.py): summaries on details
+  that declare `X-Shelfarr-Reader-Features: read-along`, manifests, resources and paired
+  audio, the server's `locations.readAlong` validation on progress writes, and control
+  endpoints `POST /read-along/reset`, `/read-along/stale`, `/read-along/realign` and
+  `/audio-place` (`{"publication", "asset", "seconds", "ago"}`, a listening place heard
+  `ago` seconds earlier on another player).
 
 Development only: no real security, in memory, bound to 127.0.0.1.
 
@@ -38,6 +44,9 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
 import mock_consumer_server as mock  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import read_along_fixture as reading  # noqa: E402
 
 GRANT_SECONDS = 3600
 
@@ -81,10 +90,16 @@ class ProgressLog:
             "asset_id": body.get("asset_id"),
             "page": locations.get("position"),
             "href": locator.get("href"),
+            "fragments": locations.get("fragments"),
+            "read_along": locations.get("readAlong"),
         }
         with self.lock:
-            log = self.writes.setdefault(publication_id, {"count": 0, "last": None, "resolving": 0, "without_observed_at": 0})
+            log = self.writes.setdefault(publication_id, {"count": 0, "last": None, "resolving": 0, "without_observed_at": 0,
+                                                           "reading_places": 0, "heard_places": 0})
             log["count"] += 1
+            # A place with a locator is heard (it names its narration) or read.
+            if entry["has_locator"]:
+                log["heard_places" if entry["read_along"] is not None else "reading_places"] += 1
             log["last"] = entry
             if entry["resolve_conflict"] is True:
                 log["resolving"] += 1
@@ -102,6 +117,9 @@ PROGRESS = re.compile(mock.PREFIX + r"/library/([^/]+)/progress")
 GRANTS = {}
 GRANTS_LOCK = threading.Lock()
 CONTENT = re.compile(mock.PREFIX + r"/assets/([^/]+)/content")
+DETAILS = re.compile(mock.PREFIX + r"/library/([^/]+)")
+READ_ALONG = re.compile(mock.PREFIX + r"/library/([^/]+)/assets/([^/]+)/read_along(?:/(resources|audio)/(.+))?")
+READING = None
 
 
 class QuickServer(ThreadingHTTPServer):
@@ -215,6 +233,58 @@ class SmokeHandler(mock.Handler):
         self.respond(401, {"error": "invalid_grant"})
         return False
 
+    def do_GET(self):
+        path = self.route()
+        if READING is not None and (READ_ALONG.fullmatch(path) or (DETAILS.fullmatch(path) and reading.FEATURES_HEADER in self.headers)):
+            return self.read_along_get(path)
+        return super().do_GET()
+
+    do_HEAD = do_GET
+
+    def read_along_get(self, path):
+        if not self.authorized():
+            return None
+        details = DETAILS.fullmatch(path)
+        if details:
+            try:
+                features = reading.parse_features(self.headers.get(reading.FEATURES_HEADER))
+            except ValueError as error:
+                return self.respond(400, {"error": "invalid_request", "message": str(error)}, vary=True)
+            formats = self.reader_formats()
+            if formats is None:
+                return None
+            with self.state.lock:
+                if details[1] not in self.state.books or not self.state.visible(details[1], formats):
+                    return self.respond(404, {"error": "not_found"})
+                item = self.state.publication(self.base, details[1], formats)
+            if "read-along" in features:
+                for asset in item["assets"]:
+                    if asset["format"] == "epub":
+                        asset["read_along"] = READING.summary(self.base, details[1], asset["id"], mock.PREFIX)
+            return self.respond(200, item, vary=True)
+        match = READ_ALONG.fullmatch(path)
+        publication, asset, kind, rest = match[1], match[2], match[3], match[4]
+        if kind is None:
+            status, payload = READING.manifest(self.base, mock.PREFIX, publication, asset)
+            return self.respond(status, payload)
+        found = READING.resource(publication, asset, rest) if kind == "resources" else READING.audio(publication, asset, rest)
+        if found is None:
+            return self.respond(404, {"error": "resource_not_found"})
+        return self.serve(found)
+
+    def do_PUT(self):
+        match = PROGRESS.fullmatch(self.route())
+        if match and READING is not None:
+            # The raw body, so the write is logged once, by the mock's own handler.
+            try:
+                body = json.loads(self.raw_body() or b"{}")
+            except ValueError:
+                body = None
+            problem = reading.read_along_error(body.get("locator")) if isinstance(body, dict) else None
+            if problem:
+                return self.respond(422, {"error": "invalid_progress", "message": problem})
+        return super().do_PUT()
+
     def do_POST(self):
         match = re.fullmatch(mock.PREFIX + r"/library/([^/]+)/assets/([^/]+)/transfer_grant", self.route())
         if not match:
@@ -234,6 +304,36 @@ class SmokeHandler(mock.Handler):
             "url": f"{self.base}{mock.PREFIX}/assets/{match[2]}/content?grant={grant}",
             "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
         })
+
+
+def save_audio_place(request):
+    """A listening place another player heard `ago` seconds ago (default 5)."""
+    state = mock.Handler.state
+    publication, asset, seconds = request["publication"], request["asset"], float(request["seconds"])
+    observed = time.time() - float(request.get("ago", 5))
+    with state.lock:
+        current = state.progress.get(publication)
+        saved = {"asset_id": asset, "locator": None, "position_seconds": seconds,
+                 "observed_at": mock.format_time(observed), "version": (current["version"] if current else 0) + 1,
+                 "updated_at": mock.format_time(time.time()), "client_mutation_id": str(uuid.uuid4())}
+        state.progress[publication] = saved
+        state.touch(publication, observed)
+    return {"progress": saved}
+
+
+def reset_read_along():
+    """Fresh read-along books: no saved places, the first alignment, nothing stale."""
+    state = mock.Handler.state
+    READING.reset()
+    with state.lock:
+        for publication in ("narrated-1", "paired-1", "paired-audio"):
+            state.progress.pop(publication, None)
+            state.activity.pop(publication, None)
+            state.statuses.pop(publication, None)
+    with PROGRESS_LOG.lock:
+        for publication in ("narrated-1", "paired-1", "paired-audio"):
+            PROGRESS_LOG.writes.pop(publication, None)
+    return {"reset": True}
 
 
 def save_place(request):
@@ -280,6 +380,16 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/place":
             self.reply(save_place(json.loads(body or b"{}")))
             return
+        if self.path == "/audio-place":
+            self.reply(save_audio_place(json.loads(body or b"{}")))
+            return
+        if self.path == "/read-along/reset":
+            self.reply(reset_read_along())
+            return
+        if self.path in ("/read-along/stale", "/read-along/realign"):
+            (READING.mark_stale if self.path.endswith("stale") else READING.realign)()
+            self.reply({"generation": READING.generation("paired-1"), "stale": READING.stale})
+            return
         if self.path == "/offline":
             SWITCH.down()
         elif self.path == "/online":
@@ -297,7 +407,7 @@ class ControlHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    global SWITCH
+    global SWITCH, READING
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--control-port", type=int, default=8766)
@@ -306,6 +416,7 @@ def main():
 
     mock.Handler.state = mock.State(True, 0, False, args.extra_books)
     mock.Handler.base = ""
+    READING = reading.ReadAlong(mock.Handler.state)
     SWITCH = Switch("127.0.0.1", args.port)
     SWITCH.up()
     control = QuickServer(("127.0.0.1", args.control_port), ControlHandler)

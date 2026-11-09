@@ -106,6 +106,10 @@ struct DetailsView: View {
                     if publication.isReadableHere {
                         DownloadPanel(downloads: downloads, publication: publication, offline: offline).padding(.top, 20)
                     }
+                    if let summary = publication.asset(for: .epub)?.readAlong {
+                        NarrationPanel(service: app.readAlong, downloads: downloads, publication: publication, summary: summary, offline: offline)
+                            .padding(.top, 16)
+                    }
                     StatusPicker(
                         publication: publication,
                         offline: offline,
@@ -178,5 +182,66 @@ struct DetailsView: View {
             Text(value).foregroundStyle(Palette.ink)
         }
         .font(.footnote)
+    }
+}
+
+/// What the book's narration is, and whether it's on this device. Says nothing for books
+/// without read-along.
+private struct NarrationPanel: View {
+    @EnvironmentObject private var app: AppModel
+    @ObservedObject var service: ReadAlongService
+    @ObservedObject var downloads: DownloadsModel
+    let publication: ShelfarrCore.Publication
+    let summary: ReadAlongSummary
+    let offline: Bool
+
+    var body: some View {
+        if let line = description {
+            VStack(spacing: 6) {
+                Label(line, systemImage: "text.word.spacing")
+                    .font(.footnote)
+                    .foregroundStyle(Palette.ink)
+                    .multilineTextAlignment(.center)
+                if let detail {
+                    Text(detail.text)
+                        .font(.footnote)
+                        .foregroundStyle(Palette.inkMuted)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("narration-status")
+                    if detail.retry, !offline, let session = app.session, let asset = publication.asset(for: .epub) {
+                        Button("Get the narration") { Task { await service.prepare(publication, asset: asset, session: session) } }
+                            .font(.footnote.weight(.semibold))
+                            .tint(Palette.accent)
+                            .frame(minHeight: 44)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var description: String? {
+        switch summary.status {
+        case .available:
+            let coverage = summary.coverage?.description ?? ""
+            let source = summary.source == .imported
+                ? "Read along with “\(summary.audiobook?.title ?? "the audiobook")”."
+                : "Read along with the narration in this book."
+            return [source, coverage].filter { !$0.isEmpty }.joined(separator: " ")
+        case .unaligned:
+            return summary.audiobook.map { "“\($0.title)” isn't aligned with this text, so read-along isn't available." }
+        case .stale, .invalid:
+            return summary.reason.map { "Read-along isn't available: \($0)" } ?? "Read-along isn't available for this edition."
+        }
+    }
+
+    private var detail: (text: String, retry: Bool)? {
+        guard summary.isAvailable, downloads.records[publication.id]?.readerFormat == .epub else { return nil }
+        switch service.status[publication.id] {
+        case .onDevice: return ("Narration is on this device too.", false)
+        case let .preparing(text): return (text, false)
+        case let .missing(text): return (text, true)
+        case nil: return downloads.records[publication.id]?.isReady == true ? ("The narration isn't on this device yet.", true) : nil
+        }
     }
 }

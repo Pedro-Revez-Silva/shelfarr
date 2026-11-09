@@ -38,6 +38,10 @@ final class ReaderModel: ObservableObject {
     @Published var chromeVisible = false
     /// How the place was restored, for the simulator smoke only (synthetic fixture places).
     @Published private(set) var restoreTrace: String?
+    /// Narration for this EPUB, when real alignment for it can be played now.
+    @Published private(set) var readAlong: ReadAlongController?
+    /// Why this EPUB has no narration here, when there is something worth saying.
+    @Published private(set) var readAlongNote: String?
     /// The format open now, and the formats this book has.
     @Published private(set) var format: ReaderFormat?
     @Published private(set) var formats: [ReaderFormat] = []
@@ -63,11 +67,15 @@ final class ReaderModel: ObservableObject {
     private var observer: UUID?
     /// Tells Readium reporting the opened place apart from the reader moving on.
     private var restoration = ReadingRestoration(opening: nil)
+    /// The place `restoration` is restoring.
+    private var restorationTarget: JSONValue?
     /// Bounds one attempt to bring the saved place back on screen.
     private var correctionTimer: Task<Void, Never>?
     private let trace = RestoreTrace.make()
     /// Local writes run in the order the pages were reached.
     private var lastWrite: Task<Void, Never>?
+    /// The last place Readium reported, so a layout change can be restored rather than read.
+    private var lastLocator: JSONValue?
 
     // What this open decided, kept while the reader is asked which format or page.
     private var publication: ShelfarrCore.Publication?
@@ -303,6 +311,41 @@ final class ReaderModel: ObservableObject {
         }
         book = opened
         await start(position)
+        await startReadAlong(at: position)
+    }
+
+    /// Opens the narration of a read-along EPUB, when there is one this device can play.
+    /// The book reads exactly as before when there isn't: older servers, unaligned, stale
+    /// or invalid alignments, or offline without its narration downloaded.
+    private func startReadAlong(at position: SavedPosition?) async {
+        await readAlong?.close()
+        readAlong = nil
+        readAlongNote = nil
+        guard let session = owner, let publication, let asset, asset.isEpub, let book, let sync, app.isCurrent(session) else { return }
+        switch await app.readAlong.setup(publication: publication, asset: asset, offline: offline, session: session) {
+        case .none:
+            return
+        case let .note(text):
+            readAlongNote = text
+        case let .ready(narration):
+            guard app.isCurrent(session), self.book === book else { return }
+            let audiobookId = narration.manifest.audiobookPublicationId
+            let audiobookSync = audiobookId.flatMap { app.progressRegistry()?.sync(for: $0) }
+            let controller = ReadAlongController(
+                narration: narration, title: publication.title, author: publication.author, book: book, engine: app.playback,
+                ebook: sync, audiobook: audiobookSync, server: session.server, api: app.api(for: session), theme: app.readerSettings.settings.theme
+            )
+            controller.restored(position?.locator)
+            readAlong = controller
+            note("read-along \(narration.manifest.source.rawValue) \(narration.fromDevice ? "device" : "stream")")
+            if let audiobookId, let audiobookSync {
+                // A later place heard on the audiobook's own player is offered, never written here.
+                let local = await audiobookSync.snapshot()
+                let remote = try? await app.publications(for: session).load(id: audiobookId, server: session.server, api: app.api(for: session))
+                guard readAlong === controller else { return }
+                controller.consider(audiobook: remote?.publication.progress, local: local, ebookObservedAt: observedAt)
+            }
+        }
     }
 
     /// Anchors the session on the saved place (in whichever format it is) and opens the
@@ -313,6 +356,7 @@ final class ReaderModel: ObservableObject {
         await sync?.begin(position: place, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
         correctionTimer?.cancel()
         restoration = ReadingRestoration(opening: position?.locator)
+        restorationTarget = position?.locator
         note("open \(RestoreTrace.describe(position?.locator))")
         do {
             let navigator = try book.makeNavigator(
@@ -334,16 +378,23 @@ final class ReaderModel: ObservableObject {
         position = location.position
         if let chapter = location.chapter { self.chapter = chapter }
         guard let asset, let sync, let locator = JSONValue.parse(jsonString: location.locatorJSON) else { return }
+        lastLocator = locator
         let viewport = location.visible.map { visible in
             ReadingViewport(resources: visible
                 .filter { $0.from.isFinite && $0.to.isFinite }
                 .map { ReadingViewport.Resource(href: $0.href, progression: $0.from ... max($0.from, $0.to)) })
         }
-        let action = restoration.observe(ReadingObservation(locator: locator, viewport: viewport))
+        let observation = ReadingObservation(locator: locator, viewport: viewport)
+        let action = restoration.observe(observation)
         note("report \(RestoreTrace.describe(locator)) viewport \(RestoreTrace.describe(viewport)) -> \(RestoreTrace.describe(action))")
         guard action == .record else {
             // Restoring is not reading: the saved place and its time stay as they were.
-            apply(action)
+            apply(action, for: observation)
+            return
+        }
+        // Read-along: a page followed to, or turned while narration plays, is not reading.
+        if let readAlong, !readAlong.readerMoved(href: locator["href"]?.stringValue) {
+            note("read-along report not written")
             return
         }
         let saved = SavedPosition(assetId: asset.id, locator: locator)
@@ -352,10 +403,23 @@ final class ReaderModel: ObservableObject {
 
     private static let restoreFailed = "Couldn't show your saved page. It stays your saved place until you turn a page."
 
-    private func apply(_ action: ReadingRestoration.Action) {
+    private func apply(_ action: ReadingRestoration.Action, for observation: ReadingObservation? = nil) {
         switch action {
         case .none, .record:
             return
+        case .confirm:
+            // A place heard names its element: ask the page whether that element is shown.
+            guard let observation, let book, let href = observation.locator["href"]?.stringValue,
+                  case let .array(fragments)? = restorationTarget?["locations"]?["fragments"], case let .string(fragment)? = fragments.first
+            else { return }
+            let target = restorationTarget?["href"]?.stringValue ?? href
+            Task { [weak self] in
+                let visible = await book.isElementVisible(href: target, fragment: fragment) ?? false
+                guard let self, self.book === book else { return }
+                let next = self.restoration.elementShown(visible, for: observation)
+                self.note("element \(fragment) visible=\(visible) -> \(RestoreTrace.describe(next))")
+                self.apply(next, for: observation)
+            }
         case let .correct(target, attempt):
             correct(to: target, attempt: attempt)
         case .settled:
@@ -511,6 +575,9 @@ final class ReaderModel: ObservableObject {
 
     private func closeReaders() {
         correctionTimer?.cancel()
+        if let readAlong { Task { await readAlong.close() } }
+        readAlong = nil
+        readAlongNote = nil
         pageReader = nil
         pendingReader = nil
         cursor = nil
@@ -526,6 +593,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func flush() {
+        readAlong?.checkpointNow()
         guard let sync else { return }
         enqueue { await sync.requestFlush() }
     }
@@ -562,9 +630,28 @@ final class ReaderModel: ObservableObject {
                 waitForRestoredPage(pageReader)
                 if case let .correct(page) = action { pageReader.go(to: page, animated: false) }
             } else {
+                restorationTarget = position.locator
                 apply(restoration.reopen(at: position.locator))
+                // The other device's place is where narration starts, as it is.
+                readAlong?.restored(position.locator, arrival: .adopted)
             }
         }
+    }
+
+    /// Text size, page colours or the window changed. With narration, the report the new
+    /// layout causes anchors the page rather than being saved as reading; turns after it are.
+    func layoutChanged() {
+        guard readAlong != nil, lastLocator != nil, case .ready = state, !restoration.isCorrecting else { return }
+        restoration = ReadingRestoration(opening: nil)
+        restorationTarget = nil
+        note("layout")
+    }
+
+    /// The reader is closing: save the place heard and unload the narration.
+    func leave() {
+        flush()
+        guard let readAlong else { return }
+        Task { await readAlong.close() }
     }
 
     func clearNotice() {
@@ -573,6 +660,7 @@ final class ReaderModel: ObservableObject {
 
     func applyTheme(_ theme: ReaderTheme) {
         pageReader?.theme = theme
+        readAlong?.applyTheme(theme)
     }
 }
 

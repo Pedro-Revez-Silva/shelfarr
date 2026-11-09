@@ -5,8 +5,12 @@
 # time sent with progress, a silent reader reopen and the audiobook resume rewind; and
 # PDFs and CBZ comics (FormatsSmokeTests): rendered pages, page turns, rotation and
 # reopening without writes, an impossible saved page kept, each format downloaded, the
-# choice of format, and a comic read offline that syncs on reconnecting. The fixture's
-# own format checks (RuntimeSmoke/test_formats_fixture.py) run first.
+# choice of format, and a comic read offline that syncs on reconnecting; and read-along
+# (ReadAlongSmokeTests): the heard cue highlighted and followed, browsing and restoring
+# writing nothing, the resume rewind, coupled ebook and audiobook places, a later
+# audiobook place offered, narration downloaded and reopened offline, and a stale
+# alignment reading as usual. The fixture's own format and read-along checks
+# (RuntimeSmoke/test_formats_fixture.py, test_read_along_fixture.py) run first.
 #
 # Needs macOS, Xcode 16.4+, XcodeGen and python3.
 #
@@ -137,6 +141,12 @@ for runtime, devices in json.load(sys.stdin)["devices"].items():
 if ! python3 -B RuntimeSmoke/test_formats_fixture.py > "$out/fixture-tests.log" 2>&1; then
   echo "The fixture's format tests failed:" >&2
   tail -n 40 "$out/fixture-tests.log" >&2
+  exit 1
+fi
+# And its read-along books must match their known alignment (docs/native-read-along-ios.md).
+if ! python3 -B RuntimeSmoke/test_read_along_fixture.py > "$out/read-along-fixture-tests.log" 2>&1; then
+  echo "The fixture's read-along tests failed:" >&2
+  tail -n 40 "$out/read-along-fixture-tests.log" >&2
   exit 1
 fi
 

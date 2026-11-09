@@ -92,6 +92,9 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Narration kept with downloads, and what readers need to read along.
+    lazy var readAlong = ReadAlongService(app: self)
+
     /// Adding the opt-in requesting permission to this connection, in place.
     lazy var requesting: RequestingAccess = {
         let transport = self.transport
@@ -128,6 +131,7 @@ final class AppModel: ObservableObject {
         downloadSession = nil
         Task {
             await playback.stop()
+            await readAlong.close()
             await previous?.stopAll()
             await previousDownloads?.close()
             await downloads.attach(nil)
@@ -143,6 +147,11 @@ final class AppModel: ObservableObject {
     /// Whether `session` is still the live sign-in, perhaps with a token handed over in place.
     func isCurrent(_ session: Session?) -> Bool {
         session.flatMap(sessions.continuing) != nil
+    }
+
+    /// The account's own folder; deleted on sign-out.
+    func accountFolder(_ session: Session) -> URL {
+        accountDirectory(session)
     }
 
     private func accountDirectory(_ session: Session) -> URL {
@@ -261,6 +270,10 @@ final class AppModel: ObservableObject {
         downloadManager = manager
         downloadSession = session
         let model = downloads
+        let readAlong = self.readAlong
+        model.onRecords = { [weak readAlong] in readAlong?.reconcile($0) }
+        model.onEnqueue = { [weak readAlong] in readAlong?.downloadRequested($0, format: $1) }
+        model.onRemove = { [weak readAlong] in readAlong?.downloadRemoved($0) }
         Task {
             // The next account's transfers wait until the previous ones have stopped.
             await previous?.close()
@@ -326,6 +339,7 @@ final class AppModel: ObservableObject {
         downloadManager = nil
         downloadSession = nil
         await downloads.attach(nil)
+        await readAlong.close()
         sessions.clear()
         await epubCache.clear(accountKey: session.accountKey)
         pageLayouts.forget(accountKey: session.accountKey)
@@ -339,9 +353,15 @@ final class AppModel: ObservableObject {
 /// Publishes one account's download records for SwiftUI.
 @MainActor
 final class DownloadsModel: ObservableObject {
-    @Published private(set) var records: [String: DownloadRecord] = [:]
+    @Published private(set) var records: [String: DownloadRecord] = [:] {
+        didSet { onRecords?(records) }
+    }
     private(set) var manager: DownloadManager?
     private var observation: UUID?
+    /// Read-along follows downloads: their states, new downloads and removals.
+    var onRecords: (@MainActor ([String: DownloadRecord]) -> Void)?
+    var onEnqueue: (@MainActor (ShelfarrCore.Publication, ReaderFormat?) -> Void)?
+    var onRemove: (@MainActor (String) -> Void)?
 
     func attach(_ manager: DownloadManager?) async {
         if let previous = self.manager, let observation { await previous.stopObserving(observation) }
@@ -365,6 +385,7 @@ final class DownloadsModel: ObservableObject {
     func enqueue(_ publication: ShelfarrCore.Publication, format: ReaderFormat? = nil) {
         guard let manager else { return }
         Task { await manager.enqueue(publication, format: format) }
+        onEnqueue?(publication, format ?? records[publication.id]?.readerFormat)
     }
 
     func cancel(_ id: String) {
@@ -375,6 +396,7 @@ final class DownloadsModel: ObservableObject {
     func remove(_ id: String) {
         guard let manager else { return }
         Task { await manager.remove(id) }
+        onRemove?(id)
     }
 
     func retry(_ id: String) {
