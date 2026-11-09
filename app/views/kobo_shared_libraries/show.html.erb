@@ -1,0 +1,15 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← Shared Kobo books", kobo_shared_libraries_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white break-words"><%= @account.name %></h1>
+    <p class="mt-2 text-gray-400 break-words">Shared with you by <%= @account.user.name %>. They can stop sharing at any time.</p>
+  </div>
+  <% unless @account.connected? %>
+    <p role="status" class="rounded-lg border border-amber-800 bg-amber-950/30 p-5 text-amber-200">This catalogue may be out of date: <%= @account.user.name %> needs to reconnect the Kobo account before new copies can be prepared.</p>
+  <% end %>
+  <%= render "kobo_account_books/catalogue", account: @account, books: @books, count: @count, sendable_count: @sendable_count,
+    page: @page, more: @more, filter: @filter, page_path: ->(**query) { kobo_shared_library_path(@account, **query.compact) } %>
+</div>

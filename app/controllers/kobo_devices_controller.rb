@@ -75,7 +75,8 @@ class KoboDevicesController < ApplicationController
   end
 
   def load_deliveries
-    @deliveries = @device.kobo_deliveries.includes(:book).order(updated_at: :desc)
+    @deliveries = @device.kobo_deliveries.includes(:book, :kobo_account_book_file, kobo_account_book: { kobo_account: :user })
+      .order(updated_at: :desc)
     @progresses = Current.user.consumer_progresses.where(book_id: @deliveries.map(&:book_id).compact).index_by(&:book_id)
   end
 

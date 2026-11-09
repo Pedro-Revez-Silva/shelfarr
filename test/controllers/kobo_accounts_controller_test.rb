@@ -63,7 +63,8 @@ class KoboAccountsControllerTest < ActionDispatch::IntegrationTest
     get kobo_account_path(account)
     assert_select "h2", text: "Connected to Kobo"
     assert_select "body", text: /A Purchased Book/
-    assert_select "body", text: /Catalogue only/
+    # The fixture lists only a KEPUB without a DRM label: never shown as sendable.
+    assert_select "body", text: /Format not supported/
     assert_not_includes response.body, "synthetic-access"
     assert_not_includes response.body, "synthetic-refresh"
     assert_not_includes response.body, "synthetic-user-key"

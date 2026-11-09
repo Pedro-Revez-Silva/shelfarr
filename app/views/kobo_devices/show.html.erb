@@ -18,12 +18,21 @@
     <% @deliveries.each do |delivery| %>
       <div class="border-t border-gray-800 py-4 flex flex-wrap justify-between gap-3" data-testid="kobo-delivery">
         <div class="min-w-0 flex-1 basis-64">
-          <% if delivery.book&.acquired? %>
+          <% if delivery.private_source? %>
+            <% if delivery.deliverable? %>
+              <%= link_to delivery.publication["title"], kobo_account_book_path(delivery.kobo_account_book), class: "text-gray-200 hover:text-blue-400 break-words" %>
+            <% else %>
+              <p class="text-gray-200 break-words"><%= delivery.publication["title"] %></p>
+            <% end %>
+            <p class="text-sm text-gray-400 mt-1">Shared Kobo book · <%= kobo_shared_delivery_text(delivery) %></p>
+          <% elsif delivery.book&.acquired? %>
             <%= link_to delivery.publication["title"], library_path(delivery.book), class: "text-gray-200 hover:text-blue-400 break-words" %>
           <% else %>
             <p class="text-gray-200 break-words"><%= delivery.publication["title"] %></p>
           <% end %>
-          <p class="text-sm text-gray-400 mt-1"><%= delivery.book&.acquired? ? (delivery.last_download_at ? "Download requested #{time_ago_in_words(delivery.last_download_at)} ago" : "Queued · waiting for download") : "Source removed from library · copy on reader kept" %></p>
+          <% unless delivery.private_source? %>
+            <p class="text-sm text-gray-400 mt-1"><%= delivery.book&.acquired? ? (delivery.last_download_at ? "Download requested #{time_ago_in_words(delivery.last_download_at)} ago" : "Queued · waiting for download") : "Source removed from library · copy on reader kept" %></p>
+          <% end %>
           <% if @device.share_progress? || delivery.progress_bridge.present? %>
             <% place = kobo_place_notice(delivery, @progresses[delivery.book_id]) %>
             <p class="text-sm mt-1 <%= tones.fetch(place.tone) %>" data-testid="kobo-place"><%= place.text %></p>

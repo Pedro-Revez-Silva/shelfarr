@@ -36,7 +36,7 @@ class KoboAccountsTest < ApplicationSystemTestCase
     account = users(:one).kobo_accounts.sole
     KoboCatalogSyncJob.perform_now(account.id, account.sync_request_id)
     using_wait_time(15) { assert_text "A Purchased Book" }
-    assert_text "Catalogue only"
+    assert_text "Format not supported"
     assert_no_text "123456"
     capture("02-kobo-catalogue-desktop.png")
   end

@@ -66,6 +66,19 @@ Rails.application.routes.draw do
   resources :kobo_accounts, only: [ :index, :create, :show, :destroy ] do
     post :poll, on: :member
     post :sync, on: :member
+    resources :shares, only: [ :create, :destroy ], controller: "kobo_account_shares"
+  end
+
+  # Household sharing: catalogues other users explicitly shared with you, and
+  # private DRM-free copies sent to your own Kobo reader.
+  resources :kobo_shared_libraries, only: [ :index, :show ], path: "kobo_shared"
+  resources :kobo_account_books, only: [ :show ], path: "kobo_books" do
+    member do
+      post :prepare
+      post :deliver
+      post :status
+      get :cover
+    end
   end
 
   resources :kobo_devices, only: [ :index, :create, :show, :update, :destroy ] do

@@ -1,11 +1,14 @@
 # frozen_string_literal: true
 
 class KoboAccountsController < ApplicationController
+  include KoboCataloguePages
+
   before_action :prevent_caching
   before_action :set_account, only: [ :show, :poll, :sync, :destroy ]
 
   def index
-    @accounts = Current.user.kobo_accounts.order(created_at: :desc)
+    @accounts = Current.user.kobo_accounts.includes(:kobo_account_shares).order(created_at: :desc)
+    @received_shares = Current.user.received_kobo_account_shares.effective.includes(kobo_account: :user).order(:created_at)
   end
 
   def create
@@ -20,11 +23,9 @@ class KoboAccountsController < ApplicationController
   end
 
   def show
-    @page = [ params[:page].to_i, 1 ].max
-    @books = @account.kobo_account_books.order(:title, :id).offset((@page - 1) * 50).limit(51).to_a
-    @more = @books.size > 50
-    @books = @books.first(50)
-    @count = @account.kobo_account_books.count
+    load_catalogue(@account)
+    @shares = @account.kobo_account_shares.includes(:recipient).order(:created_at)
+    @share_candidates = User.active.where.not(id: [ Current.user.id, *@shares.map(&:recipient_id) ]).order(:name, :username)
   end
 
   def poll
@@ -51,16 +52,12 @@ class KoboAccountsController < ApplicationController
     rescue ActiveRecord::RecordNotFound
       Rails.logger.info("[Kobo] Connection was already removed")
     end
-    redirect_to kobo_accounts_path, notice: "Kobo connection and its private catalogue removed from Shelfarr. Your Kobo readers are unchanged."
+    redirect_to kobo_accounts_path, notice: "Kobo connection, its private catalogue, copies and shares removed from Shelfarr. Books already on Kobo readers are unchanged."
   end
 
   private
 
   def set_account
     @account = Current.user.kobo_accounts.find(params[:id])
-  end
-
-  def prevent_caching
-    response.headers["Cache-Control"] = "private, no-store"
   end
 end

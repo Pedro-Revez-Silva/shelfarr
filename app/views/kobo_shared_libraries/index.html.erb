@@ -1,0 +1,23 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← Kobo accounts", kobo_accounts_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white">Shared Kobo books</h1>
+    <p class="mt-2 text-gray-400">Kobo catalogues that people in your household chose to share with you. You can send their DRM-free purchases to your own Kobo reader. You never see their Kobo sign-in, and nothing changes on their readers.</p>
+  </div>
+  <% if @shares.empty? %>
+    <p class="rounded-lg border border-gray-800 bg-gray-900 p-5 text-gray-300">Nobody has shared a Kobo catalogue with you yet. The account owner can share one from their own Kobo account page in Shelfarr.</p>
+  <% end %>
+  <% @shares.each do |share| %>
+    <% account = share.kobo_account %>
+    <div class="rounded-lg border border-gray-800 bg-gray-900 p-5 flex flex-wrap items-center justify-between gap-4">
+      <div class="min-w-0">
+        <%= link_to account.name, kobo_shared_library_path(account), class: "text-lg font-semibold text-white hover:text-blue-400 break-words" %>
+        <p class="mt-1 text-sm text-gray-400 break-words">Shared by <%= account.user.name %> · <%= pluralize(@counts.fetch(account.id, 0), "book") %> can be sent</p>
+      </div>
+      <%= link_to "Browse", kobo_shared_library_path(account), class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+    </div>
+  <% end %>
+</div>

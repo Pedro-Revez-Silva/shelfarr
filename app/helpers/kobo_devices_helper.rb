@@ -38,6 +38,7 @@ module KoboDevicesHelper
       in [ "needs_choice", _ ] then "Another device saved a place while this one arrived. Kobo place: #{place}."
       in [ "unknown_time", _ ] then "Kobo didn't say when it reached this place (#{place}), so it wasn't shared automatically."
       in [ "clock_ahead", _ ] then "This Kobo's clock is ahead of the server, so its place (#{place}) wasn't shared. Check the reader's date and time."
+      in [ "unsupported", "private_edition" ] then "This copy came from a Kobo account, not the Shelfarr library, so its place (#{place}) stays on this reader."
       in [ "unsupported", "no_location" ] then "Kobo sent only a percentage (#{place}), not a chapter, so this place can't be shared."
       in [ "unsupported", "invalid_percent" ] then "Kobo sent a place Shelfarr can't read, so it wasn't shared."
       in [ "unsupported", _ ] then "Kobo's location doesn't match a chapter in this edition, so it wasn't shared."
