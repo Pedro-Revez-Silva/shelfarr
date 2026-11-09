@@ -521,7 +521,15 @@ export class PageReader {
     const moved = target !== this.displayedPosition
     this.position = target
     if (changed && !this.preserveZoom) this.zoom = 1
-    const shown = await this.draw()
+    let drawing = this.draw()
+    let shown = await drawing
+    // A refit or zoom of this page can replace this drawing before it
+    // finishes. The page then shows when the latest drawing does, and that is
+    // still this move: report it from that drawing instead of dropping it.
+    while (shown !== true && this.active && this.position === target && this.latestDraw && this.latestDraw !== drawing) {
+      drawing = this.latestDraw
+      shown = await drawing
+    }
     if (!this.active || this.position !== target) return
     if (shown) this.displayedPosition = target
     this.onChange?.(target, this.count, { activity: activity && moved && shown === true, shown: shown === true })
@@ -532,8 +540,15 @@ export class PageReader {
   previous() { if (this.position > 1) return this.show(this.position - 1, { activity: true }) }
   go(position) { return this.show(position, { activity: true }) }
 
-  // Fit the whole page in the visible area, times the zoom.
-  async draw() {
+  // Fit the whole page in the visible area, times the zoom. Each drawing
+  // replaces any earlier one still in progress.
+  draw() {
+    const drawing = this.paint()
+    this.latestDraw = drawing
+    return drawing
+  }
+
+  async paint() {
     const position = this.position
     this.drawing?.abort()
     const controller = new AbortController()
