@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -36,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -95,6 +98,7 @@ internal fun NarrationPanel(ui: ReadAlongUi, theme: ReaderTheme, actions: Narrat
             }
             ui.offer?.let { OfferCard(it, theme, actions) }
             Text(ui.note, style = MaterialTheme.typography.bodySmall, color = theme.mutedColor)
+            HorizontalDivider(color = theme.hairlineColor, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
         }
     }
 }
@@ -129,7 +133,7 @@ internal fun NarrationPill(ui: ReadAlongUi.Ready, theme: ReaderTheme, actions: N
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                PlayGlyph(ui, theme, Modifier.size(18.dp))
+                PlayGlyph(ui, theme, Modifier.size(20.dp))
                 Text(label, style = MaterialTheme.typography.labelLarge)
             }
             if (ui.browsing) {
@@ -139,6 +143,25 @@ internal fun NarrationPill(ui: ReadAlongUi.Ready, theme: ReaderTheme, actions: N
                 }
             }
         }
+    }
+}
+
+/**
+ * The bottom of the page while the reading controls are hidden: the quiet folio, and above
+ * it, only once narration has been used or a later audiobook place is offered, the pill or
+ * the offer. They stack, so large text never makes them overlap.
+ */
+@Composable
+internal fun PageFoot(folio: String, readAlong: ReadAlongUi, theme: ReaderTheme, actions: NarrationActions, modifier: Modifier = Modifier) {
+    val ready = readAlong as? ReadAlongUi.Ready
+    Column(
+        modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ready?.offer?.let { OfferCard(it, theme, actions, Modifier.widthIn(max = 480.dp)) }
+        if (ready?.started == true) NarrationPill(ready, theme, actions)
+        Text(folio, style = MaterialTheme.typography.labelSmall, color = theme.mutedColor)
     }
 }
 
@@ -207,7 +230,13 @@ private fun RoundIcon(icon: ImageVector, label: String, description: String, the
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, null, tint = tint, modifier = Modifier.size(28.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, modifier = Modifier.padding(top = 6.dp))
+        // Drawn inside the icon, so it keeps the icon's size; the button's name carries it for TalkBack.
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = with(LocalDensity.current) { 10.dp.toSp() }),
+            color = tint,
+            modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 

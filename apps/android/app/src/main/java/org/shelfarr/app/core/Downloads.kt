@@ -574,6 +574,12 @@ class DownloadManager(
 
     /** Stops a transfer and deletes what it wrote. The entry stays, marked cancelled. */
     suspend fun cancel(publicationId: String) {
+        // A ready book whose narration is still coming: only that transfer stops (from the
+        // Downloads list or the notification). The book, and any complete narration, stay.
+        record(publicationId)?.takeIf { it.isReady && it.narrationActive }?.let {
+            removeNarration(publicationId, removeAll = false)
+            return
+        }
         invalidateNarration(publicationId)
         stopJob(publicationId)
         val record = record(publicationId) ?: return

@@ -76,10 +76,11 @@ fun downloadCopy(record: DownloadRecord): DownloadCopy {
             record.fraction?.let { "Downloading ${(it * 100).toInt()}%" } ?: "Downloading",
             amount + fileCount(record),
         )
-        DownloadState.READY -> DownloadCopy(
-            "Downloaded",
-            "${formatBytes(record.bytesDone)} on this device. Opens without a connection.",
-        )
+        DownloadState.READY -> if (record.narrationActive) {
+            DownloadCopy("Downloaded · fetching narration", "The book opens without a connection; read-along offline needs the narration too.")
+        } else {
+            DownloadCopy("Downloaded", "${formatBytes(record.bytesDone)} on this device. Opens without a connection.")
+        }
         DownloadState.CANCELLED -> DownloadCopy("Download cancelled", "Nothing is kept on this device.", canRetry = true)
         DownloadState.FAILED -> when (record.problem) {
             DownloadProblem.OFFLINE -> DownloadCopy("Paused: no connection", "Continues when you're back online.$kept", true)
@@ -238,12 +239,13 @@ fun DownloadPanel(
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(copy.title, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    // Narration has its own Stop below; Cancel is only for the book's own transfer.
                     when {
-                        record.isActive -> TextButton(onClick = onCancel) { Text("Cancel") }
+                        record.isActive && !record.isReady -> TextButton(onClick = onCancel) { Text("Cancel") }
                         else -> TextButton(onClick = { confirmRemove = true }) { Text("Remove") }
                     }
                 }
-                if (record.isActive) {
+                if (record.isActive && !record.isReady) {
                     ProgressRule(record.fraction ?: 0f, Modifier.padding(vertical = 4.dp))
                 }
                 Caption(copy.detail)
@@ -447,7 +449,7 @@ private fun DownloadRow(
                 Text(copy.detail, style = MaterialTheme.typography.bodySmall, color = ShelfarrTheme.extended.inkMuted)
                 Row {
                     if (record.isActive) {
-                        TextButton(onClick = onCancel) { Text("Cancel") }
+                        TextButton(onClick = onCancel) { Text(if (record.isReady) "Stop narration" else "Cancel") }
                     } else {
                         if (copy.canRetry) TextButton(onClick = onRetry) { Text(retryLabel(record)) }
                         TextButton(onClick = onRemove) { Text("Remove") }

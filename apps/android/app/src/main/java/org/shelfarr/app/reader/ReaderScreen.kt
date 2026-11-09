@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -401,26 +400,10 @@ private fun ReaderChrome(
     }
 
     Box(Modifier.fillMaxSize()) {
-        // Always-present quiet folio, so progress is never more than a glance away.
+        // Always-present quiet folio, so progress is never more than a glance away. Read-along adds
+        // nothing to the page until narration is used, or a later audiobook place is offered.
         if (!visible) {
-            Text(
-                "${(place.fraction * 100).roundToInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = theme.mutedColor,
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 10.dp),
-            )
-            // Read-along adds nothing to the page until narration is used, or a later audiobook place is offered.
-            val ready = readAlong as? ReadAlongUi.Ready
-            if (ready != null && (ready.started || ready.offer != null)) {
-                Column(
-                    Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 30.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    ready.offer?.let { OfferCard(it, theme, narration, Modifier.widthIn(max = 480.dp)) }
-                    if (ready.started) NarrationPill(ready, theme, narration)
-                }
-            }
+            PageFoot("${(place.fraction * 100).roundToInt()}%", readAlong, theme, narration, Modifier.align(Alignment.BottomCenter))
         }
 
         AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.fillMaxSize()) {

@@ -247,24 +247,13 @@ class NarrationDownloadTest {
     }
 
     @Test
-    fun `cancelling or removing the book during the manifest fetch can't bring narration back`() {
+    fun `removing the book during the manifest fetch can't bring narration back`() {
         val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
         val downloads = manager()
         runBlocking { downloads.enqueue(garden(), narration = true) }
         assertTrue(started.await(10, TimeUnit.SECONDS))
-        runBlocking { downloads.cancel("garden-1") }
-        release.countDown()
-        runBlocking { delay(500) }
-        val cancelled = downloads.record("garden-1")!!
-        assertEquals(DownloadState.CANCELLED, cancelled.state)
-        assertNull(cancelled.narration)
-        assertFalse(File(root, folderOf("garden-1")).exists())
-
-        val (again, open) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
-        runBlocking { downloads.enqueue(garden(), narration = true) }
-        assertTrue(again.await(10, TimeUnit.SECONDS))
         runBlocking { downloads.remove("garden-1") }
-        open.countDown()
+        release.countDown()
         runBlocking { delay(500) }
         assertNull(downloads.record("garden-1"))
         assertFalse(File(root, folderOf("garden-1")).exists())
@@ -288,6 +277,23 @@ class NarrationDownloadTest {
         assertEquals(ReadAlongFixtures.GENERATION, downloads.narrationFor(record)!!.generation)
         assertNull(record.narrationUpdate)
         assertEquals(oldFiles, narrationFiles("garden-1"))
+    }
+
+    @Test
+    fun `cancelling a ready book's narration transfer, as the notification does, keeps the book`() {
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        assertTrue(downloads.record("garden-1")!!.let { it.isReady && it.isActive })
+        runBlocking { downloads.cancel("garden-1") }
+        release.countDown()
+        runBlocking { delay(500) }
+        val record = downloads.record("garden-1")!!
+        assertTrue(record.isReady)
+        assertFalse(record.isActive)
+        assertNotNull(downloads.fileFor(record, ReadAlongFixtures.EPUB_ID))
+        assertTrue(narrationFiles("garden-1").isEmpty())
     }
 
     @Test
