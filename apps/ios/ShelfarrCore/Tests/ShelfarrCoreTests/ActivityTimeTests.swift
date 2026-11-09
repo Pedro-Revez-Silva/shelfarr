@@ -93,7 +93,9 @@ final class ListeningCheckpointsTests: XCTestCase {
         XCTAssertNil(rules.resumed(at: at(55)), "once per resume")
         XCTAssertFalse(rules.isActivity(at(58)), "the paused place stays saved through the pre-roll")
         rules.paused()
-        XCTAssertEqual(rules.resumed(at: at(58)), 53)
+        XCTAssertNil(rules.resumed(at: at(58)), "pausing during the replay must not rewind again")
+        rules.paused()
+        XCTAssertNil(rules.resumed(at: at(58.1)), "repeated pauses cannot walk backwards")
         XCTAssertFalse(rules.isActivity(at(59)), "pausing inside the pre-roll keeps the original place")
         XCTAssertTrue(rules.isActivity(at(60.5)))
     }

@@ -144,7 +144,9 @@ with "should resume", chapter or duration loading, going to the other device's p
 or reopening the player screen while the book is already loaded. The place resumed
 from stays the saved checkpoint until playback passes it or the listener moves
 deliberately, so pausing during the replayed pre-roll never moves the saved place
-backwards.
+backwards. Playing again during that pre-roll continues from the paused point
+without rewinding again. Passing the held place allows the next pause to arm
+a fresh rewind.
 
 ## Tests
 

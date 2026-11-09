@@ -583,6 +583,8 @@ export class ListeningCheckpoints {
   resume(position) {
     this.active = true
     if (this.skipRewind) { this.skipRewind = false; return position }
+    // Still replaying the same saved span: a quick pause/play continues it.
+    if (this.floor !== null && position <= this.floor) return position
     const rewound = Math.max(0, position - ListeningCheckpoints.REWIND)
     // Pausing again during pre-roll must not lower the original saved floor.
     this.floor = rewound < position ? Math.max(this.floor ?? position, position) : this.floor

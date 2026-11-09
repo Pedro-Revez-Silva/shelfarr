@@ -109,7 +109,9 @@ chapter choice (even while paused), a natural track change, chapter or metadata
 loading, audio focus coming back, or reopening the player screen while a book is
 already loaded. The place resumed from stays the saved checkpoint until playback
 passes it or the listener moves deliberately, so pausing during the replayed pre-roll
-never moves the saved place backwards.
+never moves the saved place backwards. Playing again during that pre-roll
+continues from the paused point without rewinding again. Passing the held place
+allows the next pause to arm a fresh rewind.
 
 ## Tests
 

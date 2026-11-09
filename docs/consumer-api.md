@@ -463,7 +463,10 @@ Pressing Play to resume a paused or reopened audiobook rewinds five seconds with
 the track, clamped to zero, once per resume. Choosing a track, seeking while
 paused, and a natural move to the next track do not rewind. Restoring a place,
 the rewind itself and sync acknowledgements are not activity: the saved place is
-kept until playback passes it again. If the browser refuses storage, the page
+kept until playback passes it again. Pausing and playing again during those
+replayed seconds continues from that point
+without subtracting another five seconds. After passing the saved place, a later
+pause arms the usual rewind again. If the browser refuses storage, the page
 says so and syncs only while it stays open. Browsers may suspend background tabs;
 reliable background progress needs the native apps. Unsent places for an account
 remain in that browser's storage after sign-out until that account syncs them.

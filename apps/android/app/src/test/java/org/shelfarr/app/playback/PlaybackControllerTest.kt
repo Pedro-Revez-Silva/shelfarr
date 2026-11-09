@@ -299,10 +299,17 @@ class PlaybackControllerTest {
         assertEquals(heardAt, store.memory.records.getValue("p").observedAtEpochMs)
         assertTrue(server.received.isEmpty())
 
-        // Restarting after the pause rewinds again, from where it stopped.
+        // Restarting inside the same replay continues from where it stopped.
         controller.togglePlay()
         idle()
-        assertEquals(1 to 93_000L, player.seeks.last())
+        assertEquals(98_000L, player.positionMs)
+        assertTrue("no second rewind during pre-roll", player.seeks.isEmpty())
+        player.pauseFromOutside(Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+        idle()
+        player.playFromOutside()
+        idle()
+        assertEquals(98_000L, player.positionMs)
+        assertTrue("a headset resume also continues the replay", player.seeks.isEmpty())
         idle(9_000)
         assertTrue("passed the saved place: ${saved()}", seconds(saved()) > 100.0)
     }

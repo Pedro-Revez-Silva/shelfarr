@@ -65,9 +65,9 @@ public struct ListeningCheckpoints: Sendable {
         let seconds = current.positionSeconds ?? 0
         let target = Self.rewound(seconds)
         guard millis(target) < millis(seconds) else { return nil }
-        // Keep the place it was paused at until playback passes it again.
+        // A pause inside the same replay continues it without another rewind.
         if let place = held, place.assetId == current.assetId, millis(place.positionSeconds ?? 0) >= millis(seconds) {
-            return target
+            return nil
         }
         held = current
         return target

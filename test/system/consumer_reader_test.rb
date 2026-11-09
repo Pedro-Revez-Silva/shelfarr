@@ -360,6 +360,12 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     sleep 1
     saved = users(:one).consumer_progresses.find_by!(book: @audiobook)
     assert_equal [ 1, 7.0, observed ], [ saved.version, saved.position_seconds, saved.observed_at ]
+    # Pausing again inside the replay must not subtract another five seconds.
+    replay = page.evaluate_script("document.querySelector('audio').currentTime")
+    find("button[aria-label='Play audiobook']").click
+    assert_in_delta replay, page.evaluate_script("document.querySelector('audio').currentTime"), 0.6
+    find("button[aria-label='Pause audiobook']").click
+    assert_equal [ 1, 7.0, observed ], [ saved.reload.version, saved.position_seconds, saved.observed_at ]
     # A deliberate seek while paused is saved and the next play starts there.
     page.execute_script("const seek = document.querySelector('#consumer-seek'); seek.value = 25; seek.dispatchEvent(new Event('input')); seek.dispatchEvent(new Event('change'))")
     assert_operator wait_for_progress(@audiobook, version: 2).observed_at, :>, observed

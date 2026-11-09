@@ -162,7 +162,8 @@ test("repeated resumes during pre-roll preserve the original saved checkpoint", 
   checkpoints.restored(100, ASSET)
   expect(checkpoints.resume(100)).toBe(95)
   expect(checkpoints.settle(96, ASSET)).toBe(false)
-  expect(checkpoints.resume(96)).toBe(91)
+  expect(checkpoints.resume(96)).toBe(96)
+  expect(checkpoints.resume(96.1)).toBe(96.1)
   now = 10000
   expect(checkpoints.tick(97, ASSET)).toBe(false)
   expect(checkpoints.settle(99, ASSET)).toBe(false)
@@ -412,7 +413,7 @@ test("a genuine resume rewinds five seconds and keeps the saved place until play
   now = 6000
   expect(checkpoints.tick(98, ASSET)).toBe(false)
   expect(checkpoints.settle(98, ASSET)).toBe(false)
-  expect(checkpoints.resume(98)).toBe(93)
+  expect(checkpoints.resume(98)).toBe(98)
   now = 12000
   checkpoints.tick(101, ASSET)
   expect(places).toEqual([101])

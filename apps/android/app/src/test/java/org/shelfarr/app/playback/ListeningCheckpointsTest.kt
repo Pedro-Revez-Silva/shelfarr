@@ -52,9 +52,13 @@ class ListeningCheckpointsTest {
         val checkpoints = ListeningCheckpoints()
         checkpoints.open(at(100.0), "t1")
         checkpoints.paused()
-        assertEquals(92_000L, checkpoints.resumed(at(97.0)))
+        assertNull("a paused replay continues without rewinding again", checkpoints.resumed(at(97.0)))
+        checkpoints.paused()
+        assertNull("repeated pauses cannot walk back through the track", checkpoints.resumed(at(97.1)))
         assertFalse(checkpoints.isActivity(at(99.0)))
         assertTrue(checkpoints.isActivity(at(100.1)))
+        checkpoints.paused()
+        assertEquals("new listening arms the next rewind", 95_100L, checkpoints.resumed(at(100.1)))
     }
 
     @Test

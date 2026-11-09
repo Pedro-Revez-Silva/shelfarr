@@ -53,9 +53,10 @@ class ListeningCheckpoints(private val intervalMs: Long = CHECKPOINT_INTERVAL_MS
         val currentMs = current.millis()
         val target = rewound(currentMs)
         if (target >= currentMs) return null
-        // Keep the place it was paused at until playback passes it again.
+        // A pause inside the same replay continues it without another rewind.
         val place = held
-        if (place == null || place.assetId != current.assetId || place.millis() < currentMs) held = current
+        if (place != null && place.assetId == current.assetId && place.millis() >= currentMs) return null
+        held = current
         return target
     }
 
