@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_001100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_001200) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -382,6 +382,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_001100) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.json "progress_bridge"
+    t.boolean "progress_generation_ambiguous", default: false, null: false
     t.index ["book_id"], name: "index_kobo_deliveries_on_book_id"
     t.index ["entitlement_id"], name: "index_kobo_deliveries_on_entitlement_id", unique: true
     t.index ["kobo_device_id", "book_id"], name: "index_kobo_deliveries_on_kobo_device_id_and_book_id", unique: true

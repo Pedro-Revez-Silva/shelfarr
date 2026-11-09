@@ -107,8 +107,11 @@ its selections and passes the reader's other Store requests to Kobo:
 - Library sync returns Shelfarr selections first, then the reader's own Store
   pages. One `x-kobo-synctoken` carries both positions; Kobo's part is
   encrypted (AES-256-GCM, a key derived from `secret_key_base`) and bound to the
-  reader and its current connection address. Kobo never receives Shelfarr's
-  cursor, and a reader that previously synced with Kobo keeps its Store position.
+  reader, its current connection address and a keyed fingerprint of its Kobo
+  sign-in. Kobo never receives Shelfarr's cursor. A changed sign-in discards
+  only the Store position and replays Store books; Shelfarr's position stays.
+  A refreshed access token can therefore replay Store books too. Raw Store
+  cursors and older unbound envelopes replay once rather than assuming an account.
 - Metadata, reading state and other requests for Store books are relayed to
   `https://storeapi.kobo.com` only. Store covers redirect to Kobo's public image
   host. Shelfarr books stay local, and Store records can never remove, replace
@@ -145,9 +148,15 @@ update the owner's progress for the web reader and the Android and iOS apps.
   a ZIP path, a package-relative path, or prefixed with the book's content ID
   (`<id>!!OEBPS/Text/ch.xhtml`, `<id>!OEBPS!Text/ch.xhtml`); it must match exactly
   one spine resource of the edition the reader downloaded.
-- The edition is proven, not assumed: the delivered file must still have the
-  fingerprint the reader downloaded and be the publication's current consumer
-  asset. Otherwise the place is kept with "file changed" and not shared.
+- A file must have been requested through this reader's connection, still match its delivery
+  fingerprint, and be the publication's current consumer asset. Before the
+  first download, no place is shared. If the same entitlement has offered a
+  replacement after a previous download, a bookmark cannot prove which copy it
+  names: Kobo's state endpoint has no revision. Even a replacement GET is not
+  proof that the reader installed it. These places require **Use Kobo place**
+  and are never applied automatically. Earlier delivery records without this
+  generation history use the same conservative rule. Check that the chapter
+  and percentage fit the current file before choosing one.
 - The saved locator is the chapter `href` with `progression` (Kobo's chapter
   percentage) and `totalProgression` (book percentage). This is the approximate
   cross-engine place described in the [consumer API](consumer-api.md#saved-progress).

@@ -66,6 +66,12 @@ module Kobo
 
       locations = { "progression" => place["chapter_percent"]&./(100.0), "totalProgression" => place["percent"]&./(100.0) }.compact
       candidate = place.merge("asset_id" => edition["asset_id"], "locator" => { "href" => href["href"], "type" => href["type"], "locations" => locations })
+      # The stock state endpoint does not identify a revision. Once an
+      # entitlement has represented different files, even a successful GET of
+      # the replacement cannot establish which copy a delayed bookmark names.
+      # Preserve the candidate for an explicit choice; never auto-map it.
+      return candidate.merge("status" => "needs_choice", "reason" => "edition_unverified") if @delivery.progress_generation_ambiguous?
+
       time = candidate["observed_at"] && Time.iso8601(candidate["observed_at"])
       return candidate.merge("status" => "unknown_time") unless time
       return candidate.merge("status" => "clock_ahead") if time > Time.current + Consumer::ProgressWriter::FUTURE_TOLERANCE
@@ -113,6 +119,8 @@ module Kobo
     # generation the reader downloaded. A later change to the file changes its
     # change time, so either the fingerprint check or the asset check fails.
     def edition
+      return { "status" => "edition_changed", "reason" => "not_downloaded" } if @delivery.last_download_at.nil?
+
       assets = Consumer::LibraryAssets.new(@book).list
       file = @delivery.open_file
       stat = file.stat

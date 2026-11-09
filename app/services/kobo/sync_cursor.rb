@@ -12,8 +12,12 @@ module Kobo
     Parts = Data.define(:local, :store)
     EMPTY = Parts.new(local: nil, store: nil)
 
-    def initialize(device)
+    def initialize(device, authorization: nil)
       @device = device
+      if StoreProxy.safe_header_value?(authorization, StoreProxy::MAX_HEADER_BYTES)
+        key = Rails.application.key_generator.generate_key("shelfarr kobo reader sign-in binding", 32)
+        @authorization_binding = OpenSSL::HMAC.hexdigest("SHA256", key, authorization)
+      end
     end
 
     def read(raw)
@@ -24,14 +28,15 @@ module Kobo
       # KoboSync verifies it. It is never forwarded to Kobo, even if invalid.
       return Parts.new(local: raw, store: nil) if raw.match?(/--\h{40,128}\z/)
 
-      # A token Shelfarr did not issue is the reader's own Store cursor from
-      # syncing directly with Kobo. Keeping it avoids replaying the Store.
-      Parts.new(local: nil, store: StoreProxy.safe_header_value?(raw, MAX_STORE_BYTES) ? raw : nil)
+      # An unbound cursor cannot establish which Kobo sign-in it came from.
+      # Replay the Store once rather than attaching it to a different account.
+      EMPTY
     end
 
     def write(local:, store:)
-      store = nil unless StoreProxy.safe_header_value?(store, MAX_STORE_BYTES)
-      claims = { "device" => @device.id, "generation" => @device.token_digest, "local" => local, "store" => store }
+      store = nil unless @authorization_binding && StoreProxy.safe_header_value?(store, MAX_STORE_BYTES)
+      claims = { "device" => @device.id, "generation" => @device.token_digest, "local" => local, "store" => store,
+        "authorization" => @authorization_binding }
       PREFIX + encryptor.encrypt_and_sign(claims, purpose: "kobo-sync-cursor")
     end
 
@@ -42,7 +47,9 @@ module Kobo
       return EMPTY unless claims.is_a?(Hash) && claims["device"] == @device.id && claims["generation"] == @device.token_digest
 
       local = claims["local"] if claims["local"].is_a?(String)
-      store = claims["store"] if StoreProxy.safe_header_value?(claims["store"], MAX_STORE_BYTES)
+      if @authorization_binding && claims["authorization"] == @authorization_binding && StoreProxy.safe_header_value?(claims["store"], MAX_STORE_BYTES)
+        store = claims["store"]
+      end
       Parts.new(local: local, store: store)
     rescue ActiveSupport::MessageEncryptor::InvalidMessage, ArgumentError
       EMPTY

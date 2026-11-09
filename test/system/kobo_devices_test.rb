@@ -114,6 +114,25 @@ class KoboDevicesTest < ApplicationSystemTestCase
     assert_no_horizontal_overflow
   end
 
+  test "an unverified edition is explained before its place can be applied" do
+    @device.update!(share_progress: true)
+    delivery = @device.send_book!(@book)
+    asset = Consumer::LibraryAssets.new(@book).list.sole.id
+    delivery.update_columns(progress_generation_ambiguous: true, last_download_at: 1.minute.ago, progress_bridge: {
+      "status" => "needs_choice", "reason" => "edition_unverified", "percent" => 35.0,
+      "asset_id" => asset, "locator" => { "href" => "OEBPS/b.xhtml", "locations" => { "totalProgression" => 0.35 } } })
+    page.current_window.resize_to(390, 844)
+    visit kobo_device_path(@device)
+    assert_selector "[data-testid=kobo-place]", text: "may still have the previous edition"
+    assert_text "only if that chapter and percentage fit the current file"
+    assert_empty users(:one).consumer_progresses
+    assert_no_horizontal_overflow
+    capture("kobo-edition-choice-mobile.png")
+    accept_confirm(/Resume A Library Book at the Kobo place/) { click_button "Use Kobo place" }
+    assert_text "Shelfarr now resumes A Library Book at the Kobo place."
+    assert_equal asset, users(:one).consumer_progresses.sole.asset_id
+  end
+
   private
 
   def assert_no_horizontal_overflow
