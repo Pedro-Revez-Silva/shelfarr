@@ -170,6 +170,113 @@ class Kobo::BookCacheTest < ActiveSupport::TestCase
     end
   end
 
+  test "a live worker keeps its partial and its reservation however old its lease grows" do
+    stub_book_metadata
+    stub_book_download
+    first = Kobo::BookCache.request!(@shared_book, @owner)
+    test = self
+    seen = {}
+    downloader = Kobo::BookDownload.new
+    slow = Object.new
+    slow.define_singleton_method(:call) do |url, **options|
+      downloader.call(url, **options).tap do
+        cache = test.instance_variable_get(:@kobo_cache)
+        seen[:leases] = Dir.glob(File.join(cache, ".incoming", "*.lease")).map { |path| File.read(path) }
+        test.travel(KoboAccountBookFile::FETCH_LEASE * 2 + 1.minute)
+        seen[:retry] = Kobo::BookCache.request!(test.instance_variable_get(:@shared_book), test.users(:one))
+        Kobo::BookCache.new(seen[:retry]).call
+        seen[:partial] = File.size(options[:io].tap(&:flush).path) if File.exist?(options[:io].path)
+      end
+    end
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => (synthetic_epub.bytesize * 1.5).to_i.to_s) do
+      Kobo::BookCache.new(first, downloader: slow).call
+      assert_equal [ "failed", "cache_full" ], [ seen[:retry].reload.status, seen[:retry].error ]
+      assert_equal synthetic_epub.bytesize, seen[:partial]
+      # Its row was superseded meanwhile, so the late result is discarded.
+      assert_equal [ "failed", "timed_out" ], [ first.reload.status, first.error ]
+      assert_empty Dir.glob(File.join(@kobo_cache, "**/*.epub"))
+      assert_empty Dir.children(File.join(@kobo_cache, ".incoming"))
+      row = Kobo::BookCache.request!(@shared_book, @owner)
+      Kobo::BookCache.new(row).call
+      assert_equal "ready", row.reload.status, row.error
+    end
+    # The reservation records only ids, a random request id and a byte count.
+    assert_equal [ %w[bytes request row] ], seen[:leases].map { |text| JSON.parse(text).keys.sort }
+    assert_no_match(/signature|token|kobo\.com/, seen[:leases].join)
+  end
+
+  test "a disconnected account's transfer keeps its reservation until its bytes are gone" do
+    other_account = connect_kobo_account(user: @recipient, name: "Second household account")
+    other = other_account.kobo_account_books.create!(entitlement_id: "22222222-2222-3333-4444-555555555555",
+      title: "Second", ownership_type: "purchased", rights: "drm_free", rights_checked_at: Time.current)
+    stub_book_metadata
+    stub_book_metadata(other)
+    stub_book_download
+    row = Kobo::BookCache.request!(@shared_book, @owner)
+    blocked = Kobo::BookCache.request!(other, @recipient)
+    downloader = Kobo::BookDownload.new
+    account = @account
+    disconnect = Object.new
+    disconnect.define_singleton_method(:call) do |url, **options|
+      downloader.call(url, **options).tap do
+        account.destroy!
+        Kobo::BookCache.new(blocked).call
+      end
+    end
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => (synthetic_epub.bytesize * 1.5).to_i.to_s) do
+      Kobo::BookCache.new(row, downloader: disconnect).call
+      assert_equal [ "failed", "cache_full" ], [ blocked.reload.status, blocked.error ]
+      assert_not KoboAccountBookFile.exists?(row.id)
+      assert_empty Dir.glob(File.join(@kobo_cache, "**/*.epub"))
+      assert_empty Dir.children(File.join(@kobo_cache, ".incoming"))
+      retried = Kobo::BookCache.request!(other, @recipient)
+      Kobo::BookCache.new(retried).call
+      assert_equal "ready", retried.reload.status, retried.error
+    end
+  end
+
+  test "reservations nobody holds and unreferenced files are reclaimed; held ones still count" do
+    kept = prepare_copy
+    device, = recipient_device(@owner)
+    device.send_account_book!(kept, share: nil)
+    incoming = File.join(@kobo_cache, ".incoming")
+    abandoned = @shared_book.kobo_account_book_files.create!(status: "fetching", request_id: SecureRandom.uuid,
+      requested_by: @owner, started_at: Time.current)
+    dead = SecureRandom.hex(16)
+    File.write(File.join(incoming, "#{dead}.lease"), { row: abandoned.id, request: abandoned.request_id, bytes: 900 }.to_json)
+    File.write(File.join(incoming, "#{dead}.part"), "x" * 900)
+    File.write(File.join(incoming, "#{SecureRandom.hex(16)}.part"), "legacy partial")
+    orphan = File.join(@kobo_cache, @account.id.to_s, "999", "#{'b' * 64}.epub")
+    FileUtils.mkdir_p(File.dirname(orphan))
+    File.write(orphan, "renamed but never recorded")
+    live = SecureRandom.hex(16)
+    File.write(File.join(incoming, "#{live}.part"), "y" * 400)
+    holder = File.open(File.join(incoming, "#{live}.lease"), "w+")
+    holder.write({ row: 0, request: "live", bytes: 100 }.to_json)
+    holder.flush
+    assert holder.flock(File::LOCK_EX | File::LOCK_NB)
+
+    other = @account.kobo_account_books.create!(entitlement_id: "22222222-2222-3333-4444-555555555555", title: "Second",
+      ownership_type: "purchased", rights: "drm_free", rights_checked_at: Time.current)
+    # The pinned copy plus the live partial (larger than its reservation) leave no room.
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => (synthetic_epub.bytesize * 2 + 399).to_s) do
+      row = prepare_copy(other)
+      assert_equal [ "failed", "cache_full" ], [ row.status, row.error ]
+      assert_equal [ "failed", "incomplete" ], [ abandoned.reload.status, abandoned.error ]
+      assert_equal [ "#{live}.lease", "#{live}.part" ], Dir.children(incoming).sort
+      assert_not File.exist?(orphan)
+      assert_equal synthetic_epub, File.binread(File.join(@kobo_cache, kept.storage_key))
+
+      holder.close
+      row = prepare_copy(other)
+      assert_equal "ready", row.status, row.error
+      assert_empty Dir.children(incoming)
+      assert kept.reload.ready?
+    end
+  ensure
+    holder&.close
+  end
+
   test "a revoked share during the transfer leaves nothing saved" do
     share = share_with
     stub_book_metadata
@@ -196,6 +303,7 @@ class Kobo::BookCacheTest < ActiveSupport::TestCase
       Kobo::BookCache.new(row).call
       assert_equal "failed", row.reload.status
       assert_empty Dir.glob(File.join(@kobo_cache, "**/*.epub"))
+      assert_empty Dir.glob(File.join(@kobo_cache, ".incoming", "*"))
     end
   end
 
