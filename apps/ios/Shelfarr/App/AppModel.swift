@@ -44,10 +44,13 @@ final class AppModel: ObservableObject {
         #endif
         let sessions = SessionManager(store: store)
         let transport = URLSessionTransport(credential: { sessions.credential() })
+        // Follows whoever is signed in. A refusal is replayed only for the sign-in that held
+        // the refused token, with the replacement it was handed over to.
         let api = ConsumerAPI(
             transport: transport,
             credential: { sessions.credential() },
-            onRejected: { sessions.markExpired($0) }
+            onRejected: { sessions.markExpired($0) },
+            resolveRefusal: { await sessions.resolveRefusal(of: $0) }
         )
         self.sessions = sessions
         self.transport = transport
@@ -73,10 +76,19 @@ final class AppModel: ObservableObject {
         sessions.onChange = { [weak self] _ in
             Task { @MainActor in self?.apply() }
         }
+        // A replacement token left unconfirmed by an earlier launch is checked with exactly
+        // that token, before the old one's first refusal can end the sign-in.
+        sessions.useCandidateCheck { credential in
+            try await ConsumerAPI(transport: transport, credential: { credential }).me(server: credential.server)
+        }
         // Resume this account's unfinished downloads at launch. Its manager is connected to
         // the router before the background session exists, so no early callback is dropped.
         if sessions.signedIn != nil { _ = downloadsForSession() }
         backgroundDownloads.activate()
+        if let session = sessions.signedIn, sessions.hasPendingHandover(for: session) {
+            // Confirms it now rather than at the first refusal.
+            _ = requesting
+        }
     }
 
     /// Adding the opt-in requesting permission to this connection, in place.
@@ -142,6 +154,23 @@ final class AppModel: ObservableObject {
     /// that sign-in has ended, so it can never carry another account's token.
     func api(for session: Session) -> ConsumerAPI {
         SignInBinding(session: session, sessions: sessions).api(transport: transport)
+    }
+
+    /// Runs `work`, which sends `session`'s token on its own (`api(for:).authorized`), once
+    /// more when the server refused that token because it was being handed over to a
+    /// replacement. Any other refusal is rethrown as it was.
+    func followingHandover<T>(_ session: Session, _ work: () async throws -> T) async throws -> T {
+        let sent = sessions.continuing(session)
+        do {
+            return try await work()
+        } catch APIError.unauthorized {
+            guard let sent else { throw APIError.unauthorized }
+            switch await sessions.resolveRefusal(of: Credential(server: sent.server, accessToken: sent.accessToken), signIn: session) {
+            case .replay: return try await work()
+            case .unconfirmed: throw APIError.offline(certificate: false)
+            case .ended: throw APIError.unauthorized
+            }
+        }
     }
 
     func publications(for session: Session) -> AccountPublications {
@@ -222,7 +251,9 @@ final class AppModel: ObservableObject {
                 return values?.volumeAvailableCapacityForImportantUsage
             },
             // Only a refusal of the token in use now signs out; an earlier token's late refusals are replanned.
-            onUnauthorized: { binding.refused($0) }
+            onUnauthorized: { binding.refused($0) },
+            // One refused while its replacement is being confirmed waits, then continues with it.
+            resolveRefusal: { await binding.resolveRefusal($0) }
         )
         // Before anything can deliver this account's events.
         manager.connect()

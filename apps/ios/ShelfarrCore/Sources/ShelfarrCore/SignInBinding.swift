@@ -33,16 +33,31 @@ public struct SignInBinding: Sendable {
     }
 
     /// A client for this sign-in. A request refused because its token was replaced while
-    /// it was out is sent once more with the replacement; only a refusal of the token in
-    /// use ends the sign-in.
+    /// it was out is sent once more with the replacement, and so is one refused while a
+    /// replacement is being confirmed, once it is. Only a refusal of the token in use that
+    /// nothing replaces ends the sign-in.
     public func api(transport: HTTPTransport) -> ConsumerAPI {
         let sessions = self.sessions, session = self.session
         return ConsumerAPI(
             transport: transport,
             credential: { sessions.continuing(session).map { Credential(server: $0.server, accessToken: $0.accessToken) } },
             onRejected: { sessions.markExpired($0) },
-            replaysAfterHandover: true
+            replaysAfterHandover: true,
+            resolveRefusal: { await sessions.resolveRefusal(of: $0, signIn: session) }
         )
+    }
+
+    /// For work that names its token by `DownloadManager.credentialTag`: what to do after
+    /// the server refused the token tagged `refused`. Waits while a replacement for it is
+    /// being confirmed. `.ended` reports the refusal, ending the sign-in only when that
+    /// is still the token in use.
+    public func resolveRefusal(_ refused: String) async -> RefusalResolution {
+        guard let live else { return .ended }
+        let credential = Credential(server: live.server, accessToken: live.accessToken)
+        guard DownloadManager.credentialTag(live.accessToken) == refused else { return .replay(credential) }
+        let resolution = await sessions.resolveRefusal(of: credential, signIn: session)
+        if resolution == .ended { self.refused(refused) }
+        return resolution
     }
 
     /// The server refused the credential tagged `refused`. Ends the sign-in only when that

@@ -90,8 +90,11 @@ final class ReaderModel: ObservableObject {
                 file = local
                 if offline { notice = "Reading the download on this device. Your place will sync when you're back online." }
             } else {
-                let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
-                    Task { @MainActor in self?.state = .preparing(fraction) }
+                let cache = app.epubCache
+                let cached = try await app.followingHandover(session) {
+                    try await cache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
+                        Task { @MainActor in self?.state = .preparing(fraction) }
+                    }
                 }
                 guard app.isCurrent(session) else { throw CancellationError() }
                 if cached.unverified || offline {

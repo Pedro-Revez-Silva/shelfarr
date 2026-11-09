@@ -40,21 +40,29 @@ public final class ConsumerAPI: Sendable {
     private let credential: @Sendable () -> Credential?
     private let onRejected: @Sendable (Credential) -> Void
     private let replaysAfterHandover: Bool
+    private let resolveRefusal: (@Sendable (Credential) async -> RefusalResolution)?
 
     /// With `replaysAfterHandover`, a request refused while it carried a token that
     /// `credential` has since replaced is sent once more with the replacement. Only pass
     /// it when `credential` follows one sign-in (`SessionManager.continuing`), never
     /// whoever is signed in, so a replay can't reach another account.
+    ///
+    /// `resolveRefusal` decides a refusal of the token still in use, before it is reported
+    /// to `onRejected`: while that sign-in is being handed over to a replacement token, the
+    /// server may already have retired the token this request carried. It waits for the
+    /// handover and the request is sent once more with the replacement, unchanged otherwise.
     public init(
         transport: HTTPTransport,
         credential: @escaping @Sendable () -> Credential?,
         onRejected: @escaping @Sendable (Credential) -> Void = { _ in },
-        replaysAfterHandover: Bool = false
+        replaysAfterHandover: Bool = false,
+        resolveRefusal: (@Sendable (Credential) async -> RefusalResolution)? = nil
     ) {
         self.transport = transport
         self.credential = credential
         self.onRejected = onRejected
         self.replaysAfterHandover = replaysAfterHandover
+        self.resolveRefusal = resolveRefusal
     }
 
     private struct ErrorBody: Decodable {
@@ -238,15 +246,46 @@ public final class ConsumerAPI: Sendable {
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let result = try await transport.send(request)
-        if result.1.statusCode == 401, let replay = replayedAfterHandover(request) {
+        guard result.1.statusCode == 401 else { return result }
+        if let replay = replayedAfterHandover(request) {
             // Requesting was added while this was out: the server may already have retired
             // the token it carried. One more try with the replacement, never a loop.
-            let second = try await transport.send(replay)
-            noteRejection(second.1, replay)
-            return second
+            return try await sendReplay(replay)
+        }
+        if let resolveRefusal, let sent = sentLiveCredential(request) {
+            // The token in use was refused. If this sign-in is being handed over to a
+            // replacement, the server retired it when the replacement was first used:
+            // wait for that answer rather than ending the sign-in.
+            switch await resolveRefusal(sent) {
+            case let .replay(next) where next.server.contains(request.url!) && next.accessToken != sent.accessToken:
+                var replay = request
+                replay.setValue("Bearer \(next.accessToken)", forHTTPHeaderField: "Authorization")
+                return try await sendReplay(replay)
+            case .unconfirmed:
+                try Task.checkCancellation()
+                // Nothing ended; to the caller this is a connection that dropped.
+                throw APIError.offline(certificate: false)
+            case .replay, .ended:
+                break
+            }
         }
         noteRejection(result.1, request)
         return result
+    }
+
+    private func sendReplay(_ replay: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let second = try await transport.send(replay)
+        noteRejection(second.1, replay)
+        return second
+    }
+
+    /// The credential a request carried, when it is still the live one for its URL.
+    private func sentLiveCredential(_ request: URLRequest) -> Credential? {
+        guard let sent = request.value(forHTTPHeaderField: "Authorization"), let url = request.url,
+              let credential = credential(), credential.server.contains(url),
+              sent == "Bearer \(credential.accessToken)"
+        else { return nil }
+        return credential
     }
 
     /// The request with the live bearer, when it was sent with a different one.
