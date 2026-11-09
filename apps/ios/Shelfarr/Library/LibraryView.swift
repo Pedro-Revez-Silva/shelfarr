@@ -4,7 +4,13 @@ import SwiftUI
 @MainActor
 final class LibraryModel: ObservableObject {
     @Published var filter: LibraryFilter = .all
-    @Published var query = ""
+    /// Every edit is seen here, as typed, not when the view next notices: searching waits
+    /// for a pause, then looks up what the field says then. (A hosted iPhone run showed
+    /// "Mock Book 034" in the field over the results of a prefix of it: the one lookup
+    /// after typing used the text it was scheduled with, and nothing searched again.)
+    @Published var query = "" {
+        didSet { if query != oldValue, let app { reload(app, debounce: true) } }
+    }
     /// Nil shows every status.
     @Published var status: ReadingStatus?
     @Published var sort: LibrarySort = .recent
@@ -20,6 +26,8 @@ final class LibraryModel: ObservableObject {
     private var request: Task<Void, Never>?
     private var pageRequest: Task<Void, Never>?
     private var generation = 0
+    /// The app this list belongs to, once it has loaded.
+    private weak var app: AppModel?
 
     private var listing: LibraryQuery {
         LibraryQuery(filter: filter, text: query, status: status, sort: sort)
@@ -38,13 +46,13 @@ final class LibraryModel: ObservableObject {
     }
 
     func reload(_ app: AppModel, debounce: Bool = false) {
+        self.app = app
         guard let session = app.session else { return }
         let source = source(app, session), cache = app.libraryCache(for: session)
         request?.cancel()
         pageRequest?.cancel()
         generation += 1
         let generation = self.generation
-        let listing = self.listing
         let downloads = saved(app)
         loading = true
         loadingMore = false
@@ -52,6 +60,8 @@ final class LibraryModel: ObservableObject {
         request = Task {
             if debounce { try? await Task.sleep(nanoseconds: 350_000_000) }
             if Task.isCancelled { return }
+            // What the field says when the pause ends, not when it was scheduled.
+            let listing = self.listing
             loading = true
             error = nil
             pageFailed = false
@@ -152,7 +162,6 @@ struct LibraryView: View {
         .onChange(of: model.filter) { _ in model.reload(app) }
         .onChange(of: model.status) { _ in model.reload(app) }
         .onChange(of: model.sort) { _ in model.reload(app) }
-        .onChange(of: model.query) { _ in model.reload(app, debounce: true) }
         .task(id: app.libraryGeneration) { model.reload(app) }
     }
 
