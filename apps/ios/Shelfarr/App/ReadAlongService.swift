@@ -26,8 +26,11 @@ final class ReadAlongService: ObservableObject {
     private unowned let app: AppModel
     private var library: ReadAlongLibrary?
     private var librarySession: Session?
-    /// Bundles being prepared, so a burst of download updates starts one job each.
-    private var working: Set<String> = []
+    /// The account's narration work: one owned preparation per book download, stopped
+    /// with that download (cancel, remove, another format or edition) or the account.
+    private var preparations = ReadAlongPreparations()
+    /// Books whose new download state is being followed up, so a burst of updates starts one job each.
+    private var reconciling: Set<String> = []
     private var lastStates: [String: DownloadState] = [:]
 
     init(app: AppModel) {
@@ -36,66 +39,126 @@ final class ReadAlongService: ObservableObject {
 
     func library(for session: Session) -> ReadAlongLibrary {
         if let library, let librarySession, librarySession.accountKey == session.accountKey { return library }
+        preparations.end()
+        preparations = ReadAlongPreparations()
         let created = ReadAlongLibrary(root: app.accountFolder(session).appendingPathComponent("read-along", isDirectory: true))
         library = created
         librarySession = session
         status = [:]
-        working = []
+        reconciling = []
         lastStates = [:]
         return created
     }
 
+    /// The sign-in changed or ended: nothing started for it may write, report or queue
+    /// anything from now on. Called at once, before `close`.
+    func endPreparations() {
+        preparations.end()
+    }
+
     /// Stops writing before the account's folder is deleted.
     func close() async {
+        preparations.end()
         await library?.close()
         library = nil
         librarySession = nil
+        preparations = ReadAlongPreparations()
         status = [:]
-        working = []
+        reconciling = []
         lastStates = [:]
     }
 
     // MARK: Downloads
 
-    /// A download of `publication` was requested: fetch and keep its manifest, and for an
-    /// imported alignment queue the paired audiobook too. Books without read-along are untouched.
+    /// The user asked for a download of `publication` (or to retry one). For a read-along
+    /// EPUB its narration is prepared too: the manifest, and for an imported alignment the
+    /// paired audiobook's own download. Any other format replaces the EPUB, and its
+    /// narration work stops.
     func downloadRequested(_ publication: ShelfarrCore.Publication, format: ReaderFormat?) {
-        guard (format ?? .epub) == .epub, let asset = publication.asset(for: .epub), asset.readAlong?.isAvailable == true,
-              let session = app.session
-        else { return }
-        Task { await prepare(publication, asset: asset, session: session) }
+        guard let session = app.session else { return }
+        _ = library(for: session)
+        // What the user downloads is theirs: an audiobook they asked for is never cancelled with a book.
+        preparations.userRequested(publication.id)
+        guard publication.bookType == .ebook else { return }
+        guard (format ?? .epub) == .epub, let asset = publication.asset(for: .epub), asset.readAlong?.isAvailable == true else {
+            stop(publication.id, removing: false)
+            return
+        }
+        start(publication, asset: asset, session: session)
     }
 
-    /// Fetches the manifest for `asset`'s current generation and stores it. The previous
-    /// generation stays in use until the new one is complete.
+    /// The download was cancelled: its narration work stops now, what it stored but never
+    /// made current is deleted (a usable earlier generation stays for a later download),
+    /// and an audiobook it queued that nothing else uses is cancelled while still transferring.
+    func downloadCancelled(_ publicationId: String) {
+        guard let session = app.session else { return }
+        _ = library(for: session)
+        preparations.userStopped(publicationId)
+        stop(publicationId, removing: false)
+    }
+
+    /// The download was removed: its narration goes with it (an audiobook the user
+    /// downloaded, or one already complete, stays its own download).
+    func downloadRemoved(_ publicationId: String) {
+        guard let session = app.session else { return }
+        _ = library(for: session)
+        preparations.userStopped(publicationId)
+        stop(publicationId, removing: true)
+    }
+
+    private func stop(_ publicationId: String, removing: Bool) {
+        guard let session = app.session else { return }
+        status[publicationId] = nil
+        preparations.stopped(publicationId, removing: removing, library: library(for: session), downloads: app.downloadsForSession())
+    }
+
+    /// Prepares `asset`'s current generation for its download and waits for it. The
+    /// previous generation stays in use until the new one is complete.
+    func prepare(_ publication: ShelfarrCore.Publication, asset: ShelfarrCore.Asset, session: Session) async {
+        await start(publication, asset: asset, session: session)?.value
+    }
+
+    /// Starts the owned preparation, or returns the one already running for this edition
+    /// and generation. One for an older generation or edition is superseded.
     @discardableResult
-    func prepare(_ publication: ShelfarrCore.Publication, asset: ShelfarrCore.Asset, session: Session) async -> ReadAlongManifest? {
-        guard let summary = asset.readAlong, summary.isAvailable, app.isCurrent(session), !working.contains(publication.id) else { return nil }
-        working.insert(publication.id)
-        defer { working.remove(publication.id) }
-        status[publication.id] = .preparing("Getting the narration's alignment…")
+    private func start(_ publication: ShelfarrCore.Publication, asset: ShelfarrCore.Asset, session: Session) -> Task<Void, Never>? {
+        guard let summary = asset.readAlong, summary.isAvailable, app.isCurrent(session) else { return nil }
         let library = library(for: session)
-        do {
-            let fetched = try await fetchManifest(summary, asset: asset, publication: publication, session: session)
-            guard app.isCurrent(session) else { return nil }
-            let stored = try await library.save(manifestData: fetched.data, manifest: fetched.manifest, publicationId: publication.id)
-            if fetched.manifest.source == .imported, let audiobookId = fetched.manifest.audiobookPublicationId {
-                // The paired audiobook downloads like any other: grants, background session, offline rules.
-                if let manager = app.downloadsForSession() {
-                    let existing = await manager.ready(audiobookId)
-                    let covers = existing.map { record in fetched.manifest.audio.allSatisfy { record.pinnedAssetIds.contains($0.assetId ?? "") } } ?? false
-                    if !covers {
-                        let audiobook = try await app.api(for: session).publication(server: session.server, id: audiobookId)
-                        await manager.enqueue(audiobook)
-                    }
-                }
-            }
-            await complete(stored, session: session)
-            return fetched.manifest
-        } catch {
-            status[publication.id] = .missing(Self.message(error))
-            return nil
+        let preparations = self.preparations
+        let downloads = app.downloadsForSession()
+        return preparations.launch(publication.id, key: "\(asset.id)/\(summary.generation ?? "")") { [weak self] ticket in
+            await self?.run(ticket, publication: publication, asset: asset, summary: summary, session: session,
+                            library: library, preparations: preparations, downloads: downloads)
         }
+    }
+
+    private func run(
+        _ ticket: ReadAlongPreparations.Ticket, publication: ShelfarrCore.Publication, asset: ShelfarrCore.Asset, summary: ReadAlongSummary,
+        session: Session, library: ReadAlongLibrary, preparations: ReadAlongPreparations, downloads: DownloadManager?
+    ) async {
+        guard app.isCurrent(session) else { return }
+        report(.preparing("Getting the narration's alignment…"), ticket, preparations)
+        let api = app.api(for: session)
+        do {
+            let stored = try await preparations.store(
+                ticket, library: library, downloads: downloads,
+                fetchManifest: { [weak self] in
+                    guard let self else { throw CancellationError() }
+                    return try await self.fetchManifest(summary, asset: asset, publication: publication, session: session)
+                },
+                fetchAudiobook: { id in try await api.publication(server: session.server, id: id) }
+            )
+            guard let stored else { return }
+            await finish(ticket, stored, library: library, preparations: preparations, downloads: downloads)
+        } catch {
+            report(.missing(Self.message(error)), ticket, preparations)
+        }
+    }
+
+    /// Sets a book's status only for a preparation still current for this account.
+    private func report(_ value: NarrationStatus?, _ ticket: ReadAlongPreparations.Ticket, _ owner: ReadAlongPreparations) {
+        guard owner === preparations, owner.isCurrent(ticket) else { return }
+        status[ticket.publicationId] = value
     }
 
     /// Finishes whatever downloaded books' narration still needs: copying overlay audio
@@ -103,6 +166,8 @@ final class ReadAlongService: ObservableObject {
     func reconcile(_ records: [String: DownloadRecord]) {
         guard let session = app.session else { return }
         let library = library(for: session)
+        let preparations = self.preparations
+        let downloads = app.downloadsForSession()
         // Byte progress changes constantly; only a change of state can change narration.
         let states = records.mapValues(\.state)
         let changed = Set(states.filter { lastStates[$0.key] != $0.value }.keys)
@@ -110,58 +175,46 @@ final class ReadAlongService: ObservableObject {
         lastStates = states
         for record in records.values where record.publication.bookType == .ebook && record.readerFormat == .epub
             && (changed.contains(record.publicationId) || audiobookChanged) {
-            guard let asset = record.publication.asset(for: .epub), record.pinnedAssetIds == [asset.id], !working.contains(record.publicationId) else { continue }
             let id = record.publicationId
-            working.insert(id)
+            guard let asset = record.publication.asset(for: .epub), record.pinnedAssetIds == [asset.id],
+                  !preparations.isPreparing(id), !reconciling.contains(id) else { continue }
+            // A cancelled download prepares nothing; Cancel already cleaned up after it.
+            if record.state == .cancelled {
+                status[id] = nil
+                continue
+            }
+            guard let ticket = preparations.snapshot(id) else { continue }
+            reconciling.insert(id)
             Task {
-                defer { working.remove(id) }
+                defer { reconciling.remove(id) }
                 guard let stored = await library.latest(id, ebookAssetId: asset.id, server: session.server) else {
-                    if asset.readAlong?.isAvailable == true, record.isReady {
-                        status[id] = .missing("The narration isn't on this device yet.")
-                    } else {
-                        status[id] = nil
-                    }
+                    report(asset.readAlong?.isAvailable == true && record.isReady ? .missing("The narration isn't on this device yet.") : nil, ticket, preparations)
                     return
                 }
                 guard record.isReady else {
-                    status[id] = .preparing("The narration is ready once the book has downloaded.")
+                    report(.preparing("The narration is ready once the book has downloaded."), ticket, preparations)
                     return
                 }
-                await complete(stored, session: session)
+                await finish(ticket, stored, library: library, preparations: preparations, downloads: downloads)
             }
         }
         for id in status.keys where records[id] == nil { status[id] = nil }
     }
 
-    private func complete(_ stored: ReadAlongLibrary.Stored, session: Session) async {
-        let library = library(for: session)
-        let id = stored.bundle.publicationId
-        guard let manager = app.downloadsForSession(), let record = await manager.ready(id),
-              let epub = await manager.fileURL(record, assetId: stored.manifest.ebookAssetId)
-        else {
-            status[id] = .preparing("The narration is ready once the book has downloaded.")
-            return
-        }
-        switch stored.manifest.source {
-        case .mediaOverlay:
-            if stored.overlayAudio == nil { status[id] = .preparing("Preparing the narration from this book…") }
-            do {
-                // Streams each narration file out of the EPUB off the main thread.
-                _ = try await library.prepareAudio(stored, epub: epub)
-                status[id] = .onDevice
-            } catch {
-                status[id] = .missing(Self.message(error))
-            }
-        case .imported:
-            let files = await audiobookFiles(stored.manifest, session: session)
-            if case .ready = ReadAlongLibrary.readiness(stored, audiobookFiles: files) {
-                try? await library.promote(stored)
-                status[id] = .onDevice
-            } else if let audiobookId = stored.manifest.audiobookPublicationId, let audiobook = await manager.record(audiobookId), audiobook.isActive {
-                status[id] = .preparing("Downloading the audiobook it's aligned with…")
-            } else {
-                status[id] = .missing("The audiobook it's aligned with isn't downloaded.")
-            }
+    private func finish(
+        _ ticket: ReadAlongPreparations.Ticket, _ stored: ReadAlongLibrary.Stored, library: ReadAlongLibrary,
+        preparations: ReadAlongPreparations, downloads: DownloadManager?
+    ) async {
+        let outcome = await preparations.complete(ticket, stored: stored, library: library, downloads: downloads, willCopyAudio: { [weak self] in
+            await self?.report(.preparing("Preparing the narration from this book…"), ticket, preparations)
+        })
+        switch outcome {
+        case .stale: return
+        case .onDevice: report(.onDevice, ticket, preparations)
+        case .waitingForBook: report(.preparing("The narration is ready once the book has downloaded."), ticket, preparations)
+        case .downloadingAudiobook: report(.preparing("Downloading the audiobook it's aligned with…"), ticket, preparations)
+        case .audiobookMissing: report(.missing("The audiobook it's aligned with isn't downloaded."), ticket, preparations)
+        case let .failed(failure): report(.missing(Self.message(failure)), ticket, preparations)
         }
     }
 
@@ -169,14 +222,6 @@ final class ReadAlongService: ObservableObject {
     func audiobookFiles(_ manifest: ReadAlongManifest, session: Session) async -> [String: URL]? {
         guard let id = manifest.audiobookPublicationId, let manager = app.downloadsForSession(), let record = await manager.ready(id) else { return nil }
         return await manager.fileURLs(record)
-    }
-
-    /// The download was removed: its narration goes with it (the audiobook stays its own download).
-    func downloadRemoved(_ publicationId: String) {
-        guard let session = app.session else { return }
-        let library = library(for: session)
-        status[publicationId] = nil
-        Task { await library.remove(publicationId) }
     }
 
     // MARK: Reading
@@ -240,7 +285,7 @@ final class ReadAlongService: ObservableObject {
             if await app.downloadsForSession()?.ready(publication.id) != nil,
                await library.currentGenerationName(publication.id) != manifest.generation {
                 // A downloaded book with newer narration: update it; the old one stays until then.
-                Task { await prepare(publication, asset: asset, session: session) }
+                start(publication, asset: asset, session: session)
             }
             return .ready(Narration(manifest: manifest, tracks: tracks(manifest, local: local, remote: local == nil, session: session),
                                     audiobookTitle: audiobookTitle, fromDevice: local != nil))

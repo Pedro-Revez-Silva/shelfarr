@@ -122,6 +122,8 @@ final class AppModel: ObservableObject {
             // all read the live credential through `sessions.continuing`, so nothing restarts.
             return
         }
+        // Narration work for the previous sign-in stops before anything else can resume.
+        readAlong.endPreparations()
         if sessions.signedIn == nil { requesting.detach() }
         let previous = registry
         registry = nil
@@ -273,6 +275,7 @@ final class AppModel: ObservableObject {
         let readAlong = self.readAlong
         model.onRecords = { [weak readAlong] in readAlong?.reconcile($0) }
         model.onEnqueue = { [weak readAlong] in readAlong?.downloadRequested($0, format: $1) }
+        model.onCancel = { [weak readAlong] in readAlong?.downloadCancelled($0) }
         model.onRemove = { [weak readAlong] in readAlong?.downloadRemoved($0) }
         Task {
             // The next account's transfers wait until the previous ones have stopped.
@@ -317,6 +320,8 @@ final class AppModel: ObservableObject {
             sessions.clear()
             return
         }
+        // No narration work for this account writes or queues anything from now on.
+        readAlong.endPreparations()
         await playback.stop()
         let registry = progressRegistry()
         let api = self.api(for: session)
@@ -358,9 +363,12 @@ final class DownloadsModel: ObservableObject {
     }
     private(set) var manager: DownloadManager?
     private var observation: UUID?
-    /// Read-along follows downloads: their states, new downloads and removals.
+    /// Read-along follows downloads: their states, and what the user asks for, cancels and
+    /// removes. Each is told synchronously, before the manager acts, so narration work for
+    /// a stopped download stops first.
     var onRecords: (@MainActor ([String: DownloadRecord]) -> Void)?
     var onEnqueue: (@MainActor (ShelfarrCore.Publication, ReaderFormat?) -> Void)?
+    var onCancel: (@MainActor (String) -> Void)?
     var onRemove: (@MainActor (String) -> Void)?
 
     func attach(_ manager: DownloadManager?) async {
@@ -390,17 +398,20 @@ final class DownloadsModel: ObservableObject {
 
     func cancel(_ id: String) {
         guard let manager else { return }
+        onCancel?(id)
         Task { await manager.cancel(id) }
     }
 
     func remove(_ id: String) {
         guard let manager else { return }
-        Task { await manager.remove(id) }
         onRemove?(id)
+        Task { await manager.remove(id) }
     }
 
+    /// Retrying is asking for the download again, with the details and format it has.
     func retry(_ id: String) {
         guard let manager else { return }
         Task { await manager.retry(id) }
+        if let record = records[id] { onEnqueue?(record.publication, record.readerFormat) }
     }
 }
