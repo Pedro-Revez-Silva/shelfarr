@@ -605,15 +605,31 @@ export default class extends Controller {
     return this.readingAnchor || this.rendition.location?.start?.cfi || this.rendition.currentLocation()?.start?.cfi
   }
 
+  // While the text follows narration, the place being read is the text being
+  // heard. Following turns a page only when the heard cue changes, so a cue
+  // already in view is not the reading anchor yet; a layout change must show
+  // that cue itself, or it can land on a later page and stay unseen while it
+  // sounds. Browsing (suspended), Follow off, a pause or the gap between cues
+  // keep the reading anchor. Display only: never a reading observation.
+  // EPUB.js clears its views before it reports a resize, so the cue's place is
+  // the CFI kept when it was highlighted, not a lookup in the cleared page.
+  heardAnchor() {
+    const readAlong = this.readAlong
+    if (!readAlong?.follow || readAlong.suspended || !readAlong.session.playing) return null
+    const cue = readAlong.session.cue
+    return cue >= 0 && readAlong.heardPlace?.cue === cue ? readAlong.heardPlace.cfi : null
+  }
+
   // A window or orientation change re-renders the section the same way. EPUB.js
   // queues its own display of the place right after this event; settle after
-  // it. The anchor is kept through a burst of resizes.
+  // it. The anchor is kept through a burst of resizes; the heard cue is read
+  // when the layout runs, after any follow queued before it.
   reflowed() {
     if (!this.readerReady) return
     const cfi = this.layoutAnchor()
     if (!cfi) return
     this.userMoved = false
-    const reflow = this.readerReflow.then(() => this.active && this.showPlace(cfi))
+    const reflow = this.readerReflow.then(() => this.active && this.showPlace(this.heardAnchor() || cfi))
       .catch(() => {})
     this.readerReflow = reflow
   }
@@ -808,6 +824,8 @@ export default class extends Controller {
     const reflow = this.readerReflow.then(async () => {
       if (!this.active || !this.rendition || !this.readerReady) return
       this.userMoved = false
+      const heard = this.heardAnchor()
+      if (heard) this.readingAnchor = heard
       const cfi = this.layoutAnchor()
       this.fontSize = Math.max(80, Math.min(180, this.fontSize + delta))
       this.savePreferences()
@@ -1074,10 +1092,14 @@ export default class extends Controller {
     readAlong.highlighted = null
     readAlong.highlightedCue = cue
     if (cue < 0) return
-    const element = this.elementFor(readAlong.module.hrefOf(readAlong.prepared, cue), readAlong.prepared.fragments[cue])
+    const href = readAlong.module.hrefOf(readAlong.prepared, cue)
+    const element = this.elementFor(href, readAlong.prepared.fragments[cue])
     if (!element) return
     element.classList.add(READ_ALONG_ACTIVE)
     readAlong.highlighted = element
+    // Where this cue's text starts, for layout changes while it sounds.
+    const contents = this.contentsFor(href)
+    if (contents && readAlong.heardPlace?.cue !== cue) readAlong.heardPlace = { cue, cfi: this.elementCfi(contents, element) }
   }
 
   // A newly shown document gets the current highlight back.
