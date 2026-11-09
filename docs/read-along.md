@@ -8,8 +8,8 @@ narration. Books without alignment read and play exactly as before.
 
 | | Server and consumer API | Web reader | Native apps |
 |---|---|---|---|
-| EPUB 3 Media Overlays (narration inside the EPUB) | Implemented | Implemented, online and offline | iOS/iPad implemented; SDK/runtime checks pending. Android in progress. |
-| Imported alignment (EPUB + separate audiobook) | Implemented (admin import) | Implemented, online and offline | iOS/iPad implemented; SDK/runtime checks pending. Android in progress. |
+| EPUB 3 Media Overlays (narration inside the EPUB) | Implemented | Implemented, online and offline | Android and iOS/iPad implemented; final runtime/device checks pending. |
+| Imported alignment (EPUB + separate audiobook) | Implemented (admin import) | Implemented, online and offline | Android and iOS/iPad implemented; final runtime/device checks pending. |
 | Computing alignment (forced aligner) | Not implemented | — | — |
 
 Read-along is **not** an ebook format. It adds no asset, does not change how
@@ -257,9 +257,11 @@ Rules every client follows (the web reader does):
 ## Native implementations
 
 The [iOS/iPad implementation](native-read-along-ios.md) includes core tests and
-simulator smoke coverage. Its app-side SDK build, rendering and playback still
-need macOS CI; Linux tests and syntax parsing do not verify those paths. Android
-implementation is in progress. Physical-device acceptance remains separate.
+simulator smoke coverage. Its updated app-side SDK build, rendering and playback
+need macOS CI; Linux tests and syntax parsing do not verify those paths. The
+[Android implementation](native-read-along-android.md) includes unit/render tests
+and device smoke coverage; rendering and playback need the accelerated emulator
+lane. Physical-device acceptance remains separate for both clients.
 
 Both clients follow these shared integration requirements:
 
@@ -267,7 +269,8 @@ Both clients follow these shared integration requirements:
    fetch the manifest; cache it with the download (bound to `generation`).
 2. `media_overlay`: play `epub_resource` audio from the downloaded EPUB
    (Readium can expose the entry); `imported`: download the audiobook asset
-   by `publication_id`/`asset_id` with the existing transfer grant.
+   by `publication_id`/`asset_id` through the platform's existing authenticated
+   download path (transfer grants for iOS background sessions).
 3. Highlight by element ID in the rendered document (Readium decorations) and
    follow pages only for out-of-view cues.
 4. Reuse the platform listening checkpoints and media session; write places
