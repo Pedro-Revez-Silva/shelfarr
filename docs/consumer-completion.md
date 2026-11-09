@@ -45,6 +45,8 @@ verified; a build or simulated test alone does not establish device acceptance.
 
 - [ ] PDF and comic reading work through bounded, authorized asset handling
   with durable, edition-specific page positions on supported clients.
+  API and web reader implemented ([formats](consumer-formats.md)); native
+  clients and device acceptance pending.
 - [ ] Web users can deliberately download supported books/audio, see storage
   and download state, reopen offline and later synchronize their saved place.
 - [ ] Account changes, updates and cache eviction cannot silently mix accounts
