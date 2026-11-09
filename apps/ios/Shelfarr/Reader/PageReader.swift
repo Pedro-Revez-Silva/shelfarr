@@ -642,12 +642,12 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
         let from = current?.index ?? index
         let forward = index >= from
         let direction: UIPageViewController.NavigationDirection = forward != layout.rightToLeft ? .forward : .reverse
-        let target = spread(index)
+        let pageView = spread(index)
         setZoomed(false)
-        pager.setViewControllers([target], direction: direction, animated: animated && index != from) { [weak self] _ in
+        pager.setViewControllers([pageView], direction: direction, animated: animated && index != from) { [weak self] _ in
             guard let self else { return }
             // UIPageViewController can keep stale neighbours after an animated jump.
-            if animated { DispatchQueue.main.async { self.pager.setViewControllers([target], direction: direction, animated: false) } }
+            if animated { DispatchQueue.main.async { self.pager.setViewControllers([pageView], direction: direction, animated: false) } }
             self.settled()
         }
         if !animated || index == from { DispatchQueue.main.async { [weak self] in self?.settled() } }
