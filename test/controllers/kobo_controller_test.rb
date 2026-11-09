@@ -451,8 +451,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal "kobo.5.2", response.parsed_body.first.dig("ChangedReadingState", "ReadingState", "CurrentBookmark", "Location", "Value")
     get "#{@base}/v1/library/#{@delivery.entitlement_id}/state", headers: kobo_headers
     assert_response :success
-    assert_not_requested :any, %r{#{STORE}/v1/library/.*/state}
-    assert_not_requested :post, /#{STORE}/
-    assert_not_requested :put, /#{STORE}/
+    assert_not_requested :any, %r{\A#{Regexp.escape(STORE)}/v1/library/.*/state}
+    assert_not_requested :post, %r{\A#{Regexp.escape(STORE)}/}
+    assert_not_requested :put, %r{\A#{Regexp.escape(STORE)}/}
   end
 end
