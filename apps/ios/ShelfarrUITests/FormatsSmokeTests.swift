@@ -94,10 +94,17 @@ final class FormatsSmokeTests: XCTestCase {
             let pageButton = app.buttons["reader-page"]
             XCTAssertTrue(pageButton.waitForExistence(timeout: wait))
             pageButton.tap()
-            let field = app.textFields["go-to-page-field"]
-            XCTAssertTrue(field.waitForExistence(timeout: wait))
+            // SwiftUI doesn't carry an identifier onto a text field inside an alert (the
+            // hosted iOS 18.5 and 26 hierarchies show it without one), so the alert's own
+            // field is typed into, by its placeholder.
+            let alert = app.alerts["Go to page"]
+            XCTAssertTrue(alert.waitForExistence(timeout: wait), "the Go to page alert opened")
+            XCTAssertTrue(alert.staticTexts["Pages 1 to 6"].exists, "it names the range")
+            let field = alert.textFields.matching(NSPredicate(format: "placeholderValue == %@", "Page")).firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: wait), "the page field")
             field.typeText("5")
-            app.alerts.buttons["Go"].tap()
+            alert.buttons["Go"].tap()
+            XCTAssertTrue(waitForAbsence(alert))
             XCTAssertTrue(waitForPage(app, 5, of: 6))
             middleTap(app)
             XCTAssertTrue(waitForAbsence(app.buttons["Close book"]))
