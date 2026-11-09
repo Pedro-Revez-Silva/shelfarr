@@ -144,4 +144,76 @@ class API::Consumer::V1::RequestPermissionTest < ActionDispatch::IntegrationTest
     get "/api/consumer/v1/server.json"
     assert_includes response.parsed_body.fetch("consumer_features"), "requests"
   end
+
+  test "revoking the original connection invalidates its approved pending upgrade" do
+    grant, device_code, = ConsumerDeviceGrant.issue!(client_name: "Phone", scope: REQUESTING, replaces: @old_token)
+    grant.decide!(actor: users(:one), allow: true)
+
+    post "/api/consumer/v1/auth/revoke", headers: @old_headers
+    assert_response :no_content
+    assert_no_difference "APIToken.count" do
+      post "/api/consumer/v1/auth/token", params: { device_code: device_code }, as: :json
+    end
+    assert_response :bad_request
+    assert_equal "access_denied", response.parsed_body.fetch("error")
+    assert_nil APIToken.authenticate(@old_raw)
+  end
+
+  test "profile revocation removes issued upgrades before and after adoption without affecting other connections" do
+    [ false, true ].each do |adopted|
+      original, original_raw = APIToken.issue!(name: "Phone", user: users(:one), scopes: ConsumerDeviceGrant::SCOPES)
+      # Simulate a connection made before lineage existed.
+      original.update!(connection_key: nil)
+      replacement, replacement_raw = APIToken.issue!(name: "Phone", user: users(:one), scopes: REQUESTING.split,
+        replaces: original, issued_via: APIToken::CONSUMER_DEVICE)
+      unrelated, unrelated_raw = APIToken.issue!(name: "Other device", user: users(:one), scopes: ConsumerDeviceGrant::SCOPES)
+      assert replacement.connection_key.present?
+      assert_equal original.reload.connection_key, replacement.connection_key
+      assert APIToken.authenticate(replacement_raw) if adopted
+      assert_nil replacement.reload.replaces_api_token_id if adopted
+      sign_in_as(users(:one))
+      delete api_token_profile_path(original)
+      assert_response :redirect
+      assert original.reload.revoked?
+      assert replacement.reload.revoked?
+      assert_nil APIToken.authenticate(original_raw)
+      assert_nil APIToken.authenticate(replacement_raw)
+      assert APIToken.authenticate(unrelated_raw)
+      assert_not unrelated.reload.revoked?
+    end
+  end
+
+  test "a revoked or expired origin cannot issue a replacement even after approval" do
+    [ { revoked_at: Time.current }, { expires_at: 1.second.ago } ].each do |change|
+      original, = APIToken.issue!(name: "Phone", user: users(:one), scopes: ConsumerDeviceGrant::SCOPES)
+      grant, code, = ConsumerDeviceGrant.issue!(client_name: "Phone", scope: REQUESTING, replaces: original)
+      grant.decide!(actor: users(:one), allow: true)
+      # Bypass revoke!'s proactive invalidation to prove exchange independently
+      # refuses an origin that becomes unusable between approval and polling.
+      original.update!(change)
+      assert_no_difference "APIToken.count" do
+        post "/api/consumer/v1/auth/token", params: { device_code: code }, as: :json
+      end
+      assert_equal "access_denied", response.parsed_body.fetch("error")
+      assert_raises(APIToken::InactiveReplacement) do
+        APIToken.issue!(name: "Invalid replacement", user: users(:one), scopes: REQUESTING.split, replaces: original)
+      end
+    end
+  end
+
+  test "adoption rechecks an origin revoked after the replacement credential was looked up" do
+    replacement, = APIToken.issue!(name: "Phone", user: users(:one), scopes: REQUESTING.split, replaces: @old_token)
+    @old_token.revoke!
+    assert_not replacement.retire_replaced_token!
+    assert replacement.reload.revoked?
+  end
+
+  test "simultaneous lookups of one replacement remain valid after another request adopts it" do
+    replacement, raw = APIToken.issue!(name: "Phone", user: users(:one), scopes: REQUESTING.split, replaces: @old_token)
+    second_lookup = APIToken.find(replacement.id)
+    assert APIToken.authenticate(raw)
+    assert second_lookup.retire_replaced_token!
+    assert APIToken.authenticate(raw)
+    assert @old_token.reload.revoked?
+  end
 end

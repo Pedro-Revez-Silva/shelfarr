@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_002000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_003000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -48,9 +48,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_002000) do
     t.integer "user_id"
     t.string "issued_via"
     t.integer "replaces_api_token_id"
+    t.string "connection_key"
     t.index ["revoked_at"], name: "index_api_tokens_on_revoked_at"
     t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
     t.index ["token_prefix"], name: "index_api_tokens_on_token_prefix"
+    t.index ["user_id", "connection_key"], name: "index_api_tokens_on_user_id_and_connection_key"
     t.index ["user_id"], name: "index_api_tokens_on_user_id"
   end
 
