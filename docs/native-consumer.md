@@ -57,6 +57,16 @@ from the visible buttons, and have its paused place acknowledged by the fixture.
 ebook must show its generated text, turn a page from a tap on its right edge, save
 that page to the fixture and reopen there (`request-*.png`). The emulator's guest
 audio still decodes with `-noaudio`; only audibility is unchecked.
+`RealServerRequestTest` is the same journey against a real, isolated Shelfarr server
+instead of a fixture. From a fresh install it enters the address, connects and allows
+requesting, finds a public-domain title through the server's metadata providers,
+requests the ebook once, follows the stages while the server's own jobs fetch it from
+Project Gutenberg, then reads it: page turns by tap, the server acknowledges the place,
+and the book reopens on the same words. It runs only when given
+`-e shelfarrRealServer http://127.0.0.1:PORT` (skipped otherwise, including in CI).
+The two browser approvals must be made for the server's test account while it waits.
+Use a disposable server with its own database and no notifications, never a household
+server.
 The background-transfer test also drives Library → details → Download, notification
 Cancel and Downloads navigation, system interruption/resume, and offline Library
 search. It exercises the real app on the emulator; process death and denied
