@@ -10,7 +10,7 @@ clients opt in, and what stays out of scope.
 | PDF (`application/pdf`) | Opt-in, ≤ 500 MiB | Yes, page rendering with text selection | Android implemented; iOS implemented, SDK/runtime verification pending |
 | CBZ (`application/vnd.comicbook+zip`) | Opt-in, ≤ 2 GiB, JPEG/PNG/WebP pages | Yes, page images | Android implemented; iOS implemented, SDK/runtime verification pending |
 | CBR/RAR, CB7, MOBI/AZW | Not supported | Not supported | Not supported |
-| Read-along (text + narration) | Feature, not a format: [read-along](read-along.md) | Yes | Not yet |
+| Read-along (text + narration) | Feature, not a format: [read-along](read-along.md) | Yes | Android and iOS/iPad implemented; final runtime/device verification pending |
 
 Read-along is not a reading format and is not negotiated here. It is declared
 with `X-Shelfarr-Reader-Features` and described in [read-along](read-along.md).
