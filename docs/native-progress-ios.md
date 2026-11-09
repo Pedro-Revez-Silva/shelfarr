@@ -233,6 +233,11 @@ The fixture ports differ per family (iPhone 8765/8766, iPad
   offline remain in the acceptance flow.
 - The simulator's audio may not advance on CI hosts; the rewind UI test then skips.
   The cadence and rewind rules are covered by the core tests either way.
+- The rewind UI test checks where its second pause really landed (the track and time
+  shown). Inside the replay, the saved place, its asset, version and time must be
+  unchanged and nothing written. A pause a loaded host delivers after the replay (on
+  one hosted iPhone it reached the app 45 s after Play, in track 2) must instead save
+  that track and place with a later time.
 - Restoration relies on Readium 3.11's viewport being measured in the same step as
   the location report. The cause of the wrong first report on a cold offline open was
   not isolated (CI did not record the locators); the restore trace now does. A restore
