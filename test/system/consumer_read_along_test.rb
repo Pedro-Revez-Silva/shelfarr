@@ -236,6 +236,49 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
     assert(media_entries.any? { |url| url.end_with?("/narration.mp3") })
   end
 
+  test "cancelling an interrupted narration download removes its already stored resources" do
+    open_reader
+    reveal_reading_controls
+    ConsumerReachability.drop = %r{/read_along/resources/OEBPS/audio/narration\.mp3\z}
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Download paused", wait: 20
+    end
+    assert(media_entries.any? { |url| url.end_with?("/chapter1.xhtml") }, "text arrived before narration was interrupted")
+    assert_selector ".consumer-offline:not([data-offline-state=ready])"
+    within(".consumer-offline") do
+      click_button "Cancel"
+      assert_button "Download", wait: 10
+    end
+    assert_empty media_entries, "Cancel must reclaim the text and audio already stored, not only its unfinished manifest"
+  end
+
+  test "cancelling an interrupted narration update keeps exactly the earlier complete download" do
+    open_reader
+    reveal_reading_controls
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+    previous = media_entries.sort
+    cues = default_read_along_cues.map { |cue| cue.merge(clip_end: format("0:00:%06.3f", Consumer::ReadAlong::Clock.milliseconds(cue[:clip_end]) / 1000.0 - 0.1)) }
+    write_read_along_epub(@epub_path, cues: cues)
+    visit at(consumer_publication_path(@ebook))
+    reveal_reading_controls
+    ConsumerReachability.drop = %r{/read_along/resources/OEBPS/audio/narration\.mp3\z}
+    within(".consumer-offline") do
+      click_button "Update"
+      assert_text "Download paused", wait: 20
+    end
+    assert_operator media_entries.size, :>, previous.size, "the replacement stored new text before interruption"
+    within(".consumer-offline") do
+      click_button "Cancel"
+      assert_text "Available offline", wait: 10
+      assert_text "an older edition"
+    end
+    assert_equal previous, media_entries.sort, "Cancel keeps the prior complete edition and removes only replacement resources"
+  end
+
   test "an imported alignment narrates a separate audiobook and saves both places at the hearing time" do
     write_read_along_epub(@epub_path, overlay: false)
     FileUtils.cp(TONES, @audio_path)
