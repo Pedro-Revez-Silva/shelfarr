@@ -39,14 +39,21 @@ final class ReadAlongService: ObservableObject {
 
     func library(for session: Session) -> ReadAlongLibrary {
         if let library, let librarySession, librarySession.accountKey == session.accountKey { return library }
+        let folder = app.accountFolder(session).appendingPathComponent("read-along", isDirectory: true)
         preparations.end()
-        preparations = ReadAlongPreparations()
-        let created = ReadAlongLibrary(root: app.accountFolder(session).appendingPathComponent("read-along", isDirectory: true))
+        // Which paired audiobooks a book's download queued outlives the process, like the downloads.
+        let preparations = ReadAlongPreparations(storage: folder.appendingPathComponent("companions.json"))
+        self.preparations = preparations
+        let created = ReadAlongLibrary(root: folder)
         library = created
         librarySession = session
         status = [:]
         reconciling = []
         lastStates = [:]
+        if let downloads = app.downloadsForSession() {
+            // Cancels what a Cancel or Remove cut short by the app ending had released.
+            Task { await preparations.resumeReleases(downloads: downloads) }
+        }
         return created
     }
 
@@ -178,9 +185,11 @@ final class ReadAlongService: ObservableObject {
             let id = record.publicationId
             guard let asset = record.publication.asset(for: .epub), record.pinnedAssetIds == [asset.id],
                   !preparations.isPreparing(id), !reconciling.contains(id) else { continue }
-            // A cancelled download prepares nothing; Cancel already cleaned up after it.
+            // A cancelled download prepares nothing. Cancel cleaned up after it; this also
+            // finishes a cleanup the app ended before (a usable generation stays).
             if record.state == .cancelled {
                 status[id] = nil
+                Task { await preparations.cleanUp(id, removing: false, released: [], library: library, downloads: nil) }
                 continue
             }
             guard let ticket = preparations.snapshot(id) else { continue }

@@ -181,10 +181,23 @@ the folder is removed, so no late write recreates it):
   generation stays for the next download. The cleanup is skipped if the book was
   downloaded again in the meantime, since the new preparation owns its folder.
 - A paired audiobook queued by a book's download is cancelled with it only while it is
-  still transferring, no other book's preparation is using it, and the user hasn't asked
-  for (or retried) that audiobook themselves. A complete audiobook is never deleted.
-  This ownership is kept in memory: after a relaunch an unfinished companion is an
-  ordinary download, and cancelling the book leaves it running.
+  unfinished (queued, downloading or failed), no other book uses it, and the user hasn't
+  asked for (or retried) that audiobook themselves. A complete audiobook is never
+  deleted. If another book queues it while it is being cancelled, it starts again for
+  that book.
+- That ownership survives relaunches like the downloads do, in
+  `read-along/companions.json` in the account's folder (deleted with it). A book's claim
+  is written before its audiobook is queued. A release stays recorded until the
+  audiobook was cancelled, and a release cut short by the app ending is carried out at
+  the next launch, as is the cleanup of a cancelled book's unfinished narration.
+  - With no file (companions queued by earlier versions) nothing is assumed: those
+    audiobooks stay ordinary downloads.
+  - A file that can't be read, or is from another version, is moved aside as
+    `companions.json.unreadable` and never trusted, so the audiobooks it named aren't
+    cancelled with their books.
+  - If a change can't be written, the file is deleted rather than left stale, so a
+    later launch forgets ownership instead of cancelling an audiobook the user has
+    since asked for. That launch still knows, from memory.
 
 ## Credentials
 
