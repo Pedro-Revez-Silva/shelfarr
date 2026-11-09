@@ -106,6 +106,68 @@ test("a failed page is not reading and a successful retry of that page is", asyn
   expect(changes.at(-1).activity).toBe(false)
 })
 
+// A page element just real enough for PageReader.draw.
+function fakeElement() {
+  const element = { style: { setProperty() {}, getPropertyValue: () => "" }, dataset: {}, childNodes: [], clientWidth: 360, clientHeight: 640,
+    classList: { toggle() {} }, setAttribute() {}, replaceChildren(...nodes) { element.childNodes = nodes } }
+  return element
+}
+
+test("a turn whose drawing a refit replaces is still reported as reading when the page shows", async () => {
+  const originals = { document: globalThis.document, getComputedStyle: globalThis.getComputedStyle }
+  globalThis.document = { createElement: fakeElement }
+  globalThis.getComputedStyle = () => ({ paddingLeft: "0", paddingRight: "0", paddingTop: "0", paddingBottom: "0" })
+  try {
+    const changes = []
+    const reader = new PageReader({ format: "cbz", onChange: (position, count, state) => changes.push({ position, ...state }) })
+    reader.element = fakeElement()
+    reader.stage = fakeElement()
+    reader.page = fakeElement()
+    // Each render waits until the test lets it finish; aborted ones reject.
+    const renders = []
+    reader.source = {
+      count: 3,
+      prefetch() {},
+      size: async () => ({ width: 100, height: 160 }),
+      render: (position, holder, scale, signal) => new Promise((resolve, reject) => {
+        renders.push({ position, finish: resolve })
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })))
+      })
+    }
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+
+    const opened = reader.show(1)
+    await settle()
+    renders.at(-1).finish()
+    await opened
+    expect(changes.at(-1)).toEqual({ position: 1, activity: false, shown: true })
+
+    // Turn to page 2; while it draws, a resize refits (redraws) the page.
+    const turned = reader.next()
+    await settle()
+    const refit = reader.draw()
+    await settle()
+    expect(renders.map(render => render.position)).toEqual([1, 2, 2])
+    renders.at(-1).finish()
+    await refit
+    await turned
+    expect(reader.element.dataset.page).toBe("2")
+    expect(changes.at(-1)).toEqual({ position: 2, activity: true, shown: true })
+    expect(changes.filter(change => change.activity)).toHaveLength(1)
+
+    // A refit alone is never reading activity.
+    const count = changes.length
+    const alone = reader.draw()
+    await settle()
+    renders.at(-1).finish()
+    await alone
+    expect(changes).toHaveLength(count)
+  } finally {
+    globalThis.document = originals.document
+    globalThis.getComputedStyle = originals.getComputedStyle
+  }
+})
+
 test("compressed page budgets are enforced before fetching or allocating the span", async () => {
   const { items, asset } = comic([png(2, 2)])
   const oversized = { ...items[0], compressed_size: 35 * 1024 * 1024 }
