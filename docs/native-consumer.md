@@ -14,7 +14,9 @@ The flow on both platforms is: server address, device authorization in the syste
 browser, library and continue, publication details, EPUB reader or audio player,
 resume from the saved place. Books and audiobooks can be downloaded for offline use,
 and each has a reading status. Both clients browse downloaded and previously seen
-titles offline, with saved coverage and freshness shown. See the platform details for
+titles offline, with saved coverage and freshness shown. With the person's explicit
+approval, a **Find** tab also searches beyond the library and requests books; see
+[Finding and requesting](#finding-and-requesting). See the platform details for
 [Android](native-offline-android.md) and [iOS](native-offline-ios.md). The Android
 app can also [update itself](native-updates-android.md) from a publisher feed.
 
@@ -105,6 +107,41 @@ The actual Android reader passes rendering, chapter navigation, HTTP progress an
 reopening tests on an accelerated API 35 emulator. Earlier software-only API 33
 and API 35 runs crashed the WebView renderer. Use an accelerated emulator for
 validation; physical-device compatibility is still unverified.
+
+## Finding and requesting
+
+Find is a separate tab, so Library stays "what I have" and Find is "ask for
+something new". It works in four steps, each a full screen with large targets and
+text that wraps at every font size:
+
+1. **Allow requesting.** A read-only connection explains what requesting means and
+   that the library, downloads and saved places stay as they are, then opens the
+   browser approval described in [consumer-api.md](consumer-api.md#requesting-from-native-apps).
+   The code and countdown stay on screen; the attempt survives the app being killed.
+   The new credential replaces the old one in place for the same account; an
+   approval by another account is refused and dropped. Older servers get an
+   explanation and a link to the website instead.
+2. **Find.** Search runs when the person submits, not per keystroke, to spare the
+   server's metadata providers. Each result says which formats can be requested,
+   are already in the library or are already requested.
+3. **Choose and request.** A title page shows ebook and audiobook as large choices,
+   the first requestable one preselected, and one *Request ebook/audiobook* button
+   that ignores repeated taps while it is in flight. Formats already in the library
+   open their details; formats already requested open their tracker.
+4. **Follow and open.** The request page polls while visible and shows plain stages
+   (requested, finding a copy, downloading with percentage, adding to the library,
+   ready). When ready, *Read now* or *Listen now* opens the reader or player
+   directly. Unfinished requests can be cancelled after a confirmation.
+
+Offline, Find says that searching and requesting need a connection and keeps the
+last request list. A 403 refreshes the connection's scopes and returns to step 1.
+On Android, adding requesting keeps playback and downloads running. On iOS the
+account's progress and download services restart with the new credential (files
+and places kept), which stops current playback once.
+
+The mock server grants requesting when asked: `--grant-requesting` gives it to every
+new token, `--old-server` behaves like a server without it and
+`--request-outcome not_found|failed` ends requests there.
 
 ## Security model
 

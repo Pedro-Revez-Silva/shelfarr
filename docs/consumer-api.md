@@ -3,7 +3,9 @@
 The consumer preview adds a mobile web library at `/read` and a versioned API for
 the native Android and iOS apps. It reuses Shelfarr's acquired library and normal
 account sign-in. Discovery, requests, acquisition, uploads, and administration
-remain in their existing flows. **Read & listen** in the main navigation or **My Profile → Reader preview** opens the web
+remain in their existing flows, except that native apps may opt in to
+[finding and requesting](#requesting-from-native-apps) through the same request
+service as the web. **Read & listen** in the main navigation or **My Profile → Reader preview** opens the web
 experience; acquired book details also link to its reader or player.
 
 This first slice reads DRM-free EPUBs, plays supported local audio files, and
@@ -21,8 +23,10 @@ Shelfarr's existing password, SSO, and MFA flow and approves the displayed code.
 The page names the requesting app and current account. GET and HEAD never approve
 a connection; the approval POST requires the normal session and CSRF protection.
 
-The app receives only `library:read progress:write`, with a 30-day expiry. It cannot
-create requests, manage users, or administer the server. Revoke it from the API
+By default the app receives only `library:read progress:write`, with a 30-day
+expiry. It cannot create requests, manage users, or administer the server unless
+the person separately allows requesting, described below; nothing ever grants it
+user management or administration. Revoke it from the API
 token list in My Profile or disconnect in the app. Soft-deleted accounts lose
 access. The existing legacy global API token is **not** accepted by this API.
 The web reader uses the current browser session and does not create a bearer
@@ -51,10 +55,10 @@ Personal responses use `Cache-Control: private, no-store`.
 
 | Method and path | Result |
 |---|---|
-| `POST /auth/device` with `{client_name}` | `{device_code,user_code,verification_uri,verification_uri_complete,expires_in:600,interval:5}` |
+| `POST /auth/device` with `{client_name, scope?}` | `{device_code,user_code,verification_uri,verification_uri_complete,expires_in:600,interval:5}` |
 | `POST /auth/token` with `{device_code}` | `{access_token,token_type:"Bearer",scope,expires_in:2592000}` |
 | `POST /auth/revoke` | Revoke the current credential; 204 |
-| `GET /me` | `{id,name,username}` |
+| `GET /me` | `{id,name,username,scopes}` |
 | `GET /library?type=ebook\|audiobook&q=...&status=...&sort=...&limit=30&cursor=...` | `{items:[publication],next_cursor}` |
 | `GET /continue?limit=10` | `{items:[publication]}` across the library, most recent activity first |
 | `GET /library/:id` | One publication |
@@ -64,6 +68,11 @@ Personal responses use `Cache-Control: private, no-store`.
 | `GET /library/:id/assets/:asset_id/transfer?grant=...` | The same media bytes, authorized only by the grant in the URL |
 | `GET /library/:id/progress` | `{progress:null\|progress}` |
 | `PUT /library/:id/progress` | Compare-and-set progress, described below |
+| `GET /discover?q=...&limit=12` | `{items:[candidate]}`; requires `search:read` |
+| `GET /requests?limit=30` | `{items:[request]}` for this account, most recently changed first; requires `requests:read` |
+| `GET /requests/:id` | `{request}`; this account's only, otherwise 404 |
+| `POST /requests` | Request one format, described below; requires `requests:write` |
+| `DELETE /requests/:id` | Cancel this account's unfinished request; requires `requests:write` |
 
 Token polling returns 400 with `error: authorization_pending`, `slow_down`,
 `access_denied`, or `expired_token`. Grants expire after ten minutes and exchange
@@ -110,6 +119,106 @@ Clients must restrict credentials to the configured origin and subpath. Asset
 URLs include the subpath when supplied by the deployment. A metadata cover can
 be an external HTTPS URL: fetch it **without** credentials or use a generated
 fallback. Covers are not fetched by the Shelfarr backend.
+
+## Requesting from native apps
+
+Requesting is opt-in per app connection and approved in the browser, like the
+connection itself. `GET /server.json` lists `"requests"` in `consumer_features`
+on servers that offer it; clients explain older servers instead of opening an
+approval they cannot complete.
+
+### Permission
+
+An app asks for the bundle with `scope` set to exactly
+`library:read progress:write search:read requests:read requests:write` on
+`POST /auth/device`. Any other combination, or naming a privileged scope such as
+`requests:admin` or `users:write`, returns 400 `invalid_scope`. Omitting `scope`
+keeps the read-and-listen pair. Existing tokens never change scope.
+
+- **Adding requesting to a connected app** sends that app's current bearer with
+  the device request. A missing, expired or revoked bearer returns 401. The
+  approval page then says the app is already connected and asks to *Allow
+  requesting* or *Not now*, lists what the app will be able to do, and states that
+  it cannot see other people's requests, manage users or change server settings.
+  Only the account that owns the bearer can decide; another signed-in account sees
+  a "Different account" page and its POST returns 403 without touching the grant.
+- **Not now** or expiry leaves the old token and its scopes untouched.
+- On approval the token endpoint issues a new 30-day token with the bundle. The old
+  token keeps working until the new one is first used, then it is revoked, so a lost
+  token response never strands the app. Clients replace the credential in place and
+  keep the server, account files, downloads, settings and saved places.
+- A fresh connection may ask for the bundle too; the page then offers *Connect and
+  allow requesting*.
+- Tokens from device approval are marked as such and never act as admin tokens on
+  this API or on `/api/v1`, even for an admin account: they only see and create
+  that account's own requests. `GET /me` reports the token's `scopes`, so a client
+  notices when requesting was revoked.
+
+### Finding titles
+
+`GET /discover` searches the same enabled metadata providers as web search, for
+books (comics are not offered to these clients). Queries are 1–200 characters;
+invalid queries return 422 `invalid_query`. Provider connection failures return
+503 `search_unavailable` and other provider errors 502 `search_failed`. Covers
+are HTTPS only or `null`.
+
+```json
+{
+  "id": "openlibrary:OL1W",
+  "work_id": "openlibrary:OL1W",
+  "source_work_ids": ["google_books:abc"],
+  "title": "A story", "author": "An author", "year": 2019,
+  "description": "...", "cover_url": null,
+  "series_name": null, "series_position": null, "source_name": "Open Library",
+  "formats": [
+    {"book_type": "ebook", "state": "in_library", "publication_id": "42", "request": null},
+    {"book_type": "audiobook", "state": "requested", "publication_id": null, "request": {"...": "request"}}
+  ]
+}
+```
+
+Each format's `state` is `requestable`, `in_library` (open `publication_id`),
+`requested` (this account's own `request`) or `requested_by_someone` (no details
+about the other account). Clients treat unknown states as not requestable.
+
+### Requests
+
+`POST /requests` takes `{work_id, book_type, title, author?, cover_url?, year?,
+source_work_ids?, language?}`. `book_type` is `ebook` or `audiobook`; `user_id`,
+`username` and other on-behalf fields are ignored. Creation goes through
+`RequestCreationService` with `created_via: api` and `external_source:
+consumer_app`, so duplicate checks, notifications, queueing, automatic search
+policy and enabled providers are exactly as for the web.
+
+| Status | Meaning |
+|---|---|
+| 201 `{request, warnings}` | Created |
+| 200 `{request, existing: true}` | This account already has it open; nothing new was created (repeated taps are safe) |
+| 409 `already_in_library` with `publication_id` | Already acquired |
+| 409 `already_requested` | Another account has it open |
+| 422 `invalid_request` / `request_rejected` with `message` | Malformed input / refused by the request service |
+| 403 `insufficient_scope` | Read-only connection |
+
+Concurrent submissions from one account are serialized in the server process, so a
+double tap creates one request. A request is:
+
+```json
+{
+  "id": "17", "status": "downloading", "stage": "downloading",
+  "attention_needed": false, "title": "A story", "author": "An author",
+  "book_type": "audiobook", "cover_url": null, "download_percent": 42,
+  "can_cancel": true, "next_retry_at": null, "publication_id": null,
+  "created_at": "2026-11-09T10:00:00Z", "updated_at": "2026-11-09T10:05:00Z"
+}
+```
+
+`stage` is `queued`, `searching`, `not_found`, `awaiting_purchase`,
+`downloading`, `processing`, `available` (open `publication_id` through
+`/library/:id`), `completed` (finished but no longer readable here) or `failed`
+(also what a cancelled request shows). Clients treat unknown stages as in
+progress. Indexers, download clients, paths and internal error text are never
+included. `DELETE` uses the same cancellation as `/api/v1`; finished or
+finalizing requests return 422 `cannot_cancel` with a `message`.
 
 ## Media and file safety
 

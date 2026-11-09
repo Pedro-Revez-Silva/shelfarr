@@ -22,6 +22,10 @@ Scopes:
 - `requests:admin` - retry requests and act across users
 - `users:write` - create users
 
+Tokens a native app received through browser device approval act only for their
+own account here, even when that account is an admin. Native apps use the
+consumer requesting endpoints described in [consumer-api.md](consumer-api.md#requesting-from-native-apps).
+
 ## Search
 
 `GET /api/v1/search?q=dune&limit=5`
