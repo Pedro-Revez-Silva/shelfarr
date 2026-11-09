@@ -216,9 +216,11 @@ brings that later place back as before. Each option works on its own.
   edition are shown on the reader page with their reason. **Send Shelfarr
   place** is an explicit choice: the bookmark then carries the time of the
   choice (Shelfarr's own progress is not changed).
-- **No echo.** Every marker sent is remembered for that delivery. When the Kobo
-  reports one back, even with its own later clock, it is recorded as the place
-  Shelfarr sent and creates no new version, time or send. A place this Kobo
+- **No echo.** Only markers actually handed to the reader are remembered for
+  that delivery. When the Kobo reports one back, even with its own later clock,
+  it is recorded as the place Shelfarr sent and creates no new version, time
+  or send. Once the Kobo reports a different place, returning to an earlier
+  sentence counts as reading again. A place this Kobo
   shared itself is never sent back to it; the owner's other opted-in Kobo
   readers receive it.
 - **Protocol.** A queued place advances the reader's sync revision while its

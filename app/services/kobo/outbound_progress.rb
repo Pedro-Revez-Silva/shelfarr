@@ -17,8 +17,8 @@ module Kobo
   # owner's current place, still opted in, and not older than a genuine Kobo
   # place is checked again whenever it is served.
   #
-  # Every span sent is remembered, so the Kobo echoing it back is recognised by
-  # ProgressBridge and never becomes new Shelfarr activity.
+  # Spans handed to the reader are remembered until it reports another place,
+  # so an adoption echo is not activity but a later deliberate return is.
   class OutboundProgress
     MAX_PER_SYNC = 20
     SENT_HISTORY = 8
@@ -70,13 +70,16 @@ module Kobo
         return [ stored, false ] unless outbound && SENDABLE.include?(outbound["status"]) && current?(delivery, progress, outbound)
 
         bookmark = stored&.dig("CurrentBookmark")
-        if kobo_reading?(delivery, bookmark)
+        chosen = outbound["reason"] == "chosen" && outbound.key?("chosen_kobo_bookmark") && bookmark == outbound["chosen_kobo_bookmark"]
+        if kobo_reading?(delivery, bookmark) && !chosen
           kobo_time = ProgressBridge.activity_time(bookmark["LastModified"])
           # A genuine Kobo place is replaced only when it is provably older:
           # a later one, or one without a usable time, keeps the Kobo's place.
           return [ stored, false ] unless kobo_time && Time.iso8601(kobo_time) <= Time.iso8601(outbound.fetch("bookmark_at"))
         end
         [ state(delivery, stored, outbound), true ]
+      rescue KoboPublication::Unavailable, Consumer::LibraryAssets::Unavailable
+        [ stored, false ]
       end
 
       # A place the Kobo reached itself: a location or a percentage that is
@@ -89,7 +92,20 @@ module Kobo
       def current?(delivery, progress, outbound)
         delivery.kobo_device.receive_progress? && eligible?(delivery) && delivery.deliverable? && progress &&
           progress.user_id == delivery.kobo_device.user_id && progress.book_id == delivery.book_id &&
-          progress.version == outbound["progress_version"] && progress.client_mutation_id == outbound["progress_mutation_id"]
+          progress.version == outbound["progress_version"] && progress.client_mutation_id == outbound["progress_mutation_id"] &&
+          outbound["key"] == key(delivery, progress) && current_edition?(delivery, progress)
+      end
+
+      # Queuing is not proof that the file is still the delivered generation
+      # when a later sync or state request actually serves the bookmark.
+      def current_edition?(delivery, progress)
+        file = delivery.open_file
+        stat = file.stat
+        Consumer::LibraryAssets.new(delivery.book).list.any? do |asset|
+          asset.id == progress.asset_id && asset.device == stat.dev && asset.inode == stat.ino && asset.size_bytes == stat.size
+        end
+      ensure
+        file&.close unless file&.closed?
       end
 
       # Records that a sync or GET handed Shelfarr's place to the reader.
@@ -97,10 +113,24 @@ module Kobo
         now = Time.current.utc.iso8601(3)
         deliveries.each do |delivery|
           outbound = delivery.progress_outbound
-          next unless outbound && outbound["status"] == "queued"
+          next unless outbound && SENDABLE.include?(outbound["status"])
 
-          delivery.update_columns(progress_outbound: outbound.merge("status" => "sent", "sent_at" => now))
+          entry = outbound.slice("source", "span", "package_dir")
+          sent = ((outbound["sent"] || []).reject { |item| item.slice("source", "span") == entry.slice("source", "span") } + [ entry ]).last(SENT_HISTORY)
+          delivery.update_columns(progress_outbound: outbound.merge("status" => "sent", "sent_at" => now, "sent" => sent))
         end
+      end
+
+      # Once the reader reports a different actual place, going back to a
+      # previously sent sentence is reading again, rather than an adoption echo.
+      # This applies even when importing Kobo places into Shelfarr is disabled.
+      def received!(delivery, bookmark)
+        echo = echo?(delivery, bookmark)
+        outbound = delivery.progress_outbound
+        if !echo && outbound && Array(outbound["sent"]).any? && kobo_reading?(delivery, bookmark)
+          delivery.update_columns(progress_outbound: outbound.merge("sent" => []))
+        end
+        echo
       end
 
       # Whether a Kobo bookmark names a span Shelfarr sent to this reader.
@@ -171,7 +201,11 @@ module Kobo
         raise NothingToSend
       end
 
-      queue!(outbound.merge("status" => "queued", "reason" => "chosen", "bookmark_at" => Time.current.utc.iso8601(3))) || raise(NothingToSend)
+      # Resolve exactly the Kobo place the owner is choosing against, including
+      # an unknown or ahead-of-clock time. A later different bookmark withdraws
+      # this authorization when served instead of inheriting the old choice.
+      queue!(outbound.merge("status" => "queued", "reason" => "chosen", "bookmark_at" => Time.current.utc.iso8601(3),
+        "chosen_kobo_bookmark" => @delivery.reading_state&.dig("CurrentBookmark")&.deep_dup)) || raise(NothingToSend)
     end
 
     private
@@ -275,6 +309,8 @@ module Kobo
     # again inside the lock: a newer place re-evaluates at the next sync.
     def queue!(outbound)
       @device.with_lock do
+        return unless @device.receive_progress?
+
         current = @device.user.consumer_progresses.find_by(book_id: @delivery.book_id)
         delivery = @device.kobo_deliveries.find(@delivery.id)
         unless current && current.version == outbound["progress_version"] && current.client_mutation_id == outbound["progress_mutation_id"] &&
@@ -289,9 +325,7 @@ module Kobo
 
         @device.increment(:sync_revision)
         @device.save!
-        entry = outbound.slice("source", "span", "package_dir")
-        sent = ((outbound["sent"] || []).reject { |item| item.slice("source", "span") == entry.slice("source", "span") } + [ entry ]).last(SENT_HISTORY)
-        delivery.update_columns(sync_revision: @device.sync_revision, progress_outbound: outbound.merge("sent" => sent,
+        delivery.update_columns(sync_revision: @device.sync_revision, progress_outbound: outbound.merge(
           "queued_at" => Time.current.utc.iso8601(3), "checked_at" => Time.current.utc.iso8601(3)))
         @delivery.progress_outbound = delivery.progress_outbound
         @delivery.sync_revision = delivery.sync_revision

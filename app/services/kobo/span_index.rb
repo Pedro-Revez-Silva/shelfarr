@@ -71,7 +71,7 @@ module Kobo
       body = @root.at_xpath("./*[local-name()='body']") || @root
       @starts = {}
       spans = []
-      counts = Hash.new(0)
+      counts = @document.xpath("//*[@id]").each_with_object(Hash.new(0)) { |node, ids| ids[node["id"]] += 1 }
       position = 0
       stack = [ body ]
       until stack.empty?
@@ -80,7 +80,6 @@ module Kobo
           @starts[node.pointer_id] = position
           id = node["id"]
           if node.name == "span" && id&.match?(SPAN_ID) && node["class"].to_s.split.include?("koboSpan")
-            counts[id] += 1
             spans << [ id, position ]
             raise Unsupported, "too_many_spans" if spans.size > MAX_SPANS
           end

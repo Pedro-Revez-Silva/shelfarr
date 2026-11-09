@@ -118,6 +118,74 @@ class Kobo::OutboundProgressTest < ActiveSupport::TestCase
     assert_equal [ "OEBPS/Text/ch3.xhtml", "kobo.2.1" ], state.dig("CurrentBookmark", "Location").values_at("Source", "Value")
   end
 
+  test "a queued place which was never handed to the Kobo cannot suppress real Kobo reading" do
+    saved = read_in_shelfarr(at: 2.hours.ago)
+    Kobo::OutboundProgress.refresh(@device.reload)
+    assert_equal "queued", @delivery.reload.progress_outbound["status"]
+
+    read_at = 1.minute.ago.utc.floor(3)
+    assert_equal "shared", kobo_uploads(kobo_bookmark(span: "kobo.5.2", at: read_at))["status"]
+    assert_equal [ saved.version + 1, read_at ], [ progress.version, progress.observed_at ]
+  end
+
+  test "reading elsewhere on Kobo then returning to a sent sentence is genuine backward reading" do
+    saved = read_in_shelfarr(at: 2.hours.ago)
+    second = sync(@first.token)
+    span = state_items(second).sole.dig("CurrentBookmark", "Location", "Value")
+    assert_equal "echo", kobo_uploads(kobo_bookmark(span: span, at: 1.hour.ago))["status"]
+    assert_equal "shared", kobo_uploads(kobo_bookmark(span: "kobo.1.2", source: "OEBPS/Text/ch3.xhtml", at: 30.minutes.ago))["status"]
+
+    read_at = 1.minute.ago.utc.floor(3)
+    assert_equal "shared", kobo_uploads(kobo_bookmark(span: span, at: read_at))["status"]
+    assert_equal [ saved.version + 2, "OEBPS/Text/ch2.xhtml", read_at ],
+      [ progress.version, progress.locator["href"], progress.observed_at ]
+    assert_empty sync(second.token).items, "the reader's genuine backward place is not bounced back"
+  end
+
+  test "a queued place is withheld if its delivered file changes before serving" do
+    read_in_shelfarr
+    Kobo::OutboundProgress.refresh(@device.reload)
+    assert_equal "queued", @delivery.reload.progress_outbound["status"]
+    File.open(@path, "ab") { |file| file.write("changed after queueing") }
+
+    assert_equal [ nil, false ], Kobo::OutboundProgress.serve(@delivery.reload, progress)
+    assert_empty sync(@first.token).items
+  end
+
+  test "receiving a different Kobo place ends echo suppression even when inbound sharing is off" do
+    read_in_shelfarr(at: 2.hours.ago)
+    second = sync(@first.token)
+    span = state_items(second).sole.dig("CurrentBookmark", "Location", "Value")
+    @device.update!(share_progress: false)
+    kobo_uploads(kobo_bookmark(span: "kobo.1.2", source: "OEBPS/Text/ch3.xhtml", at: 1.hour.ago))
+    kobo_uploads(kobo_bookmark(span: span, at: 1.minute.ago))
+
+    read_in_shelfarr(href: "OEBPS/Text/ch3.xhtml", at: 30.minutes.ago)
+    assert_empty sync(second.token).items, "the newer Kobo return is genuine reading, even without importing it"
+    assert_equal %w[needs_choice kobo_newer], @delivery.reload.progress_outbound.values_at("status", "reason")
+  end
+
+  test "an explicit choice can resolve an unknown Kobo time but cannot overwrite a subsequent Kobo place" do
+    @device.update!(share_progress: false)
+    unknown = kobo_bookmark(span: "kobo.1.2", source: "OEBPS/Text/ch3.xhtml").except("LastModified")
+    kobo_uploads(unknown)
+    saved = read_in_shelfarr
+    assert_empty sync(@first.token).items
+    assert_equal %w[needs_choice kobo_time_unknown], @delivery.reload.progress_outbound.values_at("status", "reason")
+
+    Kobo::OutboundProgress.new(@delivery, progress).choose!
+    state, shelfarr = Kobo::OutboundProgress.serve(@delivery.reload, progress)
+    assert shelfarr, "the owner's explicit choice resolves the otherwise incomparable time"
+    assert_equal "kobo.5.2", state.dig("CurrentBookmark", "Location", "Value")
+
+    changed = unknown.deep_dup
+    changed["Location"]["Value"] = "kobo.2.1"
+    kobo_uploads(changed)
+    assert_equal [ @delivery.reload.reading_state, false ], Kobo::OutboundProgress.serve(@delivery, progress),
+      "the choice applies only to the Kobo place the owner saw"
+    assert_equal saved.attributes, progress.attributes
+  end
+
   test "intentional newer backward reading in Shelfarr is sent" do
     read_in_shelfarr(href: "OEBPS/Text/ch3.xhtml", progression: 0.9, total: 0.95, at: 3.hours.ago)
     second = sync(@first.token)
@@ -182,10 +250,21 @@ class Kobo::OutboundProgressTest < ActiveSupport::TestCase
     Kobo::OutboundProgress.refresh(@device.reload)
     assert_equal "queued", @delivery.reload.progress_outbound["status"]
     @device.update!(receive_progress: false)
-    assert_empty sync(@first.token).items, "turning it off before the sync withdraws the place"
+    while_off = sync(@first.token)
+    assert_empty while_off.items, "turning it off before the sync withdraws the place"
     assert_nil Kobo::OutboundProgress.serve(@delivery.reload, progress).first
     @device.update!(receive_progress: true)
-    assert_equal 1, state_items(sync(@first.token)).size
+    assert_equal 1, state_items(sync(while_off.token)).size, "re-enabling also reaches a cursor that advanced while it was off"
+  end
+
+  test "an opt-out during mapping is checked again inside the queue lock" do
+    read_in_shelfarr
+    stale = Kobo::OutboundProgress.new(@delivery, progress)
+    KoboDevice.find(@device.id).update!(receive_progress: false)
+    assert_no_changes -> { @device.reload.sync_revision } do
+      stale.evaluate!
+    end
+    assert_nil @delivery.reload.progress_outbound
   end
 
   test "places stay with their owner and reach only that owner's opted-in readers" do

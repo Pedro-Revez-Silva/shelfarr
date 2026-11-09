@@ -48,8 +48,9 @@ class Kobo::SpanIndexTest < ActiveSupport::TestCase
 
   test "only unique koboSpan ids written in the file are destinations" do
     data = <<~XHTML
-      <html xmlns="http://www.w3.org/1999/xhtml"><body>
-      <p><span id="kobo.1.1">no class</span><span class="koboSpan" id="kobo.2.1">dup one</span>
+      <html xmlns="http://www.w3.org/1999/xhtml"><head><meta id="kobo.7.1"/></head><body>
+      <p><span id="kobo.1.1">no class</span><span class="koboSpan" id="kobo.1.1">duplicate non-marker</span>
+      <span class="koboSpan" id="kobo.7.1">duplicate head id</span><span class="koboSpan" id="kobo.2.1">dup one</span>
       <span class="koboSpan" id="kobo.2.1">dup two</span><span class="koboSpan" id="kobo.x.1">bad id</span>
       <span class="other koboSpan" id="kobo.9.4">the real one</span></p></body></html>
     XHTML

@@ -19,6 +19,7 @@ class KoboDevice < ApplicationRecord
 
   normalizes :name, with: ->(value) { value.strip }
   normalizes :base_url, with: ->(value) { value.strip.sub(%r{/+\z}, "") }
+  after_update :invalidate_outbound_places, if: :saved_change_to_receive_progress?
 
   def self.issue(user:, **attributes)
     token = SecureRandom.hex(32)
@@ -65,6 +66,15 @@ class KoboDevice < ApplicationRecord
   end
 
   private
+
+  # A sync while receiving is off may advance past a withheld state revision.
+  # Re-evaluate on the next opt-in so that cursor can receive the current place.
+  # Keep the actual handoff history: an old adoption echo is still not reading.
+  def invalidate_outbound_places
+    kobo_deliveries.where.not(progress_outbound: nil).find_each do |delivery|
+      delivery.update_columns(progress_outbound: delivery.progress_outbound.except("key"))
+    end
+  end
 
   def publish!(identity, publication, **attributes)
     with_lock do

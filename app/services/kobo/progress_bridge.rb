@@ -62,10 +62,11 @@ module Kobo
     end
 
     def call(bookmark)
+      echo = OutboundProgress.received!(@delivery, bookmark)
       return unless @device.share_progress?
       # The Kobo reporting a place Shelfarr sent it is not new reading: it
       # never becomes a new version, a new time, or a place to send back.
-      return save(place(bookmark).except("source", "chapter_percent").merge("status" => "echo")) if OutboundProgress.echo?(@delivery, bookmark)
+      return save(place(bookmark).except("source", "chapter_percent").merge("status" => "echo")) if echo
 
       save(evaluate(bookmark))
     rescue StandardError => error
