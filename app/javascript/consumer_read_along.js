@@ -182,6 +182,7 @@ export class ReadAlongSession {
     this.cue = -1
     this.ready = false
     this.closed = false
+    this.retry = null
     this.listeners = {
       loadedmetadata: () => this.loaded(),
       timeupdate: () => this.tick(),
@@ -211,7 +212,10 @@ export class ReadAlongSession {
     if (this.closed || this.track < 0) return
     if (!this.ready) {
       if (this.pending) { this.playWhenReady = true; return }
-      return this.load(this.track, this.positionMs, { autoplay: true, restored: true })
+      const retry = this.retry || { ms: this.positionMs }
+      const loaded = await this.load(this.track, retry.ms, { ...retry, autoplay: false })
+      if (loaded === false || this.closed) return false
+      return this.resume()
     }
     const from = this.checkpoints.resume(this.audio.currentTime)
     if (from !== this.audio.currentTime) this.audio.currentTime = from
@@ -253,6 +257,7 @@ export class ReadAlongSession {
     this.closed = true
     this.pending?.resolve?.(false)
     this.pending = null
+    this.retry = null
     for (const [type, listener] of Object.entries(this.listeners)) this.audio.removeEventListener(type, listener)
     this.audio.pause()
     this.audio.removeAttribute("src")
@@ -263,6 +268,7 @@ export class ReadAlongSession {
 
   load(track, ms, { autoplay, restored = false, deliberate = false, continued = false }) {
     this.ready = false
+    this.retry = null
     this.track = track
     this.pending = { ms, autoplay, restored, deliberate, continued }
     this.playWhenReady = false
@@ -298,6 +304,7 @@ export class ReadAlongSession {
       this.onRecord("error")
     }
     const pending = this.pending
+    this.retry = pending ? { ms: pending.ms, restored: pending.restored, deliberate: pending.deliberate, continued: pending.continued } : { ms: this.positionMs }
     this.pending = null
     this.playWhenReady = false
     this.ready = false

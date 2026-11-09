@@ -155,6 +155,24 @@ test("closing a pending narration restore releases its waiter without playing or
   expect(saved).toEqual([])
 })
 
+test("retrying failed narration keeps the requested place and its replay floor", async () => {
+  const { value, audio, saved } = session()
+  audio.load = () => queueMicrotask(() => audio.emit("error"))
+  expect(await value.prepare(0, 15000)).toBe(false)
+  audio.load = FakeAudio.prototype.load.bind(audio)
+  await value.resume()
+  expect(audio.currentTime).toBe(10)
+  expect(saved).toEqual([])
+  // Failure within the replayed span must not lower the original 15s floor.
+  audio.currentTime = 11
+  audio.emit("error")
+  await value.resume()
+  expect(audio.currentTime).toBe(11)
+  value.pause()
+  expect(saved).toEqual([])
+  value.close()
+})
+
 test("an audio error immediately saves the last point actually heard", async () => {
   const { value, audio, saved, tick } = session()
   await value.prepare(0, 0)
