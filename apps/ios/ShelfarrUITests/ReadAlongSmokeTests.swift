@@ -30,7 +30,10 @@ final class ReadAlongSmokeTests: XCTestCase {
         self.port = port
         self.controlPort = controlPort
         try setOnline(true)
-        _ = try request(controlPort, "POST", "/read-along/reset")
+        // The fixture as the server started (see `FormatsSmokeTests.freshFixture`), after
+        // the previous case's app has stopped sending.
+        XCUIApplication().terminate()
+        _ = try request(controlPort, "POST", "/reset")
         let grant = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS read-along smoke"]))
         let issued = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": grant["device_code"] as? String ?? ""]))
         token = try XCTUnwrap(issued["access_token"] as? String)
@@ -41,8 +44,6 @@ final class ReadAlongSmokeTests: XCTestCase {
     override func tearDownWithError() throws {
         guard controlPort != 0 else { return }
         try? setOnline(true)
-        // The other smoke tests see the fixture books as they were: no places, no activity.
-        _ = try? request(controlPort, "POST", "/read-along/reset")
     }
 
     func testNarrationHighlightsFollowsAndSavesOnlyWhatWasHeard() throws {

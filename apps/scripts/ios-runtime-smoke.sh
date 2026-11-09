@@ -10,7 +10,9 @@
 # writing nothing, the resume rewind, coupled ebook and audiobook places, a later
 # audiobook place offered, narration downloaded and reopened offline, and a stale
 # alignment reading as usual. The fixture's own format and read-along checks
-# (RuntimeSmoke/test_formats_fixture.py, test_read_along_fixture.py) run first.
+# (RuntimeSmoke/test_formats_fixture.py, test_read_along_fixture.py) run first. One
+# fixture server serves the whole run; each test case resets it first (POST /reset on
+# the control port), so no case depends on what another left.
 #
 # Needs macOS, Xcode 16.4+, XcodeGen and python3.
 #

@@ -219,7 +219,11 @@ It needs macOS, Xcode 16.4, XcodeGen and `python3`. The script works like this:
    `8766` for iPhone, or `8775`/`8776` for iPad. Set `SHELFARR_SMOKE_PORT` and
    `SHELFARR_SMOKE_CONTROL_PORT` to change them for a single-family run.
    The fixture server runs `mock_consumer_server.py` unchanged and adds transfer grants,
-   an offline switch that also drops kept-alive connections, and counters.
+   an offline switch that also drops kept-alive connections, and counters. Every test
+   case first stops the previous case's app and calls `POST /reset` on the control port,
+   so it starts from the fixture as the server started (no places, writes, activity
+   order, requests or counters from another case); within a case, places persist across
+   relaunches and going offline.
 4. Runs `xcodebuild test` with local ad-hoc signing (`CODE_SIGN_IDENTITY=-`), which
    needs no developer account. The system download daemon rejects an unsigned
    simulator app as having no bundle ID. The ports reach the test runner as
