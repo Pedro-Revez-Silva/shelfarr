@@ -11,10 +11,23 @@ module Kobo
   # as an unencrypted EPUB before an atomic rename promotes it. Failures never
   # touch a copy that is already ready. Copies referenced by a delivery are
   # pinned: they are never evicted while a reader may still fetch them.
+  #
+  # Capacity: ready copies plus every in-flight reservation stay within
+  # max_total_bytes. A reservation is a <random>.lease file beside its
+  # <random>.part, flock-held by the worker from reservation until its partial
+  # bytes are gone. The kernel drops that lock when the worker dies, however it
+  # dies, so a lease nobody holds marks an abandoned attempt whatever its age,
+  # and a held lease keeps counting even after its row was timed out or
+  # deleted. Reservations, reclamation and promotion take one short
+  # cross-process lock, never held during network transfer.
   class BookCache
     MAX_TOTAL_BYTES = 4.gigabytes
     PER_USER_HOURLY = 20
     INCOMING = ".incoming"
+    LEASE = ".lease"
+    PART = ".part"
+    LEASE_NAME = /\A[0-9a-f]{32}\.lease\z/
+    PART_NAME = /\A[0-9a-f]{32}\.part\z/
     class Failure < StandardError
       attr_reader :code
 
@@ -111,8 +124,7 @@ module Kobo
       raise Failure, "not_eligible" unless located&.purchased && located.choice.rights == "drm_free"
 
       reserve_capacity!(located.choice.size || BookDownload::MAX_BYTES)
-      temporary = download(located.choice)
-      promote(temporary, located)
+      promote(download(located.choice), located)
     rescue Failure, BookDownload::Error => error
       fail!(error.code)
     rescue HttpClient::Error => error
@@ -128,7 +140,7 @@ module Kobo
     rescue Errno::ENOSPC, Errno::EDQUOT
       fail!("storage_full")
     ensure
-      File.unlink(temporary) if temporary && File.exist?(temporary)
+      release_lease
     end
 
     private
@@ -145,10 +157,7 @@ module Kobo
     end
 
     def download(choice)
-      incoming = private_directory(root.join(INCOMING))
-      sweep(incoming)
-      path = incoming.join("#{SecureRandom.hex(16)}.part")
-      @temporary_path = path
+      path = @temporary_path
       flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
       @result = File.open(path, flags, 0o600, binmode: true) do |io|
         @downloader.call(choice.url, io: io, expected_size: choice.size).tap do
@@ -171,33 +180,39 @@ module Kobo
       File.unlink(path) if path && @epub_version.nil? && File.exist?(path)
     end
 
+    # Promotion holds the capacity lock, so reclamation never sees a renamed
+    # file before its row commits, and two promotions of the same bytes cannot
+    # replace each other's file. A worker that dies between the rename and the
+    # commit leaves an unreferenced file the next reclamation removes.
     def promote(temporary, located)
       key = "#{@account.id}/#{@book.id}/#{@result.sha256}.epub"
-      final = private_directory(root.join(@account.id.to_s, @book.id.to_s)).join("#{@result.sha256}.epub")
-      if File.exist?(final)
-        # The same bytes are already cached: keep that file and drop ours.
-        raise Failure, "incomplete" unless File.lstat(final).file? && File.size(final) == @result.bytes
+      with_capacity_lock do
+        final = private_directory(root.join(@account.id.to_s, @book.id.to_s)).join("#{@result.sha256}.epub")
+        if File.exist?(final)
+          # The same bytes are already cached: keep that file and drop ours.
+          raise Failure, "incomplete" unless File.lstat(final).file? && File.size(final) == @result.bytes
 
-        File.unlink(temporary)
-      else
-        File.rename(temporary, final)
-      end
-      stat = File.lstat(final)
-      KoboAccountBookFile.transaction do
-        @row.reload
-        raise ActiveRecord::StaleObjectError unless @row.status == "fetching"
+          File.unlink(temporary)
+        else
+          File.rename(temporary, final)
+        end
+        stat = File.lstat(final)
+        KoboAccountBookFile.transaction do
+          @row.reload
+          raise ActiveRecord::StaleObjectError unless @row.status == "fetching"
 
-        authorize!
-        @row.update!(status: "ready", error: nil, storage_key: key, sha256: @result.sha256, size_bytes: @result.bytes,
-          expected_size: located.choice.size, format: located.choice.format, kobo_revision_id: located.revision_id || @book.revision_id,
-          epub_version: @epub_version.to_s.first(16), file_device: stat.dev.to_s, file_inode: stat.ino.to_s,
-          fetched_at: Time.current, last_used_at: Time.current)
+          authorize!
+          @row.update!(status: "ready", error: nil, storage_key: key, sha256: @result.sha256, size_bytes: @result.bytes,
+            expected_size: located.choice.size, format: located.choice.format, kobo_revision_id: located.revision_id || @book.revision_id,
+            epub_version: @epub_version.to_s.first(16), file_device: stat.dev.to_s, file_inode: stat.ino.to_s,
+            fetched_at: Time.current, last_used_at: Time.current)
+        end
+      rescue StandardError
+        self.class.remove(key) unless KoboAccountBookFile.where(storage_key: key, status: "ready").exists?
+        raise
       end
       prune
       @row
-    rescue StandardError
-      self.class.remove(key) unless KoboAccountBookFile.where(storage_key: key, status: "ready").exists?
-      raise
     end
 
     # Older ready copies of this title that no delivery references are
@@ -208,20 +223,53 @@ module Kobo
         .find_each(&:destroy!)
     end
 
-    # Reserve before writing bytes. The short filesystem lock spans processes,
-    # but never network I/O: every increase in ready + in-flight bytes passes
-    # here. Promotion can only shrink a reservation into its actual ready size.
+    # Reserve before writing bytes: every increase in ready + in-flight bytes
+    # passes here, after abandoned attempts are reclaimed. The lease is taken
+    # inside the lock, before any partial byte exists.
     def reserve_capacity!(needed)
+      with_capacity_lock do
+        @row.reload
+        raise ActiveRecord::StaleObjectError unless @row.status == "fetching"
+
+        @in_flight_bytes = reclaim_abandoned
+        ensure_capacity!(needed)
+        take_lease(needed)
+        @row.update!(expected_size: needed)
+      end
+    end
+
+    def with_capacity_lock
       private_directory(root)
       File.open(root.join(".capacity.lock"), File::RDWR | File::CREAT | File::NOFOLLOW, 0o600) do |lock|
         raise Failure, "storage_full" unless lock.stat.file? && lock.flock(File::LOCK_EX)
 
-        @row.reload
-        raise ActiveRecord::StaleObjectError unless @row.status == "fetching"
-
-        ensure_capacity!(needed)
-        @row.update!(expected_size: needed)
+        yield
       end
+    end
+
+    def take_lease(needed)
+      incoming = private_directory(root.join(INCOMING))
+      name = SecureRandom.hex(16)
+      @lease_path = incoming.join("#{name}#{LEASE}")
+      @lease = File.open(@lease_path, File::RDWR | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600)
+      raise Failure, "storage_full" unless @lease.flock(File::LOCK_EX | File::LOCK_NB)
+
+      # Only ids, a random request id and a byte count: never a URL or secret.
+      @lease.write(JSON.generate("row" => @row.id, "request" => @row.request_id, "bytes" => needed))
+      @lease.flush
+      @temporary_path = incoming.join("#{name}#{PART}")
+    end
+
+    # The partial goes first: a reservation is released only once its bytes
+    # are gone, so a crash in between leaves a lease that is reclaimed later.
+    def release_lease
+      File.unlink(@temporary_path) if @temporary_path && File.exist?(@temporary_path)
+      File.unlink(@lease_path) if @lease_path && File.exist?(@lease_path)
+    rescue SystemCallError => error
+      Rails.logger.warn("[Kobo] Could not release a copy reservation (#{error.class.name})")
+    ensure
+      @lease&.close
+      @lease = nil
     end
 
     def ensure_capacity!(needed)
@@ -242,16 +290,111 @@ module Kobo
       raise Failure, "cache_full"
     end
 
+    # Identical ready copies share one on-disk file. In-flight bytes come from
+    # live leases, not row status, so they survive a timed-out or deleted row.
     def used_bytes
-      # One snapshot avoids missing a row that changes from fetching to ready
-      # between separate queries. Identical ready copies share one on-disk file.
-      ready = {}
-      reserved = 0
-      KoboAccountBookFile.where(status: %w[ready fetching]).where.not(id: @row.id)
-        .pluck(:status, :storage_key, :size_bytes, :expected_size).each do |status, key, size, expected|
-        status == "ready" ? ready[key] = size.to_i : reserved += expected.to_i
+      KoboAccountBookFile.where(status: "ready").pluck(:storage_key, :size_bytes).to_h.values.sum(&:to_i) + @in_flight_bytes
+    end
+
+    # Under the capacity lock: removes what dead workers left behind and
+    # returns the bytes live workers hold (their reservation, or their partial
+    # if larger). No new lease or promotion can start meanwhile.
+    def reclaim_abandoned
+      incoming = private_directory(root.join(INCOMING))
+      held = Dir.children(incoming).sort.sum do |name|
+        next 0 unless name.match?(LEASE_NAME)
+
+        inspect_lease(incoming.join(name))
       end
-      ready.values.sum + reserved
+      # A partial whose lease is gone has no live writer: leases precede their
+      # partials and are released only after them.
+      Dir.each_child(incoming) do |name|
+        next unless name.match?(PART_NAME) && !File.exist?(incoming.join(name.delete_suffix(PART) + LEASE))
+
+        unlink_regular(incoming.join(name))
+      end
+      reclaim_unreferenced_copies
+      held
+    end
+
+    def inspect_lease(path)
+      File.open(path, File::RDONLY | File::NOFOLLOW) do |lease|
+        next 0 unless lease.stat.file?
+
+        details = lease_details(lease)
+        partial = Pathname(path.to_s.delete_suffix(LEASE) + PART)
+        if lease.flock(File::LOCK_EX | File::LOCK_NB)
+          abandon(details, partial, path)
+          0
+        else
+          reserved = Integer(details["bytes"], exception: false)
+          [ reserved&.positive? ? reserved : BookDownload::MAX_BYTES, regular_size(partial) ].max
+        end
+      end
+    rescue SystemCallError
+      0
+    end
+
+    def lease_details(lease)
+      details = JSON.parse(lease.read(4.kilobytes).to_s)
+      details.is_a?(Hash) ? details : {}
+    rescue JSON::ParserError
+      {}
+    end
+
+    # The worker is gone: drop its partial, then record the attempt as failed
+    # so its title no longer waits on it, then release the reservation.
+    def abandon(details, partial, lease_path)
+      unlink_regular(partial)
+      if (id = Integer(details["row"], exception: false)) && details["request"].is_a?(String)
+        KoboAccountBookFile.where(id: id, request_id: details["request"], status: "fetching")
+          .update_all([ "status = 'failed', error = 'incomplete', lock_version = lock_version + 1, updated_at = ?", Time.current ])
+      end
+      File.unlink(lease_path)
+      Rails.logger.info("[Kobo] Reclaimed an abandoned copy attempt")
+    end
+
+    # Final files no row names, such as one renamed into place by a worker
+    # that died before recording it.
+    def reclaim_unreferenced_copies
+      referenced = KoboAccountBookFile.where.not(storage_key: nil).distinct.pluck(:storage_key).to_set
+      stored_keys.each { |key| self.class.remove(key) unless referenced.include?(key) }
+    end
+
+    def stored_keys
+      id_directories(root).flat_map do |account|
+        id_directories(root.join(account)).flat_map do |book|
+          entries(root.join(account, book)).filter_map do |name|
+            "#{account}/#{book}/#{name}" if name.match?(/\A[0-9a-f]{64}\.epub\z/) && regular?(root.join(account, book, name))
+          end
+        end
+      end
+    end
+
+    # Numeric account or title directories, never following a symlink.
+    def id_directories(path)
+      entries(path).select { |name| name.match?(/\A\d{1,19}\z/) && File.directory?(path.join(name)) && !File.symlink?(path.join(name)) }
+    end
+
+    # Dir.glob returns nothing for a directory removed meanwhile.
+    def entries(path)
+      Dir.glob("*", base: path.to_s)
+    end
+
+    def regular?(path)
+      File.file?(path) && !File.symlink?(path)
+    end
+
+    def regular_size(path)
+      regular?(path) ? File.size(path) : 0
+    rescue SystemCallError
+      0
+    end
+
+    def unlink_regular(path)
+      File.unlink(path) if regular?(path)
+    rescue SystemCallError => error
+      Rails.logger.info("[Kobo] A reclaimed partial was already gone (#{error.class.name})")
     end
 
     def private_directory(path)
@@ -268,19 +411,7 @@ module Kobo
       path
     end
 
-    # Partial files left by a crashed worker.
-    def sweep(incoming)
-      Dir.each_child(incoming) do |name|
-        path = incoming.join(name)
-        stat = File.lstat(path)
-        File.unlink(path) if stat.file? && name.end_with?(".part") && stat.mtime < (KoboAccountBookFile::FETCH_LEASE * 2).ago
-      rescue SystemCallError
-        next
-      end
-    end
-
     def fail!(code)
-      # Release an in-flight reservation only after its partial bytes are gone.
       File.unlink(@temporary_path) if @temporary_path && File.exist?(@temporary_path)
       code = "protocol_changed" unless KoboAccountBookFile::ERROR_MESSAGES.key?(code)
       @row.reload

@@ -86,6 +86,12 @@ valid EPUB, or does not match Kobo's stated size is rejected.
   never removed. A failed, incomplete or out-of-space download never replaces a
   copy that is already ready. Space is reserved before transfers start, across
   job workers; ready copies and in-flight reservations share the same bound.
+  A download keeps its reservation for as long as its worker is running, even
+  if the attempt times out or the account is disconnected meanwhile, so a slow
+  transfer is never cleaned up for being slow. If a worker stops abruptly (for
+  example, the server is killed), the next copy prepared removes its partial
+  file, and any file it had not finished recording, before reserving space;
+  that attempt is shown as incomplete and can be retried.
   A title being replaced keeps its earlier copy throughout the attempt, so a
   replacement may wait for enough room to stage both copies. Each user can
   request 20 copies an hour.
