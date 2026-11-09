@@ -9,7 +9,7 @@ public protocol ReadAlongDownloads: Sendable {
     func fileURLs(_ record: DownloadRecord) async -> [String: URL]?
     func enqueue(_ publication: Publication, format: ReaderFormat?) async
     @discardableResult
-    func cancelActive(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool
+    func cancelUnfinished(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool
 }
 
 extension DownloadManager: ReadAlongDownloads {}
@@ -26,14 +26,28 @@ extension DownloadManager: ReadAlongDownloads {}
 /// is ordered after any write that had already passed its check.
 ///
 /// The paired audiobook an imported alignment needs is a companion: queued by the
-/// preparation as the audiobook's own ordinary download. A companion this preparation
-/// created is cancelled with the book's download only while it is still transferring,
-/// no other book's preparation is using it, and the user hasn't asked for the audiobook
-/// themselves. An audiobook the user downloaded, or one already complete, is never touched.
+/// preparation as the audiobook's own ordinary download. A companion a preparation
+/// created is cancelled with the book's download only while it is unfinished, no other
+/// book uses it, and the user hasn't asked for the audiobook themselves. An audiobook
+/// the user downloaded, or one already complete, is never touched.
 ///
-/// The state is in memory: after a relaunch an unfinished companion is an ordinary
-/// download, and a cancelled book no longer cancels it.
+/// Downloads outlive the process, so who owns which companion does too: with a
+/// `storage` file (in the account's folder) every change is written before it matters.
+/// A claim is on disk before its companion is queued, and a release stays on disk until
+/// the companion was cancelled (`resumeReleases` finishes one cut short by a relaunch).
+/// A missing file knows nothing, so companions queued before it existed stay ordinary
+/// downloads. An unreadable one is moved aside and reported (`storageProblem`): the
+/// companions it named are then never cancelled. If the file can't be written it is
+/// deleted, so a later launch forgets ownership rather than trusting a stale one.
 public final class ReadAlongPreparations: @unchecked Sendable {
+    /// Why ownership on disk can't be fully trusted.
+    public enum StorageProblem: Equatable, Sendable {
+        /// The file couldn't be read or wasn't understood; it was moved aside.
+        case unreadable
+        /// The latest change couldn't be written.
+        case unwritable
+    }
+
     /// One preparation's claim on its book. Stale once invalidated.
     public struct Ticket: Hashable, Sendable {
         public let publicationId: String
@@ -74,6 +88,19 @@ public final class ReadAlongPreparations: @unchecked Sendable {
         var isNeeded: Bool { !claimants.isEmpty || !intents.isEmpty }
     }
 
+    /// One companion as kept on disk.
+    private struct StoredCompanion: Codable, Equatable {
+        var owned: Bool
+        var books: [String]
+    }
+
+    private struct StoredState: Codable {
+        var version: Int
+        var companions: [String: StoredCompanion]
+    }
+
+    private static let storageVersion = 1
+
     private struct Intent {
         let ticket: Ticket
         let audiobookId: String
@@ -91,8 +118,70 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     private var requests: [String: Int] = [:]
     /// Downloads the user asked for and hasn't cancelled or removed since.
     private var wanted: Set<String> = []
+    private let storage: URL?
+    private var problem: StorageProblem?
+    /// Serializes writes, newest last; taken before `lock`, never inside it.
+    private let writeLock = NSLock()
+    private var queuedWrite: UInt64 = 0
+    private var writtenVersion: UInt64 = 0
 
-    public init() {}
+    /// `storage` keeps companion ownership across launches; nil keeps it in memory.
+    public init(storage: URL? = nil) {
+        self.storage = storage
+        guard let storage, FileManager.default.fileExists(atPath: storage.path) else { return }
+        if let data = try? Data(contentsOf: storage),
+           let state = try? JSONDecoder().decode(StoredState.self, from: data),
+           state.version == Self.storageVersion,
+           state.companions.allSatisfy({ !$0.key.isEmpty && !$0.value.books.contains(where: \.isEmpty) }) {
+            companions = state.companions.mapValues { Companion(owned: $0.owned, claimants: Set($0.books)) }
+        } else {
+            // Kept for diagnosis, never trusted: nothing it named is cancelled.
+            let aside = storage.appendingPathExtension("unreadable")
+            try? FileManager.default.removeItem(at: aside)
+            if (try? FileManager.default.moveItem(at: storage, to: aside)) == nil { try? FileManager.default.removeItem(at: storage) }
+            problem = .unreadable
+        }
+    }
+
+    public var storageProblem: StorageProblem? { lock.withLock { problem } }
+
+    /// Runs `body` under the lock and writes companion ownership if it changed.
+    private func update<T>(_ body: () -> T) -> T {
+        let (result, pending): (T, (StoredState, UInt64)?) = lock.withLock {
+            let before = durable()
+            let result = body()
+            let after = durable()
+            guard storage != nil, !ended, after != before else { return (result, nil) }
+            queuedWrite += 1
+            return (result, (StoredState(version: Self.storageVersion, companions: after), queuedWrite))
+        }
+        if let pending { write(pending.0, version: pending.1) }
+        return result
+    }
+
+    private func durable() -> [String: StoredCompanion] {
+        companions.compactMapValues { companion in
+            companion.owned || !companion.claimants.isEmpty ? StoredCompanion(owned: companion.owned, books: companion.claimants.sorted()) : nil
+        }
+    }
+
+    private func write(_ state: StoredState, version: UInt64) {
+        writeLock.withLock {
+            // After `end`, no write may recreate a folder being deleted with the account.
+            guard let storage, !lock.withLock({ ended }), version > writtenVersion else { return }
+            writtenVersion = version
+            do {
+                try FileManager.default.createDirectory(at: storage.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(state).write(to: storage, options: .atomic)
+                // An unreadable file's ownership stays lost; only a failed write is mended.
+                lock.withLock { if problem == .unwritable { problem = nil } }
+            } catch {
+                // A stale file could name as ours an audiobook the user asked for since; a missing one only forgets.
+                try? FileManager.default.removeItem(at: storage)
+                lock.withLock { problem = .unwritable }
+            }
+        }
+    }
 
     // MARK: Tickets
 
@@ -164,7 +253,7 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     /// Returns the companions nothing needs any more, for `cleanUp` to cancel.
     @discardableResult
     public func invalidate(_ publicationId: String) -> [String] {
-        let (task, released): (Task<Void, Never>?, [String]) = lock.withLock {
+        let (task, released): (Task<Void, Never>?, [String]) = update {
             bump(publicationId)
             let task = running.removeValue(forKey: publicationId)?.task
             return (task, unclaim(publicationId, except: nil))
@@ -182,6 +271,8 @@ public final class ReadAlongPreparations: @unchecked Sendable {
             companions.removeAll()
             return tasks
         }
+        // Waits out a write in progress; none starts after this.
+        writeLock.withLock {}
         tasks.forEach { $0.cancel() }
     }
 
@@ -189,7 +280,7 @@ public final class ReadAlongPreparations: @unchecked Sendable {
 
     /// The user asked for this download (or to retry it). As an audiobook, it is theirs from now on.
     public func userRequested(_ publicationId: String) {
-        lock.withLock {
+        update {
             requests[publicationId, default: 0] += 1
             wanted.insert(publicationId)
             companions[publicationId]?.owned = false
@@ -198,7 +289,7 @@ public final class ReadAlongPreparations: @unchecked Sendable {
 
     /// The user cancelled or removed this download themselves.
     public func userStopped(_ publicationId: String) {
-        lock.withLock {
+        update {
             requests[publicationId, default: 0] += 1
             wanted.remove(publicationId)
             companions[publicationId]?.owned = false
@@ -211,19 +302,38 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     }
 
     /// Drops `publicationId`'s claims (but the one on `except`), returning companions
-    /// left owned and unneeded. Caller holds the lock.
+    /// left owned and unneeded. Those stay recorded, unclaimed, until `release` has
+    /// cancelled them. Caller holds the lock.
     private func unclaim(_ publicationId: String, except: String?) -> [String] {
         var released: [String] = []
         for (audiobookId, var companion) in companions where audiobookId != except && companion.claimants.contains(publicationId) {
             companion.claimants.remove(publicationId)
             if companion.isNeeded {
                 companions[audiobookId] = companion
+            } else if companion.owned && !wanted.contains(audiobookId) {
+                companions[audiobookId] = companion
+                released.append(audiobookId)
             } else {
                 companions[audiobookId] = nil
-                if companion.owned && !wanted.contains(audiobookId) { released.append(audiobookId) }
             }
         }
         return released.sorted()
+    }
+
+    /// Records the claim of `intent`'s book before its companion is queued, owned when
+    /// queueing creates it. False, and nothing is queued, once the ticket is stale.
+    private func reserve(_ intent: Intent, created: Bool) -> Bool {
+        update {
+            guard current(intent.ticket) else { return false }
+            let audiobookId = intent.audiobookId
+            var companion = companions[audiobookId] ?? Companion()
+            if created, (requests[audiobookId] ?? 0) == intent.requests, !wanted.contains(audiobookId) {
+                companion.owned = true
+            }
+            companion.claimants.insert(intent.ticket.publicationId)
+            companions[audiobookId] = companion
+            return true
+        }
     }
 
     private func intend(_ ticket: Ticket, _ audiobookId: String) -> Intent? {
@@ -235,18 +345,14 @@ public final class ReadAlongPreparations: @unchecked Sendable {
         }
     }
 
-    /// Ends an intent. `created` is nil when nothing was queued, else whether queueing
-    /// created the download (none, or a cancelled one, was there). Returns companions to cancel.
-    private func settle(_ intent: Intent, created: Bool?) -> [String] {
-        lock.withLock {
+    /// Ends an intent; `queued` when `reserve` let it queue the companion. Returns
+    /// companions to cancel.
+    private func settle(_ intent: Intent, queued: Bool) -> [String] {
+        update {
             let audiobookId = intent.audiobookId
             var companion = companions[audiobookId] ?? Companion()
             companion.intents.remove(intent.token)
-            if created == true, (requests[audiobookId] ?? 0) == intent.requests, !wanted.contains(audiobookId) {
-                companion.owned = true
-            }
-            if created != nil, current(intent.ticket) {
-                companion.claimants.insert(intent.ticket.publicationId)
+            if queued, current(intent.ticket) {
                 companions[audiobookId] = companion
                 // This book's narration now uses only this audiobook.
                 return unclaim(intent.ticket.publicationId, except: audiobookId)
@@ -255,9 +361,30 @@ public final class ReadAlongPreparations: @unchecked Sendable {
                 companions[audiobookId] = companion
                 return []
             }
+            if companion.owned, !wanted.contains(audiobookId), !ended {
+                companions[audiobookId] = companion
+                return [audiobookId]
+            }
             companions[audiobookId] = nil
-            return companion.owned && !wanted.contains(audiobookId) && !ended ? [audiobookId] : []
+            return []
         }
+    }
+
+    /// A release has been carried out (or wasn't needed after all): forgets the companion
+    /// unless something uses it again.
+    private func released(_ audiobookId: String) {
+        update {
+            if let companion = companions[audiobookId], !companion.isNeeded { companions[audiobookId] = nil }
+        }
+    }
+
+    /// Finishes releases a previous launch recorded but didn't get to carry out. Run once
+    /// the account's downloads are available.
+    public func resumeReleases(downloads: ReadAlongDownloads) async {
+        let pending: [String] = lock.withLock {
+            companions.filter { $0.value.owned && !$0.value.isNeeded && !wanted.contains($0.key) }.keys.sorted()
+        }
+        await release(pending, downloads)
     }
 
     // MARK: Preparing
@@ -294,7 +421,7 @@ public final class ReadAlongPreparations: @unchecked Sendable {
         fetchAudiobook: @Sendable (String) async throws -> Publication
     ) async throws {
         guard let intent = intend(ticket, audiobookId) else { return }
-        var created: Bool?
+        var queued = false
         do {
             let existing = await downloads.ready(audiobookId)
             let covers = existing.map { record in manifest.audio.allSatisfy { record.pinnedAssetIds.contains($0.assetId ?? "") } } ?? false
@@ -303,22 +430,23 @@ public final class ReadAlongPreparations: @unchecked Sendable {
                 let audiobook = try await fetchAudiobook(audiobookId)
                 if isCurrent(ticket) {
                     let before = await downloads.record(audiobookId)
-                    if isCurrent(ticket) {
-                        created = before == nil || before?.state == .cancelled
+                    if reserve(intent, created: before == nil || before?.state == .cancelled) {
                         await downloads.enqueue(audiobook, format: nil)
+                        queued = true
                     }
                 }
             }
         } catch {
-            await release(settle(intent, created: nil), downloads)
+            await release(settle(intent, queued: false), downloads)
             throw error
         }
-        await release(settle(intent, created: created), downloads)
+        await release(settle(intent, queued: queued), downloads)
     }
 
     private func release(_ audiobookIds: [String], _ downloads: ReadAlongDownloads) async {
         for audiobookId in audiobookIds {
-            await downloads.cancelActive(audiobookId, if: { [self] in releasable(audiobookId) })
+            await downloads.cancelUnfinished(audiobookId, if: { [self] in releasable(audiobookId) })
+            released(audiobookId)
         }
     }
 

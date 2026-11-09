@@ -477,13 +477,13 @@ public actor DownloadManager: TransferSink {
         pump()
     }
 
-    /// `cancel`, only while the download is still queued or downloading and `allowed()`
-    /// agrees at that moment, so a download that has just finished keeps its files.
-    /// Returns whether it was cancelled.
+    /// `cancel`, only while the download is unfinished (queued, downloading or failed) and
+    /// `allowed()` agrees at that moment, so a download that has just finished keeps its
+    /// files. Returns whether it was cancelled.
     @discardableResult
-    public func cancelActive(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool {
+    public func cancelUnfinished(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool {
         load()
-        guard records[publicationId]?.isActive == true, allowed() else { return false }
+        guard let record = records[publicationId], record.state != .ready, record.state != .cancelled, allowed() else { return false }
         await cancel(publicationId)
         return true
     }

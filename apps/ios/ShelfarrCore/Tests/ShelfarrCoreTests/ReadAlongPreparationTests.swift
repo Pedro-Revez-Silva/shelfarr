@@ -7,7 +7,7 @@ import XCTest
 
 /// The real account downloads, with an optional hold just before a companion is queued
 /// (the suspension between a preparation's last check and the manager's enqueue).
-private final class HeldDownloads: ReadAlongDownloads, @unchecked Sendable {
+final class HeldDownloads: ReadAlongDownloads, @unchecked Sendable {
     let base: DownloadManager
     let beforeEnqueue: HoldPoint?
     let enqueued = Shared<[String]>([])
@@ -26,39 +26,66 @@ private final class HeldDownloads: ReadAlongDownloads, @unchecked Sendable {
         enqueued.value.append(publication.id)
         await base.enqueue(publication, format: format)
     }
-    func cancelActive(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool {
-        await base.cancelActive(publicationId, if: allowed)
+    func cancelUnfinished(_ publicationId: String, if allowed: @Sendable () -> Bool) async -> Bool {
+        await base.cancelUnfinished(publicationId, if: allowed)
     }
 }
 
-/// Narration preparation owned by the download that started it: cancelling, removing,
-/// replacing or signing out stops it at every suspension, with the real download
-/// manager and read-along library, and each schedule held exactly where it matters.
-final class ReadAlongPreparationTests: DownloadTestCase {
-    private typealias F = ReadAlongFixture
+/// The real download manager, read-along library and preparation coordinator for one
+/// account, over a fake server whose transfers stay in flight until served, and the
+/// app's request, cancel and remove hooks.
+class ReadAlongPreparationTestCase: DownloadTestCase {
+    typealias F = ReadAlongFixture
 
-    private let router = TransferRouter()
-    /// Transfers stay in flight until the test serves them.
-    private lazy var system = FakeSystem(router: router)
-    private let bookData = ReadAlongFixture.epub().data
-    private let trackA = Data(repeating: 3, count: 1000)
-    private let trackB = Data(repeating: 4, count: 2000)
-    private let otherAssetId = String(repeating: "f", count: 64)
+    var router = TransferRouter()
+    /// Transfers stay in flight until the test serves them; like a system session, they outlive a relaunch.
+    lazy var system = FakeSystem(router: router)
+    /// Holds the cancelling of audiobook transfers once closed (`hold()`).
+    let cancelGate = HoldPoint(open: true)
+    let bookData = ReadAlongFixture.epub().data
+    let trackA = Data(repeating: 3, count: 1000)
+    let trackB = Data(repeating: 4, count: 2000)
+    let otherAssetId = String(repeating: "f", count: 64)
 
-    private lazy var ebook = Publication(id: "12", title: "Book", bookType: .ebook, assets: [
+    lazy var ebook = Publication(id: "12", title: "Book", bookType: .ebook, assets: [
         Asset(id: F.ebookAssetId, filename: "b.epub", mediaType: "application/epub+zip", format: "epub", sizeBytes: Int64(bookData.count), contentUrl: "/files/ebook"),
     ])
-    private lazy var otherEbook = Publication(id: "13", title: "Other edition", bookType: .ebook, assets: [
+    lazy var otherEbook = Publication(id: "13", title: "Other edition", bookType: .ebook, assets: [
         Asset(id: otherAssetId, filename: "c.epub", mediaType: "application/epub+zip", format: "epub", sizeBytes: Int64(bookData.count), contentUrl: "/files/other"),
     ])
-    private lazy var narration = Publication(id: "40", title: "Narration", bookType: .audiobook, assets: [
+    lazy var narration = Publication(id: "40", title: "Narration", bookType: .audiobook, assets: [
         Asset(id: "track-a", filename: "01.mp3", mediaType: "audio/mpeg", format: "mp3", sizeBytes: 1000, contentUrl: "/files/track-a", position: 1),
         Asset(id: "track-b", filename: "02.mp3", mediaType: "audio/mpeg", format: "mp3", sizeBytes: 2000, contentUrl: "/files/track-b", position: 2),
     ])
 
-    private var downloads: DownloadManager!
-    private var library: ReadAlongLibrary!
-    private var preparations: ReadAlongPreparations!
+    var downloads: DownloadManager!
+    var library: ReadAlongLibrary!
+    var preparations: ReadAlongPreparations!
+
+    var companionsFile: URL { root.appendingPathComponent("acct/read-along/companions.json") }
+
+    private func makeDownloads() -> DownloadManager {
+        let executor = HeldExecutor(system, gate: cancelGate, holds: { $0.request.url!.path.hasPrefix("/files/track-") })
+        return manager(executors: DownloadExecutors(foreground: executor), router: router)
+    }
+
+    /// A new process over the same disk: new router, manager, library and coordinator.
+    /// The old objects are abandoned, not closed, as when the system ends the app.
+    func relaunch() async {
+        router = TransferRouter()
+        system.router = router
+        downloads = makeDownloads()
+        await downloads.start()
+        library = ReadAlongLibrary(root: root.appendingPathComponent("acct/read-along"))
+        preparations = ReadAlongPreparations(storage: companionsFile)
+    }
+
+    /// Companion ownership as it is on disk now.
+    func storedCompanions() -> [String: [String: Any]]? {
+        guard let data = try? Data(contentsOf: companionsFile),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["companions"] as? [String: [String: Any]]
+    }
 
     override func setUp() {
         super.setUp()
@@ -67,14 +94,14 @@ final class ReadAlongPreparationTests: DownloadTestCase {
         transport["/files/track-a"] = .init(data: trackA, etag: "\"a\"")
         transport["/files/track-b"] = .init(data: trackB, etag: "\"b\"")
         publications = [ebook.id: ebook, otherEbook.id: otherEbook, narration.id: narration]
-        downloads = manager(executors: DownloadExecutors(foreground: system), router: router)
+        downloads = makeDownloads()
         library = ReadAlongLibrary(root: root.appendingPathComponent("acct/read-along"))
-        preparations = ReadAlongPreparations()
+        preparations = ReadAlongPreparations(storage: companionsFile)
     }
 
     // MARK: Fixtures
 
-    private func imported(_ publicationId: String = "12", ebookAssetId: String = F.ebookAssetId, generation: String = F.generation) -> ReadAlongPreparations.Fetched {
+    func imported(_ publicationId: String = "12", ebookAssetId: String = F.ebookAssetId, generation: String = F.generation) -> ReadAlongPreparations.Fetched {
         var object = F.importedObject(generation: generation)
         object["publication_id"] = publicationId
         object["ebook_asset_id"] = ebookAssetId
@@ -83,25 +110,25 @@ final class ReadAlongPreparationTests: DownloadTestCase {
         return (data, manifest)
     }
 
-    private func overlay() -> ReadAlongPreparations.Fetched {
+    func overlay() -> ReadAlongPreparations.Fetched {
         let data = F.data(F.overlayObject(audioSizes: [1000, Int64(LongDeflate.text.count)]))
         return (data, try! ReadAlongManifest.parse(data, ebookAssetId: F.ebookAssetId, generation: F.generation, publicationId: "12", server: F.server))
     }
 
-    private func bookFolder(_ publicationId: String = "12") -> URL {
+    func bookFolder(_ publicationId: String = "12") -> URL {
         root.appendingPathComponent("acct/read-along").appendingPathComponent(String(SHA256.hexDigest(Data(publicationId.utf8)).prefix(32)))
     }
 
-    private func generations(_ publicationId: String = "12") -> [String] {
+    func generations(_ publicationId: String = "12") -> [String] {
         ((try? FileManager.default.contentsOfDirectory(atPath: bookFolder(publicationId).path)) ?? []).filter(ReadAlongManifest.isGeneration).sorted()
     }
 
-    private func liveJobs(_ path: String) -> [FakeSystem.Job] {
+    func liveJobs(_ path: String) -> [FakeSystem.Job] {
         system.live.filter { $0.request.url!.path == path }
     }
 
     /// Serves a book's file so its download becomes ready.
-    private func finishBook(_ publication: Publication, path: String, etag: String) async throws {
+    func finishBook(_ publication: Publication, path: String, etag: String) async throws {
         try await until("the book's transfer") { !liveJobs(path).isEmpty }
         for job in liveJobs(path) { system.serve(job, bookData, etag: etag) }
         await idle(router)
@@ -110,7 +137,7 @@ final class ReadAlongPreparationTests: DownloadTestCase {
 
     /// The app's download request: `ReadAlongService.downloadRequested` then `start`.
     @discardableResult
-    private func request(
+    func request(
         _ publication: Publication,
         fetched: ReadAlongPreparations.Fetched,
         key: String? = nil,
@@ -152,7 +179,7 @@ final class ReadAlongPreparationTests: DownloadTestCase {
     }
 
     /// The app's Cancel: `DownloadsModel.cancel` → `ReadAlongService.downloadCancelled`, then the manager.
-    private func cancel(_ publicationId: String) async {
+    func cancel(_ publicationId: String) async {
         preparations.userStopped(publicationId)
         let cleanup = preparations.stopped(publicationId, removing: false, library: library, downloads: downloads)
         await downloads.cancel(publicationId)
@@ -160,7 +187,7 @@ final class ReadAlongPreparationTests: DownloadTestCase {
     }
 
     /// The app's Remove: `DownloadsModel.remove` → `ReadAlongService.downloadRemoved`, then the manager.
-    private func remove(_ publicationId: String) async {
+    func remove(_ publicationId: String) async {
         preparations.userStopped(publicationId)
         let cleanup = preparations.stopped(publicationId, removing: true, library: library, downloads: downloads)
         await downloads.remove(publicationId)
@@ -169,7 +196,7 @@ final class ReadAlongPreparationTests: DownloadTestCase {
 
     /// The preparation as it was before downloads owned it (PR 700 at 2196d84,
     /// `ReadAlongService.prepare`), with only the account check.
-    private func legacyPrepare(_ fetched: ReadAlongPreparations.Fetched, manifestGate: HoldPoint) async throws {
+    func legacyPrepare(_ fetched: ReadAlongPreparations.Fetched, manifestGate: HoldPoint) async throws {
         await manifestGate.wait()
         let stored = try await library.save(manifestData: fetched.data, manifest: fetched.manifest, publicationId: "12")
         if fetched.manifest.source == .imported, let audiobookId = fetched.manifest.audiobookPublicationId {
@@ -179,7 +206,12 @@ final class ReadAlongPreparationTests: DownloadTestCase {
         }
         _ = stored
     }
+}
 
+/// Narration preparation owned by the download that started it: cancelling, removing,
+/// replacing or signing out stops it at every suspension, with the real download
+/// manager and read-along library, and each schedule held exactly where it matters.
+final class ReadAlongPreparationTests: ReadAlongPreparationTestCase {
     // MARK: Cancel
 
     func testLegacyPreparationQueuesTheAudiobookAfterTheBookIsCancelledAndOrphansItsManifest() async throws {
