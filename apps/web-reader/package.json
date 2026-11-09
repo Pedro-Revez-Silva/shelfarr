@@ -4,11 +4,13 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "build": "bun build ./engine.js --target browser --format esm --minify --outfile ../../vendor/javascript/consumer_reader_engine.js"
+    "build": "bun build ./engine.js --target browser --format esm --minify --outfile ../../vendor/javascript/consumer_reader_engine.js && bun run build_pdf.js",
+    "build:pdf": "bun run build_pdf.js"
   },
   "dependencies": {
     "dompurify": "3.4.17",
-    "epubjs": "0.3.93"
+    "epubjs": "0.3.93",
+    "pdfjs-dist": "6.4.299"
   },
   "overrides": {
     "@xmldom/xmldom": "0.9.12"

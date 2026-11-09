@@ -97,6 +97,8 @@ test("the worker answers only reader pages, downloaded media and its precached a
   for (const path of ["/shelf/read", "/shelf/read/", "/shelf/read/12", "/shelf/read/downloads", "/shelf/read/offline"]) expect(worker.PAGE.test(path)).toBe(true)
   for (const path of ["/read", "/shelf/read/12/progress", "/shelf/read/offline/account", "/shelf/read/0", "/shelf/session/new", "/shelf/consumer/connect", "/shelf/read-offline-worker.js"]) expect(worker.PAGE.test(path)).toBe(false)
   expect(worker.MEDIA.test(`/shelf/read/12/assets/${"a".repeat(64)}`)).toBe(true)
+  expect(worker.MEDIA.test(`/shelf/read/12/assets/${"a".repeat(64)}/reading_order`)).toBe(true)
+  expect(worker.MEDIA.test(`/shelf/read/12/assets/${"a".repeat(64)}/reading_order/x`)).toBe(false)
   for (const path of [`/read/12/assets/${"a".repeat(64)}`, `/shelf/api/consumer/v1/library/12/assets/${"a".repeat(64)}`, `/shelf/read/12/assets/${"a".repeat(64)}/transfer`]) expect(worker.MEDIA.test(path)).toBe(false)
   expect([...worker.ASSETS]).toEqual(["/shelf/assets/consumer-abc.css"])
 })

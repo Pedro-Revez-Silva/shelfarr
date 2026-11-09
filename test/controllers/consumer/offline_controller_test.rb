@@ -23,6 +23,14 @@ class Consumer::OfflineControllerTest < ActionDispatch::IntegrationTest
     assert assets.any? { |path| path.match?(%r{\A/assets/Newsreader-Regular-\h+\.ttf\z}) }, assets.inspect
     assert assets.any? { |path| path.include?("consumer_reader_engine") }
     assert assets.any? { |path| path.include?("consumer_offline-") }
+    # The PDF renderer opens offline: its engine, worker, fonts, CMaps and decoders are precached.
+    assert assets.any? { |path| path.include?("consumer_pdf_engine-") }
+    assert assets.any? { |path| path.include?("consumer_page_reader-") }
+    assert assets.any? { |path| path.match?(%r{\A/assets/pdfjs/pdf\.worker-\h+\.js\z}) }, assets.inspect
+    assert assets.any? { |path| path.match?(%r{\A/assets/pdfjs/standard_fonts/LiberationSans-Regular-\h+\.ttf\z}) }
+    assert assets.any? { |path| path.match?(%r{\A/assets/pdfjs/cmaps/UniJIS-UCS2-H-\h+\.bcmap\z}) }
+    assert assets.any? { |path| path.match?(%r{\A/assets/pdfjs/wasm/openjpeg-\h+\.wasm\z}) }
+    assert_not assets.any? { |path| path.include?("quickjs") || path.include?("LICENSE") }
     assert assets.all? { |path| path.start_with?("/assets/") }, "only digested assets are precached"
     assert_includes response.body, "self.addEventListener(\"fetch\""
 
@@ -129,15 +137,17 @@ class Consumer::OfflineControllerTest < ActionDispatch::IntegrationTest
     assert_select ".consumer-audio-panel [data-controller=consumer-offline]"
   end
 
-  test "only EPUBs and audio tracks are offered for offline use" do
+  test "only formats the web reader can reopen are offered for offline use" do
     controller = Consumer::OfflineController.new
     epub = { format: "epub", media_type: "application/epub+zip", size_bytes: 10 }
     supported = ->(type, *assets) { controller.send(:web_offline_supported?, { book_type: type, assets: assets }) }
     assert supported.call("ebook", epub)
     assert_not supported.call("ebook")
     assert_not supported.call("ebook", epub.merge(size_bytes: 33.megabytes))
-    assert_not supported.call("ebook", epub, { format: "cbz", media_type: "application/vnd.comicbook+zip", size_bytes: 10 })
-    assert_not supported.call("ebook", { format: "pdf", media_type: "application/pdf", size_bytes: 10 })
+    assert supported.call("ebook", epub, { format: "cbz", media_type: "application/vnd.comicbook+zip", size_bytes: 10 })
+    assert supported.call("ebook", { format: "pdf", media_type: "application/pdf", size_bytes: 400.megabytes })
+    assert_not supported.call("ebook", { format: "pdf", media_type: "application/pdf", size_bytes: 10 }, epub.merge(size_bytes: 33.megabytes))
+    assert_not supported.call("ebook", { format: "cbr", media_type: "application/x-cbr", size_bytes: 10 })
     assert supported.call("audiobook", { format: "mp3", media_type: "audio/mpeg", size_bytes: 10 })
   end
 

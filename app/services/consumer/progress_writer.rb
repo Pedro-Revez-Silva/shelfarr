@@ -25,6 +25,10 @@ class Consumer::ProgressWriter
   UNUSABLE = Object.new.freeze
   TIMESTAMP = /\A(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)\z/
   FUTURE_TOLERANCE = 5.minutes
+  FIXED_LAYOUT = %w[pdf cbz].freeze
+  FIXED_LOCATOR_KEYS = %w[href type title locations text].freeze
+  FIXED_LOCATION_KEYS = %w[position progression totalProgression fragments].freeze
+  MAX_PAGES = 100_000
 
   # Strong parameters drop nested or array values silently. An optional field
   # that was sent but dropped must be refused, not read as "not supplied".
@@ -42,9 +46,10 @@ class Consumer::ProgressWriter
   def call(attributes)
     values, resolve = validate(attributes)
     # Filesystem inspection stays outside the write transaction.
-    unless Consumer::LibraryAssets.new(@book).list.any? { |asset| asset.id == values[:asset_id] }
-      raise Invalid, "This asset is no longer available; refresh the publication"
-    end
+    asset = Consumer::LibraryAssets.new(@book, formats: Consumer::ReaderFormats::SUPPORTED).find(values[:asset_id])
+    raise Invalid, "This asset is no longer available; refresh the publication" unless asset
+
+    validate_fixed_layout(asset, values[:locator]) if values[:locator]
 
     ConsumerProgress.transaction do
       progress = @user.consumer_progresses.find_by(book: @book)
@@ -97,7 +102,7 @@ class Consumer::ProgressWriter
 
     values = attributes.slice("asset_id", "client_mutation_id").symbolize_keys
     values[:observed_at] = observed_at(attributes["observed_at"])
-    if @book.ebook?
+    unless @book.audiobook?
       locator = attributes["locator"]
       raise Invalid, "A bounded relative ebook locator is required" unless valid_locator?(locator) && attributes["position_seconds"].nil?
 
@@ -123,6 +128,38 @@ class Consumer::ProgressWriter
     raise Invalid, "observed_at is too far in the future; check this device's clock" if time > Time.current + FUTURE_TOLERANCE
 
     time.utc.floor(3)
+  end
+
+  # PDF and CBZ places name a page. A PDF has one resource, "document.pdf";
+  # the page is checked only against the bound here, since the server never
+  # parses PDF pages. A CBZ page must be item N of this exact generation's
+  # reading order. A text position (such as an EPUB CFI) is never accepted.
+  def validate_fixed_layout(asset, locator)
+    return unless FIXED_LAYOUT.include?(asset.format)
+
+    locations = locator["locations"]
+    position = locations["position"]
+    unless (locator.keys - FIXED_LOCATOR_KEYS).empty? && (locations.keys - FIXED_LOCATION_KEYS).empty? &&
+        position.is_a?(Integer) && position.between?(1, MAX_PAGES) &&
+        (locator["title"].nil? || (locator["title"].is_a?(String) && locator["title"].bytesize <= 1024)) &&
+        (locator["text"].nil? || locator["text"].is_a?(Hash))
+      raise Invalid, "A page place needs a one-based locations.position and no text position"
+    end
+
+    if asset.format == "pdf"
+      fragments = locations["fragments"]
+      unless locator["href"] == "document.pdf" && locator["type"] == "application/pdf" && (fragments.nil? || fragments == [ "page=#{position}" ])
+        raise Invalid, "A PDF place is document.pdf with type application/pdf and an optional page=N fragment"
+      end
+    else
+      raise Invalid, "A comic place has no fragments" if locations.key?("fragments")
+
+      _, pages = Consumer::LibraryAssets.new(@book, formats: %w[cbz]).reading_order(asset.id)
+      page = pages[position - 1]
+      unless page && locator["href"] == page[:href] && locator["type"] == page[:media_type]
+        raise Invalid, "This page is not page #{position} of the comic's reading order; refresh the publication"
+      end
+    end
   end
 
   def valid_locator?(locator)

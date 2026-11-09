@@ -1,6 +1,6 @@
 <% content_for :title, "#{@book.title} · Shelfarr" %>
 <% content_for :hide_navigation, "true" %>
-<% reading = @book.ebook? && @publication[:assets].any? %>
+<% reading = !@book.audiobook? && @publication[:assets].any? %>
 <% content_for :main_class, reading ? "consumer-publication consumer-reading" : "consumer-publication" %>
 <% content_for :reading_mode, "true" if reading %>
 <% status_form = capture do %>
@@ -15,6 +15,6 @@
 <% else %>
   <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
   <%= render "audio_session", title: @book.title, author: @book.author, description: truncate(strip_tags(@book.description.to_s), length: 380),
-    ebook: @book.ebook?, cover: render("cover", book: @book, publication: @publication), tracks: @publication[:assets].map { |asset| asset[:filename] },
+    ebook: !@book.audiobook?, cover: render("cover", book: @book, publication: @publication), tracks: @publication[:assets].map { |asset| asset[:filename] },
     publication: @publication, status_form: status_form, recovery_path: consumer_publication_path(@book), offline: false %>
 <% end %>

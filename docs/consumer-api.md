@@ -8,9 +8,11 @@ remain in their existing flows, except that native apps may opt in to
 service as the web. **Read & listen** in the main navigation or **My Profile → Reader preview** opens the web
 experience; acquired book details also link to its reader or player.
 
-This first slice reads DRM-free EPUBs, plays supported local audio files, and
-saves personal progress. It does not implement read-along, edition alignment,
-PDF/comic reading, or a new acquisition engine. The API is a migration boundary:
+The preview reads DRM-free EPUBs, plays supported local audio files, and saves
+personal progress. Clients that declare it can also open PDFs and CBZ comics:
+see [PDF and comic reading](consumer-formats.md) for the format negotiation,
+CBZ page order, page locators and the web PDF/comic reader. Read-along, edition
+alignment, CBR/RAR comics and a new acquisition engine are not implemented. The API is a migration boundary:
 clients depend on publications, file-generation assets, and locators rather than
 Rails models, paths, or downloader details. A later backend can preserve this
 contract while the acquisition engine is replaced incrementally.
@@ -64,6 +66,7 @@ Personal responses use `Cache-Control: private, no-store`.
 | `GET /library/:id` | One publication |
 | `PUT /library/:id/reading_status` with `{status}` | Updated publication; requires `progress:write` |
 | `GET /library/:id/assets/:asset_id` | Original media bytes; GET, HEAD, single byte ranges, strong ETag, If-Range |
+| `GET /library/:id/assets/:asset_id/reading_order` | `{asset_id,format:"cbz",items:[page]}`: a CBZ asset's page order; see [formats](consumer-formats.md#cbz-reading-order) |
 | `POST /library/:id/assets/:asset_id/transfer_grant` with `{}` | 201 `{url,expires_at}`: a bearer-free URL for that asset, described below |
 | `GET /library/:id/assets/:asset_id/transfer?grant=...` | The same media bytes, authorized only by the grant in the URL |
 | `GET /library/:id/progress` | `{progress:null\|progress}` |
@@ -82,13 +85,16 @@ have per-IP rate limits. An expired or revoked bearer receives 401; missing
 scope receives 403 with `error: insufficient_scope`.
 
 Library pages default to 30 items and cap at 50. Signed keyset cursors are bound
-to the account, query, type, reading status and sort. Changing any of them starts a new page chain.
+to the account, query, type, reading status and sort, and to a non-default
+`X-Shelfarr-Reader-Formats` selection. Changing any of them starts a new page chain.
 `sort=recent` (default) orders by acquisition record ID descending; `sort=title`
 orders by SQLite lowercase title then ID, with stable keyset pagination. An
 acquired-book expression index and cursor range avoid sorting or walking the
 preceding catalog on each title page. Omit
 `status` for all titles or choose `unread`, `in_progress`, or `finished`.
-Only acquired ebook/audiobook Book records are projected. Remote-only owned
+Only acquired ebook/audiobook Book records are projected; comic records are
+added, presented as `book_type: "ebook"`, only for clients that declare PDF or CBZ.
+Without the header, a reading publication lists EPUB assets only, as before. Remote-only owned
 inventory and pending requests are not fabricated as playable media. A missing
 or unsupported source has an empty assets array, while its metadata remains
 visible. Search matches title and author; it does not call metadata providers.
@@ -239,7 +245,9 @@ Single files and book-specific directories work. Audio files are naturally
 ordered so Chapter2 precedes Chapter10. Scans stop at 2,000 entries and eight
 nested levels, skip hidden directories, and refuse an item pointing at the whole
 shared library root. EPUB files are capped at 250 MiB for the API and 32 MiB for
-the current web renderer. Audio types are MP3, M4B/M4A, AAC, Ogg/Opus, FLAC and WAV;
+the current web renderer; PDF at 500 MiB and CBZ at 2 GiB. PDF and CBZ bytes are
+sent as attachments with `X-Content-Type-Options: nosniff` and a sandboxing
+`Content-Security-Policy`, so readers fetch them instead of navigating to them. Audio types are MP3, M4B/M4A, AAC, Ogg/Opus, FLAC and WAV;
 actual codec playback depends on the platform. No conversion or transcoding runs.
 
 Range responses support one `bytes=start-end`, open-ended or suffix range. Invalid,
@@ -324,6 +332,8 @@ For audio, send `position_seconds` instead of `locator`. Version 0 means no save
 position. A successful write returns `{progress:{asset_id,locator,position_seconds,
 version,observed_at,updated_at,client_mutation_id}}`. Invalid, out-of-bounds, or
 no-longer-available assets return 422. Never apply an old locator to a replaced file.
+PDF and CBZ places name a page instead; see
+[page locators](consumer-formats.md#page-locators).
 
 ### Activity time and conflicts
 
@@ -393,6 +403,8 @@ Text size and listening speed persist on this browser. Changing tracks while
 paused keeps playback paused; reaching a track end continues automatically.
 Opening a book needs a connection unless it was deliberately downloaded, as
 described under [Offline reading and listening](#offline-reading-and-listening).
+PDFs and CBZ comics open in a page reader with the same quiet surface; see
+[PDF and comic reading](consumer-formats.md#web-page-reader).
 
 Reading an EPUB shows only the book text across the whole viewport: no header,
 cover, description, status form, chapter or font toolbar, or page buttons.
@@ -459,8 +471,10 @@ remain in that browser's storage after sign-out until that account syncs them.
 ### Offline reading and listening
 
 An ebook's reading controls and an audiobook's player offer **Download**. Only
-media the web reader can open again is offered: EPUBs within its 32 MiB limit and
-supported audio tracks. Nothing is stored until the reader chooses Download, and
+media the web reader can open again is offered: EPUBs within its 32 MiB limit,
+PDFs and CBZ comics (whose download includes the comic's page list), and
+supported audio tracks. A book with several formats downloads all of them, so
+any of them opens offline. Nothing is stored until the reader chooses Download, and
 no service worker is registered before that. The control then shows
 *Downloading* with its progress, *Paused* (the connection dropped or the page
 closed) with **Resume**, *Stopped* with the reason and **Try again**, or
@@ -528,10 +542,10 @@ To reproduce it with Bun 1.4.4:
 ```sh
 cd apps/web-reader
 bun install --frozen-lockfile
-bun test   # progress outbox, listening checkpoints and offline download rules
+bun test   # outbox, checkpoints, offline rules, page reader, PDF engine drift
 bun audit
 bun run build
-git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js
+git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js ../../vendor/javascript/consumer_pdf_engine.js ../../vendor/javascript/pdfjs
 ```
 
 The web-reader CI job repeats these checks, including bundle drift. Package

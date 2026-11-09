@@ -1,8 +1,8 @@
 # Web reader dependencies
 
-The checked-in browser engine is built from pinned packages with Bun 1.4.4. It contains EPUB.js (BSD-2-Clause), DOMPurify (Apache-2.0 or MPL-2.0), and their dependencies. Source and exact resolved versions are recorded in package.json and bun.lock. The XML parser is pinned to a patched release through an override; the actual EPUB browser path uses the browser DOM parser. No package install or CDN request runs in production.
+The checked-in browser engines are built from pinned packages with Bun 1.4.4. The EPUB engine contains EPUB.js (BSD-2-Clause), DOMPurify (Apache-2.0 or MPL-2.0), and their dependencies. The PDF engine and its worker are Mozilla PDF.js (pdfjs-dist 6.4.299, Apache-2.0); its standard fonts (Foxit and Liberation), CMaps (Adobe) and WebAssembly image decoders (OpenJPEG, PDF.js JBIG2) are copied unchanged with their license files into vendor/javascript/pdfjs/. pdfjs-dist lists @napi-rs/canvas as an optional Node.js-only dependency; it may be installed for development but is never bundled. Source and exact resolved versions are recorded in package.json and bun.lock. The XML parser is pinned to a patched release through an override; the actual EPUB browser path uses the browser DOM parser. No package install or CDN request runs in production.
 
-Rebuild with `bun install --frozen-lockfile && bun run build` from this directory. Run `bun test` and `bun audit` before committing a rebuilt bundle. The output is vendor/javascript/consumer_reader_engine.js.
+Rebuild with `bun install --frozen-lockfile && bun run build` from this directory. Run `bun test` (which also rebuilds the PDF engine into a temporary folder and compares it byte for byte with the checked-in files) and `bun audit` before committing a rebuilt bundle. The outputs are vendor/javascript/consumer_reader_engine.js, vendor/javascript/consumer_pdf_engine.js and vendor/javascript/pdfjs/.
 
 ## License texts
 
@@ -39,6 +39,7 @@ Rebuild with `bun install --frozen-lockfile && bun run build` from this director
 Additional package license declarations and retained attribution:
 
 - path-webpack 0.0.3 — MIT ([terms and attribution](licenses/path-webpack0.0.3.txt))
+- pdfjs-dist@6.4.299 — Apache-2.0 ([license](licenses/pdfjs-dist6.4.299.txt))
 - marks-pane 1.0.9 — MIT ([terms and attribution](licenses/marks-pane1.0.9.txt))
 - isarray 1.0.0 — MIT ([upstream README license](licenses/isarray1.0.0.txt))
 - @types/localforage 0.0.34 — localForage MIT declaration ([upstream license](licenses/types__localforage0.0.34.txt)); type declarations are not part of the browser bundle.

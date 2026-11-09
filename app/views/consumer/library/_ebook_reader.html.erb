@@ -1,11 +1,14 @@
-<%# The text-only EPUB reader. The offline shell renders it as a template and fills the title, author and publication data. %>
+<%# The reader for EPUB text and PDF/CBZ pages. The offline shell renders it as a template and fills the title, author and publication data. %>
 <div data-controller="consumer-reader" class="consumer-reading-session consumer-reading-session--ebook" data-action="keydown->consumer-reader#readerKey">
   <script type="application/json" data-consumer-reader-target="publication" data-offline-fill="publication"><%= raw json_escape(publication.to_json) if publication %></script>
+  <script type="application/json" data-consumer-reader-target="pdfResources"><%= raw json_escape(consumer_pdf_resources.to_json) %></script>
   <section class="consumer-reader" aria-label="<%= title %>" data-offline-fill="label">
     <button type="button" class="consumer-controls-reveal" data-consumer-reader-target="reveal" data-action="consumer-reader#showControls" aria-controls="consumer-reader-controls" aria-expanded="false">Show reading controls</button>
-    <div class="consumer-ebook-frame" data-action="click->consumer-reader#marginTap">
+    <div class="consumer-ebook-frame" data-consumer-reader-target="textFrame" data-action="click->consumer-reader#marginTap">
       <div class="consumer-ebook" data-consumer-reader-target="viewport" tabindex="0" aria-label="Book text. Arrow keys turn pages; Escape shows reading controls."><p class="consumer-opening">Opening your book…</p></div>
     </div>
+    <div class="consumer-pages" data-consumer-reader-target="pages" tabindex="0" aria-label="Book pages. Arrow keys turn pages, plus and minus zoom, Escape shows reading controls." hidden></div>
+    <p class="consumer-sr-only" data-consumer-reader-target="announce" aria-live="polite"></p>
     <div id="consumer-reader-controls" class="consumer-reader-controls" data-consumer-reader-target="controls" role="region" aria-label="Reading controls" hidden>
       <div class="consumer-reader-controls__top">
         <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
@@ -13,8 +16,15 @@
         <button type="button" class="consumer-reader-done" data-consumer-reader-target="hide" data-action="consumer-reader#hideControls">Done</button>
       </div>
       <div class="consumer-reader-controls__bottom">
+        <label class="consumer-edition" data-consumer-reader-target="editionPicker" hidden>Format<select data-consumer-reader-target="edition" data-action="change->consumer-reader#chooseEdition"></select></label>
+        <p class="consumer-edition-note" data-consumer-reader-target="editionNote" hidden></p>
         <div class="consumer-page-controls"><button type="button" data-action="consumer-reader#previousPage">← Previous</button><span data-consumer-reader-target="location">Your place</span><button type="button" data-action="consumer-reader#nextPage">Next →</button></div>
-        <div class="consumer-reader-toolbar">
+        <div class="consumer-reader-toolbar consumer-page-toolbar" data-consumer-reader-target="pageTools" hidden>
+          <label class="consumer-page-jump">Page <input type="number" inputmode="numeric" min="1" value="1" data-consumer-reader-target="pageNumber" data-action="change->consumer-reader#jumpToPage keydown.enter->consumer-reader#jumpToPage"> <span data-consumer-reader-target="pageTotal">of —</span></label>
+          <input type="range" class="consumer-page-slider" min="1" max="1" value="1" aria-label="Choose a page" data-consumer-reader-target="pageSlider" data-action="input->consumer-reader#previewPage change->consumer-reader#slidePage">
+          <div class="consumer-zoom-controls" role="group" aria-label="Zoom"><button type="button" data-action="consumer-reader#zoomOut" aria-label="Zoom out">−</button><button type="button" data-action="consumer-reader#zoomFit" data-consumer-reader-target="zoomLabel" aria-label="Fit page">Fit</button><button type="button" data-action="consumer-reader#zoomIn" aria-label="Zoom in">+</button></div>
+        </div>
+        <div class="consumer-reader-toolbar" data-consumer-reader-target="textTools">
           <label class="consumer-chapters">Chapter<select data-consumer-reader-target="chapters" data-action="change->consumer-reader#chooseChapter"><option>Opening book…</option></select></label>
           <div class="consumer-type-controls" role="group" aria-label="Text size"><button type="button" data-action="consumer-reader#smallerText" aria-label="Smaller text">A−</button><button type="button" data-action="consumer-reader#largerText" aria-label="Larger text">A+</button></div>
         </div>

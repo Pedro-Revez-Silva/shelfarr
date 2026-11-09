@@ -15,6 +15,7 @@ class API::Consumer::V1::ServerController < ActionController::API
       server_version: Consumer::ServerInfo.server_version,
       consumer_api_versions: Consumer::ServerInfo::API_VERSIONS,
       consumer_features: Consumer::ServerInfo::FEATURES,
+      reader_formats: Consumer::ReaderFormats::SUPPORTED,
       android: configuration.channels.index_with { |channel| android_channel(channel) }
     }
   end

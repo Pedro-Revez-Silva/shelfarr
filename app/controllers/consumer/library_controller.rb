@@ -12,12 +12,12 @@ class Consumer::LibraryController < ApplicationController
     @type = params[:type]
     @status = params[:status]
     @sort = params[:sort].presence || "recent"
-    result = Consumer::Catalog.new(user: Current.user).call(query: @query, type: @type, cursor: params[:cursor], limit: "30", status: @status, sort: @sort)
+    result = Consumer::Catalog.new(user: Current.user, reader_formats: web_reader_formats).call(query: @query, type: @type, cursor: params[:cursor], limit: "30", status: @status, sort: @sort)
     @next_cursor = result.next_cursor
     @books = result.books
-    continuing = @query.blank? && params[:cursor].blank? && @status.blank? ? Consumer::ContinueReading.new(user: Current.user, routes: self).call(limit: 3, type: @type) : {}
+    continuing = @query.blank? && params[:cursor].blank? && @status.blank? ? Consumer::ContinueReading.new(user: Current.user, routes: self, reader_formats: web_reader_formats).call(limit: 3, type: @type) : {}
     @continue_books = continuing.keys
-    @publications = Consumer::Publication.many((@books + @continue_books).uniq(&:id), user: Current.user, routes: self).merge(continuing)
+    @publications = Consumer::Publication.many((@books + @continue_books).uniq(&:id), user: Current.user, routes: self, reader_formats: web_reader_formats).merge(continuing)
   rescue Consumer::Catalog::Invalid => error
     redirect_to consumer_library_path, alert: error.message
   end
@@ -25,11 +25,18 @@ class Consumer::LibraryController < ApplicationController
   def show
     @book = find_book
     # Binds this browser's progress outbox and downloads to the account and deployment subpath.
-    @publication = web_publication(@book, Consumer::Publication.new(@book, user: Current.user, routes: self).representation)
+    @publication = web_publication(@book, Consumer::Publication.new(@book, user: Current.user, routes: self, reader_formats: web_reader_formats).representation)
   end
 
   def asset
     serve_consumer_asset(find_book, params[:asset_id])
+  end
+
+  # The CBZ page order of this exact asset generation, for the page reader.
+  def reading_order
+    render json: consumer_reading_order(find_book, params[:asset_id])
+  rescue Consumer::LibraryAssets::Unavailable
+    render json: { error: "asset_unavailable" }, status: :gone
   end
 
   def progress
@@ -45,7 +52,7 @@ class Consumer::LibraryController < ApplicationController
     book = find_book
     Consumer::ReadingStatus.set(user: Current.user, book: book, status: params[:status])
     if request.format.json?
-      render json: Consumer::Publication.new(book, user: Current.user, routes: self).representation
+      render json: Consumer::Publication.new(book, user: Current.user, routes: self, reader_formats: web_reader_formats).representation
     else
       redirect_to consumer_publication_path(book), status: :see_other, notice: "Reading status saved. Your saved place is kept."
     end
@@ -68,10 +75,7 @@ class Consumer::LibraryController < ApplicationController
   end
 
   def find_book
-    id = params[:id]
-    raise ActiveRecord::RecordNotFound unless id.is_a?(String) && id.match?(/\A[1-9]\d{0,18}\z/)
-
-    Book.acquired.where(book_type: %w[ebook audiobook]).find(id)
+    web_book(params[:id])
   end
 
   def private_response

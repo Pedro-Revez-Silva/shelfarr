@@ -5,8 +5,9 @@ class Consumer::Catalog
   Result = Data.define(:books, :next_cursor)
   TITLE_SORT = "LOWER(COALESCE(books.title, ''))".freeze
 
-  def initialize(user:)
+  def initialize(user:, reader_formats: Consumer::ReaderFormats::LEGACY)
     @user = user
+    @reader_formats = reader_formats
   end
 
   def call(query:, type:, cursor:, limit:, status: nil, sort: nil)
@@ -17,10 +18,14 @@ class Consumer::Catalog
     raise Invalid, "Unknown library sort" unless %w[recent title].include?(sort)
 
     limit = limit.is_a?(String) && limit.match?(/\A\d{1,3}\z/) ? limit.to_i.clamp(1, 50) : 30
-    key = Digest::SHA256.hexdigest([ @user.id, query, type, status, sort ].join("\0"))
+    # Cursors bind to the normalized format selection. The default keeps the
+    # identity it had before formats were negotiable, so stored cursors work.
+    parts = [ @user.id, query, type, status, sort ]
+    parts << @reader_formats.formats.join(",") unless @reader_formats.default?
+    key = Digest::SHA256.hexdigest(parts.join("\0"))
     before = decode_cursor(cursor, key, sort)
-    relation = Consumer::LibraryScope.for(@user)
-    relation = relation.where(book_type: type) if type.present?
+    relation = Consumer::LibraryScope.for(@user, graphic: @reader_formats.graphic?)
+    relation = relation.where(book_type: Consumer::LibraryScope.types(type, graphic: @reader_formats.graphic?)) if type.present?
     relation = relation.where("#{Consumer::LibraryScope::STATUS_SQL} = ?", status) if status.present?
     if query.present?
       escaped = "%#{Book.sanitize_sql_like(query)}%"

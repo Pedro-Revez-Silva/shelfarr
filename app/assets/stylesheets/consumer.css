@@ -240,3 +240,39 @@
 .consumer-app--reading .consumer-offline-banner { position:fixed; z-index:45; top:max(10px,env(safe-area-inset-top)); left:50%; transform:translateX(-50%); width:min(calc(100vw - 32px),32rem); box-shadow:0 6px 20px #17261914; }
 .consumer-app--offline .consumer-main { padding-bottom:60px; }
 .consumer-app--offline .consumer-main.consumer-reading { padding:0; }
+
+/* PDF and CBZ pages: the page fills the screen; controls overlay it on a deliberate tap. */
+.consumer-pages { position:absolute; inset:0; background:var(--paper); }
+.consumer-pages[hidden] { display:none; }
+.consumer-pages:focus { outline:none; }
+.consumer-pages:focus-visible { outline:2px solid var(--accent); outline-offset:-4px; }
+.consumer-pages__stage { position:absolute; inset:0; overflow:hidden; display:flex; touch-action:pan-y; padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+.consumer-pages.is-zoomed .consumer-pages__stage { overflow:auto; touch-action:pan-x pan-y; overscroll-behavior:contain; }
+.consumer-page { position:relative; margin:auto; flex:none; background:#fff; box-shadow:0 2px 18px #1726191f; }
+.consumer-page canvas,.consumer-page img { display:block; }
+.consumer-page img { user-select:none; -webkit-user-select:none; }
+.consumer-page--cbz { background:transparent; box-shadow:none; }
+@media (prefers-color-scheme:dark) { .consumer-pages { background:#0d0b09; } }
+/* PDF.js text layer: invisible, selectable text positioned over the canvas. */
+.consumer-page .textLayer { position:absolute; inset:0; overflow:clip; opacity:1; line-height:1; text-align:initial; -webkit-text-size-adjust:none; text-size-adjust:none; forced-color-adjust:none; transform-origin:0 0; z-index:0; --min-font-size:1; --text-scale-factor:calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv:calc(1 / var(--min-font-size)); }
+.consumer-page .textLayer :is(span,br) { color:transparent; position:absolute; white-space:pre; cursor:text; transform-origin:0% 0%; user-select:text; -webkit-user-select:text; }
+.consumer-page .textLayer > :not(.markedContent),.consumer-page .textLayer .markedContent span:not(.markedContent) { z-index:1; --font-height:0; font-size:calc(var(--text-scale-factor) * var(--font-height)); --scale-x:1; --rotate:0deg; transform:rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.consumer-page .textLayer .markedContent { display:contents; }
+.consumer-page .textLayer ::selection { background:color-mix(in srgb,AccentColor,transparent 55%); color:transparent; }
+.consumer-page .textLayer br::selection { background:transparent; }
+.consumer-page .textLayer .endOfContent { display:block; position:absolute; inset:100% 0 0; z-index:0; cursor:default; user-select:none; }
+.consumer-page .textLayer.selecting .endOfContent { top:0; }
+.consumer-page-toolbar { flex-wrap:wrap; }
+.consumer-page-jump { display:flex; align-items:center; gap:0.5rem; font-size:0.875rem; color:var(--muted); }
+.consumer-page-jump input { width:4.5rem; min-height:48px; box-sizing:border-box; font:inherit; font-size:1rem; color:var(--ink); background:var(--paper); border:1px solid var(--line); border-radius:10px; padding:0 0.5rem; text-align:center; }
+.consumer-page-slider { flex:1 1 10rem; min-width:8rem; min-height:48px; accent-color:var(--accent); }
+.consumer-zoom-controls { display:flex; flex-shrink:0; }
+.consumer-zoom-controls button { min-height:48px; min-width:48px; border:0; background:transparent; color:var(--ink); font-size:1.125rem; padding:0 0.5rem; }
+.consumer-zoom-controls button[data-consumer-reader-target=zoomLabel] { font-size:0.875rem; min-width:3.75rem; }
+.consumer-edition { display:grid; gap:4px; color:var(--muted); font-size:0.75rem; padding:8px 0 4px; }
+.consumer-edition select { min-height:48px; width:100%; border:1px solid var(--line); border-radius:12px; padding:0 12px; background:var(--paper); color:var(--ink); font-size:0.9375rem; }
+.consumer-edition-note { margin:4px auto 0; font-size:0.8125rem; color:var(--muted); }
+.consumer-reading-session--pages .consumer-page-controls span { font-size:0.875rem; color:var(--ink); }
+.consumer-reading-session--pages .consumer-page-controls button { font-size:0.9375rem; }
+.consumer-page__unavailable { margin:0; padding:2rem 1.25rem; max-width:22rem; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:14px; font-size:1rem; text-align:center; }
+.consumer-page:has(.consumer-page__unavailable) { background:transparent; box-shadow:none; }

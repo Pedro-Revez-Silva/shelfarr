@@ -124,6 +124,7 @@ Rails.application.routes.draw do
         get "discover", to: "discover#index"
         resources :requests, only: [ :index, :show, :create, :destroy ]
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
+        get "library/:id/assets/:asset_id/reading_order", to: "library#reading_order", as: :asset_reading_order
         post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
         get "library/:id/assets/:asset_id/transfer", to: "transfers#show", as: :asset_transfer
         resources :library, only: [ :index, :show ] do
@@ -165,6 +166,7 @@ Rails.application.routes.draw do
   get "read/downloads", to: "consumer/offline#downloads", as: :consumer_downloads, format: false
   get "read/:id", to: "consumer/library#show", as: :consumer_publication
   get "read/:id/assets/:asset_id", to: "consumer/library#asset", as: :consumer_asset
+  get "read/:id/assets/:asset_id/reading_order", to: "consumer/library#reading_order", as: :consumer_asset_reading_order
   put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress
   put "read/:id/reading_status", to: "consumer/library#reading_status", as: :consumer_reading_status
 

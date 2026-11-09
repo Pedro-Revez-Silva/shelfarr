@@ -18,6 +18,7 @@ class API::Consumer::V1::ServerControllerTest < ActionDispatch::IntegrationTest
       "server_version" => File.read(Rails.root.join("VERSION")).strip,
       "consumer_api_versions" => [ 1 ],
       "consumer_features" => [ "requests" ],
+      "reader_formats" => %w[cbz epub pdf],
       "android" => {
         "release" => {
           "feed_url" => "/apps/android/release.json",
