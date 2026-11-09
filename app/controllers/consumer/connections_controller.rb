@@ -29,6 +29,5 @@ class Consumer::ConnectionsController < ApplicationController
 
   def private_response
     headers["Cache-Control"] = "private, no-store"
-    headers["Referrer-Policy"] = "no-referrer"
   end
 end
