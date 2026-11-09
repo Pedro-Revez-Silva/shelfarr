@@ -12,7 +12,6 @@ module Kobo
     def initialize(device, endpoint:, proxy: StoreProxy.new)
       @device = device
       @local = KoboSync.new(device, endpoint: endpoint)
-      @cursor = SyncCursor.new(device)
       @proxy = proxy
     end
 
@@ -21,7 +20,9 @@ module Kobo
     # refusals keep Shelfarr books flowing, as the reader's direct Kobo
     # requests (Store, sign-in refresh) still surface the problem there.
     def call(raw_cursor, headers:, query: "")
-      parts = @cursor.read(raw_cursor)
+      authorization = headers.find { |name, _| name.to_s.casecmp?("Authorization") }&.last
+      cursor = SyncCursor.new(@device, authorization: authorization)
+      parts = cursor.read(raw_cursor)
       local = @local.call(parts.local)
       store_token = parts.store
       store_items = []
@@ -42,7 +43,7 @@ module Kobo
           record(response && response.status.between?(400, 499) ? "rejected" : "unavailable")
         end
       end
-      Result.new(items: local.items + store_items, token: @cursor.write(local: local.token, store: store_token),
+      Result.new(items: local.items + store_items, token: cursor.write(local: local.token, store: store_token),
         more: local.more || store_more, headers: extra)
     end
 

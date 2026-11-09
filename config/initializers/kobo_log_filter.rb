@@ -4,16 +4,24 @@
 # Keep the routing path intact and redact the separate logging representation.
 module KoboLogFilter
   def filtered_path
-    super.gsub(%r{(/kobo/)[^/?]+}, '\1[FILTERED]')
+    logged = super
+    logged = logged.split("?", 2).first if kobo_reader_request?
+    logged.gsub(%r{(/kobo/)[^/?]+}, '\1[FILTERED]')
   end
 
   # Reader requests, including Store requests relayed for coexistence, carry
   # account and device identifiers under names no filter list anticipates.
   # Log only routing information for them.
   def filtered_parameters
-    return super unless path_info.to_s.match?(%r{(?:\A|/)kobo/[^/]+(?:/|\z)})
+    return super unless kobo_reader_request?
 
-    super.slice("controller", "action", "format")
+    path_parameters.slice(:controller, :action, :format).stringify_keys
+  end
+
+  private
+
+  def kobo_reader_request?
+    path_info.to_s.match?(%r{(?:\A|/)kobo/[^/]+(?:/|\z)})
   end
 end
 

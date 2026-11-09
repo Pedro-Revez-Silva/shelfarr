@@ -1,4 +1,5 @@
 import Network
+import UIKit
 import XCTest
 
 /// Drives the real app on a simulator against `RuntimeSmoke/smoke_server.py`: library
@@ -461,11 +462,46 @@ final class RuntimeSmokeTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: wait), "the library search field")
         field.tap()
         field.typeText(text)
+        XCTAssertEqual(searchText(field), text, "the library search field took the query")
     }
 
+    /// Empties the library search and leaves search mode, failing if either doesn't happen.
+    ///
+    /// The search bar changed on iOS 26: its "Cancel" text button became a round
+    /// xmark button labelled "Close" (CI accessibility snapshot, iPhone 17 Pro, iOS 26.5),
+    /// so looking only for "Cancel" left the query in place. The field's own clear
+    /// button is the one button inside the field on iOS 18 and 26 alike, and deleting
+    /// the text is the fallback when it isn't offered.
     private func clearSearch(_ app: XCUIApplication) {
-        let cancel = app.buttons["Cancel"]
-        if cancel.exists { cancel.tap() }
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: wait), "the library search field")
+        let typed = searchText(field)
+        let clear = field.buttons.firstMatch
+        if clear.exists, clear.isHittable {
+            clear.tap()
+        } else if !typed.isEmpty {
+            // Put the caret after the text before deleting it, unless the keyboard is still up from typing.
+            if !app.keyboards.firstMatch.exists { field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap() }
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: typed.count))
+        }
+        XCTAssertTrue(waitFor(timeout: 10) { self.searchText(field).isEmpty },
+                      "the library search query was cleared, not left as “\(searchText(field))”")
+
+        // iPhone always offers a way out of search mode; iPad's toolbar field may not.
+        let leave = app.buttons.matching(NSPredicate(format: "label IN %@", ["Cancel", "Close"])).firstMatch
+        if leave.exists {
+            leave.tap()
+            XCTAssertTrue(waitForAbsence(leave), "search mode ended")
+        } else {
+            XCTAssertNotEqual(UIDevice.current.userInterfaceIdiom, .phone, "the iPhone search bar offers Cancel or Close")
+        }
+        XCTAssertTrue(searchText(field).isEmpty, "leaving search kept the query empty")
+    }
+
+    /// What is typed in a search field: its value, minus the placeholder an empty field reports.
+    private func searchText(_ field: XCUIElement) -> String {
+        guard field.exists, let value = field.value as? String else { return "" }
+        return value == field.placeholderValue ? "" : value
     }
 
     /// The full player's play/pause button, when it reads `label`. The mini player has its own.

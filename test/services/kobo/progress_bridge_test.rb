@@ -19,6 +19,7 @@ class Kobo::ProgressBridgeTest < ActiveSupport::TestCase
     write_epub(@path, package: PACKAGE, extra: { "OEBPS/Text/chapter 1.xhtml" => "<html/>", "OEBPS/Text/ch2.xhtml" => "<html/>" })
     @device.update!(share_progress: true)
     @delivery = @device.send_book!(@book)
+    @delivery.update!(last_download_at: 1.day.ago)
     @user = users(:one)
     @asset_id = Consumer::LibraryAssets.new(@book).list.sole.id
   end
@@ -116,6 +117,30 @@ class Kobo::ProgressBridgeTest < ActiveSupport::TestCase
     assert_nil progress
     @device.send_book!(@book)
     assert_nil @delivery.reload.progress_bridge
+  end
+
+  test "a queued edition cannot receive a bookmark before its first download" do
+    @delivery.update!(last_download_at: nil)
+    assert_equal %w[edition_changed not_downloaded], bridge(bookmark).values_at("status", "reason")
+    assert_nil progress
+  end
+
+  test "replacement downloads and later resends never manufacture edition proof for old bookmarks" do
+    original_entitlement = @delivery.entitlement_id
+    File.rename(@path, "#{@path}.old")
+    write_epub(@path, package: PACKAGE, extra: { "OEBPS/Text/chapter 1.xhtml" => "<p>New text</p>", "OEBPS/Text/ch2.xhtml" => "<p>New text</p>" })
+    replacement = @device.send_book!(@book)
+    assert_equal original_entitlement, replacement.entitlement_id
+    assert replacement.progress_generation_ambiguous?
+    assert_equal "edition_changed", bridge(bookmark)["status"]
+    assert_nil progress
+    replacement.update!(last_download_at: Time.current)
+    assert_equal %w[needs_choice edition_unverified], bridge(bookmark).values_at("status", "reason")
+    assert_nil progress
+    assert @device.send_book!(@book).progress_generation_ambiguous?
+    assert_equal "needs_choice", bridge(bookmark(at: Time.current))["status"]
+    Kobo::ProgressBridge.new(@delivery.reload).choose!
+    assert_equal Consumer::LibraryAssets.new(@book).list.sole.id, progress.asset_id
   end
 
   test "a place is not shared when the listed asset is not the delivered file generation" do

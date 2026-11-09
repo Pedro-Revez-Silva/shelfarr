@@ -36,11 +36,11 @@ class Kobo::StoreSyncTest < ActiveSupport::TestCase
     second = @sync.call(first.token, headers: @headers)
     assert_equal [ "store-2" ], second.items.map { |item| item.values.first["BookEntitlement"]["Id"] }
     assert_not second.more
-    assert_equal "store-done", Kobo::SyncCursor.new(@device).read(second.token).store
+    assert_equal "store-done", Kobo::SyncCursor.new(@device, authorization: @headers.fetch("authorization")).read(second.token).store
   end
 
   test "a Store outage or unusable page keeps Shelfarr books and does not advance the Store cursor" do
-    start = Kobo::SyncCursor.new(@device).write(local: nil, store: "store-before")
+    start = Kobo::SyncCursor.new(@device, authorization: @headers.fetch("authorization")).write(local: nil, store: "store-before")
     [ -> { stub_request(:get, URL).to_return(status: 503) }, -> { stub_request(:get, URL).to_timeout },
       -> { stub_request(:get, URL).to_return(body: "{}", headers: { "X-Kobo-Synctoken" => "next" }) },
       -> { stub_request(:get, URL).to_return(body: "not json", headers: { "X-Kobo-Synctoken" => "next" }) },
@@ -50,9 +50,26 @@ class Kobo::StoreSyncTest < ActiveSupport::TestCase
       failure.call
       result = @sync.call(start, headers: @headers)
       assert_equal [ @delivery.entitlement_id ], result.items.map { |item| item.values.first["BookEntitlement"]["Id"] }
-      assert_equal "store-before", Kobo::SyncCursor.new(@device).read(result.token).store
+      assert_equal "store-before", Kobo::SyncCursor.new(@device, authorization: @headers.fetch("authorization")).read(result.token).store
       assert_equal "unavailable", @device.reload.store_status
     end
+  end
+
+  test "a changed reader sign-in replays only Store books and never sends the previous account's cursor" do
+    stub_request(:get, URL).with { |request| request.headers["Authorization"] == "Bearer reader-own" && request.headers["X-Kobo-Synctoken"].nil? }
+      .to_return(body: [ store_item("account-A-book") ].to_json, headers: { "X-Kobo-Synctoken" => "account-A-cursor" })
+    first = @sync.call(nil, headers: @headers)
+    other_headers = { "authorization" => "Bearer account-B" }
+    stub_request(:get, URL).with { |request| request.headers["Authorization"] == "Bearer account-B" && request.headers["X-Kobo-Synctoken"].nil? }
+      .to_return(status: 503)
+    offline = @sync.call(first.token, headers: other_headers)
+    assert_empty offline.items
+    assert_nil Kobo::SyncCursor.new(@device, authorization: other_headers.fetch("authorization")).read(offline.token).store
+    stub_request(:get, URL).with { |request| request.headers["Authorization"] == "Bearer account-B" && request.headers["X-Kobo-Synctoken"].nil? }
+      .to_return(body: [ store_item("account-B-book") ].to_json, headers: { "X-Kobo-Synctoken" => "account-B-cursor" })
+    changed = @sync.call(offline.token, headers: other_headers)
+    assert_equal [ "account-B-book" ], changed.items.map { |item| item.values.first["BookEntitlement"]["Id"] }
+    assert_not_requested :get, URL, headers: { "Authorization" => "Bearer account-B", "X-Kobo-Synctoken" => "account-A-cursor" }
   end
 
   test "other Store refusals keep Shelfarr books and are reported separately from outages" do

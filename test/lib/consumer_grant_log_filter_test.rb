@@ -27,7 +27,7 @@ class ConsumerGrantLogFilterTest < ActiveSupport::TestCase
 
   test "Kobo path capabilities and consumer grant queries are redacted together" do
     path = "/kobo/synthetic-device/v1/initialization"
-    assert_equal "/kobo/[FILTERED]/v1/initialization?gr%61nt=[FILTERED]",
+    assert_equal "/kobo/[FILTERED]/v1/initialization",
       request("gr%61nt=synthetic-grant", path: path).filtered_path
   end
 
