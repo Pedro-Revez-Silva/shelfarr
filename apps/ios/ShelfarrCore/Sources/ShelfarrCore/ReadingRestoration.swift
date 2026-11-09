@@ -120,6 +120,13 @@ public struct ReadingRestoration: Sendable {
         }
     }
 
+    /// A report after restoring a heard place waits for the page's answer: it is a turn
+    /// (`.record`) only if the saved element has left the screen.
+    public var isVerifying: Bool {
+        if case .verifying = phase { return true }
+        return false
+    }
+
     /// The reader is being sent to a saved place it chose (another device's). Arriving
     /// there is not reading either; the caller performs the returned jump.
     public mutating func reopen(at locator: JSONValue?) -> Action {

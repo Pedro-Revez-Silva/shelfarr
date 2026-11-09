@@ -81,6 +81,97 @@ final class ReadAlongSessionTests: XCTestCase {
         XCTAssertEqual(session.plan(loaded: true), .fromPage, "after the last file, Play starts from the page")
     }
 
+    // MARK: Turns waiting for the page's answer
+
+    /// The review's first transition: turned while narration played, paused before the
+    /// page answered. It is still browsing; the narration stays where Play resumes.
+    func testATurnReportedWhilePlayingStaysBrowsingWhenPausedBeforeItsAnswer() {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.began()
+        _ = session.tick(audio: 0, ms: 3000, playing: true)
+        let turn = session.turnReported()
+        XCTAssertFalse(session.suspended, "nothing changes before the answer")
+        XCTAssertEqual(session.plan(loaded: true), .resume, "a browsing report never holds Play")
+        session.paused()
+        _ = session.tick(audio: 0, ms: 3500, playing: false)
+        XCTAssertEqual(session.turnAnswered(turn, moved: true), .browsing, "as it was when reported, not when answered")
+        XCTAssertTrue(session.suspended)
+        XCTAssertEqual(session.plan(loaded: true), .resume, "Play resumes the narration heard")
+    }
+
+    /// The review's second transition: turned while paused, Play pressed before the page
+    /// answered. Play waits; a real turn then starts from the page.
+    func testPlayWaitsForATurnReportedWhilePausedAndThenStartsFromThePage() {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.began()
+        _ = session.tick(audio: 0, ms: 3000, playing: true)
+        session.paused()
+        let turn = session.turnReported()
+        XCTAssertEqual(session.plan(loaded: true), .awaitingPage, "Play can't choose before the page answers")
+        XCTAssertEqual(session.plan(loaded: false), .awaitingPage)
+        XCTAssertEqual(session.turnAnswered(turn, moved: true), .reading)
+        XCTAssertFalse(session.awaitingTurn)
+        XCTAssertEqual(session.plan(loaded: true), .fromPage, "the page read is where Play starts")
+    }
+
+    /// Negative control for both: a late report of the restore (the element still shown)
+    /// is no turn, and Play resumes the exact narration.
+    func testALateRestoreReportReleasesPlayToTheNarration() {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.restore(F.heard(F.overlay, audio: 0, ms: 3000))
+        let turn = session.turnReported()
+        XCTAssertEqual(session.plan(loaded: false), .awaitingPage)
+        XCTAssertNil(session.turnAnswered(turn, moved: false))
+        XCTAssertEqual(session.plan(loaded: false), .open(.init(audio: 0, ms: 3000, cue: 1, exact: true), .resume), "resumed exactly, rewound once by the player")
+        XCTAssertNil(session.turnAnswered(turn, moved: true), "answered once")
+    }
+
+    func testOnlyTheNewestReportIsAppliedAndNewerChoicesWin() {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.began()
+        _ = session.tick(audio: 0, ms: 3000, playing: true)
+        session.paused()
+        let older = session.turnReported()
+        let newer = session.turnReported()
+        XCTAssertNil(session.turnAnswered(older, moved: true), "a newer report replaced it")
+        XCTAssertEqual(session.plan(loaded: true), .awaitingPage, "Play waits for the newer one")
+        XCTAssertEqual(session.turnAnswered(newer, moved: true), .reading)
+
+        // Playing again is newer than a paused report still waiting: it is never applied.
+        var played = ReadAlongSession(manifest: F.overlay)
+        played.paused()
+        let waiting = played.turnReported()
+        played.began()
+        XCTAssertNil(played.turnAnswered(waiting, moved: true))
+        XCTAssertEqual(played.plan(loaded: true), .resume)
+
+        // "Back to the narration" is newer than a browsing report still waiting.
+        var browsing = ReadAlongSession(manifest: F.overlay)
+        browsing.began()
+        _ = browsing.tick(audio: 0, ms: 100, playing: true)
+        let browsed = browsing.turnReported()
+        _ = browsing.returnToNarration()
+        XCTAssertNil(browsing.turnAnswered(browsed, moved: true))
+        XCTAssertFalse(browsing.suspended, "following stays on")
+
+        // Reopening at another place, an accepted offer or closing drop it too.
+        for drop in [{ (s: inout ReadAlongSession) in s.restore(F.heard(F.overlay, audio: 1, ms: 3500), arrival: .adopted) },
+                     { (s: inout ReadAlongSession) in s.turnAbandoned() }] {
+            var other = ReadAlongSession(manifest: F.overlay)
+            let id = other.turnReported()
+            drop(&other)
+            XCTAssertFalse(other.awaitingTurn)
+            XCTAssertNil(other.turnAnswered(id, moved: true))
+        }
+    }
+
+    func testAnImmediateTurnIsUnchanged() {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.paused()
+        XCTAssertEqual(session.readerTurned(), .reading, "a turn answered at once is what readerTurned always was")
+        XCTAssertEqual(session.plan(loaded: true), .fromPage)
+    }
+
     func testRestoringAHeardPlaceResumesItAndAReadingPlaceStartsFromThePage() {
         var session = ReadAlongSession(manifest: F.overlay)
         session.restore(F.heard(F.overlay, audio: 1, ms: 3500))

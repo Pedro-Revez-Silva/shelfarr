@@ -54,6 +54,8 @@ protocol ReadAlongListener: AnyObject {
     /// Let the reader consume a pending adopted place or a page read while paused.
     /// False means the loaded audio can resume normally.
     func narrationResumeRequested() -> Bool
+    /// Pause was asked for; a Play the reader is still holding doesn't go ahead.
+    func narrationPauseRequested()
     /// About ten times a second while narration is loaded.
     func narration(at track: Int, seconds: Double, playing: Bool)
     /// The last narrated file finished.
@@ -478,6 +480,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func pause() {
+        if program != nil { listener?.narrationPauseRequested() }
         player.pause()
     }
 
@@ -643,7 +646,7 @@ final class PlaybackEngine: ObservableObject {
             return .success
         }
         commands.pauseCommand.addTarget { [weak self] _ in
-            self?.player.pause()
+            self?.pause()
             return .success
         }
         commands.togglePlayPauseCommand.addTarget { [weak self] _ in
