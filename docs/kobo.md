@@ -219,3 +219,12 @@ reader and complete the following on the oldest, middle, and newest generation:
 No physical-device results have been recorded yet. In a failure report, include
 model, firmware, whether HTTP/HTTPS and a subpath were used, the failing step,
 and redacted Rails logs. Never include the token or Kobo account keys.
+
+## Coexistence setup and place choices
+
+These browser captures use synthetic test accounts and books. The private
+connection address is replaced with a placeholder.
+
+![Store coexistence setup](screenshot-kobo-coexistence-setup.png)
+
+![Explicit choice of a Kobo reading place](screenshot-kobo-place-choice.png)
