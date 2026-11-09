@@ -393,12 +393,16 @@ final class ReaderModel: ObservableObject {
             return
         }
         // Read-along: a page followed to, or turned while narration plays, is not reading.
-        if let readAlong, !readAlong.readerMoved(href: locator["href"]?.stringValue) {
-            note("read-along report not written")
-            return
-        }
         let saved = SavedPosition(assetId: asset.id, locator: locator)
-        enqueue { await sync.update(saved, observedAt: observedAt) }
+        if let readAlong {
+            guard readAlong.readerMoved(href: locator["href"]?.stringValue) else {
+                note("read-along report not written")
+                return
+            }
+            readAlong.recordReading(saved, observedAt: observedAt)
+        } else {
+            enqueue { await sync.update(saved, observedAt: observedAt) }
+        }
     }
 
     private static let restoreFailed = "Couldn't show your saved page. It stays your saved place until you turn a page."
@@ -608,12 +612,16 @@ final class ReaderModel: ObservableObject {
 
     func keepThisPlace() {
         guard let sync else { return }
-        Task { await sync.keepLocal() }
+        Task {
+            await readAlong?.finishWrites()
+            await sync.keepLocal()
+        }
     }
 
     func useOtherPlace() {
         guard let sync else { return }
         Task {
+            await readAlong?.finishWrites()
             guard let position = await sync.useServer() else { return }
             note("reopen \(RestoreTrace.describe(position.locator))")
             // Going to the chosen saved place is not new reading. A place in another file

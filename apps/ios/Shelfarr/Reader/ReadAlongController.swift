@@ -130,7 +130,21 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
             return
         }
         problem = nil
-        switch session.plan(loaded: loaded) {
+        start(session.plan(loaded: loaded))
+    }
+
+    /// Media controls use the same pending choice as the reader's Play button.
+    /// Returning false leaves a plain resume (including its rewind) to the engine.
+    func narrationResumeRequested() -> Bool {
+        let plan = session.plan(loaded: loaded)
+        guard plan != .resume else { return false }
+        problem = nil
+        start(plan)
+        return true
+    }
+
+    private func start(_ plan: ReadAlongSession.Plan) {
+        switch plan {
         case .resume:
             engine.play()
         case let .open(point, arrival):
@@ -225,6 +239,22 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
     /// While narration plays, reports are never reading, whatever caused them.
     var suppressesReading: Bool { session.playing || followMoving }
 
+    /// Paused reading shares the narration write queue: a pause checkpoint already
+    /// queued before this turn must reach disk first, even if its store is still busy.
+    func recordReading(_ position: SavedPosition, observedAt: Int64) {
+        let ebook = progress.ebook
+        let previous = lastWrite
+        lastWrite = Task {
+            await previous?.value
+            await ebook.update(position, observedAt: observedAt)
+        }
+    }
+
+    /// Explicit conflict choices settle earlier observations before replacing them.
+    func finishWrites() async {
+        await lastWrite?.value
+    }
+
     // MARK: ReadAlongListener
 
     func narration(at track: Int, seconds: Double, playing: Bool) {
@@ -252,6 +282,15 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
             await progress.checkpoint(audio: track, ms: ms, observedAt: observedAt, totalProgression: { _ in start }, flush: flush)
         }
         updateTrace("heard")
+    }
+
+    func narrationNeedsFlush() {
+        let progress = self.progress
+        let previous = lastWrite
+        lastWrite = Task {
+            await previous?.value
+            await progress.flush()
+        }
     }
 
     func narrationEnded() {

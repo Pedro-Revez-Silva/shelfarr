@@ -140,6 +140,44 @@ final class ReadAlongSmokeTests: XCTestCase {
         }
     }
 
+    func testPagesReadAfterPausingSurviveBackgroundingAndClosingNarration() throws {
+        let app = launch(reset: true)
+        let book = "narrated-1"
+        try openDetails(app, search: "Narrated Fixture", book)
+        button(app, startingWith: ["Start reading", "Continue reading", "Open book"]).tap()
+        XCTAssertTrue(prose(app, "The river was high that spring").waitForExistence(timeout: 60))
+        try startNarration(app)
+        XCTAssertTrue(waitFor(timeout: 20) { (self.heardMs(app) ?? 0) >= 3000 }, traceLine(app))
+        app.buttons["read-along-play"].tap()
+        XCTAssertTrue(waitFor { self.trace(app)["playing"] == "0" })
+        XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.lastReadAlong != nil }, "pause saved the heard place")
+
+        showChrome(app, false)
+        app.webViews.firstMatch.swipeLeft()
+        XCTAssertTrue(waitFor { ((try? self.progressWrites(book))?.reading ?? 0) > 0 }, "a turn while paused saved a reading place")
+        let read = try progressWrites(book)
+        XCTAssertNil(read.lastReadAlong)
+        let time = try XCTUnwrap(read.lastObservedAt)
+        screenshot(app, "ra-08-read-after-pause")
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(waitFor { self.trace(app)["playing"] == "0" }, traceLine(app))
+        closeReader(app)
+        button(app, startingWith: ["Continue reading", "Start reading", "Open book"]).tap()
+        XCTAssertTrue(waitFor { self.trace(app)["source"] == "media_overlay" })
+        XCTAssertTrue(waitFor(timeout: 25) { self.restoreTrace(app).contains { $0.hasSuffix("-> settled") } }, restoreTrace(app).joined(separator: "\n"))
+
+        let reopened = try progressWrites(book)
+        XCTAssertNil(reopened.lastReadAlong, "background and close never re-observe the paused audio over the page read")
+        XCTAssertEqual(reopened.lastObservedAt, time, "the reading time survives lifecycle flushes and restore")
+        XCTAssertEqual(reopened.count, read.count)
+        XCTAssertEqual(trace(app)["started"], "0")
+        XCTAssertFalse(restoreTrace(app).contains { $0.hasSuffix("-> record") })
+        screenshot(app, "ra-09-read-page-reopened")
+        closeReader(app)
+    }
+
     func testAnImportedPairSavesBothPlacesAndOffersALaterAudiobookPlace() throws {
         // The audiobook was heard on its own player five seconds ago, into the second chapter.
         _ = try request(controlPort, "POST", "/audio-place", body: ["publication": "paired-audio", "asset": "track-p2", "seconds": "3.0", "ago": "5"])

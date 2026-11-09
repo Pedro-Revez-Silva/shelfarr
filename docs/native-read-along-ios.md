@@ -122,7 +122,13 @@ read-along mode they go to `ReadAlongProgress`:
   once; the saved place stays the checkpoint until playback passes it, so pausing in the
   replayed seconds doesn't move it back, and playing again there doesn't rewind again.
   Play from a page and seeks are deliberate: no rewind, saved at once. An adopted place
-  (the audiobook's, another device's) plays from exactly there.
+  (the audiobook's, another device's) plays from exactly there, including when narration
+  is already loaded and Play comes from the lock screen or headset. The choice is
+  consumed once; merely showing its page does not start audio or create activity.
+- **Paused reading**: background and close send pending saves without observing the
+  unchanged paused audio again. A page read after pausing keeps its place and reading
+  time, and the next Play starts from that page. Actual pause edges, deliberate seeks
+  and natural file ends still checkpoint at once.
 - **Restoring**: a heard place names an element and no progression, so the restore gate
   (`ReadingRestoration`) asks the page whether that element is on screen (`.confirm`)
   instead of comparing progressions. The usual bounded correction, retry and give-up
@@ -189,7 +195,8 @@ Core (ShelfarrCore, `swift test`, Linux and macOS):
   disk before either is sent with one `observed_at`, the time heard surviving an offline
   queue, a lost response and a relaunch, nothing before a first cue, a clock stepping
   back, the five-second resume once with pauses in the replay keeping the saved place,
-  and restoring or repeating a place writing nothing.
+  restoring or repeating a place writing nothing, an adopted place or accepted offer
+  replacing loaded narration, and flushes preserving a later read page and both times.
 - `ReadAlongLibraryTests`, `InflateStreamTests`, `ReadingRestorationElementTests`:
   overlay audio copied from stored and zlib-deflated entries, damaged, missing and
   truncated files never ready, a failed update keeping the previous generation, imported
@@ -213,7 +220,9 @@ element and exact offset, a silent reopen, the five-second resume and a pause in
 keeping the saved place; an imported pair's offer, accepted without writing, and one
 checkpoint writing both places with one `observed_at`; a download with its narration
 reopened and played offline from the device; and a stale alignment reading as an ordinary
-EPUB. A simulator that never starts audio skips the playback steps visibly.
+EPUB. A further case pauses narration, reads a page, backgrounds and closes the reader,
+then checks the page reopens without replacing its reading time or writing narration.
+A simulator that never starts audio skips the playback steps visibly.
 
 ## Limits
 
@@ -230,8 +239,6 @@ EPUB. A simulator that never starts audio skips the playback steps visibly.
 - Follow and "Play from this page" read the page's layout with JavaScript on the
   current spread; a fixed-layout (pre-paginated) EPUB with two documents in a spread is
   treated as its current document.
-- Lock-screen Play resumes where narration paused, even after paused reading turns;
-  only Play in the reader starts from the page.
 - A media overlay read online without a download streams its narration from the server;
   only a download copies it to the device.
 - Space doesn't toggle narration with a hardware keyboard yet.

@@ -70,6 +70,7 @@ public struct ReadAlongSession: Sendable {
         restored = point
         heard = point ?? heard
         self.arrival = arrival
+        if arrival == .adopted { highlighted = nil; followed = nil }
         // A reading place (no exact offset) starts from the page, as after reading on.
         readSinceHeard = point == nil || !ReadAlongManifest.isHeard(locator)
     }
@@ -93,6 +94,8 @@ public struct ReadAlongSession: Sendable {
         restored = point
         heard = point
         arrival = .adopted
+        highlighted = nil
+        followed = nil
         readSinceHeard = false
         suspended = false
         return point
@@ -104,6 +107,9 @@ public struct ReadAlongSession: Sendable {
 
     /// What pressing Play does. `loaded` is whether the player holds this narration.
     public func plan(loaded: Bool) -> Plan {
+        // A choice made while this program was paused supersedes the loaded audio too.
+        // It remains pending until playback begins; merely showing its page is silent.
+        if let restored, arrival == .adopted, !readSinceHeard { return .open(restored, .adopted) }
         if !loaded {
             if let restored, !readSinceHeard { return .open(restored, arrival) }
             return .fromPage
@@ -143,6 +149,11 @@ public struct ReadAlongSession: Sendable {
     /// The player reported `ms` of `audio`.
     public mutating func tick(audio: Int, ms: Int64, playing: Bool) -> Tick {
         self.playing = playing
+        if !playing, restored != nil, arrival == .adopted, !readSinceHeard {
+            // The old loaded item keeps reporting its paused position until Play.
+            // It must not pull the pending choice or its highlight back to that item.
+            return Tick(highlight: highlighted, changed: false, follow: nil)
+        }
         let cue = manifest.cue(at: ms, audio: audio)
         if let reached = manifest.cueReached(at: ms, audio: audio) {
             heard = ReadAlongManifest.Point(audio: audio, ms: ms, cue: reached, exact: true)
@@ -216,6 +227,13 @@ public struct ReadAlongProgress: Sendable {
         self.manifest = manifest
         self.ebook = ebook
         self.audiobook = manifest.source == .imported ? audiobook : nil
+    }
+
+    /// Sends already recorded places without observing the paused audio again. A page
+    /// read after pausing, or a place adopted from elsewhere, must keep its own time.
+    public func flush() async {
+        await ebook.requestFlush()
+        await audiobook?.requestFlush()
     }
 
     /// What one checkpoint wrote.

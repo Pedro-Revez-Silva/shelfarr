@@ -49,6 +49,11 @@ protocol ReadAlongListener: AnyObject {
     /// before anything waits). Opened places and the replayed pre-roll are never reported.
     /// `flush` for pause, seek, file change, errors, background and stop.
     func narration(heard track: Int, seconds: Double, observedAt: Int64, flush: Bool)
+    /// Send pending places without treating unchanged paused audio as new listening.
+    func narrationNeedsFlush()
+    /// Let the reader consume a pending adopted place or a page read while paused.
+    /// False means the loaded audio can resume normally.
+    func narrationResumeRequested() -> Bool
     /// About ten times a second while narration is loaded.
     func narration(at track: Int, seconds: Double, playing: Bool)
     /// The last narrated file finished.
@@ -213,7 +218,7 @@ final class PlaybackEngine: ObservableObject {
             at = max(0, seconds)
         }
         open(track: index, at: at, play: true)
-        if start == .deliberate { recordAndFlush() }
+        if start == .deliberate { recordAndFlush(narrationActivity: true) }
     }
 
     /// A deliberate move within the loaded narration (Play from this page, a chosen place):
@@ -228,17 +233,14 @@ final class PlaybackEngine: ObservableObject {
             open(track: track, at: max(0, seconds), play: play)
         }
         if play { player.playImmediately(atRate: speed) }
-        recordAndFlush()
+        recordAndFlush(narrationActivity: true)
         updateNowPlaying()
     }
 
     /// Saves the narration's place and unloads it. The audio session stays as it was.
     func stopReadAlong() async {
         guard program != nil else { return }
-        let observedAt = ActivityTime.now()
-        if let last = currentPosition(), checkpoints.isActivity(last) {
-            listener?.narration(heard: trackIndex, seconds: last.positionSeconds ?? 0, observedAt: observedAt, flush: true)
-        }
+        recordAndFlush()
         player.pause()
         player.replaceCurrentItem(with: nil)
         loader?.cancelAll()
@@ -383,7 +385,7 @@ final class PlaybackEngine: ObservableObject {
         if wasPlaying, status == .paused {
             // Paused by anyone (the app, lock screen, headset, sleep timer): the next play is a resume.
             checkpoints.paused()
-            recordAndFlush()
+            recordAndFlush(narrationActivity: true)
         }
         if program != nil, wasPlaying != isPlaying {
             listener?.narration(at: trackIndex, seconds: position, playing: isPlaying)
@@ -395,11 +397,11 @@ final class PlaybackEngine: ObservableObject {
         if let program {
             if let next = program.next(trackIndex) {
                 checkpoints.carriedOn()
-                recordAndFlush()
+                recordAndFlush(narrationActivity: true)
                 open(track: next, at: 0, play: true)
                 record()
             } else {
-                recordAndFlush()
+                recordAndFlush(narrationActivity: true)
                 listener?.narrationEnded()
             }
             return
@@ -431,6 +433,7 @@ final class PlaybackEngine: ObservableObject {
     }
 
     func togglePlay() {
+        if !isPlaying, program != nil, listener?.narrationResumeRequested() == true { return }
         if problem != nil {
             problem = nil
             let at = currentPosition().flatMap { checkpoints.resumed(at: $0) } ?? position
@@ -445,6 +448,7 @@ final class PlaybackEngine: ObservableObject {
     /// Plays again after a pause, a little earlier than where it stopped, once.
     private func resume() {
         guard !isPlaying, isLoaded else { return }
+        if program != nil, listener?.narrationResumeRequested() == true { return }
         configureSession()
         if let current = currentPosition(), let target = checkpoints.resumed(at: current) {
             position = target
@@ -570,10 +574,16 @@ final class PlaybackEngine: ObservableObject {
         enqueue { await sync.update(saved, observedAt: observedAt) }
     }
 
-    private func recordAndFlush() {
+    private func recordAndFlush(narrationActivity: Bool? = nil) {
         let observedAt = ActivityTime.now()
         if program != nil {
-            guard let saved = currentPosition(), checkpoints.isActivity(saved) else { return }
+            // Lifecycle flushes while paused send the outbox only. Pause edges,
+            // deliberate moves and natural file ends explicitly record their activity.
+            guard narrationActivity ?? isPlaying,
+                  let saved = currentPosition(), checkpoints.isActivity(saved) else {
+                listener?.narrationNeedsFlush()
+                return
+            }
             listener?.narration(heard: trackIndex, seconds: saved.positionSeconds ?? 0, observedAt: observedAt, flush: true)
             return
         }

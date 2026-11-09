@@ -115,6 +115,45 @@ final class ReadAlongSessionTests: XCTestCase {
         XCTAssertNil(session.offer)
     }
 
+    func testAnAdoptedPlaceReplacesLoadedNarrationOnTheNextPlayOnly() throws {
+        var session = ReadAlongSession(manifest: F.overlay)
+        session.began()
+        _ = session.tick(audio: 0, ms: 3000, playing: true)
+        session.paused()
+        let locator = F.heard(F.overlay, audio: 1, ms: 3500)
+        let point = try XCTUnwrap(F.overlay.point(from: locator))
+        session.restore(locator, arrival: .adopted)
+        XCTAssertNil(session.tick(audio: 0, ms: 3000, playing: false).highlight)
+        XCTAssertEqual(session.heard, point, "the old paused item's reports cannot replace the pending choice")
+        XCTAssertEqual(session.plan(loaded: true), .open(point, .adopted), "reader and media Play must consume the remote point even with audio loaded")
+        XCTAssertFalse(session.playing, "adopting never starts playback")
+
+        var checkpoints = ListeningCheckpoints()
+        let saved = SavedPosition(assetId: "read-along:1", positionSeconds: point.seconds)
+        checkpoints.hold(saved)
+        XCTAssertNil(checkpoints.resumed(at: saved), "the adopted point is not a five-second resume")
+        XCTAssertFalse(checkpoints.isActivity(saved), "arriving does not create activity")
+        session.began()
+        XCTAssertNil(session.restored)
+        XCTAssertEqual(session.plan(loaded: true), .resume, "the chosen point is consumed once")
+    }
+
+    func testAcceptingAnAudiobookOfferAlsoReplacesLoadedNarration() throws {
+        var session = ReadAlongSession(manifest: F.imported)
+        session.began()
+        _ = session.tick(audio: 0, ms: 800, playing: true)
+        session.paused()
+        let later = try XCTUnwrap(F.imported.point(audiobookAsset: "track-b", seconds: 3.5))
+        session.consider(audiobook: later, observedAt: baseTime + 60_000, ebookObservedAt: baseTime, now: baseTime + 120_000)
+        XCTAssertEqual(session.plan(loaded: true), .resume, "merely offering changes nothing")
+        XCTAssertEqual(session.acceptOffer(), later)
+        XCTAssertEqual(session.plan(loaded: true), .open(later, .adopted))
+        _ = session.tick(audio: 0, ms: 800, playing: false)
+        XCTAssertEqual(session.heard, later)
+        XCTAssertEqual(session.readerTurned(), .reading)
+        XCTAssertEqual(session.plan(loaded: true), .fromPage, "reading after the choice takes precedence")
+    }
+
     // MARK: Places heard, through the production stores
 
     private struct Pair {
@@ -207,6 +246,38 @@ final class ReadAlongSessionTests: XCTestCase {
         XCTAssertEqual(audiobookServer.stored?.observedAt, ActivityTime.format(heardAt))
         XCTAssertEqual(audiobookServer.received.map(\.clientMutationId).count, 2)
         XCTAssertEqual(Set(audiobookServer.received.map(\.clientMutationId)).count, 1, "a retry repeats the same write")
+    }
+
+    func testFlushingPausedNarrationKeepsTheLaterReadPageAndBothActivityTimes() async throws {
+        let directory = F.temporaryDirectory("paused-reading-flush")
+        let pair = Pair.make(directory)
+        let writer = ReadAlongProgress(manifest: F.imported, ebook: pair.ebook, audiobook: pair.audiobook)
+        await writer.checkpoint(audio: 0, ms: 3000, observedAt: baseTime, flush: false)
+        let page = SavedPosition(assetId: F.ebookAssetId, locator: .object([
+            "href": .string("OEBPS/c2.xhtml"), "locations": .object(["progression": .number(0.5)]),
+        ]))
+        _ = await pair.ebook.record(page, observedAt: baseTime + 1000)
+
+        // Background and close flush what was already reached; neither observes the
+        // still-paused 3s narration again. Read through a fresh store after both.
+        await writer.flush()
+        await writer.flush()
+        await pair.ebook.flush()
+        await pair.audiobook.flush()
+        let fresh = FileProgressStore(file: directory.appendingPathComponent("progress.json"))
+        let savedEbook = try await fresh.get("12")
+        let savedAudiobook = try await fresh.get("40")
+        let ebook = try XCTUnwrap(savedEbook)
+        let audiobook = try XCTUnwrap(savedAudiobook)
+        XCTAssertEqual(ebook.position, page)
+        XCTAssertEqual(ebook.observedAt, baseTime + 1000)
+        XCTAssertEqual(audiobook.position, SavedPosition(assetId: "track-a", positionSeconds: 3))
+        XCTAssertEqual(audiobook.observedAt, baseTime)
+        XCTAssertEqual(pair.server.stored?.locator, page.locator)
+        XCTAssertEqual(pair.server.stored?.observedAt, ActivityTime.format(baseTime + 1000))
+        XCTAssertEqual(pair.audiobookServer.stored?.observedAt, ActivityTime.format(baseTime))
+        await pair.ebook.stop()
+        await pair.audiobook.stop()
     }
 
     func testAMediaOverlayWritesOnlyTheEbookAndNothingBeforeAFirstCue() async throws {
