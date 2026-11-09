@@ -80,11 +80,19 @@ and a page that fails is shown with its reason instead of crashing.
 - **CBZ**: `href` and `type` of item N in the generation's reading order (the exact
   escaped href), `position` N, `totalProgression` (N-1)/count.
 
-A page the reader actually reaches is written at once to the durable local outbox with
+A page the reader actually sees is written at once to the durable local outbox with
 its `observed_at`, then sent with the existing debounce, retry, UUID and compare-and-set
-rules. Opening, restoring, rotating, zooming, re-rendering, choosing a format and
-acknowledgements write nothing: the pager reports where it settled, and only a page
-different from the one already shown is saved.
+rules. "Seen" means the pager has settled on it *and* its image is drawn; the time is
+read at that moment and kept through any wait for the server. Opening, restoring,
+rotating, zooming, re-rendering, choosing a format and acknowledgements write nothing,
+and a neighbouring page drawn ahead of time is not reading until the reader settles on it.
+
+The page on screen and the reading place are kept apart (`PageProgress`). A page that
+can't be drawn (a damaged comic image, a PDF page the renderer refuses, running out of
+memory) says so, with *Your reading place hasn't moved* and **Try again**; it never
+changes the local place, the outbox, the server or the activity time. Swipes, edge taps,
+the controls and hardware keys turn from the page on screen, so the reader can skip past
+it or go back, and a page that draws on a retry is saved at the time it was drawn.
 
 A saved place this file can't show (a PDF page past the end, a non-integer position,
 another file's href, a CBZ page whose href doesn't match item N) is never replaced with
@@ -145,7 +153,11 @@ taller than 30,000 pixels. Nothing is ever extracted to disk.
   offline).
 - Robolectric: `PagedReaderTest` (opening, swipes, edge taps, commands, middle tap,
   zoom and pan, rebuilding on rotation, labelled controls, real CBZ decoding through
-  `BitmapFactory`), `GoToPageDialogTest`, and `FixedLayoutScreenshotTest`, which renders
+  `BitmapFactory`), `PageProgressTest`, `PageReadingTest` (the reader wired to
+  `PageProgress` and a real `ProgressSync` over a durable store and contract server: a
+  failed page, then Next by control, key and edge tap; prefetching and slow pages;
+  trying again; silent opening, rebuilding, resizing and zooming; a real comic with a
+  damaged page; screenshots `16-*`), `GoToPageDialogTest`, and `FixedLayoutScreenshotTest`, which renders
   `15-*` into `app/build/screenshots`: quiet and controls on a phone, a night comic page
   decoded from a real archive, 2× text on a phone and a 320 dp phone, the format choice,
   the invalid-place choice, and the download format choice.
@@ -154,7 +166,8 @@ taller than 30,000 pixels. Nothing is ever extracted to disk.
   `PdfRenderer`, a Page Down key turns it, the write carries the PDF locator and a
   plausible `observed_at`, a recreated activity and a reopen show the same page and send
   nothing; an impossible saved place is kept through opening and choosing and replaced
-  only by a page turn; a CBZ and a PDF download, then open offline from the download,
+  only by a page turn; a comic page with a bad checksum is never saved and Page Down
+  goes past it; a CBZ and a PDF download, then open offline from the download,
   with the comic's page kept locally. Each check reads the pixels on screen and saves a
   screenshot.
 

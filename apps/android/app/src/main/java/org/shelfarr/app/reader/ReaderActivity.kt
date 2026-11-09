@@ -203,8 +203,8 @@ class ReaderActivity : FragmentActivity() {
     /**
      * Hardware keys turn PDF and comic pages: Page Up/Down, Space (Shift+Space back) and
      * the arrows. This only sees keys no focused control used, so arrows still move focus
-     * between the controls while they are shown. The pager saves the page once it settles
-     * there, like any other turn.
+     * between the controls while they are shown. A turn starts from the page on screen,
+     * even one that couldn't be drawn, and is saved only once the new page is seen.
      */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (viewModel.state.value !is ReaderState.Paged) return super.onKeyDown(keyCode, event)

@@ -5,11 +5,9 @@ import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -52,6 +50,7 @@ import org.shelfarr.app.reader.pages.PageBitmapCache
 import org.shelfarr.app.reader.pages.PageCommand
 import org.shelfarr.app.reader.pages.PageDocument
 import org.shelfarr.app.reader.pages.PageLocators
+import org.shelfarr.app.reader.pages.PageProgress
 import org.shelfarr.app.reader.pages.PageRestore
 import org.shelfarr.app.reader.pages.PdfPages
 
@@ -120,12 +119,13 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     private val mutablePlace = MutableStateFlow(ReadingPlace())
     val place: StateFlow<ReadingPlace> = mutablePlace.asStateFlow()
 
-    /** The page a PDF or comic shows (0-based). Changed silently by restoring, by reading otherwise. */
-    private val mutablePage = MutableStateFlow(0)
-    val page: StateFlow<Int> = mutablePage.asStateFlow()
+    /** A PDF or comic's place: the page on screen, kept apart from the last page actually seen. */
+    private val pageProgress = PageProgress()
 
-    private val mutableCommands = MutableSharedFlow<PageCommand>(extraBufferCapacity = 8)
-    val pageCommands: SharedFlow<PageCommand> = mutableCommands.asSharedFlow()
+    /** The page a PDF or comic is on (0-based), drawn or not. */
+    val page: StateFlow<Int> = pageProgress.page
+
+    val pageCommands: SharedFlow<PageCommand> = pageProgress.commands
 
     val settings get() = container.readerSettings.settings
     val serverHost: String? get() = account?.session?.server?.host
@@ -323,22 +323,22 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
      * anchored on the saved place, and only a later, different page is written. A place
      * this file can't show stays saved and waits for the reader's choice.
      */
-    private suspend fun paged(format: ReadingFormat, pages: PageDocument, start: Start) {
+    private suspend fun paged(format: ReadingFormat, document: PageDocument, start: Start) {
         sync?.begin(start.position, start.baseVersion, start.observedAtEpochMs, details?.playableAssets?.map { it.id })
         val restore = when (format) {
-            ReadingFormat.PDF -> PageLocators.restorePdf(start.position?.locator, pages.pageCount)
+            ReadingFormat.PDF -> PageLocators.restorePdf(start.position?.locator, document.pageCount)
             else -> PageLocators.restoreComic(start.position?.locator, comicPages)
         }
         val (index, invalid) = when (restore) {
             PageRestore.Beginning -> 0 to null
             is PageRestore.At -> restore.index to null
-            is PageRestore.Invalid -> 0 to InvalidPlace(restore.saved, pages.pageCount)
+            is PageRestore.Invalid -> 0 to InvalidPlace(restore.saved, document.pageCount)
         }
-        mutablePage.value = index
+        pageProgress.open(document.pageCount, index, ::recordPage)
         mutableState.value = ReaderState.Paged(
             title = details?.title.orEmpty(),
             format = format,
-            pageCount = pages.pageCount,
+            pageCount = document.pageCount,
             initialPage = index,
             notice = notice,
             invalidPlace = invalid,
@@ -353,16 +353,24 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         return pages.render(index, width, height).also { bitmaps.put(key, it) }
     }
 
-    /**
-     * The pager settled on [index]. A page other than the one already shown is the reader
-     * turning pages: it is written straight away with the time it was reached. The same
-     * page again (opening, rotation, zoom, re-layout) is not.
-     */
+    /** The pager came to rest on [index], drawn or not. Turning continues from there; nothing is saved. */
     fun onPageSettled(index: Int) {
-        val observedAt = System.currentTimeMillis()
+        if (mutableState.value !is ReaderState.Paged) return
+        pageProgress.onSettled(index)
+    }
+
+    /**
+     * The settled page [index] was drawn, first seen at [observedAtEpochMs]. A page other
+     * than the last one seen is the reader turning pages and is written with that time.
+     * The same page again (opening, rotation, zoom, re-layout) is not.
+     */
+    fun onPageShown(index: Int, observedAtEpochMs: Long) {
+        if (mutableState.value !is ReaderState.Paged) return
+        pageProgress.onShown(index, observedAtEpochMs)
+    }
+
+    private fun recordPage(index: Int, observedAtEpochMs: Long) {
         val paged = mutableState.value as? ReaderState.Paged ?: return
-        if (index !in 0 until paged.pageCount || index == mutablePage.value) return
-        mutablePage.value = index
         if (paged.invalidPlace != null) mutableState.value = paged.copy(invalidPlace = null)
         val opened = asset ?: return
         val locator = if (paged.format == ReadingFormat.PDF) {
@@ -370,23 +378,21 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
         } else {
             PageLocators.comic(comicPages[index], paged.pageCount)
         }
-        viewModelScope.launch { sync?.update(SavedPosition(opened.id, locator), observedAt) }
+        viewModelScope.launch { sync?.update(SavedPosition(opened.id, locator), observedAtEpochMs) }
     }
 
-    /** A page turn from the keyboard or chrome. It is saved once the pager settles there. */
+    /** A page turn from the keyboard or chrome, from the page on screen. It is saved once seen there. */
     fun turnPage(delta: Int) {
-        val paged = mutableState.value as? ReaderState.Paged ?: return
-        val target = (mutablePage.value + delta).coerceIn(0, paged.pageCount - 1)
-        if (target != mutablePage.value) mutableCommands.tryEmit(PageCommand(target, animate = true))
+        if (mutableState.value !is ReaderState.Paged) return
+        pageProgress.turn(delta)
     }
 
     /** The reader's answer to a saved place this file can't show. Looking is not reading. */
     fun resolveInvalidPlace(index: Int) {
         val paged = mutableState.value as? ReaderState.Paged ?: return
         val target = index.coerceIn(0, paged.pageCount - 1)
-        mutablePage.value = target
         mutableState.value = paged.copy(invalidPlace = null, initialPage = target)
-        mutableCommands.tryEmit(PageCommand(target, animate = false))
+        pageProgress.goToSaved(target)
     }
 
     private fun flatten(links: List<Link>, depth: Int): List<ContentsEntry> = links.flatMap { link ->
@@ -442,10 +448,7 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
                 PageLocators.restoreComic(position.locator, comicPages)
             }
             // Going there is the reader's choice of a saved place, not new reading.
-            if (restore is PageRestore.At) {
-                mutablePage.value = restore.index
-                mutableCommands.tryEmit(PageCommand(restore.index, animate = false))
-            }
+            if (restore is PageRestore.At) pageProgress.goToSaved(restore.index)
             return null
         }
         if (position.assetId != asset?.id) return null

@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -254,6 +255,53 @@ class FixedLayoutReaderTest {
         }
     }
 
+    @Test
+    fun aComicPageThatCantBeShownKeepsThePlaceAndTheNextKeyGoesPastIt() {
+        val comic = comic(damaged = 1)
+        val orderPath = "/api/consumer/v1/library/comic-book/assets/cbz-1/reading_order"
+        val comicBook = Publication(
+            id = "comic-book", title = "Damaged comic", bookType = BookType.EBOOK, contentKind = "graphic",
+            assets = listOf(Asset("cbz-1", "damaged.cbz", CBZ_MEDIA_TYPE, "cbz", comic.first.size.toLong(), "/files/cbz",
+                pageCount = comic.second.size, readingOrderUrl = orderPath)),
+        )
+        val fixture = serve(
+            "comic-damaged",
+            mapOf("comic-book" to comicBook),
+            mapOf("/files/cbz" to (comic.first to CBZ_MEDIA_TYPE)),
+            mapOf(orderPath to ReadingOrder("cbz-1", "cbz", comic.second)),
+        )
+        try {
+            ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "comic-book")).use { scenario ->
+                awaitPaged(scenario, ReadingFormat.CBZ, page = 0)
+                awaitBand(scenario, 0, "comic-damaged-page-one.png")
+                // Page Down onto the damaged page: the reader is there, but it was never seen.
+                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                awaitPaged(scenario, ReadingFormat.CBZ, page = 1)
+                SystemClock.sleep(1_500)
+                screenshot(scenario, "comic-damaged-page-two.png")
+                scenario.onActivity { viewModel(it).flush() }
+                SystemClock.sleep(6_000)
+                assertTrue("The damaged page reached the server: ${fixture.writes}", fixture.writes.isEmpty())
+                val kept = runBlocking { requireNotNull(app.container.currentAccount()).progress.sync("comic-book").snapshot() }
+                assertTrue("The damaged page was saved locally: ${kept.position}", kept.position == null)
+
+                // Page Down again turns from the page on screen, past the damaged one.
+                val before = System.currentTimeMillis()
+                InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_PAGE_DOWN)
+                awaitPaged(scenario, ReadingFormat.CBZ, page = 2)
+                awaitBand(scenario, 2, "comic-damaged-page-three.png")
+                await("page three reached the server") { fixture.writes.isNotEmpty() }
+                val write = fixture.writes.single()
+                assertEquals(comic.second[2].href, write.locator!!["href"]!!.jsonPrimitive.content)
+                assertEquals(3, write.locator!!["locations"]!!.jsonObject["position"]!!.jsonPrimitive.content.toInt())
+                val seen = requireNotNull(ActivityTime.parse(write.observedAt))
+                assertTrue("seen at $seen, turned at $before", seen in before..System.currentTimeMillis())
+            }
+        } finally {
+            cleanUp(fixture)
+        }
+    }
+
     private fun viewModel(activity: ReaderActivity) = ViewModelProvider(activity)[ReaderViewModel::class.java]
 
     private fun awaitPaged(scenario: ActivityScenario<ReaderActivity>, format: ReadingFormat, page: Int): ReaderState.Paged {
@@ -357,8 +405,12 @@ class FixedLayoutReaderTest {
         return ByteArrayOutputStream().also { document.writeTo(it); document.close() }.toByteArray()
     }
 
-    /** A ZIP32 comic, written byte by byte, with the reading order the server would describe. */
-    private fun comic(): Pair<ByteArray, List<ReadingOrderItem>> {
+    /**
+     * A ZIP32 comic, written byte by byte, with the reading order the server would describe.
+     * With [damaged], that page's stored bytes no longer match its checksum: the comic opens,
+     * but that one page can't be shown.
+     */
+    private fun comic(damaged: Int? = null): Pair<ByteArray, List<ReadingOrderItem>> {
         val pages = bands.mapIndexed { index, color ->
             val bitmap = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888)
             bitmap.eraseColor(color)
@@ -408,7 +460,15 @@ class FixedLayoutReaderTest {
                 crc32 = "%08x".format(crc as Long),
             )
         }
-        return out.toByteArray() to items
+        val bytes = out.toByteArray()
+        if (damaged != null) {
+            val item = items[damaged]
+            check(item.compressionMethod == 0) { "Only a stored page is damaged byte for byte" }
+            val name = Uri.decode(item.href).toByteArray()
+            val at = (item.localHeaderOffset + 30 + name.size + 100).toInt()
+            bytes[at] = (bytes[at] + 1).toByte()
+        }
+        return bytes to items
     }
 }
 

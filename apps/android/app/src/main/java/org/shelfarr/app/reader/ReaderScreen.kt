@@ -114,7 +114,7 @@ fun ReaderScreen(
         is ReaderState.ChooseFormat -> FormatChoice(theme, current, onClose, viewModel::chooseFormat)
         is ReaderState.Paged -> {
             val page by viewModel.page.collectAsState()
-            // A rotation rebuilds the pager on the page already shown, so it reports nothing new.
+            // A rotation rebuilds the pager on the page already on screen. Seeing the last-read page again reports nothing new.
             androidx.compose.runtime.key(current.format, current.pageCount) {
                 PagedReader(
                     title = current.title,
@@ -125,6 +125,7 @@ fun ReaderScreen(
                     chromeVisible = chromeVisible,
                     render = viewModel::renderPage,
                     onPageSettled = viewModel::onPageSettled,
+                    onPageShown = viewModel::onPageShown,
                     onToggleChrome = onToggleChrome,
                     onClose = onClose,
                     commands = viewModel.pageCommands,

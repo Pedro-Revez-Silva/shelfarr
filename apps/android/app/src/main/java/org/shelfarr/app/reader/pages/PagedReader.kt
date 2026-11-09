@@ -37,9 +37,12 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -72,14 +75,16 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.reader.ReaderTheme
 import org.shelfarr.app.ui.components.QuietSlider
 import org.shelfarr.app.ui.components.ShelfarrIcons
 
-/** A request to show a page. Saving is decided by the view model when the pager settles. */
+/** A request to show a page. Saving is decided once the pager settles there and the page is drawn. */
 data class PageCommand(val index: Int, val animate: Boolean)
 
 /** A saved place that this file can't show, waiting for the reader's choice. */
@@ -92,6 +97,11 @@ private const val DOUBLE_TAP_ZOOM = 2.5f
  * Full-page reading for PDFs and comics: one quiet page at a time. A tap in the middle
  * shows or hides the controls; taps near the edges, swipes, keys and the controls turn
  * pages. Pinch or double-tap zooms; while zoomed, dragging pans instead of turning.
+ *
+ * [onPageSettled] reports where the pager came to rest, drawn or not. [onPageShown]
+ * reports a settled page once it is actually drawn, with the time it was first seen; a
+ * neighbour drawn ahead of time is not shown until the reader settles on it, and a page
+ * that fails to draw is never shown. A page that failed can be tried again.
  */
 @Composable
 fun PagedReader(
@@ -106,6 +116,9 @@ fun PagedReader(
     onToggleChrome: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    onPageShown: (index: Int, observedAtEpochMs: Long) -> Unit = { _, _ -> },
+    /** Wall-clock milliseconds, read the moment a settled page is first seen. */
+    clock: () -> Long = System::currentTimeMillis,
     commands: Flow<PageCommand> = emptyFlow(),
     notice: String? = null,
     invalidPlace: InvalidPlace? = null,
@@ -114,11 +127,22 @@ fun PagedReader(
     val pager = rememberPagerState(initialPage = initialPage.coerceIn(0, (pageCount - 1).coerceAtLeast(0))) { pageCount }
     val scope = rememberCoroutineScope()
     val settled by rememberUpdatedState(onPageSettled)
+    val shown by rememberUpdatedState(onPageShown)
+    val now by rememberUpdatedState(clock)
+    // Pages whose image is on screen now; a neighbour drawn ahead counts only once settled on.
+    val drawn = remember { mutableStateMapOf<Int, Boolean>() }
     var zoomed by remember { mutableStateOf(false) }
     var goTo by remember { mutableStateOf(false) }
     var shownNotice by remember(notice) { mutableStateOf(notice) }
 
-    LaunchedEffect(pager) { snapshotFlow { pager.settledPage }.collect { settled(it) } }
+    LaunchedEffect(pager) {
+        snapshotFlow { pager.settledPage }.collectLatest { index ->
+            settled(index)
+            // Wait for this page's image, however long it takes, unless the reader moves on.
+            snapshotFlow { drawn[index] == true }.first { it }
+            shown(index, now())
+        }
+    }
     LaunchedEffect(pager, commands) {
         commands.collect { command ->
             val target = command.index.coerceIn(0, pageCount - 1)
@@ -162,6 +186,7 @@ fun PagedReader(
                 },
                 onAccessibilityTurn = { delta -> show(index + delta) },
                 onToggleChrome = onToggleChrome,
+                onDrawn = { ready -> if (ready) drawn[index] = true else drawn.remove(index) },
             )
         }
 
@@ -246,10 +271,14 @@ private fun ZoomablePage(
     onTapZone: (TapZone) -> Unit,
     onAccessibilityTurn: (Int) -> Unit,
     onToggleChrome: () -> Unit,
+    onDrawn: (Boolean) -> Unit,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var attempt by remember { mutableIntStateOf(0) }
     val zoomedNow by rememberUpdatedState(onZoomed)
+    val drawnNow by rememberUpdatedState(onDrawn)
+    DisposableEffect(index) { onDispose { drawnNow(false) } }
 
     LaunchedEffect(isCurrent) {
         if (!isCurrent && scale != 1f) {
@@ -322,9 +351,10 @@ private fun ZoomablePage(
             scale > 1.4f -> 2
             else -> 1
         }
-        val base = rememberPage(index, width, height, 1, render)
-        val sharp = if (detail > 1 && isCurrent) rememberPage(index, width * detail, height * detail, detail, render) else null
+        val base = rememberPage(index, width, height, 1, attempt, render)
+        val sharp = if (detail > 1 && isCurrent) rememberPage(index, width * detail, height * detail, detail, attempt, render) else null
         val shown = (sharp as? PageImage.Ready) ?: base
+        LaunchedEffect(base is PageImage.Ready) { drawnNow(base is PageImage.Ready) }
         when (shown) {
             is PageImage.Ready -> {
                 val image = remember(shown.bitmap) { shown.bitmap.asImageBitmap() }
@@ -342,13 +372,25 @@ private fun ZoomablePage(
                         },
                 )
             }
-            is PageImage.Failed -> Text(
-                "Couldn't show page ${index + 1}. ${shown.message}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = theme.textColor,
-                textAlign = TextAlign.Center,
+            is PageImage.Failed -> Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.padding(32.dp),
-            )
+            ) {
+                Text(
+                    "Couldn't show page ${index + 1}. ${shown.message}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = theme.textColor,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    "Your reading place hasn't moved.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.mutedColor,
+                    textAlign = TextAlign.Center,
+                )
+                TextButton(onClick = { attempt++ }) { Text("Try again", color = theme.accentColor) }
+            }
             PageImage.Loading -> Unit
         }
     }
@@ -361,8 +403,15 @@ private sealed interface PageImage {
 }
 
 @Composable
-private fun rememberPage(index: Int, width: Int, height: Int, detail: Int, render: suspend (Int, Int, Int) -> Bitmap): PageImage {
-    val state = produceState<PageImage>(PageImage.Loading, index, width, height, detail) {
+private fun rememberPage(
+    index: Int,
+    width: Int,
+    height: Int,
+    detail: Int,
+    attempt: Int,
+    render: suspend (Int, Int, Int) -> Bitmap,
+): PageImage {
+    val state = produceState<PageImage>(PageImage.Loading, index, width, height, detail, attempt) {
         if (width <= 0 || height <= 0) return@produceState
         value = try {
             PageImage.Ready(render(index, width, height))
@@ -370,6 +419,8 @@ private fun rememberPage(index: Int, width: Int, height: Int, detail: Int, rende
             PageImage.Failed(error.message.orEmpty())
         } catch (error: OutOfMemoryError) {
             PageImage.Failed("This device ran out of memory for it.")
+        } catch (error: java.io.IOException) {
+            PageImage.Failed("It couldn't be read from this device's storage.")
         }
     }
     return state.value
