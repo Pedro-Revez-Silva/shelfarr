@@ -73,12 +73,20 @@ class NarrationRecoveryCopyTest {
         assertTrue(signedOut.text.contains("Sign in to this account again"))
         // Offline, there is nothing to retry yet; an edition without narration can't be retried at all.
         assertNull(narrationCopy(stopped(DownloadProblem.OFFLINE), summary, offline = true)!!.action)
-        assertNull(narrationCopy(stopped(DownloadProblem.UNSUPPORTED), summary, offline = false)!!.action)
+        assertNull(narrationCopy(stopped(DownloadProblem.UNSUPPORTED), null, offline = false)!!.action)
 
         // Still waiting is "preparing", never stopped; a kept generation is said to still play.
         assertEquals("Preparing narration…", narrationCopy(ready, summary, offline = false)!!.text)
         val kept = NarrationDownload(generation, "media_overlay", "ra-x.json", listOf(DownloadedFile("n0", "ra-x-0000.wav", 10, complete = true, bytesDone = 10)), NarrationState.READY)
         assertTrue(narrationCopy(stopped(DownloadProblem.SIGN_IN).copy(narration = kept), summary, offline = false)!!.text.endsWith("The earlier narration on this device still plays offline."))
+    }
+
+    @Test
+    fun `a previously unavailable narration offers retry when the server advertises it again`() {
+        val record = stopped(DownloadProblem.UNSUPPORTED)
+        assertEquals(NarrationAction.RETRY, narrationCopy(record, summary, offline = false)!!.action)
+        assertNull(narrationCopy(record, summary, offline = true)!!.action)
+        assertNull(narrationCopy(record, null, offline = false)!!.action)
     }
 
     @Test

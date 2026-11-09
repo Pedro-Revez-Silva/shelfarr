@@ -143,7 +143,7 @@ fun narrationCopy(record: DownloadRecord, current: ReadAlongSummary?, offline: B
         record.narrationRequested -> {
             val why = narrationStopWords(record.narrationProblem)
             val keptNote = if (kept != null) " The earlier narration on this device still plays offline." else " The book itself reads offline."
-            val retry = NarrationAction.RETRY.takeIf { !offline && available != null && record.narrationProblem != DownloadProblem.UNSUPPORTED }
+            val retry = NarrationAction.RETRY.takeIf { !offline && available != null }
             NarrationCopy(why + keptNote, retry)
         }
         work != null && work.isActive -> {
@@ -174,7 +174,7 @@ fun narrationStopWords(problem: DownloadProblem?): String = when (problem) {
     DownloadProblem.SERVER -> "Narration paused: your server had a problem. It tries again shortly."
     DownloadProblem.STORAGE -> "Narration didn't fit on this device. Free some space, then try again."
     DownloadProblem.CHANGED -> "The narration changed on your server while downloading."
-    DownloadProblem.UNSUPPORTED -> "This edition no longer has narration on your server."
+    DownloadProblem.UNSUPPORTED -> "Your server didn't offer narration when this download stopped."
     DownloadProblem.SIGN_IN -> "Narration stopped: signed out. Sign in to this account again to continue."
     DownloadProblem.MISSING -> "Some narration files are no longer on this device."
     DownloadProblem.INTERRUPTED -> "Narration stopped before it finished."
