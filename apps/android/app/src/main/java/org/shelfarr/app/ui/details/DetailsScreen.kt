@@ -92,6 +92,12 @@ interface DetailsActions {
     fun retryDownload() {}
     fun setStatus(status: ReadingStatus) {}
 
+    /** Download (or add to a ready download) this book's read-along narration, or the text alone. */
+    fun downloadNarration(include: Boolean) {}
+
+    /** Delete narration kept with a ready book ([all]), or stop an unfinished fetch; the book itself stays. */
+    fun removeNarration(all: Boolean) {}
+
     object None : DetailsActions
 }
 
@@ -135,15 +141,30 @@ class DetailsViewModel(private val container: AppContainer, private val id: Stri
     /** The format the next [download] keeps; null keeps the saved or already downloaded one. */
     private var downloadFormat: ReadingFormat? = null
 
-    fun prepareDownload(format: ReadingFormat?) {
+    /** Whether the next [download] keeps read-along narration too; null keeps the earlier choice. */
+    private var downloadNarration: Boolean? = null
+
+    fun prepareDownload(format: ReadingFormat?, narration: Boolean? = null) {
         downloadFormat = format
+        downloadNarration = narration
     }
 
     override fun download() {
         val services = account ?: return
         val publication = (mutableState.value as? DetailsState.Loaded)?.publication ?: return
         val format = downloadFormat
-        viewModelScope.launch { services.downloads.enqueue(publication, format) }
+        val narration = downloadNarration
+        viewModelScope.launch { services.downloads.enqueue(publication, format, narration) }
+    }
+
+    override fun downloadNarration(include: Boolean) {
+        prepareDownload(null, include)
+        download()
+    }
+
+    override fun removeNarration(all: Boolean) {
+        val services = account ?: return
+        container.scope.launch { services.downloads.removeNarration(id, removeAll = all) }
     }
 
     override fun downloadFormat(format: ReadingFormat) {
@@ -297,6 +318,8 @@ private fun Details(
                     onRemove = actions::removeDownload,
                     onRetry = actions::retryDownload,
                     onDownloadFormat = actions::downloadFormat,
+                    onNarration = actions::downloadNarration,
+                    onRemoveNarration = actions::removeNarration,
                 )
             }
             StatusPicker(publication, state.offline, statusEdit, host, actions::setStatus)

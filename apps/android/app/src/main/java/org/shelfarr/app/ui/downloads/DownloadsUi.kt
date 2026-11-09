@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -39,6 +40,9 @@ import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.DownloadProblem
 import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.DownloadState
+import org.shelfarr.app.core.NarrationState
+import org.shelfarr.app.core.ReadAlongSummary
+import org.shelfarr.app.core.defaultReadingAsset
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.core.downloadableAssets
@@ -51,6 +55,9 @@ import org.shelfarr.app.ui.theme.ShelfarrTheme
 
 /** What a download is doing, in words. Partial downloads never read as ready. */
 data class DownloadCopy(val title: String, val detail: String, val canRetry: Boolean = false)
+
+/** Read-along narration follows the EPUB, so it's offered only when the book downloads as one. */
+private fun defaultIsEpub(publication: Publication): Boolean = defaultReadingAsset(publication)?.isEpub == true
 
 /** The words on a stopped download's retry button. */
 fun retryLabel(record: DownloadRecord): String = when {
@@ -92,6 +99,60 @@ fun downloadCopy(record: DownloadRecord): DownloadCopy {
     }
 }
 
+/** What a book's read-along narration download is doing, and what can be done about it. */
+data class NarrationCopy(val text: String, val action: NarrationAction? = null, val progress: Float? = null)
+
+enum class NarrationAction(val label: String) {
+    DOWNLOAD("Download narration"),
+    UPDATE("Update narration"),
+    RETRY("Try narration again"),
+    STOP("Stop"),
+    REMOVE("Remove narration"),
+}
+
+/**
+ * Narration words for a book's download page. Null when there is nothing to say: no
+ * read-along for this edition and none kept. [current] is the server's summary, when known.
+ */
+fun narrationCopy(record: DownloadRecord, current: ReadAlongSummary?, offline: Boolean): NarrationCopy? {
+    if (!record.isReady) return null
+    val available = current?.takeIf { it.isAvailable }
+    val kept = record.narration?.takeIf { it.isReady }
+    val work = record.narrationWork
+    val size = available?.audioBytes?.takeIf { it > 0 }?.let { " · ${formatBytes(it)}" }.orEmpty()
+    return when {
+        record.narrationPending && work == null -> NarrationCopy("Preparing narration…", NarrationAction.STOP, 0f)
+        work != null && work.isActive -> {
+            val fraction = work.bytesTotal.takeIf { it > 0 }?.let { (work.bytesDone.toFloat() / it).coerceIn(0f, 1f) }
+            val label = if (kept != null) "Updating narration" else "Downloading narration"
+            NarrationCopy(
+                fraction?.let { "$label ${(it * 100).toInt()}%" } ?: label,
+                NarrationAction.STOP,
+                fraction ?: 0f,
+            )
+        }
+        work != null && work.state == NarrationState.FAILED -> {
+            val why = when (work.problem) {
+                DownloadProblem.OFFLINE -> "Narration paused: no connection. It continues when you're back online."
+                DownloadProblem.STORAGE -> "Narration didn't fit on this device. Free some space, then try again."
+                DownloadProblem.CHANGED -> "The narration changed on your server while downloading."
+                DownloadProblem.UNSUPPORTED -> "This edition no longer has narration on your server."
+                DownloadProblem.SIGN_IN -> "Narration stopped: signed out. Sign in to this account again to continue."
+                DownloadProblem.MISSING -> "Some narration files are no longer on this device."
+                DownloadProblem.INTERRUPTED -> "Narration stopped before it finished."
+                else -> "The narration didn't download."
+            }
+            val keptNote = if (kept != null) " The earlier narration on this device still plays offline." else " The book itself reads offline."
+            NarrationCopy(why + keptNote, NarrationAction.RETRY.takeIf { !offline && available != null })
+        }
+        kept != null && available != null && kept.generation != available.generation && !offline ->
+            NarrationCopy("Updated narration is on your server. The copy on this device still plays offline.", NarrationAction.UPDATE)
+        kept != null -> NarrationCopy("Narration is on this device, so you can read along offline.", NarrationAction.REMOVE)
+        available != null && !offline -> NarrationCopy("Narration for read-along isn't on this device$size.", NarrationAction.DOWNLOAD)
+        else -> null
+    }
+}
+
 private fun fileCount(record: DownloadRecord): String {
     if (record.files.size <= 1) return ""
     val done = record.files.count { it.complete }
@@ -111,6 +172,10 @@ fun DownloadPanel(
     modifier: Modifier = Modifier,
     /** Several reading formats and no saved one: Download asks which, then calls this. */
     onDownloadFormat: (ReadingFormat) -> Unit = {},
+    /** Read-along: download with (true) or without (false) the narration, or add it to a ready book. */
+    onNarration: (Boolean) -> Unit = {},
+    /** Deletes narration kept with the book: everything ([all]), or only an unfinished fetch. */
+    onRemoveNarration: (all: Boolean) -> Unit = {},
 ) {
     var confirmRemove by remember { mutableStateOf(false) }
     var choosing by remember { mutableStateOf(false) }
@@ -118,8 +183,33 @@ fun DownloadPanel(
     // A saved place keeps its format; with none, a book offered in several formats asks.
     val mustChoose = record == null && choices.size > 1 && choices.none { it.id == publication.progress?.assetId }
     val size = if (mustChoose) 0 else downloadableAssets(publication, record?.pinnedFormat).sumOf { it.sizeBytes }
+    val pinnedEpub = record?.files?.singleOrNull()?.assetId
+    val readAlong = (publication.assets.firstOrNull { it.id == pinnedEpub } ?: publication.epubAsset)?.readAlong
+    // Narration comes with a book that has a real alignment, unless the reader asks for the text alone.
+    val narration = readAlong?.takeIf { it.isAvailable && !mustChoose && publication.bookType == BookType.EBOOK && defaultIsEpub(publication) }
     Column(modifier.fillMaxWidth()) {
         when {
+            record == null && narration != null -> {
+                val audio = narration.audioBytes ?: 0
+                OutlinedButton(
+                    onClick = { onNarration(true) },
+                    enabled = !offline,
+                    border = BorderStroke(1.dp, ShelfarrTheme.extended.hairline),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Icon(ShelfarrIcons.Download, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (size + audio > 0) "Download with narration · ${formatBytes(size + audio)}" else "Download with narration")
+                }
+                Caption("Keeps the text and its narration, so you can read along without a connection.")
+                if (!offline) {
+                    TextButton(onClick = { onNarration(false) }) {
+                        Text(if (size > 0) "Download text only · ${formatBytes(size)}" else "Download text only")
+                    }
+                } else {
+                    Caption("Connect to your server to download.")
+                }
+            }
             record == null -> {
                 OutlinedButton(
                     onClick = if (mustChoose) ({ choosing = true }) else onDownload,
@@ -164,6 +254,26 @@ fun DownloadPanel(
                 } else if (copy.canRetry && !offline) {
                     TextButton(onClick = if (record.state == DownloadState.CANCELLED) onDownload else onRetry) {
                         Text(retryLabel(record))
+                    }
+                }
+                if (!outdated) narrationCopy(record, readAlong, offline)?.let { words ->
+                    words.progress?.let { ProgressRule(it, Modifier.padding(top = 8.dp, bottom = 2.dp)) }
+                    Caption(words.text)
+                    words.action?.let { action ->
+                        TextButton(onClick = {
+                            when (action) {
+                                NarrationAction.DOWNLOAD, NarrationAction.UPDATE, NarrationAction.RETRY -> onNarration(true)
+                                NarrationAction.STOP -> onRemoveNarration(false)
+                                NarrationAction.REMOVE -> onRemoveNarration(true)
+                            }
+                        }) {
+                            val label = if (action == NarrationAction.DOWNLOAD) {
+                                readAlong?.audioBytes?.takeIf { it > 0 }?.let { "${action.label} · ${formatBytes(it)}" } ?: action.label
+                            } else {
+                                action.label
+                            }
+                            Text(label)
+                        }
                     }
                 }
             }

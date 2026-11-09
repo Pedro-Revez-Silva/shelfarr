@@ -84,10 +84,43 @@ data class DownloadedFile(
     val bytesDone: Long = 0,
 )
 
+/** Where a book's read-along narration download is. The book itself is tracked by [DownloadRecord.state]. */
+@Serializable
+enum class NarrationState { QUEUED, DOWNLOADING, READY, FAILED }
+
+/**
+ * Read-along narration kept with a book: one manifest generation, its exact manifest
+ * bytes and every narration file it names. Usable only once all of them are complete.
+ */
+@Serializable
+data class NarrationDownload(
+    val generation: String,
+    val source: String,
+    /** The stored manifest's file name in the publication's folder. */
+    val manifest: String,
+    /** In the manifest's audio order. [DownloadedFile.assetId] is this download's own track id. */
+    val tracks: List<DownloadedFile>,
+    val state: NarrationState = NarrationState.QUEUED,
+    val problem: DownloadProblem? = null,
+) {
+    val isReady: Boolean get() = state == NarrationState.READY && tracks.isNotEmpty() && tracks.all { it.complete }
+    val isActive: Boolean get() = state == NarrationState.QUEUED || state == NarrationState.DOWNLOADING
+    val bytesTotal: Long get() = tracks.sumOf { it.sizeBytes.coerceAtLeast(0) }
+    val bytesDone: Long get() = tracks.sumOf { if (it.complete) it.sizeBytes.coerceAtLeast(it.bytesDone) else it.bytesDone }
+}
+
+/** A ready narration download's files, checked on disk, for playing offline. */
+data class LocalNarration(val generation: String, val manifest: File, val tracks: List<File>)
+
 /**
  * A publication kept on this device by the user's choice. It pins one edition: the
  * exact asset ids it was started with. It is only [DownloadState.READY] once every
  * pinned file is complete and verified.
+ *
+ * A book with read-along may also keep its narration ([narration]). That never changes
+ * whether the book itself is ready: the EPUB reads offline as soon as it is complete, and a
+ * failed or updating narration download leaves the book, and any complete earlier
+ * narration, exactly as usable as before.
  */
 @Serializable
 data class DownloadRecord(
@@ -102,8 +135,22 @@ data class DownloadRecord(
      * records written before PDF and CBZ, which are worked out from the pinned file.
      */
     val format: String? = null,
+    /** The person asked to keep this book's read-along narration too. */
+    val withNarration: Boolean = false,
+    /** Narration for one generation: ready, or being fetched for the first time. */
+    val narration: NarrationDownload? = null,
+    /** A newer generation being fetched while a complete [narration] stays in use. */
+    val narrationUpdate: NarrationDownload? = null,
+    /** Narration was asked for and the server's current generation hasn't been checked yet. */
+    val narrationPending: Boolean = false,
 ) {
     val pinnedAssetIds: List<String> get() = files.map { it.assetId }
+
+    /** The narration download that is being worked on, if any. */
+    val narrationWork: NarrationDownload?
+        get() = narrationUpdate ?: narration?.takeUnless { it.isReady }
+
+    val narrationActive: Boolean get() = narrationWork?.isActive == true || (narrationPending && narrationWork == null)
 
     /** The book format this download follows across editions. Null for audiobooks. */
     val pinnedFormat: ReadingFormat?
@@ -115,15 +162,48 @@ data class DownloadRecord(
         }
 
     /** Null when the server didn't state every size, so no honest total exists. */
-    val bytesTotal: Long? get() = if (files.any { it.sizeBytes <= 0 }) null else files.sumOf { it.sizeBytes }
+    val bytesTotal: Long?
+        get() = if (files.any { it.sizeBytes <= 0 }) null else files.sumOf { it.sizeBytes } + narrationBytes { it.bytesTotal }
 
-    val bytesDone: Long get() = files.sumOf { if (it.complete) it.sizeBytes.coerceAtLeast(it.bytesDone) else it.bytesDone }
+    val bytesDone: Long
+        get() = files.sumOf { if (it.complete) it.sizeBytes.coerceAtLeast(it.bytesDone) else it.bytesDone } + narrationBytes { it.bytesDone }
+
+    private inline fun narrationBytes(measure: (NarrationDownload) -> Long): Long =
+        (narration?.let(measure) ?: 0L) + (narrationUpdate?.let(measure) ?: 0L)
 
     val fraction: Float? get() = bytesTotal?.takeIf { it > 0 }?.let { (bytesDone.toFloat() / it).coerceIn(0f, 1f) }
 
     val isReady: Boolean get() = state == DownloadState.READY
 
-    val isActive: Boolean get() = state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING
+    /** Transferring or waiting to: the book's files, or its narration after the book is ready. */
+    val isActive: Boolean
+        get() = state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING || (state == DownloadState.READY && narrationActive)
+
+    /** Stops whatever is active for [problem]: the book when it isn't ready, otherwise only its narration. */
+    internal fun stopped(problem: DownloadProblem, at: Long): DownloadRecord = when {
+        state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING ->
+            copy(state = DownloadState.FAILED, problem = problem, updatedAtEpochMs = at)
+        narrationActive -> withNarrationWork { it.copy(state = NarrationState.FAILED, problem = problem) }
+            .copy(updatedAtEpochMs = at, narrationPending = false)
+        else -> this
+    }
+
+    /** Back to waiting for a host, keeping every byte. */
+    internal fun requeued(): DownloadRecord = when {
+        state == DownloadState.DOWNLOADING || state == DownloadState.QUEUED -> copy(state = DownloadState.QUEUED)
+        narrationActive -> withNarrationWork { it.copy(state = NarrationState.QUEUED) }
+        else -> this
+    }
+
+    /** True when narration stopped for [problems], so it may be resumed like the book's own files. */
+    internal fun narrationFailedFor(problems: Set<DownloadProblem>): Boolean =
+        state == DownloadState.READY && narrationWork?.let { it.state == NarrationState.FAILED && it.problem in problems } == true
+
+    internal fun withNarrationWork(transform: (NarrationDownload) -> NarrationDownload): DownloadRecord = when {
+        narrationUpdate != null -> copy(narrationUpdate = transform(narrationUpdate))
+        narration != null && !narration.isReady -> copy(narration = transform(narration))
+        else -> this
+    }
 
     /** True when [current] is the same edition, in the same format, as this download pinned. */
     fun matches(current: Publication): Boolean = downloadableAssets(current, pinnedFormat).map { it.id } == pinnedAssetIds
@@ -179,10 +259,24 @@ class DownloadManager(
 ) {
     private val manifestFile = File(root, "manifest.json")
     private val orders = ReadingOrderClient(client)
+    private val api = ConsumerApi(client)
     private val manifestMutex = Mutex()
     private val permits = Semaphore(maxConcurrent)
     private val jobs = HashMap<String, Job>()
     private val jobsLock = Any()
+
+    /**
+     * Bumped whenever a book's narration is removed, or the book cancelled or removed. A
+     * narration fetch started under an earlier epoch may no longer save, pin or promote
+     * anything, even if it was suspended (fetching its manifest) when that happened.
+     */
+    private val narrationEpochs = HashMap<String, Int>()
+
+    private fun narrationEpoch(publicationId: String): Int = synchronized(jobsLock) { narrationEpochs[publicationId] ?: 0 }
+
+    private fun invalidateNarration(publicationId: String) = synchronized(jobsLock) {
+        narrationEpochs[publicationId] = (narrationEpochs[publicationId] ?: 0) + 1
+    }
 
     @Volatile
     private var closed = false
@@ -210,7 +304,8 @@ class DownloadManager(
     /** Bytes still to fetch for queued and running downloads, for the OS's transfer estimate. */
     val remainingBytes: Long
         get() = mutableRecords.value.values.filter { it.isActive }.sumOf { record ->
-            record.files.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
+            (record.files + record.narrationWork?.tracks.orEmpty()).filterNot { it.complete }
+                .sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
         }
 
     /**
@@ -221,7 +316,7 @@ class DownloadManager(
     suspend fun resumeQueued() {
         load()
         mutableRecords.value.values
-            .filter { it.isActive || (it.state == DownloadState.FAILED && it.problem == DownloadProblem.SIGN_IN) }
+            .filter { it.isActive || it.stoppedForSignIn }
             .forEach { launch(it.publicationId) }
     }
 
@@ -229,7 +324,7 @@ class DownloadManager(
     suspend fun resumeAfterSignIn() {
         load()
         mutableRecords.value.values
-            .filter { it.state == DownloadState.FAILED && it.problem == DownloadProblem.SIGN_IN }
+            .filter { it.stoppedForSignIn }
             .forEach { retry(it.publicationId) }
     }
 
@@ -246,9 +341,7 @@ class DownloadManager(
             inherited.clear()
             if (stale.isEmpty()) return@withLock
             mutableRecords.update { records ->
-                records + stale.associateWith { id ->
-                    records.getValue(id).copy(state = DownloadState.FAILED, problem = DownloadProblem.INTERRUPTED, updatedAtEpochMs = clock())
-                }
+                records + stale.associateWith { id -> records.getValue(id).stopped(DownloadProblem.INTERRUPTED, clock()) }
             }
             if (!persistLocked()) Log.w(TAG, "Could not record interrupted downloads")
         }
@@ -270,8 +363,8 @@ class DownloadManager(
                 records.mapValues { (_, record) ->
                     when {
                         !record.isActive -> record
-                        interrupted -> record.copy(state = DownloadState.FAILED, problem = DownloadProblem.INTERRUPTED, updatedAtEpochMs = clock())
-                        else -> record.copy(state = DownloadState.QUEUED)
+                        interrupted -> record.stopped(DownloadProblem.INTERRUPTED, clock())
+                        else -> record.requeued()
                     }
                 }
             }
@@ -288,7 +381,7 @@ class DownloadManager(
         mutableRecords.value = checked
         if (checked != stored && !persistLocked()) {
             mutableRecords.update { records -> records.mapValues { (_, record) ->
-                if (record.isActive) record.copy(state = DownloadState.FAILED, problem = DownloadProblem.STORAGE) else record
+                if (record.isActive) record.stopped(DownloadProblem.STORAGE, record.updatedAtEpochMs) else record
             } }
         }
     }
@@ -315,10 +408,42 @@ class DownloadManager(
             else -> record.state
         }
         val problem = if (record.state == DownloadState.READY && !allComplete) DownloadProblem.MISSING else record.problem
-        return record.copy(files = files, state = state, problem = problem)
+        return record.copy(
+            files = files,
+            state = state,
+            problem = problem,
+            narration = record.narration?.let { reconcile(folder, it) },
+            narrationUpdate = record.narrationUpdate?.let { reconcile(folder, it) },
+        )
+    }
+
+    /** Narration is ready only while its manifest and every file are still on disk at their sizes. */
+    private fun reconcile(folder: File, narration: NarrationDownload): NarrationDownload {
+        val tracks = narration.tracks.map { file ->
+            val final = File(folder, file.name)
+            val partial = File(folder, file.name + PART)
+            when {
+                file.complete && final.isFile && final.length() == file.sizeBytes -> file.copy(bytesDone = final.length())
+                file.complete -> file.copy(complete = false, bytesDone = 0)
+                else -> file.copy(bytesDone = if (partial.isFile) partial.length() else 0)
+            }
+        }
+        val manifestPresent = File(folder, narration.manifest).isFile
+        val whole = manifestPresent && tracks.isNotEmpty() && tracks.all { it.complete }
+        val state = when {
+            narration.state == NarrationState.READY && !whole -> NarrationState.FAILED
+            narration.state == NarrationState.DOWNLOADING -> NarrationState.QUEUED
+            else -> narration.state
+        }
+        val problem = if (narration.state == NarrationState.READY && !whole) DownloadProblem.MISSING else narration.problem
+        return narration.copy(tracks = tracks, state = state, problem = problem)
     }
 
     fun record(publicationId: String): DownloadRecord? = mutableRecords.value[publicationId]
+
+    private val DownloadRecord.stoppedForSignIn: Boolean
+        get() = (state == DownloadState.FAILED && problem == DownloadProblem.SIGN_IN) ||
+            narrationFailedFor(setOf(DownloadProblem.SIGN_IN))
 
     /** Like [record], but waits for the manifest to load, for use straight after launch. */
     suspend fun find(publicationId: String): DownloadRecord? {
@@ -342,6 +467,21 @@ class DownloadManager(
         return ReadingOrderFile.read(File(file.path + ORDER))
     }
 
+    /**
+     * The book's complete narration, checked on disk: its manifest and every file, for one
+     * generation. Null unless the book itself is ready too. A partial or missing set is never offered.
+     */
+    fun narrationFor(record: DownloadRecord): LocalNarration? {
+        if (!record.isReady) return null
+        val narration = record.narration?.takeIf { it.isReady } ?: return null
+        val folder = folder(record.publicationId)
+        val manifest = File(folder, narration.manifest).takeIf { it.isFile } ?: return null
+        val tracks = narration.tracks.map { track ->
+            File(folder, track.name).takeIf { it.isFile && it.length() == track.sizeBytes } ?: return null
+        }
+        return LocalNarration(narration.generation, manifest, tracks)
+    }
+
     /** Local files for every pinned asset, in order, or null unless the whole download is ready. */
     fun filesFor(record: DownloadRecord): Map<String, File>? {
         val found = record.files.associate { it.assetId to fileFor(record, it.assetId) }
@@ -354,13 +494,26 @@ class DownloadManager(
      * Queues [publication]. The job fetches the current edition before transferring,
      * so a download never pins details that were already stale on screen.
      */
-    suspend fun enqueue(publication: Publication, format: ReadingFormat? = null) {
+    suspend fun enqueue(publication: Publication, format: ReadingFormat? = null, narration: Boolean? = null) {
         if (closed) return
         load()
         val existing = record(publication.id)
+        val withNarration = narration ?: existing?.withNarration ?: false
         if (existing != null && existing.isActive) {
+            if (withNarration != existing.withNarration) save(existing.copy(withNarration = withNarration))
             // Already queued; make sure something will run it.
             onQueued()
+            return
+        }
+        // A ready book that only needs its narration stays readable while that is fetched.
+        if (existing != null && existing.isReady && existing.matches(publication) && (format == null || existing.pinnedFormat == format)) {
+            if (!withNarration) return
+            val queued = existing.copy(withNarration = true, narrationPending = true, publication = publication, updatedAtEpochMs = clock())
+                .withNarrationWork { it.copy(state = NarrationState.QUEUED, problem = null) }
+            // Whether anything is new is settled by the job, against the server's current generation.
+            if (!save(queued)) return
+            onQueued()
+            launch(publication.id)
             return
         }
         // An explicit choice, else the format this download already keeps while the edition has it.
@@ -369,10 +522,17 @@ class DownloadManager(
         val assets = downloadableAssets(publication, chosen)
         val sameFormat = format == null || existing?.pinnedFormat == format
         val record = if (existing != null && sameFormat && existing.matches(publication) && existing.state != DownloadState.CANCELLED) {
-            existing.copy(state = DownloadState.QUEUED, problem = null, publication = publication, updatedAtEpochMs = clock())
+            existing.copy(
+                state = DownloadState.QUEUED, problem = null, publication = publication, updatedAtEpochMs = clock(),
+                withNarration = withNarration, narrationPending = withNarration,
+            )
         } else {
             if (existing != null) withContext(Dispatchers.IO) { folder(publication.id).deleteRecursively() }
-            DownloadRecord(publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock(), format = chosen?.wire)
+            DownloadRecord(
+                publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock(), format = chosen?.wire,
+                withNarration = withNarration && chosen == ReadingFormat.EPUB,
+                narrationPending = withNarration && chosen == ReadingFormat.EPUB,
+            )
         }
         if (!save(record)) return
         onQueued()
@@ -389,27 +549,32 @@ class DownloadManager(
     suspend fun retryInterrupted() {
         load()
         mutableRecords.value.values
-            .filter { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
+            .filter { (it.state == DownloadState.FAILED && it.problem in TRANSIENT) || it.narrationFailedFor(TRANSIENT) }
             .forEach { retry(it.publicationId) }
     }
 
     /** Downloads that stopped for a reason that may pass by itself, so a host may retry them later. */
     val hasTransientFailures: Boolean
-        get() = mutableRecords.value.values.any { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
+        get() = mutableRecords.value.values.any { (it.state == DownloadState.FAILED && it.problem in TRANSIENT) || it.narrationFailedFor(TRANSIENT) }
 
     /** Re-queues and starts downloads that stopped for a transient reason. For a running host only. */
     suspend fun resumeTransient() {
         load()
         mutableRecords.value.values
-            .filter { it.state == DownloadState.FAILED && it.problem in TRANSIENT }
+            .filter { (it.state == DownloadState.FAILED && it.problem in TRANSIENT) || it.narrationFailedFor(TRANSIENT) }
             .forEach { failed ->
-                val queued = failed.copy(state = DownloadState.QUEUED, problem = null, updatedAtEpochMs = clock())
+                val queued = if (failed.state == DownloadState.READY) {
+                    failed.withNarrationWork { it.copy(state = NarrationState.QUEUED, problem = null) }
+                } else {
+                    failed.copy(state = DownloadState.QUEUED, problem = null, updatedAtEpochMs = clock())
+                }
                 if (save(queued)) launch(failed.publicationId)
             }
     }
 
     /** Stops a transfer and deletes what it wrote. The entry stays, marked cancelled. */
     suspend fun cancel(publicationId: String) {
+        invalidateNarration(publicationId)
         stopJob(publicationId)
         val record = record(publicationId) ?: return
         withContext(Dispatchers.IO) { folder(publicationId).deleteRecursively() }
@@ -419,12 +584,40 @@ class DownloadManager(
                 problem = null,
                 files = record.files.map { it.copy(complete = false, bytesDone = 0, etag = null) },
                 updatedAtEpochMs = clock(),
+                narration = null,
+                narrationUpdate = null,
             ),
         )
     }
 
+    /**
+     * Stops fetching narration and deletes what that fetch wrote. A complete earlier
+     * narration is kept when only an update is being fetched; [removeAll] deletes that too.
+     * The book itself is never touched.
+     */
+    suspend fun removeNarration(publicationId: String, removeAll: Boolean = true) {
+        record(publicationId) ?: return
+        // Whatever fetch is under way, even one still waiting for its manifest, ends here.
+        invalidateNarration(publicationId)
+        val wasRunning = synchronized(jobsLock) { jobs[publicationId]?.isActive == true }
+        stopJob(publicationId)
+        val record = record(publicationId) ?: return
+        val keep = record.narration?.takeIf { !removeAll && it.isReady }
+        withContext(Dispatchers.IO) {
+            // Every narration file but the kept set: also bytes a stopped fetch wrote before recording them.
+            val kept = keep?.let { set -> set.tracks.map { it.name }.toSet() + set.manifest }.orEmpty()
+            folder(publicationId).listFiles().orEmpty()
+                .filter { it.name.startsWith(NARRATION_PREFIX) && it.name.substringBefore(PART) !in kept && it.name.removeSuffix(".tmp") !in kept }
+                .forEach { it.delete() }
+        }
+        save(record.copy(withNarration = keep != null, narration = keep, narrationUpdate = null, narrationPending = false, updatedAtEpochMs = clock()))
+        // The book's own files may have been transferring in the stopped job.
+        if (wasRunning && record.state != DownloadState.READY) launch(publicationId)
+    }
+
     /** Stops any transfer and deletes the download and its entry. */
     suspend fun remove(publicationId: String) {
+        invalidateNarration(publicationId)
         stopJob(publicationId)
         withContext(Dispatchers.IO) { folder(publicationId).deleteRecursively() }
         manifestMutex.withLock {
@@ -451,7 +644,7 @@ class DownloadManager(
                 if (closed) return@withLock
                 mutableRecords.update { records ->
                     records.mapValues { (_, record) ->
-                        if (record.isActive) record.copy(state = DownloadState.FAILED, problem = DownloadProblem.SIGN_IN) else record
+                        if (record.isActive) record.stopped(DownloadProblem.SIGN_IN, clock()) else record
                     }
                 }
                 if (!persistLocked()) Log.w(TAG, "Could not record downloads stopped by sign-in")
@@ -496,16 +689,23 @@ class DownloadManager(
 
     private suspend fun run(publicationId: String) {
         var record = record(publicationId) ?: return
-        if (!record.isActive && !(record.state == DownloadState.FAILED && record.problem == DownloadProblem.SIGN_IN)) return
+        if (!record.isActive && !record.stoppedForSignIn) return
+        val current: Publication
         try {
             // Re-pin against the server's current edition before moving any bytes.
-            val current = fetchPublication(publicationId)
+            current = fetchPublication(publicationId)
             if (!record.matches(current)) {
                 folder(publicationId).deleteRecursively()
-                record = record.copy(files = pin(downloadableAssets(current, record.pinnedFormat)))
+                record = record.copy(files = pin(downloadableAssets(current, record.pinnedFormat)), narration = null, narrationUpdate = null)
             }
             if (record.files.isEmpty()) throw Unsupported()
-            record = record.copy(publication = current, state = DownloadState.DOWNLOADING, problem = null, updatedAtEpochMs = clock())
+            // Complete, verified files stay readable while anything else is fetched.
+            val bookDone = record.files.all { it.complete } && record.state != DownloadState.CANCELLED
+            record = if (bookDone) {
+                record.copy(publication = current, state = DownloadState.READY, problem = null)
+            } else {
+                record.copy(publication = current, state = DownloadState.DOWNLOADING, problem = null, updatedAtEpochMs = clock())
+            }
             if (!save(record)) return
 
             val remaining = record.files.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
@@ -521,7 +721,9 @@ class DownloadManager(
             }
             val finished = record(publicationId) ?: return
             if (finished.files.isEmpty() || !finished.files.all { it.complete }) throw ApiException.Protocol()
-            save(finished.copy(state = DownloadState.READY, problem = null, updatedAtEpochMs = clock()))
+            if (finished.state != DownloadState.READY) {
+                save(finished.copy(state = DownloadState.READY, problem = null, updatedAtEpochMs = clock()))
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
@@ -536,7 +738,269 @@ class DownloadManager(
                 }
                 save(latest.copy(state = DownloadState.FAILED, problem = problem, files = files, updatedAtEpochMs = clock()))
             }
+            return
         }
+        narrate(publicationId, current)
+    }
+
+    /**
+     * Fetches a ready book's read-along narration, when it was asked for and the server has a
+     * current generation: the exact manifest bytes first, then every narration file. EPUB
+     * Media Overlay audio is copied out of the verified EPUB on this device; an imported
+     * alignment's audiobook files are fetched with this account's normal transfer.
+     *
+     * A newer generation is fetched beside a complete earlier one, which stays in use until
+     * the new set is whole. Failing never touches the book or the earlier narration.
+     */
+    private suspend fun narrate(publicationId: String, current: Publication) {
+        val epoch = narrationEpoch(publicationId)
+        val record = record(publicationId) ?: return
+        if (!record.isReady || !record.withNarration) {
+            if (record.narrationPending) save(record.copy(narrationPending = false))
+            return
+        }
+        val pinned = record.files.singleOrNull() ?: return
+        val asset = current.assets.firstOrNull { it.id == pinned.assetId && it.isEpub }
+        val summary = asset?.readAlong?.takeIf { it.isAvailable }
+        if (asset == null || summary == null) {
+            // Nothing current to fetch. A complete copy is still a coherent set for this EPUB and stays.
+            val settled = record.copy(narrationPending = false)
+            save(if (record.narrationWork?.isActive == true || record.narration?.isReady != true) {
+                settled.withNarrationWork { it.copy(state = NarrationState.FAILED, problem = DownloadProblem.UNSUPPORTED) }
+            } else {
+                settled
+            })
+            return
+        }
+        val generation = requireNotNull(summary.generation)
+        if (record.narration?.let { it.isReady && it.generation == generation } == true) {
+            record.narrationUpdate?.let { stale -> deleteNarration(publicationId, stale) }
+            save(record.copy(narrationUpdate = null, narrationPending = false))
+            return
+        }
+        try {
+            // A failure recorded before any manifest was stored is no work to resume.
+            var work = record.narrationWork?.takeIf { it.generation == generation && it.manifest.isNotEmpty() }
+            if (work == null) {
+                record.narrationWork?.let { stale -> deleteNarration(publicationId, stale) }
+                work = pinNarration(publicationId, asset, summary)
+                if (!stillWanted(publicationId, epoch)) {
+                    deleteNarration(publicationId, work)
+                    return
+                }
+                val latest = record(publicationId) ?: return
+                val placed = if (latest.narration?.isReady == true) {
+                    latest.copy(narrationUpdate = work, narrationPending = false)
+                } else {
+                    latest.copy(narration = work, narrationUpdate = null, narrationPending = false)
+                }
+                if (!save(placed)) return
+            }
+            val manifest = readStoredManifest(publicationId, work, asset.id) ?: throw EditionChanged()
+            setNarrationWork(publicationId) { it.copy(state = NarrationState.DOWNLOADING, problem = null) }
+            val remaining = work.tracks.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
+            if (usableSpace() < remaining + SPACE_MARGIN_BYTES) throw StorageFailure(IOException("Not enough space"))
+            val epub = File(folder(publicationId), pinned.name)
+            for ((index, file) in work.tracks.withIndex()) {
+                coroutineContextActive()
+                val latest = narrationTrack(publicationId, file.assetId) ?: throw EditionChanged()
+                if (latest.complete) continue
+                val track = manifest.tracks[index]
+                when (track.kind) {
+                    NarrationKind.EPUB_RESOURCE -> extractNarration(publicationId, epub, requireNotNull(track.href), latest)
+                    NarrationKind.PUBLICATION_ASSET -> transferNarration(publicationId, requireNotNull(track.contentUrl), latest)
+                }
+            }
+            if (!stillWanted(publicationId, epoch)) return
+            completeNarration(publicationId, generation, epoch)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            val problem = classify(error)
+            withContext(NonCancellable) {
+                if (!stillWanted(publicationId, epoch)) return@withContext
+                val latest = record(publicationId) ?: return@withContext
+                val work = latest.narrationWork ?: run {
+                    // Failed before any work was recorded (the manifest itself): say so on the ready book.
+                    val failed = NarrationDownload(requireNotNull(summary.generation), summary.source.orEmpty(), "", emptyList(), NarrationState.FAILED, problem)
+                    save(if (latest.narration?.isReady == true) latest.copy(narrationUpdate = failed, narrationPending = false) else latest.copy(narration = failed, narrationPending = false))
+                    return@withContext
+                }
+                if (problem == DownloadProblem.CHANGED) deleteNarration(publicationId, work)
+                save(
+                    latest.withNarrationWork {
+                        val tracks = if (problem == DownloadProblem.CHANGED) it.tracks.map { file -> file.copy(complete = false, bytesDone = 0, etag = null) } else it.tracks
+                        it.copy(state = NarrationState.FAILED, problem = problem, tracks = tracks)
+                    }.copy(updatedAtEpochMs = clock(), narrationPending = false),
+                )
+            }
+        }
+    }
+
+    /** Fetches and stores the manifest for [summary]'s generation, then pins its narration files. */
+    private suspend fun pinNarration(publicationId: String, asset: Asset, summary: ReadAlongSummary): NarrationDownload {
+        val generation = requireNotNull(summary.generation)
+        val manifestUrl = requireNotNull(summary.manifestUrl)
+        val fetched = when (val result = api.readAlong(server, manifestUrl, asset.id, generation)) {
+            is ReadAlongFetch.Available -> result
+            is ReadAlongFetch.Refused -> throw if (result.kind == ReadAlongRefused.Kind.CHANGED) EditionChanged() else ApiException.Protocol()
+            // Unaligned, stale or invalid since the details were read.
+            is ReadAlongFetch.Unavailable -> throw EditionChanged()
+        }
+        val key = generation.take(12)
+        val name = "$NARRATION_PREFIX$key.json"
+        withContext(Dispatchers.IO) {
+            try {
+                val folder = folder(publicationId).apply { mkdirs() }
+                val temporary = File(folder, "$name.tmp")
+                temporary.writeBytes(fetched.body)
+                if (!temporary.renameTo(File(folder, name))) throw IOException("Could not save the narration manifest")
+            } catch (error: IOException) {
+                throw StorageFailure(error)
+            }
+        }
+        val tracks = fetched.readAlong.tracks.map { track ->
+            DownloadedFile("narration:$key:${track.index}", "$NARRATION_PREFIX$key-%04d.%s".format(track.index, narrationExtension(track)), track.sizeBytes)
+        }
+        return NarrationDownload(generation, fetched.readAlong.source.wire, name, tracks)
+    }
+
+    /** The stored manifest for [work], read and checked again, or null when it is missing or no longer matches. */
+    private suspend fun readStoredManifest(publicationId: String, work: NarrationDownload, ebookAssetId: String): ReadAlong? =
+        withContext(Dispatchers.IO) {
+            val file = File(folder(publicationId), work.manifest)
+            if (!file.isFile) return@withContext null
+            val manifest = try {
+                file.inputStream().use { ReadAlong.read(it, ebookAssetId, work.generation, server) }
+            } catch (_: ReadAlongRefused) {
+                return@withContext null
+            } catch (error: IOException) {
+                throw StorageFailure(error)
+            }
+            manifest.takeIf { it.tracks.size == work.tracks.size && it.tracks.zip(work.tracks).all { (track, file) -> track.sizeBytes == file.sizeBytes } }
+        }
+
+    /** Copies one Media Overlay audio entry out of the verified EPUB, checking it is exactly the size the manifest states. */
+    private suspend fun extractNarration(publicationId: String, epub: File, href: String, pinned: DownloadedFile) {
+        val folder = folder(publicationId)
+        val partial = File(folder, pinned.name + PART)
+        val final = File(folder, pinned.name)
+        val context = kotlin.coroutines.coroutineContext
+        withContext(Dispatchers.IO) {
+            try {
+                java.util.zip.ZipFile(epub).use { zip ->
+                    val entry = zip.getEntry(href)?.takeUnless { it.isDirectory } ?: throw ApiException.Protocol()
+                    if (entry.size >= 0 && entry.size != pinned.sizeBytes) throw ApiException.Protocol()
+                    zip.getInputStream(entry).use { input ->
+                        partial.outputStream().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            var written = 0L
+                            while (true) {
+                                context.ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                written += count
+                                if (written > pinned.sizeBytes) throw ApiException.Protocol()
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                }
+            } catch (error: java.util.zip.ZipException) {
+                partial.delete()
+                throw ApiException.Protocol(error)
+            } catch (error: IOException) {
+                partial.delete()
+                throw StorageFailure(error)
+            }
+        }
+        if (partial.length() != pinned.sizeBytes) {
+            partial.delete()
+            throw ApiException.Protocol()
+        }
+        final.delete()
+        if (!partial.renameTo(final)) throw StorageFailure(IOException("Could not finish the narration file"))
+        updateFile(publicationId, pinned.assetId, persist = true) { it.copy(complete = true, bytesDone = pinned.sizeBytes) }
+    }
+
+    /** Downloads one audiobook file of an imported alignment, resuming with Range + If-Range when provably safe. */
+    private suspend fun transferNarration(publicationId: String, contentUrl: String, pinned: DownloadedFile) {
+        val url = server.resolve(contentUrl)?.takeIf(server::contains) ?: throw ApiException.Protocol()
+        val folder = folder(publicationId).apply { mkdirs() }
+        val partial = File(folder, pinned.name + PART)
+        val final = File(folder, pinned.name)
+        val strongTag = pinned.etag?.takeUnless { it.startsWith("W/") }
+        val offset = if (partial.isFile && strongTag != null) partial.length() else 0L
+        if (offset == 0L) partial.delete()
+        if (offset < pinned.sizeBytes || offset == 0L) {
+            val request = Request.Builder().url(url).apply {
+                if (offset > 0) {
+                    header("Range", "bytes=$offset-")
+                    header("If-Range", strongTag.orEmpty())
+                }
+            }.build()
+            call(request).use { response ->
+                val tag = response.header("ETag")
+                val append = when {
+                    response.code == 206 && offset > 0 && contentRangeStart(response) == offset -> true
+                    response.code == 200 -> {
+                        if (pinned.etag != null && tag != pinned.etag) throw EditionChanged()
+                        false
+                    }
+                    response.code == 412 || response.code == 416 -> throw EditionChanged()
+                    else -> fail(response)
+                }
+                if (!append) updateFile(publicationId, pinned.assetId) { it.copy(etag = tag, bytesDone = 0) }
+                write(publicationId, pinned.assetId, response, partial, append, pinned.sizeBytes)
+            }
+        }
+        if (partial.length() != pinned.sizeBytes) {
+            partial.delete()
+            updateFile(publicationId, pinned.assetId) { it.copy(bytesDone = 0, etag = null) }
+            throw ApiException.Protocol()
+        }
+        final.delete()
+        if (!partial.renameTo(final)) throw StorageFailure(IOException("Could not finish the narration file"))
+        updateFile(publicationId, pinned.assetId, persist = true) { it.copy(complete = true, bytesDone = pinned.sizeBytes) }
+    }
+
+    /** Marks [generation]'s narration whole, replacing (and only then deleting) an earlier complete one. */
+    private suspend fun completeNarration(publicationId: String, generation: String, epoch: Int) {
+        if (!stillWanted(publicationId, epoch)) return
+        val latest = record(publicationId) ?: return
+        val work = latest.narrationWork?.takeIf { it.generation == generation } ?: return
+        if (!work.tracks.all { it.complete }) throw ApiException.Protocol()
+        val done = work.copy(state = NarrationState.READY, problem = null)
+        val previous = latest.narration?.takeIf { latest.narrationUpdate != null }
+        if (!save(latest.copy(narration = done, narrationUpdate = null, updatedAtEpochMs = clock()))) return
+        previous?.let { deleteNarration(publicationId, it) }
+    }
+
+    /** The narration fetch started under [epoch] may still change anything. */
+    private fun stillWanted(publicationId: String, epoch: Int): Boolean =
+        narrationEpoch(publicationId) == epoch && record(publicationId)?.withNarration == true
+
+    private suspend fun setNarrationWork(publicationId: String, transform: (NarrationDownload) -> NarrationDownload) {
+        val latest = record(publicationId) ?: return
+        save(latest.withNarrationWork(transform))
+    }
+
+    private fun narrationTrack(publicationId: String, trackId: String): DownloadedFile? =
+        record(publicationId)?.narrationWork?.tracks?.firstOrNull { it.assetId == trackId }
+
+    private suspend fun deleteNarration(publicationId: String, narration: NarrationDownload) = withContext(Dispatchers.IO) {
+        val folder = folder(publicationId)
+        if (narration.manifest.startsWith(NARRATION_PREFIX)) File(folder, narration.manifest).delete()
+        narration.tracks.forEach { track ->
+            File(folder, track.name).delete()
+            File(folder, track.name + PART).delete()
+        }
+    }
+
+    private fun narrationExtension(track: NarrationTrack): String {
+        NARRATION_EXTENSIONS[track.mediaType]?.let { return it }
+        val name = track.filename ?: track.href.orEmpty()
+        return name.substringAfterLast('.', "").lowercase().takeIf { it.matches(Regex("[a-z0-9]{1,5}")) } ?: "bin"
     }
 
     private suspend fun coroutineContextActive() = kotlin.coroutines.coroutineContext.ensureActive()
@@ -735,10 +1199,17 @@ class DownloadManager(
         transform: (DownloadedFile) -> DownloadedFile,
     ) = manifestMutex.withLock {
         val record = mutableRecords.value[publicationId] ?: return@withLock
-        val updated = record.copy(files = record.files.map { if (it.assetId == assetId) transform(it) else it })
+        fun List<DownloadedFile>.changed() = map { if (it.assetId == assetId) transform(it) else it }
+        val updated = record.copy(
+            files = record.files.changed(),
+            narration = record.narration?.let { it.copy(tracks = it.tracks.changed()) },
+            narrationUpdate = record.narrationUpdate?.let { it.copy(tracks = it.tracks.changed()) },
+        )
         mutableRecords.update { it + (publicationId to updated) }
         // Validators must be on disk before the body, so an interrupted transfer can resume.
-        val validatorChanged = updated.files.zip(record.files).any { (after, before) -> after.etag != before.etag }
+        fun DownloadRecord.validators() = files.map { it.etag } + narration?.tracks.orEmpty().map { it.etag } +
+            narrationUpdate?.tracks.orEmpty().map { it.etag }
+        val validatorChanged = updated.validators() != record.validators()
         if ((persist || validatorChanged) && !persistLocked()) throw StorageFailure(IOException("Could not save downloads"))
     }
 
@@ -819,10 +1290,16 @@ class DownloadManager(
     private companion object {
         const val TAG = "ShelfarrDownloads"
         const val PART = ".part"
+        /** Every narration file of a book's folder starts with this, and nothing else does. */
+        const val NARRATION_PREFIX = "ra-"
         /** Beside a CBZ: its verified reading order. */
         const val ORDER = ".order.json"
         const val REPORT_EVERY_BYTES = 256L * 1024
         const val SPACE_MARGIN_BYTES = 64L * 1024 * 1024
         val TRANSIENT = setOf(DownloadProblem.OFFLINE, DownloadProblem.SERVER)
+        val NARRATION_EXTENSIONS = mapOf(
+            "audio/mpeg" to "mp3", "audio/mp4" to "m4a", "audio/aac" to "aac", "audio/ogg" to "ogg", "audio/opus" to "opus",
+            "audio/flac" to "flac", "audio/wav" to "wav", "audio/x-wav" to "wav", "audio/wave" to "wav",
+        )
     }
 }

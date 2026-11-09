@@ -454,6 +454,11 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
                         viewModel.prepareDownload(format)
                         startDownload()
                     }
+
+                    override fun downloadNarration(include: Boolean) {
+                        viewModel.prepareDownload(null, include)
+                        startDownload()
+                    }
                 }
             }
             DetailsScreen(
