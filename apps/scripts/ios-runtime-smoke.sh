@@ -131,11 +131,24 @@ for runtime, devices in json.load(sys.stdin)["devices"].items():
 
 python3 -B RuntimeSmoke/smoke_server.py --port "$port" --control-port "$control_port" > "$out/server.log" 2>&1 &
 server_pid=$!
-for _ in $(seq 1 50); do
-  curl -fsS "http://127.0.0.1:$control_port/stats" > /dev/null 2>&1 && break
+# Wait for the fixture server to answer, for as long as it is alive. Right after a cold
+# simulator boot a hosted runner can take well over ten seconds to start Python (the
+# iPad pass of the Xcode 26 lane died here with an empty server log).
+ready=0
+for _ in $(seq 1 300); do
+  if curl -fsS "http://127.0.0.1:$control_port/stats" > /dev/null 2>&1; then ready=1; break; fi
+  kill -0 "$server_pid" 2>/dev/null || break
   sleep 0.2
 done
-curl -fsS "http://127.0.0.1:$control_port/stats" > /dev/null
+if [ "$ready" -ne 1 ]; then
+  if kill -0 "$server_pid" 2>/dev/null; then
+    echo "The fixture server did not answer on port $control_port within 60 seconds." >&2
+  else
+    echo "The fixture server exited before answering on port $control_port." >&2
+  fi
+  cat "$out/server.log" >&2 || true
+  exit 1
+fi
 
 status=0
 # The download daemon identifies its client through the code signature. Ad-hoc
