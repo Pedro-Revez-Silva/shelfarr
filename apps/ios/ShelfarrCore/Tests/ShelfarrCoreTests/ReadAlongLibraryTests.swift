@@ -302,6 +302,34 @@ final class ReadingRestorationElementTests: XCTestCase {
         XCTAssertEqual(restoring.elementShown(false, for: further), .none, "answered once")
     }
 
+    func testAnAbandonedElementCheckKeepsRepeatedReportsSilent() {
+        var restoring = ReadingRestoration(opening: target)
+        let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+        _ = restoring.observe(shown)
+        _ = restoring.elementShown(true, for: shown)
+        let unanswered = report("OEBPS/c1.xhtml", 0.6, 0.8)
+        XCTAssertEqual(restoring.observe(unanswered), .confirm(target: target))
+        restoring.abandonVerification(for: unanswered)
+        XCTAssertFalse(restoring.isVerifying)
+        XCTAssertEqual(restoring.observe(unanswered), .none, "repeating an unanswered report is not new navigation")
+        XCTAssertEqual(restoring.elementShown(false, for: unanswered), .none, "a late answer cannot revive the abandoned turn")
+        XCTAssertEqual(restoring.observe(shown), .record, "a genuine backward turn still records")
+    }
+
+    func testAbandoningAnOlderCheckDoesNotDiscardANewerTurn() {
+        var restoring = ReadingRestoration(opening: target)
+        let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+        _ = restoring.observe(shown)
+        _ = restoring.elementShown(true, for: shown)
+        let older = report("OEBPS/c1.xhtml", 0.6, 0.8)
+        _ = restoring.observe(older)
+        let newer = report("OEBPS/c1.xhtml", 0.8, 1)
+        XCTAssertEqual(restoring.observe(newer), .confirm(target: target))
+        restoring.abandonVerification(for: older)
+        XCTAssertTrue(restoring.isVerifying)
+        XCTAssertEqual(restoring.elementShown(false, for: newer), .record)
+    }
+
     func testComingBackToTheRestoredPageBeforeTheAnswerIsNotReading() {
         var restoring = ReadingRestoration(opening: target)
         let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)

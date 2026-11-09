@@ -152,7 +152,9 @@ read-along mode they go to `ReadAlongProgress`:
   replaces the waiting one; Play, "Back to the narration", Follow, another place, an
   accepted offer, closing and leaving drop it, and Pause, closing, leaving or another
   place cancel a waiting Play. An answer that never comes is bounded by the restore's
-  own five-second attempt and writes nothing. Listening checkpoints never wait for it.
+  own five-second attempt and writes nothing. An unanswered page becomes the display
+  anchor, so repeating its report cannot refresh the place or its time; a subsequent
+  real turn still records. Listening checkpoints never wait for it.
 - **Offers**: for an imported alignment, the paired audiobook's newer place (its local
   record or the server's, whichever was heard later) is offered when it was heard later
   than the ebook's place and lands on another cue ("Your audiobook is further along than
