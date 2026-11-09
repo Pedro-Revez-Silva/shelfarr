@@ -89,7 +89,7 @@ jobs:
       - name: Install pinned XcodeGen
         run: |
           set -euo pipefail
-          curl -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
           echo "${XCODEGEN_SHA256}  ${RUNNER_TEMP}/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "${RUNNER_TEMP}/xcodegen.zip" -d "${RUNNER_TEMP}/xcodegen"
           echo "${RUNNER_TEMP}/xcodegen/xcodegen/bin" >> "${GITHUB_PATH}"
@@ -159,7 +159,7 @@ jobs:
       - name: Install pinned XcodeGen
         run: |
           set -euo pipefail
-          curl -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
           echo "${XCODEGEN_SHA256}  ${RUNNER_TEMP}/xcodegen.zip" | shasum -a 256 -c -
           unzip -q "${RUNNER_TEMP}/xcodegen.zip" -d "${RUNNER_TEMP}/xcodegen"
           echo "${RUNNER_TEMP}/xcodegen/xcodegen/bin" >> "${GITHUB_PATH}"
