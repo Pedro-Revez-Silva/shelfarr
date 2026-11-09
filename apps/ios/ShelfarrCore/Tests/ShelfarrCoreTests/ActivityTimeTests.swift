@@ -123,6 +123,25 @@ final class ListeningCheckpointsTests: XCTestCase {
         XCTAssertNil(rules.resumed(at: at(0, "t2")), "nothing earlier in this track")
     }
 
+    /// The hosted iPhone resume smoke (Xcode 26): paused at 35.327 s after skipping forward,
+    /// replayed from 30.327, but the next pause came 45 s later, after track 1 ended and
+    /// track 2 had played to 15.008 s. Only the replay holds the saved place; the next
+    /// track is listening, whatever its seconds.
+    func testAReplayThatRunsIntoTheNextTrackIsListening() {
+        var rules = ListeningCheckpoints()
+        _ = rules.open(nil, firstTrack: "track-1")
+        rules.movedDeliberately()
+        XCTAssertTrue(rules.isActivity(at(35.327, "track-1")))
+        rules.paused()
+        XCTAssertEqual(rules.resumed(at: at(35.327, "track-1")) ?? -1, 30.327, accuracy: 0.0005)
+        for heard in [30.327, 31, 35, 35.327] {
+            XCTAssertFalse(rules.isActivity(at(heard, "track-1")), "\(heard) s is the replay")
+        }
+        rules.carriedOn()
+        XCTAssertTrue(rules.isActivity(at(0, "track-2")), "the next track is new listening")
+        XCTAssertTrue(rules.isActivity(at(15.008, "track-2")))
+    }
+
     func testDeliberateMovesAndNaturalTransitionsNeverRewind() {
         var rules = ListeningCheckpoints()
         _ = rules.open(at(100), firstTrack: "t1")
