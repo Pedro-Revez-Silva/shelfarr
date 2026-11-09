@@ -24,6 +24,9 @@ struct ReaderView: View {
     @ObservedObject private var settingsStore: ReaderSettingsStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    /// The reader's own width class. A sheet on iPad is compact inside, so the page
+    /// layout sheet is told what the reader can show rather than reading its own.
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var sheet: ReaderSheet?
     @State private var goToPage = false
     @State private var pageEntry = ""
@@ -77,7 +80,8 @@ struct ReaderView: View {
                 ReaderSettingsSheet(settings: $settingsStore.settings)
                     .presentationDetents([.medium, .large])
             case .pageLayout:
-                PageLayoutSheet(layout: $model.layout, theme: $settingsStore.settings.theme, format: model.format)
+                PageLayoutSheet(layout: $model.layout, theme: $settingsStore.settings.theme, format: model.format,
+                                offersSpreads: sizeClass == .regular)
                     .presentationDetents([.medium, .large])
             }
         }
