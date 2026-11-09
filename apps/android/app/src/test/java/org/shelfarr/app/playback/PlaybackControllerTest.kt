@@ -157,6 +157,16 @@ internal class FakeAudioPlayer : SimpleBasePlayer(Looper.getMainLooper()) {
         publish()
     }
 
+    /**
+     * A controller's paused position settling once the service reports where playback really
+     * stopped, as a MediaController corrects its estimate. Nothing more is heard.
+     */
+    fun settlePausedPosition(positionMs: Long) {
+        basePositionMs = positionMs
+        baseAt = SystemClock.elapsedRealtime()
+        publish()
+    }
+
     /** Playback reaches the end of a track and carries on into the next one. */
     fun finishTrack() {
         index++
@@ -283,6 +293,49 @@ class PlaybackControllerTest {
         runBlocking { controller.stop() }
         idle()
         assertEquals(3.5, seconds(saved()), 0.01)
+    }
+
+    @Test
+    fun `a paused place that settles is not heard again on leaving or stopping`() {
+        open(null)
+        idle(2_300)
+        controller.togglePlay()
+        idle()
+        val paused = store.memory.records.getValue("p")
+        assertEquals(2.3, seconds(paused.position), 0.01)
+
+        idle(1_300)
+        player.settlePausedPosition(2_229)
+        idle()
+        controller.checkpointNow()
+        idle()
+        runBlocking { controller.stop() }
+        idle()
+        val left = store.memory.records.getValue("p")
+        assertEquals(paused.position, left.position)
+        assertEquals(paused.observedAtEpochMs, left.observedAtEpochMs)
+    }
+
+    @Test
+    fun `after a paused place settles, moving or playing again is listening`() {
+        open(null)
+        idle(2_300)
+        controller.togglePlay()
+        idle()
+        player.settlePausedPosition(2_229)
+        idle(1_000)
+        controller.seekTo(40_000)
+        idle()
+        val chosen = store.memory.records.getValue("p")
+        assertEquals(SavedPosition("t0", positionSeconds = 40.0), chosen.position)
+        assertEquals(wallClock(), chosen.observedAtEpochMs)
+
+        controller.togglePlay()
+        idle(1_500)
+        controller.togglePlay()
+        idle()
+        assertEquals(41.5, seconds(saved()), 0.01)
+        assertEquals(wallClock(), store.memory.records.getValue("p").observedAtEpochMs)
     }
 
     @Test

@@ -138,6 +138,14 @@ class PlaybackController(
      */
     private var lastRecorded: Pair<String, Long>? = null
 
+    /**
+     * Playback has stopped and its place is written; nothing has been heard since. A paused
+     * controller's position can still settle by some milliseconds once the service reports
+     * where it really stopped. That is not listening: until playback resumes or the listener
+     * moves, later checkpoints (backgrounding, stopping, switching away) record nothing.
+     */
+    private var stillSinceStopped = false
+
     private data class Rewind(val index: Int, val positionMs: Long, val atElapsedMs: Long)
 
     private val state = MutableStateFlow(PlaybackSnapshot())
@@ -150,6 +158,7 @@ class PlaybackController(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
+                stillSinceStopped = false
                 startTicker()
             } else {
                 ticker?.cancel()
@@ -177,7 +186,7 @@ class PlaybackController(
                     if (isOwnRewind(newPosition)) return
                     // Lock screen, headset, notification or in-app: the listener chose this place.
                     checkpoints.movedDeliberately()
-                    checkpoint(flush = false)
+                    checkpoint(flush = false, chosen = true)
                 }
                 // A natural move into the next track.
                 Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> checkpoint(flush = false)
@@ -230,6 +239,7 @@ class PlaybackController(
         val index = tracks.indexOfFirst { it.id == start?.assetId }.coerceAtLeast(0)
         rewinding = null
         lastRecorded = null
+        stillSinceStopped = false
         val positionMs = checkpoints.open(start?.takeIf { tracks[index].id == it.assetId }, tracks[index].id)
         state.update {
             PlaybackSnapshot(publication = publication, tracks = tracks, trackIndex = index, speed = it.speed, fromDevice = local != null)
@@ -251,6 +261,7 @@ class PlaybackController(
         chapters.clear()
         rewinding = null
         lastRecorded = null
+        stillSinceStopped = false
         val first = queue.sources[start.track]
         val positionMs = if (start.resume) {
             checkpoints.open(SavedPosition(first.mediaId, positionSeconds = start.positionMs / 1_000.0), first.mediaId)
@@ -416,7 +427,7 @@ class PlaybackController(
         val player = controller ?: return
         checkpoints.movedDeliberately()
         player.action()
-        checkpoint(flush = false)
+        checkpoint(flush = false, chosen = true)
     }
 
     fun setSpeed(speed: Float) {
@@ -472,12 +483,13 @@ class PlaybackController(
     /** Saves the final position, then stops and forgets the queue. */
     suspend fun stop() = withContext(Dispatchers.Main.immediate) {
         val observedAt = wallClock()
-        val position = currentPosition()?.takeIf(checkpoints::isActivity)
+        val position = currentPosition()?.takeIf { heardSinceStopped() }?.takeIf(checkpoints::isActivity)
         val index = controller?.currentMediaItemIndex ?: 0
         val heard = position?.takeIf { it.assetId to it.millis() != lastRecorded }
         val target = sink
         sink = null
         lastRecorded = null
+        stillSinceStopped = false
         sleepTimer?.cancel()
         ticker?.cancel()
         controller?.run {
@@ -531,22 +543,27 @@ class PlaybackController(
      * Records the place reached now, unless it is only the replayed pre-roll, and
      * optionally sends what is outstanding. The time is taken before anything waits.
      */
-    private fun checkpoint(flush: Boolean): Job? {
+    private fun checkpoint(flush: Boolean, chosen: Boolean = false): Job? {
         val observedAt = wallClock()
         val target = sink ?: return null
         val index = controller?.currentMediaItemIndex ?: 0
-        val position = currentPosition()?.takeIf(checkpoints::isActivity)
+        val position = currentPosition()?.takeIf { chosen || heardSinceStopped() }?.takeIf(checkpoints::isActivity)
             ?.takeIf { it.assetId to it.millis() != lastRecorded }
         if (position != null) {
             checkpoints.checkpointed(elapsed())
             lastRecorded = position.assetId to position.millis()
         }
+        // Stopped now: this was the last place heard until playback resumes.
+        if (controller?.isPlaying != true) stillSinceStopped = true
         if (position == null && !flush) return null
         return scope.launch {
             position?.let { target.record(index, it.assetId, it.millis(), observedAt) }
             if (flush) target.flush()
         }
     }
+
+    /** False once a stopped place is written, until playback resumes. */
+    private fun heardSinceStopped(): Boolean = controller?.isPlaying == true || !stillSinceStopped
 
     private fun SavedPosition.millis(): Long = Math.round((positionSeconds ?: 0.0) * 1_000).coerceAtLeast(0)
 

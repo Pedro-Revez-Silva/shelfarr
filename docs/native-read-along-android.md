@@ -75,9 +75,14 @@ can be sent (`ProgressSync.together` holds every sync's next send until both are
 on disk). Sends stay serial, debounced and idempotent: a retry repeats the same
 body, mutation ID and activity time, also after a restart.
 
-A checkpoint of the *same* point as the last one written (narration paused,
-then the app backgrounded, stopped or switched away) records nothing, so old
-audio is never stamped with a fresh time over a place read meanwhile.
+Once playback has stopped and its place is written, later checkpoints (the app
+backgrounded, stopped or switched away) record nothing until playback resumes or
+the listener seeks. That holds even when the paused controller's position settles
+by some milliseconds as the service reports where it really stopped, so old audio
+is never stamped with a fresh time over a place read meanwhile.
+
+Readium settling on the opened page is never browsing, even when it lays out only
+after Play: page-follow carries on and "Back to the narration" is not offered.
 
 ## In the reader
 
