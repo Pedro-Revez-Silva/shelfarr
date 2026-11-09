@@ -250,14 +250,39 @@ final class RuntimeSmokeTests: XCTestCase {
         }
 
         try step("Playing again replays five seconds, once") {
+            let original = try savedProgress(book)
+            let writes = try progressWrites(book).count
             toggle(app, "Play").tap()
             let restarted = try XCTUnwrap(elapsed(slider))
             XCTAssertTrue((paused - 6.5 ... paused - 2.5).contains(restarted), "resumed at \(restarted) after pausing at \(paused)")
             toggle(app, "Pause").tap()
             XCTAssertTrue(toggle(app, "Play").waitForExistence(timeout: wait))
+            // Where the pause really landed, not where it was meant to. The replay is track 1
+            // from `restarted` up to `paused`. On a loaded hosted iPhone (Xcode 26, job
+            // 128961028895) the Pause tap reached the app 45 s after Play: track 1 ran out and
+            // track 2 played to 0:15, which was rightly saved as new listening.
+            let track = try XCTUnwrap(trackNumber(app), "the player shows its track")
+            let stopped = try XCTUnwrap(elapsed(slider))
             sleep(2)
             let saved = try savedSeconds(book)
-            XCTAssertLessThanOrEqual(abs(saved - paused), 1.5, "pausing in the replayed seconds keeps the original place: \(saved) vs \(paused)")
+            if track == 1 && stopped < paused {
+                XCTAssertLessThanOrEqual(abs(saved - paused), 1.5, "pausing in the replayed seconds keeps the original place: \(saved) vs \(paused)")
+                XCTAssertEqual(try savedProgress(book), original, "and its version, mutation and original activity time")
+                XCTAssertEqual(try progressWrites(book).count, writes, "the replayed seconds wrote nothing")
+                XCTAssertEqual(try savedProgress(book).assetId, "track-1")
+            } else if track == 1 && stopped == paused {
+                // At the saved second itself: held or just past it, the place is the same.
+                XCTAssertLessThanOrEqual(abs(saved - paused), 1.5, "paused at the saved place: \(saved) vs \(paused)")
+                XCTAssertEqual(try savedProgress(book).assetId, "track-1")
+            } else {
+                XCTContext.runActivity(named: "The pause landed past the replay, at track \(track) \(stopped) s: new listening") { _ in }
+                XCTAssertEqual(try savedProgress(book).assetId, "track-\(track)", "the track listened to is saved")
+                XCTAssertLessThanOrEqual(abs(saved - stopped), 1.5, "the place heard past the replay is saved: \(saved) vs \(stopped)")
+                let then = try XCTUnwrap(original.observedAt.flatMap(parseTime))
+                let now = try XCTUnwrap(try savedProgress(book).observedAt.flatMap(parseTime))
+                XCTAssertGreaterThan(now, then, "with the time it was heard")
+                XCTAssertEqual(try progressWrites(book).withoutObservedAt, 0)
+            }
             screenshot(app, "16-player-rewound")
         }
 
@@ -602,6 +627,13 @@ final class RuntimeSmokeTests: XCTestCase {
         return parts.reduce(0) { $0 * 60 + $1 }
     }
 
+    /// The player's "Track n of m" line, shown when a book has several tracks.
+    private func trackNumber(_ app: XCUIApplication) -> Int? {
+        let line = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Track ")).firstMatch
+        guard line.waitForExistence(timeout: wait) else { return nil }
+        return line.label.split(separator: " ").dropFirst().first.flatMap { Int($0) }
+    }
+
     private func parseTime(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -649,6 +681,7 @@ final class RuntimeSmokeTests: XCTestCase {
         let version: Int?
         let mutationId: String?
         let observedAt: String?
+        var assetId: String?
     }
 
     private func savedProgress(_ publication: String) throws -> SavedProgress {
@@ -657,7 +690,8 @@ final class RuntimeSmokeTests: XCTestCase {
         return SavedProgress(
             version: progress["version"] as? Int,
             mutationId: progress["client_mutation_id"] as? String,
-            observedAt: progress["observed_at"] as? String
+            observedAt: progress["observed_at"] as? String,
+            assetId: progress["asset_id"] as? String
         )
     }
 

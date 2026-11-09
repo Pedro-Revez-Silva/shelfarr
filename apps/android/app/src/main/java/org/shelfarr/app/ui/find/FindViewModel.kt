@@ -205,12 +205,12 @@ class FindViewModel(
         titleState.update { it.copy(format = type, message = null) }
     }
 
-    /** Requests the chosen format once. Further taps while it is in flight do nothing. */
+    /** Requests the chosen format once. In-flight and already-accepted taps do nothing. */
     fun submit() {
         val current = titleState.value
         val item = current.item ?: return
         val format = current.format ?: return
-        if (current.submitting) return
+        if (current.submitting || item.format(format)?.state != FormatState.REQUESTABLE) return
         titleState.update { it.copy(submitting = true, message = null) }
         viewModelScope.launch {
             try {
