@@ -147,7 +147,8 @@ On a book's page, a book with an available alignment downloads "with narration"
   until the new set is whole; a failed update changes nothing;
 - a retry or update requested while the previous transfer is finishing is handed
   to a new worker, including when the book remains ready. Stopping that queued
-  narration prevents the finishing worker from restarting it;
+  narration prevents the finishing worker from restarting it. Completing narration
+  clears the pending request, so it is no longer active and causes no extra fetch;
 - asking for narration is durable intent from the moment it is asked, before
   any manifest exists: if it stops before the manifest is pinned (the app
   stopped or was killed, the sign-in expired, the connection or server failed),

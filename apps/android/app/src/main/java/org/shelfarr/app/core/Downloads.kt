@@ -1025,7 +1025,13 @@ class DownloadManager(
         if (!work.tracks.all { it.complete }) throw ApiException.Protocol()
         val done = work.copy(state = NarrationState.READY, problem = null)
         val previous = latest.narration?.takeIf { latest.narrationUpdate != null }
-        if (!save(latest.copy(narration = done, narrationUpdate = null, updatedAtEpochMs = clock()))) return
+        if (!save(latest.copy(
+            narration = done,
+            narrationUpdate = null,
+            narrationPending = false,
+            narrationProblem = null,
+            updatedAtEpochMs = clock(),
+        ))) return
         previous?.let { deleteNarration(publicationId, it) }
     }
 

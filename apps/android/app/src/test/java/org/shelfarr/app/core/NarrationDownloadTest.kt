@@ -314,9 +314,11 @@ class NarrationDownloadTest {
     @Test
     fun `retrying narration before the failed worker finishes starts afterwards`() = runBlocking {
         var finishing: CompletableJob? = null
+        var retriedFinishing: CompletableJob? = null
         routes["/files/lh-2"] = { MockResponse.Builder().code(404).build() }
         val downloads = manager {
             if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+            else if (retriedFinishing == null) retriedFinishing = Job(currentCoroutineContext()[Job])
         }
         try {
             downloads.enqueue(lighthouse(), narration = true)
@@ -329,12 +331,14 @@ class NarrationDownloadTest {
             requireNotNull(finishing).complete()
             val ready = downloads.await("lighthouse-1") { it.narration?.isReady == true }
             assertTrue(ready.isReady)
+            assertFalse("completed narration is no longer queued or transferring", ready.isActive)
             assertEquals(firstTrackFetches, requests.count { it.target == "/files/lh-1" })
             val local = downloads.narrationFor(ready)!!
             assertArrayEquals(track1, local.tracks[0].readBytes())
             assertArrayEquals(track2, local.tracks[1].readBytes())
         } finally {
             finishing?.complete()
+            retriedFinishing?.complete()
             downloads.close()
         }
     }
