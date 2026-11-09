@@ -3,6 +3,7 @@ package org.shelfarr.app.find
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
@@ -83,7 +84,9 @@ import org.shelfarr.app.ui.MainActivity
  * Only the two browser approvals happen outside the app: the harness decides each grant
  * for its synthetic account on the server (see the acceptance report). Run it with
  * `-e shelfarrRealServer http://127.0.0.1:PORT` against that harness on an emulator;
- * without the argument there is no server to accept against, so it does not run.
+ * without the argument there is no server to accept against, so it does not run. It
+ * refuses, before touching anything, a device that isn't positively an emulator and a
+ * server address other than the emulator's loopback or host alias.
  */
 @RunWith(AndroidJUnit4::class)
 class RealServerRequestTest {
@@ -100,11 +103,28 @@ class RealServerRequestTest {
     /** The first words of the body text, reached by turning pages from the cover. */
     private val bodyStart = arguments.getString("shelfarrRealBodyStart") ?: "It is a melancholy object"
     private val readyTimeoutMs = (arguments.getString("shelfarrRealReadyTimeoutSeconds")?.toLong() ?: 600L) * 1_000
+    /** Set only once this is known to be an emulator and an isolated server: until then nothing is touched. */
+    private var armed = false
+    /** The full-screen hint setting as found, when this run changed it; null when it didn't. */
     private var fullScreenHint: String? = null
 
     @Before
     fun setUp() {
+        // JUnit still runs @After after a skip or a refusal here; `armed` stays false then.
         assumeTrue("Needs an isolated acceptance server (-e shelfarrRealServer)", server != null)
+        // This signs out, launches the app, changes a secure setting and talks to a server.
+        // Refuse anything but a positively identified emulator, whoever started the run.
+        val qemu = listOf("ro.kernel.qemu", "ro.boot.qemu").map { shell("getprop $it").trim() }
+        assertTrue(
+            "Emulator only: refusing on ${Build.FINGERPRINT} (hardware ${Build.HARDWARE}, qemu $qemu)",
+            "1" in qemu && Build.HARDWARE in setOf("ranchu", "goldfish"),
+        )
+        // Only a server reached through the emulator's own loopback or host alias: a disposable
+        // instance forwarded for this run, never a household server's address.
+        val host = server?.let { runCatching { java.net.URI(it).host }.getOrNull() }
+        assertTrue("An isolated server on 127.0.0.1, localhost or 10.0.2.2 only, not $server", host in setOf("127.0.0.1", "localhost", "10.0.2.2"))
+        armed = true
+        evidence("armed on ${Build.FINGERPRINT} for $server")
         signOut()
         fullScreenHint = shell("settings get secure $FULL_SCREEN_HINT").trim()
         shell("settings put secure $FULL_SCREEN_HINT confirmed")
@@ -112,13 +132,13 @@ class RealServerRequestTest {
 
     @After
     fun tearDown() {
-        if (server == null) return
+        if (!armed) return
         finishActivities()
         // Disconnecting revokes this run's token on the acceptance server.
         runBlocking { container.sessions.signedIn?.let { runCatching { container.currentAccount()?.api?.revoke(it.server) } } }
         signOut()
-        val previous = fullScreenHint
-        if (previous.isNullOrEmpty() || previous == "null") shell("settings delete secure $FULL_SCREEN_HINT")
+        val previous = fullScreenHint ?: return
+        if (previous.isEmpty() || previous == "null") shell("settings delete secure $FULL_SCREEN_HINT")
         else shell("settings put secure $FULL_SCREEN_HINT $previous")
     }
 
