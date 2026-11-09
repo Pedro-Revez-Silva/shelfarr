@@ -299,11 +299,24 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"{self.command} {self.path.split('?')[0]} -> {args[1] if len(args) > 1 else ''}", flush=True)
 
+    def parse_request(self):
+        self._raw_body = None
+        return super().parse_request()
+
+    def raw_body(self):
+        if self._raw_body is None:
+            length = int(self.headers.get("Content-Length") or 0)
+            self._raw_body = self.rfile.read(length) if length else b""
+        return self._raw_body
+
     def body(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        return json.loads(self.rfile.read(length) or b"{}")
+        return json.loads(self.raw_body() or b"{}")
 
     def respond(self, code, payload=None):
+        # Every request body is read before answering, also when a handler doesn't need
+        # it (auth/revoke, refusals): on a keep-alive connection an unread body would be
+        # parsed as the start of the next request ("{}GET ...", 501).
+        self.raw_body()
         data = b"" if payload is None else json.dumps(payload).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
