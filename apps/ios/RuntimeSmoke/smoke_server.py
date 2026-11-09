@@ -24,6 +24,7 @@ import os
 import re
 import secrets
 import socket
+import socketserver
 import sys
 import threading
 import time
@@ -93,6 +94,26 @@ GRANTS_LOCK = threading.Lock()
 CONTENT = re.compile(mock.PREFIX + r"/assets/([^/]+)/content")
 
 
+class QuickServer(ThreadingHTTPServer):
+    """Binds without HTTPServer.server_bind's socket.getfqdn() reverse DNS lookup.
+
+    That lookup only fills in a name the handlers never read, and on CI Macs it can take
+    longer than the test's 15-second request timeout. It ran at startup (the iPad server
+    once took more than 10 seconds to print its first line) and on every return online:
+    on the iOS 26 iPhone lane the control port answered POST /online only after the test
+    had given up, so the test failed with "timeout" and the server's late reply hit a
+    reset connection.
+    """
+
+    daemon_threads = True
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 class Switch:
     def __init__(self, host, port):
         self.host = host
@@ -115,8 +136,7 @@ class Switch:
             if self.server is not None:
                 return
             self.offline = False
-            server = ThreadingHTTPServer((self.host, self.port), SmokeHandler)
-            server.daemon_threads = True
+            server = QuickServer((self.host, self.port), SmokeHandler)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             self.server = server
 
@@ -252,7 +272,7 @@ def main():
     mock.Handler.base = ""
     SWITCH = Switch("127.0.0.1", args.port)
     SWITCH.up()
-    control = ThreadingHTTPServer(("127.0.0.1", args.control_port), ControlHandler)
+    control = QuickServer(("127.0.0.1", args.control_port), ControlHandler)
     print(f"Smoke API on http://127.0.0.1:{args.port}, control on http://127.0.0.1:{args.control_port}", flush=True)
     control.serve_forever()
 
