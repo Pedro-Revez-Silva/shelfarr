@@ -168,6 +168,23 @@ the folder is removed, so no late write recreates it):
   on this device too.", what is still being prepared, or what is missing.
 - Removing a book's download removes its narration bundle; the paired audiobook stays
   its own download.
+- Narration work belongs to the download that started it (`ReadAlongPreparations`, one
+  per account). **Cancel**, **Remove**, choosing another format or edition, a newer
+  generation, and the sign-in changing or ending each stop it at once: the owned task is
+  cancelled and its ticket goes stale. Every later step rechecks the ticket inside the
+  actor that writes (storing the manifest, queueing the audiobook, copying narration,
+  making a generation current) and before a status is shown, so work that was waiting on
+  the network, the audiobook's details or the book's file can't write, report or start a
+  transfer when it resumes. Asking for the same edition and generation again keeps the
+  running preparation.
+- Cancel deletes what that download stored but never made current; a usable earlier
+  generation stays for the next download. The cleanup is skipped if the book was
+  downloaded again in the meantime, since the new preparation owns its folder.
+- A paired audiobook queued by a book's download is cancelled with it only while it is
+  still transferring, no other book's preparation is using it, and the user hasn't asked
+  for (or retried) that audiobook themselves. A complete audiobook is never deleted.
+  This ownership is kept in memory: after a relaunch an unfinished companion is an
+  ordinary download, and cancelling the book leaves it running.
 
 ## Credentials
 
