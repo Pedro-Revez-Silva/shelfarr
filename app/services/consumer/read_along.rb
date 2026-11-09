@@ -81,7 +81,7 @@ class Consumer::ReadAlong
       coverage = status.core[:coverage]
       value.merge!(generation: status.generation, manifest_url: url,
         coverage: coverage.slice(:complete, :text_sections, :aligned_sections, :cues, :audio_ms),
-        text_bytes: status.core[:resources_bytes])
+        text_bytes: status.core[:resources_bytes], audio_bytes: status.core[:audio].sum { |track| track[:size_bytes].to_i })
     end
     value[:audiobook] = status.audiobook if status.audiobook
     value

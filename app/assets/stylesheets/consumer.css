@@ -196,6 +196,25 @@
 .consumer-reader-notice button { border:0; background:transparent; color:var(--accent); text-decoration:underline; font-size:12px; min-height:36px; flex-shrink:0; }
 .consumer-reading-session:not(.consumer-reading-session--ebook) .consumer-reader-notice { margin:0 0 14px; justify-content:space-between; border-radius:12px; }
 .consumer-reading-session--ebook .consumer-conflict,.consumer-reading-session--ebook .consumer-reader-error { background:var(--surface); box-shadow:0 6px 20px #17261914; }
+/* Read-along: controls live in the reading overlay; a small pill appears only once narration has started. */
+.consumer-read-along { padding:10px 0 8px; border-bottom:1px solid var(--line); }
+.consumer-read-along__tools { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; }
+.consumer-read-along__play { min-height:48px; min-width:96px; padding:0 22px; border:0; border-radius:30px; background:var(--accent); color:var(--paper)!important; font-weight:600; font-size:14px; }
+.consumer-read-along__play[aria-pressed="true"] { background:var(--accent-soft); color:var(--ink)!important; }
+.consumer-read-along__skip { display:flex; }
+.consumer-read-along__skip button { min-height:48px; min-width:48px; border:0; background:transparent; color:var(--ink); font-size:12px; padding:0 8px; }
+.consumer-read-along__follow { display:inline-flex; align-items:center; gap:8px; min-height:48px; font-size:12px; color:var(--ink); }
+.consumer-read-along__follow input { width:20px; height:20px; accent-color:var(--accent); margin:0; }
+.consumer-read-along__speed { display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+.consumer-read-along__speed select { min-height:48px; border:0; background:transparent; color:var(--ink); font-size:12px; }
+.consumer-read-along__note { margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.consumer-read-along__tools[hidden] + .consumer-read-along__note { margin-top:0; }
+.consumer-read-along-pill { justify-self:center; display:flex; align-items:center; gap:2px; padding:3px; border-radius:30px; border:1px solid var(--line); background:var(--surface); box-shadow:0 4px 16px #1726190f; }
+.consumer-read-along-pill[hidden] { display:none; }
+.consumer-read-along-pill button { min-height:44px; min-width:64px; padding:0 16px; border:0; border-radius:26px; background:transparent; color:var(--ink); font-size:12px; font-weight:600; }
+.consumer-read-along-pill__play { color:var(--accent)!important; }
+.consumer-read-along-pill__return { background:var(--accent-soft)!important; }
+.consumer-reader-controls:not([hidden]) + .consumer-reader-notices .consumer-read-along-pill { display:none; }
 .consumer-reading .consumer-notice { position:fixed; z-index:45; top:max(10px,env(safe-area-inset-top)); left:50%; transform:translateX(-50%); width:min(calc(100vw - 32px),32rem); background:var(--surface); font-size:12px; }
 @media (max-width:600px) { .consumer-reader-title small { display:none; } .consumer-reader-controls .consumer-chapters select { max-width:none; } }
 

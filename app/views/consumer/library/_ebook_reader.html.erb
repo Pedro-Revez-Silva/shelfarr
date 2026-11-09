@@ -9,6 +9,7 @@
     </div>
     <div class="consumer-pages" data-consumer-reader-target="pages" tabindex="0" aria-label="Book pages. Arrow keys turn pages, plus and minus zoom, Escape shows reading controls." hidden></div>
     <p class="consumer-sr-only" data-consumer-reader-target="announce" aria-live="polite"></p>
+    <audio data-consumer-reader-target="readAlongAudio" preload="metadata" hidden></audio>
     <div id="consumer-reader-controls" class="consumer-reader-controls" data-consumer-reader-target="controls" role="region" aria-label="Reading controls" hidden>
       <div class="consumer-reader-controls__top">
         <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
@@ -16,6 +17,15 @@
         <button type="button" class="consumer-reader-done" data-consumer-reader-target="hide" data-action="consumer-reader#hideControls">Done</button>
       </div>
       <div class="consumer-reader-controls__bottom">
+        <section class="consumer-read-along" data-consumer-reader-target="readAlong" aria-label="Read along" hidden>
+          <div class="consumer-read-along__tools" data-consumer-reader-target="readAlongTools" hidden>
+            <button type="button" class="consumer-read-along__play" data-consumer-reader-target="readAlongPlay" data-action="consumer-reader#playPause" aria-pressed="false" aria-label="Play narration">Play</button>
+            <div class="consumer-read-along__skip" role="group" aria-label="Move in the narration"><button type="button" data-action="consumer-reader#readAlongBack" aria-label="Back 15 seconds">↶ 15</button><button type="button" data-action="consumer-reader#readAlongForward" aria-label="Forward 30 seconds">30 ↷</button></div>
+            <label class="consumer-read-along__follow"><input type="checkbox" checked data-consumer-reader-target="readAlongFollow" data-action="change->consumer-reader#toggleFollow"> Follow the text</label>
+            <label class="consumer-read-along__speed">Speed<select data-consumer-reader-target="readAlongSpeed" data-action="change->consumer-reader#readAlongSpeed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+          </div>
+          <p class="consumer-read-along__note" data-consumer-reader-target="readAlongNote"></p>
+        </section>
         <label class="consumer-edition" data-consumer-reader-target="editionPicker" hidden>Format<select data-consumer-reader-target="edition" data-action="change->consumer-reader#chooseEdition"></select></label>
         <p class="consumer-edition-note" data-consumer-reader-target="editionNote" hidden></p>
         <div class="consumer-page-controls"><button type="button" data-action="consumer-reader#previousPage">← Previous</button><span data-consumer-reader-target="location">Your place</span><button type="button" data-action="consumer-reader#nextPage">Next →</button></div>
@@ -36,6 +46,8 @@
     <div class="consumer-reader-notices">
       <p class="consumer-reader-notice" data-consumer-reader-target="notice" role="status" hidden></p>
       <div class="consumer-reader-notice consumer-reader-notice--remote" data-consumer-reader-target="remote" hidden role="status"><span>Another device has a more recent place.</span><button type="button" data-action="consumer-reader#goToRemote">Go there</button></div>
+      <div class="consumer-reader-notice consumer-reader-notice--remote" data-consumer-reader-target="readAlongOffer" hidden role="status"><span>You listened further in the audiobook.</span><button type="button" data-action="consumer-reader#useAudiobookPlace">Go there</button><button type="button" data-action="consumer-reader#dismissAudiobookPlace">Not now</button></div>
+      <div class="consumer-read-along-pill" data-consumer-reader-target="readAlongPill" role="group" aria-label="Narration" hidden><button type="button" class="consumer-read-along-pill__play" data-consumer-reader-target="readAlongPillPlay" data-action="consumer-reader#playPause" aria-label="Pause narration">Pause</button><button type="button" class="consumer-read-along-pill__return" data-consumer-reader-target="readAlongReturn" data-action="consumer-reader#returnToNarration" hidden>Back to the narration</button></div>
       <%= render "consumer/library/conflict" %>
       <p class="consumer-reader-error" data-consumer-reader-target="error" hidden role="alert"></p>
     </div>

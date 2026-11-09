@@ -18,6 +18,10 @@
 // An update keeps the old complete copy usable until the new one is ready.
 // A CBZ asset is two cache entries: its bytes and its reading order (the page
 // list for that exact file generation). It is stored only when both are.
+// A read-along EPUB is read entry by entry: its download is the manifest for
+// that exact generation plus every text resource and narration file the
+// manifest lists (recorded as `read_along.files` once the manifest arrives).
+// Until all of them are stored, and while the list is unknown, it is not.
 
 export const DB_NAME = "shelfarr-offline"
 const DB_VERSION = 1
@@ -66,37 +70,59 @@ export const recordKey = (scope, id) => `${scope}|${id}`
 export const mediaCacheName = scope => `${MEDIA_PREFIX}|${scope}`
 export const shellCachePrefix = deployment => `${SHELL_PREFIX}|${deployment}|`
 const absolute = path => new URL(path, globalThis.location.origin).href
+const WEB_TEXT_LIMIT = 32 * 1024 * 1024
+// Whether the web reader opens this asset entry by entry for read-along.
+export const streamedReadAlong = asset => asset?.read_along?.status === "available" && Number.isFinite(asset.read_along.text_bytes) &&
+  asset.read_along.text_bytes <= WEB_TEXT_LIMIT && typeof asset.read_along.manifest_url === "string"
 // Every cache entry an asset needs before it counts as stored.
-export const assetUrls = asset => [asset.content_url, asset.reading_order_url].filter(Boolean).map(absolute)
-const isStored = (stored, asset) => assetUrls(asset).every(url => stored.has(url))
+export const assetUrls = asset => streamedReadAlong(asset)
+  ? [asset.read_along.manifest_url, ...(asset.read_along.files || []).map(file => file.url)].map(absolute)
+  : [asset.content_url, asset.reading_order_url].filter(Boolean).map(absolute)
+const isStored = (stored, asset) => (!streamedReadAlong(asset) || Array.isArray(asset.read_along.files)) && assetUrls(asset).every(url => stored.has(url))
+// Bytes an asset's download occupies: a read-along EPUB's text and narration,
+// otherwise the file itself.
+export const sizeOf = asset => streamedReadAlong(asset)
+  ? (Array.isArray(asset.read_along.files) ? asset.read_along.files.reduce((sum, file) => sum + (file.size_bytes || 0), 0) : (asset.read_along.text_bytes || 0) + (asset.read_along.audio_bytes || 0))
+  : asset.size_bytes || 0
 
 // The parts of a page's publication this browser keeps for offline use.
 export function snapshot(publication) {
   const assets = (publication.assets || []).map(asset => ({ id: asset.id, filename: asset.filename, format: asset.format,
     media_type: asset.media_type, size_bytes: asset.size_bytes, position: asset.position, content_url: asset.content_url,
-    ...(asset.reading_order_url ? { page_count: asset.page_count, reading_order_url: asset.reading_order_url } : {}) }))
+    ...(asset.reading_order_url ? { page_count: asset.page_count, reading_order_url: asset.reading_order_url } : {}),
+    ...(asset.read_along ? { read_along: readAlongSnapshot(asset.read_along) } : {}) }))
   return { id: String(publication.id), title: publication.title || "", author: publication.author || "",
     description: String(publication.description || "").slice(0, 2000), book_type: publication.book_type,
     content_kind: publication.content_kind || null,
     cover_style: publication.cover_style || "stone", reading_status: publication.reading_status || null,
     progress: publication.progress || null, progress_url: publication.progress_url,
-    progress_scope: publication.progress_scope, assets }
+    progress_scope: publication.progress_scope, assets,
+    ...(publication.read_along_audiobook ? { read_along_audiobook: publication.read_along_audiobook } : {}) }
 }
 
-export const editionOf = publication => (publication?.assets || []).map(asset => asset.id).join(",")
-export const bytesOf = publication => (publication?.assets || []).reduce((sum, asset) => sum + (asset.size_bytes || 0), 0)
+function readAlongSnapshot(summary) {
+  const value = { status: summary.status }
+  for (const key of ["source", "reason", "generation", "manifest_url", "coverage", "text_bytes", "audio_bytes", "audiobook", "files"]) if (summary[key] !== undefined) value[key] = summary[key]
+  return value
+}
+
+// A read-along generation is part of the edition: a new alignment for the
+// same file is an update.
+export const editionOf = publication => (publication?.assets || [])
+  .map(asset => streamedReadAlong(asset) ? `${asset.id}@${asset.read_along.generation}` : asset.id).join(",")
+export const bytesOf = publication => (publication?.assets || []).reduce((sum, asset) => sum + sizeOf(asset), 0)
 
 // Bytes the record's files occupy: its complete edition and any stored part of an update.
 export function storedBytes(record) {
   const sizes = new Map()
-  for (const asset of record.publication?.assets || []) sizes.set(asset.id, asset.size_bytes || 0)
-  for (const asset of record.pending?.assets || []) if (record.done.includes(asset.id)) sizes.set(asset.id, asset.size_bytes || 0)
+  for (const asset of record.publication?.assets || []) sizes.set(asset.id, sizeOf(asset))
+  for (const asset of record.pending?.assets || []) if (record.done.includes(asset.id)) sizes.set(asset.id, sizeOf(asset))
   return [...sizes.values()].reduce((sum, size) => sum + size, 0)
 }
 
 // Bytes an unfinished download still has to fetch.
 export function remainingBytes(record) {
-  return (record.pending?.assets || []).filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + (asset.size_bytes || 0), 0)
+  return (record.pending?.assets || []).filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + sizeOf(asset), 0)
 }
 
 // What the reader sees: downloading, paused, failed, updating or ready.
@@ -105,7 +131,7 @@ export function stateOf(record, running = false) {
   const pending = record.pending
   if (pending) {
     const total = bytesOf(pending)
-    const done = pending.assets.filter(asset => record.done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0)
+    const done = pending.assets.filter(asset => record.done.includes(asset.id)).reduce((sum, asset) => sum + sizeOf(asset), 0)
     const update = Boolean(record.publication)
     const error = record.error
     const kind = running ? "downloading" : !error || RESUMABLE.has(error.kind) ? "paused" : "failed"
@@ -389,7 +415,7 @@ export async function download(publication) {
   }
   const stored = await storedUrls(scope)
   const done = next.assets.filter(asset => isStored(stored, asset)).map(asset => asset.id)
-  const needed = next.assets.filter(asset => !done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0)
+  const needed = next.assets.filter(asset => !done.includes(asset.id)).reduce((sum, asset) => sum + sizeOf(asset), 0)
   await checkSpace(scope, needed, key)
   // An update keeps the previous complete edition readable until it finishes.
   const previous = existing?.publication && editionOf(existing.publication) !== editionOf(next) ? existing.publication : null
@@ -446,9 +472,22 @@ function run(key) {
       // IndexedDB may still remember files the browser evicted while paused.
       // Rebuild completion under the download lock before skipping any file.
       record = await current(saved => ({ ...saved, done: saved.pending.assets.filter(asset => isStored(stored, asset)).map(asset => asset.id) }))
-      await checkSpace(record.scope, record.pending.assets.filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0), key)
+      await checkSpace(record.scope, record.pending.assets.filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + sizeOf(asset), 0), key)
       for (const asset of record.pending.assets) {
         if (record.done.includes(asset.id)) continue
+        if (streamedReadAlong(asset)) {
+          const active = await activeAccount(record.deployment.slice(globalThis.location.origin.length))
+          if (!active || active.expired || active.account !== record.account) throw new OfflineError("account")
+          const files = await storeReadAlong(cache, asset, stored, controller.signal, bytes => { job.received += bytes; reportProgress(key, job) })
+          job.received = 0
+          // The file list becomes part of the pending edition only with the
+          // asset marked done, so readiness never rests on a partial list.
+          record = await current(saved => ({ ...saved,
+            pending: { ...saved.pending, assets: saved.pending.assets.map(item => item.id === asset.id ? { ...item, read_along: { ...item.read_along, files } } : item) },
+            done: [...new Set([...saved.done, asset.id])] }))
+          notify(key)
+          continue
+        }
         if (!stored.has(absolute(asset.content_url))) {
           const active = await activeAccount(record.deployment.slice(globalThis.location.origin.length))
           if (!active || active.expired || active.account !== record.account) throw new OfflineError("account")
@@ -462,9 +501,10 @@ function run(key) {
       if (!await verify({ scope: record.scope, publication: record.pending })) throw new OfflineError("evicted")
       const previous = record.publication
       record = await current(saved => ({ ...saved, publication: saved.pending, pending: null, done: [], error: null, completedAt: Date.now() }))
-      // Files only the replaced edition used are no longer needed.
-      const kept = new Set(record.publication.assets.map(asset => asset.id))
-      for (const asset of previous?.assets || []) if (!kept.has(asset.id)) for (const url of assetUrls(asset)) await cache.delete(url)
+      // Files only the replaced edition used are no longer needed (a new
+      // read-along generation of the same file may need different ones).
+      const kept = new Set(record.publication.assets.flatMap(assetUrls))
+      for (const url of (previous?.assets || []).flatMap(assetUrls)) if (!kept.has(url)) await cache.delete(url)
     } catch (error) {
       if (error instanceof EditionChanged) {
         restart = true
@@ -507,28 +547,77 @@ function reportProgress(key, job) {
 
 // Stream one file into the cache and keep it only if it arrived whole.
 async function store(cache, asset, signal, onBytes) {
-  const url = absolute(asset.content_url)
+  return storeFile(cache, { url: absolute(asset.content_url), size: asset.size_bytes, mediaType: asset.media_type, etag: `"${asset.id}"`, asset: asset.id }, signal, onBytes)
+}
+
+function failure(response) {
+  if (response.type === "opaqueredirect" || response.status === 401 || response.status === 403) return new OfflineError("signin")
+  if (response.status === 410) return new OfflineError("changed")
+  if (response.status === 404) return new OfflineError("missing")
+  if (response.status >= 500) return new OfflineError("network")
+  return null
+}
+
+// `etag`, when given, must match; `generation`, when given, must match the
+// read-along generation the server names for the bytes.
+async function storeFile(cache, { url, size, mediaType, etag, generation, asset }, signal, onBytes) {
   const response = await fetch(url, { credentials: "same-origin", redirect: "manual", cache: "no-store", signal })
-  if (response.type === "opaqueredirect" || response.status === 401 || response.status === 403) throw new OfflineError("signin")
-  if (response.status === 410) throw new OfflineError("changed")
-  if (response.status === 404) throw new OfflineError("missing")
-  if (response.status >= 500) throw new OfflineError("network")
+  const failed = failure(response)
+  if (failed) throw failed
   if (response.status !== 200 || !response.body) throw new OfflineError("verify")
-  const etag = response.headers.get("ETag")
-  if (etag && etag !== `"${asset.id}"`) throw new OfflineError("changed")
+  const tag = response.headers.get("ETag")
+  if (etag && tag && tag !== etag) throw new OfflineError("changed")
+  if (generation && response.headers.get("X-Shelfarr-Read-Along") !== generation) throw new OfflineError("changed")
   const length = response.headers.get("Content-Length")
-  if (length !== null && Number(length) !== asset.size_bytes) throw new OfflineError("changed")
+  if (length !== null && Number(length) !== size) throw new OfflineError("changed")
   let received = 0
   const counted = response.body.pipeThrough(new TransformStream({
     transform(chunk, stream) { received += chunk.byteLength; onBytes(chunk.byteLength); stream.enqueue(chunk) }
   }), { signal })
-  await cache.put(url, new Response(counted, { status: 200, headers: {
-    "Content-Type": asset.media_type, "Content-Length": String(asset.size_bytes), "ETag": `"${asset.id}"`, "X-Shelfarr-Asset": asset.id
-  } }))
-  if (received !== asset.size_bytes) {
+  const headers = { "Content-Type": mediaType || response.headers.get("Content-Type") || "application/octet-stream", "Content-Length": String(size), "X-Shelfarr-Asset": asset }
+  if (tag) headers.ETag = tag
+  await cache.put(url, new Response(counted, { status: 200, headers }))
+  if (received !== size) {
     await cache.delete(url)
     throw new OfflineError("verify")
   }
+}
+
+// A read-along download: the manifest for exactly this asset and
+// generation, then each text resource and narration file it lists. Returns
+// the file list that readiness is checked against.
+const MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+async function storeReadAlong(cache, asset, stored, signal, onBytes) {
+  const summary = asset.read_along
+  const url = absolute(summary.manifest_url)
+  const response = await fetch(url, { credentials: "same-origin", redirect: "manual", cache: "no-store", signal, headers: { Accept: "application/json" } })
+  const failed = failure(response)
+  if (failed) throw failed
+  if (response.status === 409 || response.status === 422) throw new OfflineError("changed")
+  if (response.status !== 200) throw new OfflineError("verify")
+  const text = await response.text()
+  let manifest = null
+  try { manifest = text.length <= MAX_MANIFEST_BYTES ? JSON.parse(text) : null } catch (_) { manifest = null }
+  if (!manifest || manifest.version !== 1 || manifest.generation !== summary.generation || manifest.ebook_asset_id !== asset.id ||
+    !Array.isArray(manifest.resources) || !Array.isArray(manifest.audio)) throw new OfflineError("changed")
+  const files = []
+  for (const resource of manifest.resources) files.push({ url: resource.url, size_bytes: resource.size_bytes, media_type: resource.media_type, generation: manifest.generation })
+  for (const track of manifest.audio) {
+    files.push(track.kind === "publication_asset"
+      ? { url: track.url, size_bytes: track.size_bytes, media_type: track.media_type, etag: `"${track.asset_id}"` }
+      : { url: track.url, size_bytes: track.size_bytes, media_type: track.media_type, generation: manifest.generation })
+  }
+  for (const file of files) {
+    if (!Number.isInteger(file.size_bytes) || file.size_bytes < 0 || typeof file.url !== "string" || new URL(file.url, globalThis.location.origin).origin !== globalThis.location.origin) throw new OfflineError("changed")
+  }
+  for (const file of files) {
+    const target = absolute(file.url)
+    if (stored.has(target)) continue
+    await storeFile(cache, { url: target, size: file.size_bytes, mediaType: file.media_type, etag: file.etag, generation: file.generation, asset: asset.id }, signal, onBytes)
+  }
+  // The manifest goes in last: a stored manifest means its files were stored.
+  await cache.put(url, new Response(text, { status: 200, headers: { "Content-Type": "application/json", "X-Shelfarr-Asset": asset.id } }))
+  return files.map(file => ({ url: file.url, size_bytes: file.size_bytes }))
 }
 
 // A CBZ's page list for exactly this generation, kept beside its bytes.
@@ -557,8 +646,8 @@ export async function cancel(key) {
     const record = await getRecord(key)
     if (!record?.pending) return
     const cache = await caches.open(mediaCacheName(record.scope))
-    const kept = new Set((record.publication?.assets || []).map(asset => asset.id))
-    for (const asset of record.pending.assets) if (!kept.has(asset.id)) for (const url of assetUrls(asset)) await cache.delete(url)
+    const kept = new Set((record.publication?.assets || []).flatMap(assetUrls))
+    for (const url of record.pending.assets.flatMap(assetUrls)) if (!kept.has(url)) await cache.delete(url)
     await updateRecord(key, current => current?.publication ? { ...current, pending: null, done: [], error: null } : null)
   })
   notify(key)

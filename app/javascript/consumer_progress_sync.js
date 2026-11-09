@@ -601,10 +601,10 @@ export class ListeningCheckpoints {
   }
 
   // A natural transition to the next track keeps playing without a rewind.
-  continued(assetId) {
+  continued(assetId, position = 0) {
     this.floor = null
     this.active = true
-    this.save(0, assetId)
+    this.save(position, assetId)
   }
 
   tick(position, assetId) {

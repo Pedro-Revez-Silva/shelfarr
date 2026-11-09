@@ -53,7 +53,7 @@ class Consumer::OfflineController < ApplicationController
     end
 
     books = Book.acquired.where(book_type: Consumer::LibraryScope.types(nil, graphic: true), id: ids).to_a
-    representations = Consumer::Publication.many(books, user: Current.user, routes: self, reader_formats: web_reader_formats)
+    representations = Consumer::Publication.many(books, user: Current.user, routes: self, reader_formats: web_reader_formats, read_along: true)
     render json: { account: Current.user.id.to_s, missing: ids - books.map { |book| book.id.to_s },
       publications: books.map { |book| web_publication(book, representations.fetch(book)) } }
   end

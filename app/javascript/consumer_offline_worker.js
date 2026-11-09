@@ -4,8 +4,10 @@
 // The worker is registered only after a reader chooses Download, with the
 // scope `<subpath>/read`. It answers just three kinds of request:
 //
-//   - media for a downloaded edition, from the signed-in account's cache, with
-//     single byte ranges for audio seeking; anything else goes to the network
+//   - media for a downloaded edition (including a read-along download's
+//     manifest, text resources and narration), from the signed-in account's
+//     cache, with single byte ranges for audio seeking; anything else goes to
+//     the network
 //   - the shell's own digested styles, scripts and fonts, precached at install
 //   - reader pages (/read, /read/downloads, /read/<id>) when the server can't be
 //     reached, with the static offline shell
@@ -27,8 +29,9 @@
   const ASSETS = new Set((CONFIG.assets || []).map(path => new URL(path, ORIGIN).pathname))
   const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const PAGE = new RegExp(`^${escape(BASE)}/read(?:/|/offline|/downloads/?|/[1-9]\\d{0,18}/?)?$`)
-  // Downloaded media, and a downloaded comic's reading order.
-  const MEDIA = new RegExp(`^${escape(BASE)}/read/[1-9]\\d{0,18}/assets/[0-9a-f]{64}(?:/reading_order)?$`)
+  // Downloaded media, a downloaded comic's reading order, and a read-along
+  // download's manifest, text resources and narration.
+  const MEDIA = new RegExp(`^${escape(BASE)}/read/[1-9]\\d{0,18}/assets/[0-9a-f]{64}(?:/reading_order|/read_along(?:/resources/[^?#]+|/audio/[0-9a-f]{64})?)?$`)
   const UNREACHABLE = new Set([502, 503, 504])
 
   // One single range: "bytes=a-b", "bytes=a-" or "bytes=-n". Null without a
