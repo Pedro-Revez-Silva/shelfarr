@@ -462,6 +462,7 @@ final class ReaderModel: ObservableObject {
     /// A waiting page that turned out not to be a turn, or can't be known to be: nothing
     /// is written and the saved place stays. A Play waiting for it goes ahead.
     private func release(_ pending: PendingPage) {
+        restoration.abandonVerification(for: pending.observation)
         guard let page = pending.page, let readAlong = pending.readAlong, readAlong === self.readAlong else { return }
         readAlong.pageAnswered(page, moved: false)
     }

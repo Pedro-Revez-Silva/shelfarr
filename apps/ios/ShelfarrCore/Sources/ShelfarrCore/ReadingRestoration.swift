@@ -224,6 +224,14 @@ public struct ReadingRestoration: Sendable {
         }
     }
 
+    /// An element check ended without confirming a turn. Keep its reported page as
+    /// the display anchor, so repeating it cannot become a new activity after playback
+    /// changes. Only this unanswered observation is abandoned, never a newer report.
+    public mutating func abandonVerification(for observation: ReadingObservation) {
+        guard case let .verifying(_, target, current) = phase, current == observation else { return }
+        phase = .anchored(current, target: target, failed: true)
+    }
+
     /// The app's answer to `.confirm` for the report `observation`: whether the saved
     /// element is on screen. An answer about an older report changes nothing.
     public mutating func elementShown(_ visible: Bool, for observation: ReadingObservation) -> Action {
