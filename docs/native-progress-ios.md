@@ -98,7 +98,11 @@ visible reading order resource and the progression range on screen):
 - A report that misses it is not saved. Input on the book is disabled and the reader
   is sent to the saved place again with `go(to:options: .none)`. The jump finishing is
   not proof, because Readium reports the settled page later; the restore waits for a
-  report whose viewport shows the place.
+  report whose viewport shows the place. Readium 3.11 reports only after its page script
+  sees a scroll or resize, so a jump to the offset already shown reports nothing (a hosted
+  cold offline open drew the saved page while its only report was an empty viewport at
+  0%). After each accepted jump the app runs Readium's own scroll handler
+  (`ReadiumBook.remeasure`), so Readium measures the page shown and reports it if new.
 - Each attempt waits at most five seconds; after one retry the reader gives up,
   enables input, says the saved page couldn't be shown, and keeps the saved place
   unchanged. The page left on screen becomes the anchor, so the reader's own first
