@@ -179,7 +179,15 @@ class ReadAlongSmokeTest {
                 val navigator = activity.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment
                 navigator.lifecycleScope.launch { navigator.goForward(animated = false) }
             }
-            await("browsing noticed") { (model(scenario).readAlongUi.value as ReadAlongUi.Ready).browsing || !app.container.playback.isListening }
+            await("browsing noticed") {
+                // MediaController reads, like its playback commands, require its application thread.
+                val noticed = AtomicReference(false)
+                scenario.onActivity { activity ->
+                    val state = ViewModelProvider(activity)[ReaderViewModel::class.java].readAlongUi.value as ReadAlongUi.Ready
+                    noticed.set(state.browsing || !app.container.playback.isListening)
+                }
+                noticed.get()
+            }
             writes.drop(before).forEach { (_, update) -> assertTrue("browse wrote $update", update.locator?.readAlong() != null) }
 
             scenario.onActivity { it.narrationActions.toggle() } // pause
