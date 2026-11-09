@@ -244,7 +244,13 @@ Rules every client follows (the web reader does):
   browsing) appears at the bottom; nothing else is added to the page. Space
   toggles narration; the browser's media session controls work.
 - Highlight: the element of the cue being heard (nothing between cues); the
-  page turns only when that element is out of view and follow is on.
+  page turns only when that element is out of view and follow is on. A window,
+  orientation or text-size change while narration plays and the text follows
+  it shows the start of the cue being heard, even when that cue was already in
+  view and no page had turned, so it never sounds from a page out of view.
+  Browsing (until "Back to the narration"), Follow off, a pause and the gap
+  between cues keep the reading place instead. These layout moves are display
+  only: no checkpoint, `observed_at` or version change.
 - Resume: an accepted later place from another device is restored before
   narration resumes. A failed restore stays paused and retains that place
   for retry; restoring it never records listening activity.
