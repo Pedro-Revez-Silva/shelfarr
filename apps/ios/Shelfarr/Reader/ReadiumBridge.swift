@@ -154,6 +154,20 @@ final class ReadiumBook: NSObject {
         return await navigator.go(to: locator, options: .none)
     }
 
+    /// Asks Readium to measure the page it shows now and report it if that is new.
+    ///
+    /// Readium 3.11 reports a place only after its page script posts `progressionChanged`,
+    /// which it does on a scroll or resize event, never while the document has no width,
+    /// and the native side ignores it until the resource counts as loaded. A jump to the
+    /// offset the page already shows scrolls nothing, so it reports nothing: a hosted cold
+    /// offline open drew the saved page while Readium had only reported an empty viewport
+    /// at 0%, and both corrective jumps were accepted without a report. Running Readium's
+    /// own scroll handler makes it measure and report the page as it is.
+    func remeasure() async {
+        guard let navigator else { return }
+        _ = await navigator.evaluateJavaScript("window.dispatchEvent(new Event('scroll')); true")
+    }
+
     /// Page turns, taps and selection on the book, off while it is being sent back to the
     /// saved place.
     func setInputEnabled(_ enabled: Bool) {
