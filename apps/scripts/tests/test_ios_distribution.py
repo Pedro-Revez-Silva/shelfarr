@@ -99,11 +99,11 @@ class IOSDistributionTest(ScratchCase):
         self.assertFalse(options["manageAppVersionAndBuildNumber"])
 
     def test_swiftpm_and_xcode_do_not_inherit_signing_or_github_secrets(self):
-        env = {"HOME": "/private-home", "PATH": "/usr/bin", "TMPDIR": str(self.dir),
+        env = {"HOME": "/private-home", "USER": "builder", "LOGNAME": "builder", "PATH": "/usr/bin", "TMPDIR": str(self.dir),
                "IOS_CERTIFICATE_PASSWORD": "synthetic-password", "GH_TOKEN": "synthetic-token",
                "APP_STORE_CONNECT_PRIVATE_KEY_BASE64": "synthetic-key", "GITHUB_TOKEN": "another-token"}
         clean = distribution.build_environment(env)
-        self.assertEqual({"HOME": "/private-home", "PATH": "/usr/bin", "TMPDIR": str(self.dir)}, clean)
+        self.assertEqual({"HOME": "/private-home", "USER": "builder", "LOGNAME": "builder", "PATH": "/usr/bin", "TMPDIR": str(self.dir)}, clean)
 
     def test_bad_base64_errors_do_not_echo_input(self):
         with self.assertRaises(distribution.DistributionError) as caught:
@@ -133,7 +133,7 @@ class IOSDistributionTest(ScratchCase):
                "IOS_CERTIFICATE_P12_BASE64": base64.b64encode(b"synthetic-p12").decode(),
                "IOS_PROVISION_PROFILE_BASE64": base64.b64encode(raw).decode(),
                "SHELFARR_EXPORT_METHOD": "app-store-connect"}
-        clean = {"HOME": str(self.dir / "home"), "PATH": "/usr/bin"}
+        clean = {"HOME": str(self.dir / "home"), "USER": "builder", "PATH": "/usr/bin"}
         installed = Path(clean["HOME"]) / "Library/MobileDevice/Provisioning Profiles" / f"{UUID}.mobileprovision"
         labels = []
 

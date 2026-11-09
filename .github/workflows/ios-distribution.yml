@@ -96,9 +96,9 @@ jobs:
 
       - name: Test, render and resume on current iPhone and iPad simulators
         run: |
-          env -i HOME="${HOME}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
             DEVELOPER_DIR="${DEVELOPER_DIR}" apps/scripts/ios-check.sh
-          env -i HOME="${HOME}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
             DEVELOPER_DIR="${DEVELOPER_DIR}" apps/scripts/ios-runtime-smoke.sh --device all
 
       - name: Compile the release archive without signing credentials
@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/distribution-check
-          env -i HOME="${HOME}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
             DEVELOPER_DIR="${DEVELOPER_DIR}" xcodebuild \
             -project Shelfarr.xcodeproj -scheme Shelfarr -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath build/distribution-check/DerivedData \

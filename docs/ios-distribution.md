@@ -102,8 +102,8 @@ embedded profile.
 Signing material lives in a private temporary directory and temporary keychain.
 Only this run's keychain and newly installed profile are removed, including on
 failure; concurrent changes by another signing process are preserved. An existing
-conflicting profile is never replaced. Xcode and SwiftPM receive an environment containing paths and
-locale settings only, so their diagnostic output cannot dump signing or GitHub
+conflicting profile is never replaced. Xcode and SwiftPM receive only build-user
+identity, paths and locale settings, so their diagnostic output cannot dump signing or GitHub
 secret environment variables. Signing/import/upload command output is not saved.
 
 The `ios-distribution` artifact contains the verified IPA, available symbols,

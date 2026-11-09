@@ -108,7 +108,7 @@ def export_options(team, uuid, method):
 def build_environment(env):
     # SwiftPM can dump its environment on failure. Never pass signing or GitHub
     # secrets to Xcode, package resolution, project generation or log-producing tools.
-    allowed = ("HOME", "PATH", "LANG", "LC_ALL", "TMPDIR", "DEVELOPER_DIR")
+    allowed = ("HOME", "USER", "LOGNAME", "PATH", "LANG", "LC_ALL", "TMPDIR", "DEVELOPER_DIR")
     return {key: env[key] for key in allowed if key in env}
 
 
@@ -239,6 +239,8 @@ def distribute(args, env):
         raise DistributionError("Signing and export require macOS with Xcode")
     clean = build_environment(env)
     required(clean, "HOME")
+    if not clean.get("USER"):
+        raise DistributionError("Preserve the non-secret USER variable for XcodeGen")
     temp_root = Path(env.get("RUNNER_TEMP") or env.get("TMPDIR") or Path(clean["HOME"]) / ".cache/agent-tmp")
     temp_root.mkdir(parents=True, exist_ok=True)
     output = Path(args.output).resolve()
