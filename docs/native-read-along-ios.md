@@ -92,7 +92,10 @@ The page is quiet: nothing is added until narration has played in this session.
   narration on that page (the first cue starting on it, else the cue it continues, else
   the next narrated document's first cue).
 - **Layout**: changing text settings or the window size while reading along makes the
-  next report an anchor, not a reading place.
+  next report an anchor, not a reading place. The size is the reading surface's
+  (rotation, a resized window); showing or hiding the controls, which on iPad hides the
+  status bar and changes only the safe area, is not a layout, so the next page turned
+  while paused is still saved.
 
 Narration plays through the app's one `PlaybackEngine`, so it keeps background audio,
 lock-screen, headset and Control Center commands, interruptions, the sleep timer and the
@@ -247,7 +250,9 @@ check on progress writes. The shared mock server is unchanged.
 Simulator UI tests (`ReadAlongSmokeTests`, iPhone and iPad via
 `apps/scripts/ios-runtime-smoke.sh --device all`): the quiet page, the highlight on p1,
 nothing in the silence after it, p2, the page following to p4 only when it starts off
-screen, browsing while playing writing nothing, Back to the narration, a pause saving the
+screen (the order heard is read from the Debug trace's record of every highlight change
+since Play, `shown=`, because a two-second cue is shorter than a hosted simulator's
+queries take), browsing while playing writing nothing, Back to the narration, a pause saving the
 element and exact offset, a silent reopen, the five-second resume and a pause in it
 keeping the saved place; an imported pair's offer, accepted without writing, and one
 checkpoint writing both places with one `observed_at`; a download with its narration

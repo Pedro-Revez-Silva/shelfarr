@@ -112,7 +112,9 @@ struct PageLayoutSheet: View {
     @Binding var layout: PageLayout
     @Binding var theme: ReaderTheme
     let format: ReaderFormat?
-    @Environment(\.horizontalSizeClass) private var sizeClass
+    /// Whether the reader is wide enough for spreads (iPad), decided by the reader: this
+    /// sheet's own size class is compact on iPad, which hid the choice there.
+    let offersSpreads: Bool
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -140,7 +142,7 @@ struct PageLayoutSheet: View {
                 } footer: {
                     Text("Right to left is for manga and other books read that way. Shelfarr remembers it for this book.")
                 }
-                if sizeClass == .regular {
+                if offersSpreads {
                     Section {
                         Toggle("Two pages side by side", isOn: $layout.spreads)
                     } footer: {

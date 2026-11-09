@@ -21,7 +21,11 @@ It serves apps/scripts/mock_consumer_server.py unchanged and adds, for the smoke
   audio, the server's `locations.readAlong` validation on progress writes, and control
   endpoints `POST /read-along/reset`, `/read-along/stale`, `/read-along/realign` and
   `/audio-place` (`{"publication", "asset", "seconds", "ago"}`, a listening place heard
-  `ago` seconds earlier on another player).
+  `ago` seconds earlier on another player);
+* `POST /reset` on the control port: a fresh fixture, as the server started. Every UI
+  test case calls it first, so no case sees another's saved places, activity order,
+  requests, progress writes or counters. Within a case, places and writes persist across
+  app relaunches and going offline, as on a real server.
 
 Development only: no real security, in memory, bound to 127.0.0.1.
 
@@ -65,6 +69,11 @@ class Stats:
     def bump(self, key):
         with self.lock:
             self.values[key] += 1
+
+    def reset(self):
+        with self.lock:
+            for key in self.values:
+                self.values[key] = 0
 
     def snapshot(self):
         with self.lock:
@@ -120,6 +129,7 @@ CONTENT = re.compile(mock.PREFIX + r"/assets/([^/]+)/content")
 DETAILS = re.compile(mock.PREFIX + r"/library/([^/]+)")
 READ_ALONG = re.compile(mock.PREFIX + r"/library/([^/]+)/assets/([^/]+)/read_along(?:/(resources|audio)/(.+))?")
 READING = None
+EXTRA_BOOKS = 34
 
 
 class QuickServer(ThreadingHTTPServer):
@@ -321,6 +331,26 @@ def save_audio_place(request):
     return {"progress": saved}
 
 
+def install_fixture(extra_books):
+    """A fresh fixture: the mock's books and the read-along books, with no places,
+    activity, statuses, requests, devices or tokens, no progress writes and zeroed
+    counters. It is built before it replaces the old one, so a request in flight sees one
+    or the other. Transfer grants stay valid until they expire, as before: a background
+    download still finishing from the previous case is not turned into a failure.
+    `POST /reset` builds the same fixture again."""
+    global READING, EXTRA_BOOKS
+    state = mock.State(True, 0, False, extra_books)
+    read_along = reading.ReadAlong(state)
+    mock.Handler.base = ""
+    mock.Handler.state = state
+    READING = read_along
+    EXTRA_BOOKS = extra_books
+    with PROGRESS_LOG.lock:
+        PROGRESS_LOG.writes.clear()
+    STATS.reset()
+    return {"reset": True}
+
+
 def reset_read_along():
     """Fresh read-along books: no saved places, the first alignment, nothing stale."""
     state = mock.Handler.state
@@ -383,6 +413,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/audio-place":
             self.reply(save_audio_place(json.loads(body or b"{}")))
             return
+        if self.path == "/reset":
+            self.reply(install_fixture(EXTRA_BOOKS))
+            return
         if self.path == "/read-along/reset":
             self.reply(reset_read_along())
             return
@@ -407,16 +440,14 @@ class ControlHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    global SWITCH, READING
+    global SWITCH
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--control-port", type=int, default=8766)
     parser.add_argument("--extra-books", type=int, default=34, help="Enough to need a second library page")
     args = parser.parse_args()
 
-    mock.Handler.state = mock.State(True, 0, False, args.extra_books)
-    mock.Handler.base = ""
-    READING = reading.ReadAlong(mock.Handler.state)
+    install_fixture(args.extra_books)
     SWITCH = Switch("127.0.0.1", args.port)
     SWITCH.up()
     control = QuickServer(("127.0.0.1", args.control_port), ControlHandler)

@@ -40,6 +40,7 @@ final class FormatsSmokeTests: XCTestCase {
         self.port = port
         self.controlPort = controlPort
         try setOnline(true)
+        try freshFixture()
         // A device-flow token from the fixture server; nothing here is a real credential.
         let grant = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS formats smoke"]))
         let issued = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": grant["device_code"] as? String ?? ""]))
@@ -217,12 +218,8 @@ final class FormatsSmokeTests: XCTestCase {
             let direction = app.segmentedControls["reading-direction"]
             XCTAssertTrue(direction.waitForExistence(timeout: wait))
             direction.buttons["Right to left"].tap()
+            if isPad { setSpreads(app, true) }
             screenshot(app, "42-comic-layout")
-            if isPad {
-                let spreads = app.switches["Two pages side by side"]
-                if !spreads.isHittable { app.swipeUp() }
-                spreads.tap()
-            }
             app.buttons["Done"].tap()
             middleTap(app)
             XCTAssertTrue(waitForAbsence(app.buttons["Close book"]))
@@ -291,8 +288,6 @@ final class FormatsSmokeTests: XCTestCase {
 
     // MARK: Slow pages
 
-    // Named to run after the other comic tests (XCTest runs them alphabetically): it leaves
-    // comic-1 with a saved place.
     func testSlowFallbackPageAfterTheTimeoutWritesNothingUntilAReadersTurn() throws {
         // Another device saved page 40 of the ten-page comic (a replaced archive, say).
         _ = try request(controlPort, "POST", "/place", json: ["publication": "comic-1", "asset": "cbz-1", "page": 40])
@@ -331,9 +326,11 @@ final class FormatsSmokeTests: XCTestCase {
             XCTAssertTrue(waitForPage(app, 2, of: 10))
             XCTAssertTrue(waitFor { self.shownColour(app) == 1 }, "page 2 drew")
             closeReader(app)
-            XCTAssertTrue(waitFor(timeout: 40) { (try? self.progressWrites(book))?.lastPage == 2 }, "the turn reached the server")
+            // This case's own write, not a page an earlier write named.
+            XCTAssertTrue(waitFor(timeout: 40) { ((try? self.progressWrites(book))?.count ?? 0) > before }, "the turn reached the server")
             let log = try progressWrites(book)
             XCTAssertEqual(log.count, before + 1, "one write: the turn")
+            XCTAssertEqual(log.lastPage, 2)
             let observed = try XCTUnwrap(log.lastObservedAt.flatMap(parseTime))
             XCTAssertGreaterThan(observed, turnedAt.addingTimeInterval(-5), "stamped when page 2 was reached")
             XCTAssertEqual(try savedPlace(book).page, 2)
@@ -481,14 +478,34 @@ final class FormatsSmokeTests: XCTestCase {
         let direction = app.segmentedControls["reading-direction"]
         XCTAssertTrue(direction.waitForExistence(timeout: wait))
         direction.buttons[rightToLeft ? "Right to left" : "Left to right"].tap()
-        if isPad {
-            let toggle = app.switches["Two pages side by side"]
-            if !toggle.isHittable { app.swipeUp() }
-            if (toggle.value as? String == "1") != spreads { toggle.tap() }
-        }
+        if isPad { setSpreads(app, spreads) }
         app.buttons["Done"].tap()
         middleTap(app)
         XCTAssertTrue(waitForAbsence(app.buttons["Close book"]))
+    }
+
+    /// The page layout sheet's spreads switch, set through the control. On iPad the
+    /// choice must be offered; a SwiftUI form toggle spans its row, so the tap goes to the
+    /// switch itself, and the new value is read back.
+    private func setSpreads(_ app: XCUIApplication, _ on: Bool) {
+        let toggle = app.switches["Two pages side by side"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: wait), "iPad offers two pages side by side")
+        // The sheet opens at medium height on iPad; the choice may be below its fold.
+        for _ in 0 ..< 3 where !toggle.isHittable { app.swipeUp() }
+        XCTAssertTrue(toggle.isHittable, "the spreads switch scrolled into view")
+        if isOn(toggle) != on {
+            let control = toggle.switches.firstMatch
+            if control.exists {
+                control.tap()
+            } else {
+                toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.5)).tap()
+            }
+        }
+        XCTAssertTrue(waitFor(timeout: 5) { self.isOn(toggle) == on }, "two pages side by side \(on ? "on" : "off"): \(String(describing: toggle.value))")
+    }
+
+    private func isOn(_ toggle: XCUIElement) -> Bool {
+        (toggle.value as? String) == "1"
     }
 
     private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {
@@ -600,11 +617,17 @@ final class FormatsSmokeTests: XCTestCase {
         add(attachment)
     }
 
+    /// The library is sorted by recent activity, so a book another device just read moves
+    /// to the top while the list may still be scrolled down: look down, then back up.
     private func scroll(_ app: XCUIApplication, to element: XCUIElement) -> Bool {
         if element.waitForExistence(timeout: 10) { return true }
         for _ in 0 ..< 12 {
             if element.exists { return true }
             app.swipeUp(velocity: .fast)
+        }
+        for _ in 0 ..< 16 {
+            if element.exists { return true }
+            app.swipeDown(velocity: .fast)
         }
         return element.waitForExistence(timeout: 5)
     }
@@ -688,6 +711,15 @@ final class FormatsSmokeTests: XCTestCase {
 
     private func setOnline(_ online: Bool) throws {
         _ = try request(controlPort, "POST", online ? "/online" : "/offline")
+    }
+
+    /// Each case starts from the fixture as the server started: no places, writes,
+    /// activity or counters from an earlier case (XCTest runs them in one server, by name).
+    /// The previous case's app is stopped first, so nothing it still sends lands in this
+    /// case's record. Within the case, places persist across relaunches and offline.
+    private func freshFixture() throws {
+        XCUIApplication().terminate()
+        _ = try request(controlPort, "POST", "/reset")
     }
 
     /// Plain HTTP/1.1 over TCP; ATS doesn't govern Network framework connections.

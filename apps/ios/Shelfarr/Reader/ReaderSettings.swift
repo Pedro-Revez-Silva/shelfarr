@@ -71,13 +71,21 @@ final class ReaderSettingsStore: ObservableObject {
     }
 }
 
+/// Where `PageLayoutStore` keeps its choices, so a Debug UI test's clean device can
+/// forget them too.
+enum PageLayoutKeys {
+    static let layout = "page_layout"
+    static let direction = "page_direction_rtl"
+    static let all = [layout, direction]
+}
+
 /// Page layout for PDFs and comics. Fit and spreads apply to every book; the reading
 /// direction is chosen per book (a manga reads right to left, most comics don't), and is
 /// never guessed from the language or the file. Display preferences only.
 @MainActor
 final class PageLayoutStore {
-    private static let layoutKey = "page_layout"
-    private static let directionKey = "page_direction_rtl"
+    private static let layoutKey = PageLayoutKeys.layout
+    private static let directionKey = PageLayoutKeys.direction
     private static let maxRemembered = 500
 
     func layout(accountKey: String, publicationId: String) -> PageLayout {

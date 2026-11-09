@@ -24,6 +24,9 @@ struct ReaderView: View {
     @ObservedObject private var settingsStore: ReaderSettingsStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    /// The reader's own width class. A sheet on iPad is compact inside, so the page
+    /// layout sheet is told what the reader can show rather than reading its own.
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var sheet: ReaderSheet?
     @State private var goToPage = false
     @State private var pageEntry = ""
@@ -60,9 +63,13 @@ struct ReaderView: View {
             model.book?.apply($0)
             model.applyTheme($0.theme)
         }
+        // The reading surface's size, as the navigator (which ignores the safe area) is
+        // laid out: rotation or a resized window. On iPad, hiding the controls hides the
+        // status bar and changes only the safe area; that is not a layout, and treating it
+        // as one made the next page turned an anchor instead of a reading place.
         .background(GeometryReader { proxy in
             Color.clear.onChange(of: proxy.size) { _ in model.layoutChanged() }
-        })
+        }.ignoresSafeArea())
         .onChange(of: scenePhase) { if $0 != .active { model.flush() } }
         .onDisappear { model.leave() }
         .sheet(item: $sheet) { which in
@@ -77,7 +84,8 @@ struct ReaderView: View {
                 ReaderSettingsSheet(settings: $settingsStore.settings)
                     .presentationDetents([.medium, .large])
             case .pageLayout:
-                PageLayoutSheet(layout: $model.layout, theme: $settingsStore.settings.theme, format: model.format)
+                PageLayoutSheet(layout: $model.layout, theme: $settingsStore.settings.theme, format: model.format,
+                                offersSpreads: sizeClass == .regular)
                     .presentationDetents([.medium, .large])
             }
         }

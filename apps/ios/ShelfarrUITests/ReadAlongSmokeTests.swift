@@ -30,7 +30,10 @@ final class ReadAlongSmokeTests: XCTestCase {
         self.port = port
         self.controlPort = controlPort
         try setOnline(true)
-        _ = try request(controlPort, "POST", "/read-along/reset")
+        // The fixture as the server started (see `FormatsSmokeTests.freshFixture`), after
+        // the previous case's app has stopped sending.
+        XCUIApplication().terminate()
+        _ = try request(controlPort, "POST", "/reset")
         let grant = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS read-along smoke"]))
         let issued = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": grant["device_code"] as? String ?? ""]))
         token = try XCTUnwrap(issued["access_token"] as? String)
@@ -41,8 +44,6 @@ final class ReadAlongSmokeTests: XCTestCase {
     override func tearDownWithError() throws {
         guard controlPort != 0 else { return }
         try? setOnline(true)
-        // The other smoke tests see the fixture books as they were: no places, no activity.
-        _ = try? request(controlPort, "POST", "/read-along/reset")
     }
 
     func testNarrationHighlightsFollowsAndSavesOnlyWhatWasHeard() throws {
@@ -67,12 +68,15 @@ final class ReadAlongSmokeTests: XCTestCase {
         try step("The heard cue is highlighted, gaps show nothing, and pages follow only out-of-view cues") {
             showChrome(app, false)
             XCTAssertTrue(app.buttons["read-along-pill"].waitForExistence(timeout: wait), "the pill appears once narration plays")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "p1" }, "p1 is heard first: \(traceLine(app))")
-            screenshot(app, "ra-03-p1")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "-" }, "the silence after p1 highlights nothing")
-            XCTAssertTrue(waitFor(timeout: 15) { self.trace(app)["cue"] == "p2" })
-            XCTAssertEqual(trace(app)["follows"], "0", "p1 and p2 were already on screen: no page moved")
-            XCTAssertTrue(waitFor(timeout: 20) { self.trace(app)["cue"] == "p4" }, traceLine(app))
+            // A cue lasts two seconds, about as long as reaching this point takes on a
+            // hosted simulator, so the order comes from the controller's record of every
+            // highlight change since Play (Debug UI tests only), not from sampling.
+            XCTAssertTrue(waitFor(timeout: 15) { self.shown(app).count >= 5 }, "p1, its silence, p2, its silence, p3: \(traceLine(app))")
+            let heard = Array(shown(app).prefix(5))
+            XCTAssertEqual(heard.map { $0.cue }, ["p1", "-", "p2", "-", "p3"], "p1 is heard first, and each silence highlights nothing: \(traceLine(app))")
+            XCTAssertEqual(heard.map { $0.follows }, [0, 0, 0, 0, 0], "p1, p2 and p3 were already on screen: no page moved")
+            screenshot(app, "ra-03-heard")
+            XCTAssertTrue(waitFor(timeout: 20) { self.shown(app).contains { $0.cue == "p4" } }, traceLine(app))
             XCTAssertTrue(waitFor(timeout: 10) { Int(self.trace(app)["follows"] ?? "0") ?? 0 >= 1 }, "p4 starts on a later page, so the page followed")
             screenshot(app, "ra-04-followed")
             let writes = try progressWrites(book)
@@ -153,8 +157,11 @@ final class ReadAlongSmokeTests: XCTestCase {
         XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.lastReadAlong != nil }, "pause saved the heard place")
 
         showChrome(app, false)
+        // On iPad hiding the controls hides the status bar. Only the safe area changes,
+        // not the page: it must not make the next turn an anchor.
+        XCTAssertFalse(restoreTrace(app).contains { $0.hasPrefix("layout") }, "showing and hiding the controls is not a layout: \(restoreTrace(app).joined(separator: "\n"))")
         app.webViews.firstMatch.swipeLeft()
-        XCTAssertTrue(waitFor { ((try? self.progressWrites(book))?.reading ?? 0) > 0 }, "a turn while paused saved a reading place")
+        XCTAssertTrue(waitFor { ((try? self.progressWrites(book))?.reading ?? 0) > 0 }, "a turn while paused saved a reading place: \(restoreTrace(app).joined(separator: "\n"))")
         let read = try progressWrites(book)
         XCTAssertNil(read.lastReadAlong)
         let time = try XCTUnwrap(read.lastObservedAt)
@@ -336,6 +343,22 @@ final class ReadAlongSmokeTests: XCTestCase {
             if pair.count == 2 { fields[String(pair[0])] = String(pair[1]) }
         }
         return fields
+    }
+
+    /// The highlight changes since narration last began, oldest first (`shown=` in the trace).
+    private struct Shown {
+        let cue: String
+        /// Pages followed to when this highlight began.
+        let follows: Int
+    }
+
+    private func shown(_ app: XCUIApplication) -> [Shown] {
+        guard let value = trace(app)["shown"], value != "-" else { return [] }
+        return value.split(separator: ",").compactMap { entry -> Shown? in
+            let parts = entry.split(separator: "/")
+            guard parts.count == 2, let follows = Int(parts[1]) else { return nil }
+            return Shown(cue: String(parts[0]), follows: follows)
+        }
     }
 
     private func heardMs(_ app: XCUIApplication) -> Int? {

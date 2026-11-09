@@ -4,7 +4,8 @@ real HTTP before the simulator smoke relies on it: older clients see unchanged d
 the Media Overlay book's SMIL and generated narration match its manifest exactly (a tone
 inside every cue, silence in every gap), resources and paired audio are served only as
 listed, stale alignments and malformed declarations are refused, and progress writes get
-the server's `locations.readAlong` check.
+the server's `locations.readAlong` check. Also the control port's `POST /reset`, which
+gives every UI test case the fixture as the server started.
 
     python3 -B apps/ios/RuntimeSmoke/test_read_along_fixture.py
 """
@@ -14,8 +15,10 @@ import io
 import json
 import os
 import re
+import socket
 import struct
 import sys
+import threading
 import unittest
 import uuid
 import wave
@@ -222,6 +225,109 @@ class ReadAlongFixtureTests(unittest.TestCase):
         self.assertEqual(log["count"], 1, "refused writes never reach the mock, and each write is logged once")
         self.assertEqual(log["last"]["read_along"]["offset_ms"], 3743)
         self.assertEqual(log["last"]["fragments"], ["p2"])
+
+
+class FreshFixtureTests(unittest.TestCase):
+    """`POST /reset` on the real control port: what one UI test case leaves behind (a
+    place another device saved, activity that reorders the library, progress writes, a
+    request that added a book, a stale alignment, counters) is gone for the next case."""
+
+    def setUp(self):
+        smoke_server.install_fixture(3)
+        self.fixture = Fixture.__new__(Fixture)
+        # A fixed port, as in the smoke: going offline and back must reopen the same one.
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        smoke_server.SWITCH = smoke_server.Switch("127.0.0.1", port)
+        smoke_server.SWITCH.up()
+        self.fixture.port = port
+        self.fixture.token = None
+        self.control = smoke_server.QuickServer(("127.0.0.1", 0), smoke_server.ControlHandler)
+        threading.Thread(target=self.control.serve_forever, daemon=True).start()
+        self.sign_in()
+
+    def tearDown(self):
+        self.control.shutdown()
+        self.control.server_close()
+        smoke_server.SWITCH.down()
+
+    def sign_in(self):
+        self.fixture.token = None
+        grant = self.fixture.call("POST", "/auth/device", {"client_name": "fresh fixture test"})[1]
+        self.fixture.token = self.fixture.call("POST", "/auth/token", {"device_code": grant["device_code"]})[1]["access_token"]
+
+    def control_call(self, method, path, body=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.control.server_address[1], timeout=10)
+        payload = json.dumps(body).encode() if body is not None else None
+        connection.request(method, path, body=payload, headers={"Content-Type": "application/json"} if payload else {})
+        response = connection.getresponse()
+        data = response.read()
+        connection.close()
+        return response.status, (json.loads(data) if data else None)
+
+    def recent_ids(self):
+        status, body = self.fixture.call("GET", "/library?limit=100", headers=FORMATS)
+        self.assertEqual(status, 200)
+        return [item["id"] for item in body["items"]]
+
+    def progress(self, publication):
+        status, body = self.fixture.call("GET", f"/library/{publication}/progress")
+        self.assertEqual(status, 200)
+        return body["progress"]
+
+    def test_a_reset_leaves_nothing_from_the_previous_case(self):
+        fresh_order = self.recent_ids()
+        self.assertEqual(fresh_order[-1], "multi-1", "with no activity the library is by title")
+        # What the format cases leave: a page place written by the app, another device's
+        # place that moves a book to the top, and a request that adds a book.
+        status, _ = self.fixture.call("PUT", "/library/pdf-1/progress", {
+            "asset_id": "pdf-1", "expected_version": 0, "client_mutation_id": str(uuid.uuid4()),
+            "observed_at": mock.format_time(__import__("time").time()),
+            "locator": {"href": "document.pdf", "type": "application/pdf",
+                        "locations": {"position": 5, "fragments": ["page=5"]}}}, headers=FORMATS)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.control_call("POST", "/place", {"publication": "multi-1", "asset": "pdf-m", "page": 3})[0], 200)
+        self.assertEqual(self.recent_ids()[:2], ["pdf-1", "multi-1"], "activity puts both before every untouched book")
+        books = len(mock.Handler.state.books)
+        mock.Handler.state.books["requested-1"] = ("A Request", "Someone", "ebook", ["epub-1"])
+        # What the read-along cases leave: a stale alignment, and the counters.
+        self.assertEqual(self.control_call("POST", "/read-along/stale")[0], 200)
+        stale = self.fixture.call("GET", "/library/paired-1", headers=dict(FORMATS, **FEATURES))[1]
+        self.assertEqual(stale["assets"][0]["read_along"]["status"], "stale")
+        smoke_server.STATS.bump("grant_requests")
+        self.assertEqual(smoke_server.PROGRESS_LOG.snapshot()["pdf-1"]["count"], 1)
+        self.assertEqual(self.progress("pdf-1")["locator"]["locations"]["position"], 5)
+
+        status, body = self.control_call("POST", "/reset")
+        self.assertEqual((status, body), (200, {"reset": True}))
+
+        # Tokens belong to the old fixture: each case signs in after resetting.
+        status, _ = self.fixture.call("GET", "/me")
+        self.assertEqual(status, 401)
+        self.sign_in()
+        self.assertIsNone(self.progress("pdf-1"), "the PDF opens at page 1 again")
+        self.assertIsNone(self.progress("multi-1"))
+        self.assertEqual(self.recent_ids(), fresh_order, "no activity reorders the library")
+        self.assertEqual(len(mock.Handler.state.books), books)
+        self.assertEqual(smoke_server.PROGRESS_LOG.snapshot(), {})
+        status, stats = self.control_call("GET", "/stats")
+        self.assertEqual(status, 200)
+        self.assertEqual(stats["progress_writes"], {})
+        self.assertEqual(stats["grant_requests"], 0)
+        self.assertFalse(smoke_server.READING.stale)
+        self.assertIs(smoke_server.READING.state, mock.Handler.state, "read-along books are in the new fixture")
+        details = self.fixture.call("GET", "/library/paired-1", headers=dict(FORMATS, **FEATURES))
+        self.assertEqual(details[0], 200)
+        self.assertEqual(details[1]["assets"][0]["read_along"]["status"], "available")
+
+    def test_within_a_case_places_and_writes_persist_offline_and_back(self):
+        self.control_call("POST", "/place", {"publication": "comic-1", "asset": "cbz-1", "page": 3})
+        self.assertEqual(self.control_call("POST", "/offline")[1], {"offline": True})
+        self.assertEqual(self.control_call("POST", "/online")[1], {"offline": False})
+        self.assertEqual(self.progress("comic-1")["locator"]["locations"]["position"], 3,
+                         "going offline is not a reset")
 
 
 if __name__ == "__main__":

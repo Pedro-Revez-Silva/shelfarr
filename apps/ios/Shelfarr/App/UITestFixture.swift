@@ -53,7 +53,9 @@ enum UITestFixture {
         return delays
     }
 
-    /// A clean device: no downloads, cached books, metadata or saved places.
+    /// A clean device: no downloads, cached books, metadata or saved places, and the
+    /// default page layout. Fit, two pages side by side and reading direction are
+    /// remembered on the device and would otherwise carry from one test case into the next.
     private static func reset() {
         let manager = FileManager.default
         let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -61,6 +63,7 @@ enum UITestFixture {
         try? manager.removeItem(at: support.appendingPathComponent("accounts", isDirectory: true))
         try? manager.removeItem(at: caches.appendingPathComponent("epub", isDirectory: true))
         try? manager.removeItem(at: manager.temporaryDirectory.appendingPathComponent("downloads", isDirectory: true))
+        for key in PageLayoutKeys.all { UserDefaults.standard.removeObject(forKey: key) }
     }
 }
 #endif

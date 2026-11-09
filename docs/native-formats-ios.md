@@ -61,7 +61,8 @@ page**, and a page slider that jumps when let go). Taps on the outer quarters, s
 Reading direction is an explicit per-book choice in **Page layout**, never guessed from
 language or metadata: right to left swaps edge taps, swipes, keys, the buttons, the slider
 and the order of a spread. On iPad, **Two pages side by side** shows spreads in landscape,
-with the first page alone like a cover. **Fit** chooses the whole page or the page width.
+with the first page alone like a cover. The reader decides whether to offer it from its
+own width; the Page layout sheet is compact inside on iPad and must not decide. **Fit** chooses the whole page or the page width.
 
 - **PDF** uses PDFKit's `PDFView` directly (`.singlePage`, or `.twoUp` with
   `displaysAsBook` for spreads), keeping PDFKit's text selection and pinch zoom. Before a

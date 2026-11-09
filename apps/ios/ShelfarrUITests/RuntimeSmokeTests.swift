@@ -31,6 +31,10 @@ final class RuntimeSmokeTests: XCTestCase {
         self.port = port
         self.controlPort = controlPort
         try setOnline(true)
+        // The fixture as the server started (see `FormatsSmokeTests.freshFixture`), after
+        // the previous case's app has stopped sending.
+        XCUIApplication().terminate()
+        _ = try request(controlPort, "POST", "/reset")
         // A real device-flow token from the fixture server; nothing here is a real credential.
         let grant = try json(request(port, "POST", "/api/consumer/v1/auth/device", body: ["client_name": "Shelfarr iOS smoke"]))
         let issued = try json(request(port, "POST", "/api/consumer/v1/auth/token", body: ["device_code": grant["device_code"] as? String ?? ""]))
