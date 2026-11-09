@@ -92,10 +92,8 @@ final class RuntimeSmokeTests: XCTestCase {
             button(app, startingWith: ["Start reading", "Continue reading", "Open book"]).tap()
             XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the chapter text")
             screenshot(app, "05-reader")
-            let page = app.webViews.firstMatch
-            page.swipeLeft()
-            page.swipeLeft()
-            sleep(2)
+            turnPage(app)
+            turnPage(app)
             turnPastAChapterStart(app)
             place = progress(app)
             XCTAssertNotEqual(place, "0%", "turning pages moved the reading position")
@@ -184,11 +182,9 @@ final class RuntimeSmokeTests: XCTestCase {
             item(app, book).tap()
             button(app, startingWith: ["Start reading", "Continue reading", "Open book"]).tap()
             XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the chapter text")
-            let page = app.webViews.firstMatch
             let before = Date()
-            page.swipeLeft()
-            page.swipeLeft()
-            sleep(2)
+            turnPage(app)
+            turnPage(app)
             turnPastAChapterStart(app)
             place = progress(app)
             closeReader(app)
@@ -387,9 +383,8 @@ final class RuntimeSmokeTests: XCTestCase {
             XCTAssertEqual(read.label, "Read now")
             read.tap()
             XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the requested ebook's text")
-            let page = app.webViews.firstMatch
-            page.swipeLeft()
-            page.swipeLeft()
+            turnPage(app)
+            turnPage(app)
             turnPastAChapterStart(app)
             XCTAssertTrue(waitFor(timeout: 10) { self.progress(app) != "0%" }, "turning pages moved the reading position")
             place = progress(app)
@@ -486,10 +481,25 @@ final class RuntimeSmokeTests: XCTestCase {
     /// inside one, which a cold open has to lay out before it can show.
     private func turnPastAChapterStart(_ app: XCUIApplication) {
         for _ in 0 ..< 3 where (lastReportedProgression(app) ?? 0) <= 0 {
-            app.webViews.firstMatch.swipeLeft()
-            sleep(2)
+            turnPage(app)
         }
         XCTAssertGreaterThan(lastReportedProgression(app) ?? 0, 0, "the saved place is inside a chapter: \(restoreLog(app))")
+    }
+
+    /// Swipes one page forward and waits until the navigator reports a later place.
+    ///
+    /// The report arrives after the swipe returns: on iPad (iOS 18.5) the page before the
+    /// last turn was still the latest report a second later, so reading the trace straight
+    /// after a swipe saw where the previous one landed. Waiting for each turn's own report
+    /// keeps the next look at the trace on this page; a swipe that reports nothing new, or
+    /// a reader that never reported a page to turn from, fails here.
+    private func turnPage(_ app: XCUIApplication) {
+        var from: Double?
+        XCTAssertTrue(waitFor(timeout: 10) { from = self.lastReportedTotal(app); return from != nil },
+                      "the reader reported a page to turn from: \(restoreLog(app))")
+        app.webViews.firstMatch.swipeLeft()
+        XCTAssertTrue(waitFor(timeout: 10) { (self.lastReportedTotal(app) ?? -1) > (from ?? .infinity) },
+                      "the swipe turned to a later page: \(restoreLog(app))")
     }
 
     /// The fixture-only restore trace the Debug reader exposes under the UI test argument.
@@ -506,12 +516,24 @@ final class RuntimeSmokeTests: XCTestCase {
         return Array(lines[start...])
     }
 
+    /// The navigator's latest report since the reader opened this place, split into words:
+    /// `report c1.xhtml@0.3333 total=0.4000 viewport …`.
+    private func lastReport(_ app: XCUIApplication) -> [Substring]? {
+        restoreLog(app).last { $0.hasPrefix("report ") }?.split(separator: " ")
+    }
+
     /// The progression inside its chapter of the navigator's latest report.
     private func lastReportedProgression(_ app: XCUIApplication) -> Double? {
-        guard let line = restoreTrace(app).last(where: { $0.hasPrefix("report ") }),
-              let at = line.split(separator: " ").dropFirst().first?.split(separator: "@").last
+        guard let report = lastReport(app), report.count > 1,
+              let at = report[1].split(separator: "@").last
         else { return nil }
         return Double(at)
+    }
+
+    /// The progression through the whole book of the navigator's latest report.
+    private func lastReportedTotal(_ app: XCUIApplication) -> Double? {
+        guard let report = lastReport(app), report.count > 2, report[2].hasPrefix("total=") else { return nil }
+        return Double(report[2].dropFirst("total=".count))
     }
 
     private func attachTrace(_ app: XCUIApplication, _ name: String) {
