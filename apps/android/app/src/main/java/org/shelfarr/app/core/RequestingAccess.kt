@@ -83,8 +83,12 @@ class RequestingAccess(
         }
     }
 
-    /** Continues an approval the app was killed during. */
+    /**
+     * Continues an approval the app was killed during. One whose replacement token was
+     * already issued is confirmed with the server; nothing is asked of the person again.
+     */
     fun resume(session: Session) {
+        if (backend.sessions.hasPendingHandover(session)) return confirm(session)
         val pending = backend.sessions.pendingUpgrade(session.accountKey, now()) ?: return
         poll(session, pending)
     }
@@ -97,6 +101,11 @@ class RequestingAccess(
         val current = mutableState.value
         if (current is RequestAccess.Approving) return current.browserUri
         if (starting) return null
+        if (backend.sessions.hasPendingHandover(session)) {
+            // Approved already: what's left is the server confirming the new token.
+            if (polling?.isActive != true) confirm(session)
+            return null
+        }
         starting = true
         try {
             val grant = backend.api.startDeviceAuthorization(session.server, clientName, RequestScopes.ALL)
@@ -156,7 +165,7 @@ class RequestingAccess(
             }
             val ended = try {
                 when (val outcome = backend.authorizer.await(PendingAuthorization(session.server, pending.grant, pending.expiresAtEpochMs))) {
-                    is AuthorizationOutcome.Approved -> adopt(session, outcome.token)
+                    is AuthorizationOutcome.Approved -> adopt(session, pending, outcome.token)
                     AuthorizationOutcome.Denied -> RequestAccess.NotAllowed("Requesting wasn't allowed. The app still reads and plays everything as before.")
                     AuthorizationOutcome.Expired -> RequestAccess.NotAllowed("The approval code expired. Try again when you're ready.")
                 }
@@ -172,33 +181,55 @@ class RequestingAccess(
         }
     }
 
-    private suspend fun adopt(session: Session, token: TokenResponse): RequestAccess {
-        val fresh = backend.apiFor(Credential(session.server, token.accessToken))
-        val user = try {
-            fresh.me(session.server)
-        } catch (_: ApiException) {
-            return RequestAccess.NotAllowed("Approval finished, but ${session.server.host} couldn't confirm it. Try again.")
-        }
-        if (user.id != session.user.id) {
-            // Never switch accounts from here; the server already refuses this, so a stray token is dropped.
-            quietly { fresh.revoke(session.server) }
-            return RequestAccess.NotAllowed("That approval was for a different account, so nothing changed.")
-        }
-        val granted = token.scope.split(' ').filter(String::isNotBlank)
-        val upgraded = session.copy(user = user, accessToken = token.accessToken, grantedScopes = granted)
-        if (!backend.sessions.replaceToken(session, upgraded)) {
-            quietly { fresh.revoke(session.server) }
-            return RequestAccess.NotAllowed()
-        }
-        // The server retires the old credential once the new one is used; this also covers older servers.
-        quietly { backend.apiFor(Credential(session.server, session.accessToken)).revoke(session.server) }
-        return if (upgraded.canRequest) {
-            RequestAccess.Allowed
-        } else {
-            facts[session.server.identity] = false
-            RequestAccess.ServerTooOld
+    /** Confirms a replacement issued before, without asking the person again. */
+    private fun confirm(session: Session) {
+        polling?.cancel()
+        mutableState.value = RequestAccess.Checking
+        polling = scope.launch {
+            val ended = settleHandover(session)
+            backend.sessions.clearPendingUpgrade()
+            mutableState.value = ended
         }
     }
+
+    private suspend fun adopt(session: Session, pending: PendingUpgrade, token: TokenResponse): RequestAccess {
+        val granted = token.scope.split(' ').filter(String::isNotBlank)
+        // Recorded before the new token is first sent: the server retires the old one as it
+        // authenticates that first request, so from then on the old token's refusals wait
+        // for this answer instead of signing out, and the new token survives the process.
+        val server = session.server
+        val began = backend.sessions.beginHandover(session, pending, token.accessToken, granted) { candidate ->
+            backend.apiFor(candidate).me(server)
+        }
+        if (!began) {
+            // The sign-in changed meanwhile; this token never becomes anyone's credential.
+            quietly { backend.apiFor(Credential(server, token.accessToken)).revoke(server) }
+            return RequestAccess.NotAllowed()
+        }
+        return settleHandover(session)
+    }
+
+    private suspend fun settleHandover(session: Session): RequestAccess =
+        when (val outcome = backend.sessions.confirmHandover()) {
+            is HandoverOutcome.Adopted -> {
+                // The server retires the old credential once the new one is used; this also covers older servers.
+                quietly { backend.apiFor(Credential(session.server, session.accessToken)).revoke(session.server) }
+                if (outcome.session.canRequest) {
+                    RequestAccess.Allowed
+                } else {
+                    facts[session.server.identity] = false
+                    RequestAccess.ServerTooOld
+                }
+            }
+            is HandoverOutcome.OtherAccount -> {
+                // Never switch accounts from here; the server already refuses this, so a stray token is dropped.
+                quietly { backend.apiFor(outcome.credential).revoke(session.server) }
+                RequestAccess.NotAllowed("That approval was for a different account, so nothing changed.")
+            }
+            HandoverOutcome.Refused, HandoverOutcome.Unconfirmed ->
+                RequestAccess.NotAllowed("Approval finished, but ${session.server.host} couldn't confirm it. Try again.")
+            HandoverOutcome.Ended -> RequestAccess.NotAllowed()
+        }
 }
 
 /** Best effort: a failure here changes nothing the person relies on. */
