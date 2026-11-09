@@ -408,7 +408,6 @@ async function storedUrls(scope) {
 export async function resume(key) {
   const record = await getRecord(key)
   if (!record?.pending) return
-  await checkSpace(record.scope, record.pending.assets.filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0), key)
   await updateRecord(key, current => current && { ...current, error: null })
   notify(key)
   run(key)
@@ -424,16 +423,23 @@ function run(key) {
     running.set(key, job)
     notify(key)
     let restart = false
+    let pending = null
+    let cache = null
     try {
       let record = await getRecord(key)
       if (!record?.pending) return
       const edition = editionOf(record.pending)
+      pending = record.pending
       const current = change => updateRecord(key, stored => {
         if (!stored?.pending || editionOf(stored.pending) !== edition) throw new EditionChanged()
         return change(stored)
       })
-      const cache = await caches.open(mediaCacheName(record.scope))
+      cache = await caches.open(mediaCacheName(record.scope))
       const stored = new Set((await cache.keys()).map(entry => entry.url))
+      // IndexedDB may still remember files the browser evicted while paused.
+      // Rebuild completion under the download lock before skipping any file.
+      record = await current(saved => ({ ...saved, done: saved.pending.assets.filter(asset => stored.has(absolute(asset.content_url))).map(asset => asset.id) }))
+      await checkSpace(record.scope, record.pending.assets.filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0), key)
       for (const asset of record.pending.assets) {
         if (record.done.includes(asset.id)) continue
         if (!stored.has(absolute(asset.content_url))) {
@@ -445,25 +451,39 @@ function run(key) {
         record = await current(saved => ({ ...saved, done: [...new Set([...saved.done, asset.id])] }))
         notify(key)
       }
+      if (!await verify({ scope: record.scope, publication: record.pending })) throw new OfflineError("evicted")
       const previous = record.publication
       record = await current(saved => ({ ...saved, publication: saved.pending, pending: null, done: [], error: null, completedAt: Date.now() }))
       // Files only the replaced edition used are no longer needed.
       const kept = new Set(record.publication.assets.map(asset => asset.id))
       for (const asset of previous?.assets || []) if (!kept.has(asset.id)) await cache.delete(absolute(asset.content_url))
     } catch (error) {
-      if (error instanceof EditionChanged) { restart = true; return }
-      if (job.reason === "cancel" || job.reason === "remove") return
-      const failure = error instanceof OfflineError ? error : error?.name === "QuotaExceededError" ? new OfflineError("space")
-        : error?.name === "AbortError" || error instanceof TypeError ? new OfflineError("network") : new OfflineError("storage")
-      await updateRecord(key, stored => stored?.pending ? { ...stored, error: { kind: failure.kind, message: failure.message } } : stored).catch(() => {})
+      if (error instanceof EditionChanged) {
+        restart = true
+        // A superseded in-flight response may already have reached the cache.
+        // Keep everything used by the current complete/pending editions.
+        try {
+          const latest = await getRecord(key)
+          const kept = new Set([...(latest?.publication?.assets || []), ...(latest?.pending?.assets || [])].map(asset => absolute(asset.content_url)))
+          for (const asset of pending?.assets || []) if (!kept.has(absolute(asset.content_url))) await cache?.delete(absolute(asset.content_url))
+        } catch (_) { /* Cleanup cannot prevent the selected edition from starting; its runner reports storage failures. */ }
+      } else {
+        if (job.reason === "cancel" || job.reason === "remove") return
+        const failure = error instanceof OfflineError ? error : error?.name === "QuotaExceededError" ? new OfflineError("space")
+          : error?.name === "AbortError" || error instanceof TypeError ? new OfflineError("network") : new OfflineError("storage")
+        await updateRecord(key, stored => stored?.pending ? { ...stored, error: { kind: failure.kind, message: failure.message } } : stored).catch(() => {})
+      }
     } finally {
       running.delete(key)
       clearTimeout(progressTimer)
       progressTimer = null
       notify(key)
     }
-    // Another tab chose a newer edition meanwhile: download that one instead.
-    if (restart) queueMicrotask(() => run(key))
+    return restart
+  }).then(restart => {
+    // Web Locks releases the previous lock before resolving this promise.
+    // Starting inside its callback could lose an ifAvailable acquisition.
+    if (restart) return run(key)
   })
 }
 

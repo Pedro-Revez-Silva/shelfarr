@@ -306,6 +306,84 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_selector "[data-consumer-reader-target=elapsed]", text: "0:0#{saved.position_seconds.floor}", wait: 15
   end
 
+  test "Downloads Resume refetches completed tracks evicted while the download was paused" do
+    tracks = use_two_tracks
+    ConsumerReachability.drop = %r{/assets/#{tracks.last.id}\z}
+    visit at(consumer_publication_path(@audiobook))
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Download paused at 50%", wait: 20
+    end
+    visit at(consumer_downloads_path)
+    assert_text "Paused at 50%", wait: 15
+    page.evaluate_async_script(<<~JS)
+      const done = arguments[arguments.length - 1];
+      caches.keys().then(async names => {
+        for (const name of names.filter(n => n.startsWith("shelfarr-offline-media"))) {
+          const cache = await caches.open(name);
+          for (const request of await cache.keys()) await cache.delete(request);
+        }
+      }).then(() => done(true));
+    JS
+    ConsumerReachability.drop = nil
+    find("button[aria-label='Resume: A Listening Life']").click
+    assert_text "Available offline", wait: 20
+    assert_equal tracks.map(&:id).sort, media_entries.map { |url| url[/\h{64}\z/] }.sort
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@audiobook))
+    assert_selector "h1", text: "A Listening Life", wait: 15
+    assert_no_text "This book isn't available on this device."
+    assert_selector "[data-consumer-reader-target=duration]", text: /0:0[89]/, wait: 15
+  end
+
+  test "replacing an in-flight edition starts its replacement after releasing the download lock" do
+    visit at(consumer_publication_path(@audiobook))
+    result = using_wait_time(10) do
+      page.evaluate_async_script(<<~JS)
+        const done = arguments[arguments.length - 1];
+        (async () => {
+          const offline = await import("consumer_offline");
+          const publication = JSON.parse(document.querySelector("script[data-consumer-reader-target=publication]").textContent);
+          await offline.confirmAccount({base: "/shelf", account: publication.progress_scope.account, maxAgeDays: 30});
+          let release, started;
+          const gate = new Promise(resolve => release = resolve), begun = new Promise(resolve => started = resolve);
+          const original = window.fetch;
+          let calls = 0;
+          window.fetch = async (url, options) => {
+            if (!String(url).includes("/assets/")) return original(url, options);
+            calls++;
+            if (calls === 1) { started(); await gate; }
+            const id = String(url).split("/").at(-1);
+            return new Response(new Uint8Array(publication.assets[0].size_bytes), {status: 200, headers: {
+              ETag: '"' + id + '"', "Content-Length": String(publication.assets[0].size_bytes)
+            }});
+          };
+          try {
+            const key = await offline.download(publication);
+            await begun;
+            const next = structuredClone(publication);
+            next.assets[0].id = "b".repeat(64);
+            next.assets[0].content_url = next.assets[0].content_url.replace(/[a-f0-9]{64}$/, next.assets[0].id);
+            await offline.download(next);
+            release();
+            for (let i = 0; i < 200; i++) {
+              const record = await offline.getRecord(key);
+              if (!record.pending && !await offline.isRunning(key)) {
+                return {calls, ready: record.publication?.assets[0].id};
+              }
+              await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            return {problem: "replacement never became ready", calls};
+          } finally { window.fetch = original; }
+        })().then(done, error => done({problem: String(error)}));
+      JS
+    end
+    assert_nil result["problem"], result.inspect
+    assert_equal 2, result["calls"]
+    assert_equal "b" * 64, result["ready"]
+    assert_equal [ "b" * 64 ], media_entries.map { |url| url[/\h{64}\z/] }
+  end
+
   private
 
   def download_audiobook
