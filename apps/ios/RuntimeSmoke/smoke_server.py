@@ -14,7 +14,8 @@ It serves apps/scripts/mock_consumer_server.py unchanged and adds, for the smoke
   comic place), so the test can check activity times and that reopening a saved place
   writes nothing;
 * `POST /place` on the control port, which saves a page place as another device would
-  (`{"publication", "asset", "page"}`), including a page the file doesn't have.
+  (`{"publication", "asset", "page"}`), including a page the file doesn't have (a PDF
+  page past the end, or a comic page from a replaced archive).
 
 Development only: no real security, in memory, bound to 127.0.0.1.
 
@@ -237,14 +238,16 @@ class SmokeHandler(mock.Handler):
 
 def save_place(request):
     """Another device's page place, observed a minute ago. Not validated against the page
-    count: a PDF place past the end is exactly what the reader must keep."""
+    count: a PDF or comic place past the end is exactly what the reader must keep. A comic
+    page past the end names a file this generation's reading order doesn't have."""
     state = mock.Handler.state
     publication, asset, page = request["publication"], request["asset"], int(request["page"])
     if state.files[asset][2] == "pdf":
         locator = {"href": "document.pdf", "type": "application/pdf",
                    "locations": {"position": page, "fragments": [f"page={page}"]}}
     else:
-        item = state.orders[asset][page - 1]
+        order = state.orders[asset]
+        item = order[page - 1] if 1 <= page <= len(order) else {"href": f"replaced/p{page}.png", "media_type": "image/png"}
         locator = {"href": item["href"], "type": item["media_type"], "locations": {"position": page}}
     observed = time.time() - 60
     with state.lock:

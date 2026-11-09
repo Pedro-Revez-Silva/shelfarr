@@ -8,6 +8,10 @@ import XCTest
 /// reopening write nothing, an impossible saved place is kept until a real turn, each
 /// format downloads, and a comic reopens and turns offline, then syncs on reconnecting.
 ///
+/// Slow pages are made deterministic with `SHELFARR_UITEST_COMIC_PAGE_DELAYS` (Debug,
+/// UI test only): a comic page arriving after the restore timeout, and a spread whose
+/// left half decodes before the saved right half, write nothing until the reader turns.
+///
 /// Fixture files (`build_pdf`, `build_cbz` in apps/scripts/mock_consumer_server.py):
 /// `pdf-1` has six pages, `comic-1` ten PNG pages, `multi-1` an EPUB and a PDF. They are
 /// listed only because the app declares PDF and CBZ.
@@ -285,6 +289,110 @@ final class FormatsSmokeTests: XCTestCase {
         }
     }
 
+    // MARK: Slow pages
+
+    // Named to run after the other comic tests (XCTest runs them alphabetically): it leaves
+    // comic-1 with a saved place.
+    func testSlowFallbackPageAfterTheTimeoutWritesNothingUntilAReadersTurn() throws {
+        // Another device saved page 40 of the ten-page comic (a replaced archive, say).
+        _ = try request(controlPort, "POST", "/place", json: ["publication": "comic-1", "asset": "cbz-1", "page": 40])
+        let book = "comic-1"
+        let saved = try savedPlace(book)
+        XCTAssertEqual(saved.page, 40)
+        let before = try progressWrites(book).count
+        // Page 1 decodes after nine seconds: past the five-second restore timeout.
+        let app = launch(reset: true, comicPageDelays: "1:9")
+        try open(app, book)
+
+        try step("Page 1 arrives after the timeout and writes nothing") {
+            let first = app.buttons["invalid-place-first"]
+            XCTAssertTrue(first.waitForExistence(timeout: 90), "the saved place this file can't show is explained")
+            first.tap()
+            XCTAssertTrue(app.descendants(matching: .any)["reader-notice"].waitForExistence(timeout: 12), "the timeout hands input back and says so")
+            screenshot(app, "45-comic-slow-page-timeout")
+            XCTAssertTrue(waitFor(timeout: 20) { self.shownColour(app) == 0 }, "page 1 drew, late")
+            XCTAssertTrue(waitForPage(app, 1, of: 10))
+            let log = restoreLog(app)
+            XCTAssertTrue(log.contains { $0.contains("open timeout -> gave-up") }, "\(log)")
+            XCTAssertTrue(log.contains { $0.hasSuffix("-> settled") }, "the late page settles the restore: \(log)")
+            XCTAssertFalse(log.contains { $0.contains("-> record") }, "a late page is not reading: \(log)")
+            attachTrace(app, "45-comic-slow-page-trace")
+            sleep(7) // longer than the write debounce
+            XCTAssertEqual(try progressWrites(book).count, before, "nothing was written")
+            XCTAssertEqual(try savedPlace(book), saved, "page 40 is still the saved place, with its time")
+        }
+
+        try step("The reader's turn replaces it") {
+            let turnedAt = Date()
+            middleTap(app)
+            let next = app.buttons["Next page"]
+            XCTAssertTrue(next.waitForExistence(timeout: wait))
+            next.tap()
+            XCTAssertTrue(waitForPage(app, 2, of: 10))
+            XCTAssertTrue(waitFor { self.shownColour(app) == 1 }, "page 2 drew")
+            closeReader(app)
+            XCTAssertTrue(waitFor(timeout: 40) { (try? self.progressWrites(book))?.lastPage == 2 }, "the turn reached the server")
+            let log = try progressWrites(book)
+            XCTAssertEqual(log.count, before + 1, "one write: the turn")
+            let observed = try XCTUnwrap(log.lastObservedAt.flatMap(parseTime))
+            XCTAssertGreaterThan(observed, turnedAt.addingTimeInterval(-5), "stamped when page 2 was reached")
+            XCTAssertEqual(try savedPlace(book).page, 2)
+        }
+    }
+
+    func testRotatingIntoASpreadAtAnOddPageWritesNothing() throws {
+        guard isPad else { throw XCTSkip("spreads are an iPad landscape layout") }
+        _ = try request(controlPort, "POST", "/place", json: ["publication": "comic-1", "asset": "cbz-1", "page": 5])
+        let book = "comic-1"
+        let saved = try savedPlace(book)
+        // Page 5, the right half of spread 4-5, decodes three seconds after page 4.
+        let app = launch(reset: true, comicPageDelays: "5:3")
+        try open(app, book)
+        var before = 0
+
+        try step("Page 5 restores, alone, in portrait") {
+            XCTAssertTrue(waitForPage(app, 5, of: 10), "the saved page: \(pageLabel(app) ?? "-")")
+            XCTAssertTrue(waitFor(timeout: 40) { self.shownColour(app) == 4 }, "page 5 drew")
+            setPageLayout(app, rightToLeft: false, spreads: true)
+            XCTAssertTrue(waitForPage(app, 5, of: 10))
+            before = try progressWrites(book).count
+        }
+
+        try step("Rotating into spread 4-5 draws page 4 first and keeps page 5") {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Pages 4 and 5 of 10")).firstMatch.waitForExistence(timeout: wait),
+                          "pages 4 and 5 side by side")
+            XCTAssertTrue(waitFor(timeout: 20) { self.restoreLog(app).contains { $0.contains("drawn 4-5") } }, "both halves drew")
+            screenshot(app, "46-comic-odd-page-spread")
+            let log = restoreLog(app)
+            XCTAssertTrue(log.contains { $0.contains("pages 4-5 drawn 4-4 -> none") }, "page 4 drew first: \(log)")
+            XCTAssertFalse(log.contains { $0.contains("-> record") }, "a layout is not reading: \(log)")
+            attachTrace(app, "46-comic-odd-page-spread-trace")
+            XCTAssertEqual(pageLabel(app), "Page 5 of 10", "still page 5")
+            XCUIDevice.shared.orientation = .portrait
+            XCTAssertTrue(waitForPage(app, 5, of: 10), "back to page 5 alone")
+            sleep(7) // longer than the write debounce
+            XCTAssertEqual(try progressWrites(book).count, before, "rotating wrote nothing")
+            XCTAssertEqual(try savedPlace(book), saved, "page 5 keeps its time")
+        }
+
+        try step("A real turn in a spread still records") {
+            XCUIDevice.shared.orientation = .landscapeLeft
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Pages 4 and 5 of 10")).firstMatch.waitForExistence(timeout: wait))
+            reader(app).swipeLeft()
+            XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Pages 6 and 7 of 10")).firstMatch.waitForExistence(timeout: wait))
+            XCTAssertTrue(waitFor { self.restoreLog(app).contains { $0.contains("-> record 6") } }, "\(restoreLog(app))")
+            XCUIDevice.shared.orientation = .portrait
+            XCTAssertTrue(waitForPage(app, 6, of: 10))
+            // Back to the default layout, which is not reading either.
+            setPageLayout(app, rightToLeft: false, spreads: false)
+            closeReader(app)
+            XCTAssertTrue(waitFor(timeout: 40) { (try? self.progressWrites(book))?.lastPage == 6 }, "the turn reached the server")
+            sleep(7)
+            XCTAssertEqual(try progressWrites(book).count, before + 1, "one write: the turn")
+        }
+    }
+
     // MARK: Several formats
 
     func testAChoiceOfFormatAndAnOfflineAlternative() throws {
@@ -349,7 +457,8 @@ final class FormatsSmokeTests: XCTestCase {
 
     private var isPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
 
-    private func launch(reset: Bool) -> XCUIApplication {
+    /// `comicPageDelays`: `page:seconds` pairs a comic's pages wait before decoding.
+    private func launch(reset: Bool, comicPageDelays: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-shelfarr-ui-test"] + (reset ? ["-shelfarr-ui-test-reset"] : [])
         app.launchEnvironment = [
@@ -358,8 +467,28 @@ final class FormatsSmokeTests: XCTestCase {
             "SHELFARR_UITEST_USER_ID": userId,
             "SHELFARR_UITEST_USER_NAME": "Mock Reader",
         ]
+        if let comicPageDelays { app.launchEnvironment["SHELFARR_UITEST_COMIC_PAGE_DELAYS"] = comicPageDelays }
         app.launch()
         return app
+    }
+
+    /// Page layout choices are remembered on the device across launches: set them.
+    private func setPageLayout(_ app: XCUIApplication, rightToLeft: Bool, spreads: Bool) {
+        middleTap(app)
+        let layoutButton = app.buttons["Page layout"]
+        XCTAssertTrue(layoutButton.waitForExistence(timeout: wait))
+        layoutButton.tap()
+        let direction = app.segmentedControls["reading-direction"]
+        XCTAssertTrue(direction.waitForExistence(timeout: wait))
+        direction.buttons[rightToLeft ? "Right to left" : "Left to right"].tap()
+        if isPad {
+            let toggle = app.switches["Two pages side by side"]
+            if !toggle.isHittable { app.swipeUp() }
+            if (toggle.value as? String == "1") != spreads { toggle.tap() }
+        }
+        app.buttons["Done"].tap()
+        middleTap(app)
+        XCTAssertTrue(waitForAbsence(app.buttons["Close book"]))
     }
 
     private func tab(_ app: XCUIApplication, _ name: String) -> XCUIElement {

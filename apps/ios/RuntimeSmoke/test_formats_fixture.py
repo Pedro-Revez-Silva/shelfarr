@@ -237,6 +237,19 @@ class PagePlaces(unittest.TestCase):
             self.assertEqual(self.put("comic-1", "cbz-1", locator)[0], 422, locator)
         self.assertEqual(self.put("comic-1", "pdf-1", self.pdf(1))[0], 422, "a file of another publication")
 
+    def test_the_smoke_servers_other_device_places(self):
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import smoke_server  # noqa: E402  (shares this fixture's mock state)
+        order = self.fixture.call("GET", "/library/comic-1/assets/cbz-1/reading_order")[1]["items"]
+        for page, href in [(5, order[4]["href"]), (40, "replaced/p40.png")]:
+            smoke_server.save_place({"publication": "comic-1", "asset": "cbz-1", "page": page})
+            status, body, _ = self.fixture.call("GET", "/library/comic-1/progress")
+            self.assertEqual(status, 200)
+            locator = body["progress"]["locator"]
+            self.assertEqual((locator["href"], locator["locations"]["position"]), (href, page))
+            self.assertTrue(body["progress"]["observed_at"], "another device's time")
+        self.assertNotIn("replaced/p40.png", [item["href"] for item in order], "a page this archive doesn't have")
+
     def test_continue_offers_only_places_the_client_can_open(self):
         self.assertEqual(self.put("multi-1", "pdf-m", self.pdf(2))[0], 200)
         everything = self.fixture.call("GET", "/continue", headers={HEADER: "epub,pdf,cbz"})[1]["items"]
