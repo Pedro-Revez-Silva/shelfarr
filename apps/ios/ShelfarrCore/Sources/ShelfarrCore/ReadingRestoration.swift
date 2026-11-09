@@ -48,7 +48,11 @@ public struct ReadingObservation: Sendable, Equatable {
 /// - Each attempt has a finite timeout; after `attempts` the reader gives up, input is
 ///   enabled and the page on screen becomes the anchor. The saved place stays the
 ///   durable checkpoint until the reader actually moves.
-/// - Once anchored, any report of another page, forward or back, is reading.
+/// - Once anchored, any report of another page, forward or back, is reading. A place
+///   heard is the exception while its element confirmed the anchor: the page answers
+///   about the document as it is when asked, which can be after the navigator scrolled
+///   but before it reported that scroll. A later report of that document is reading only
+///   once the page says the element has left the screen.
 public struct ReadingRestoration: Sendable {
     /// Correcting attempts before giving up: one corrective jump and one retry.
     public static let attempts = 2
@@ -73,6 +77,7 @@ public struct ReadingRestoration: Sendable {
         /// The saved place names an element (a place reached by listening has no
         /// progression) and its document is on screen: check whether the element itself
         /// is, then call `elementShown(_:for:)` with the observation this answered.
+        /// After restoring, the answer can be `.record`: that observation is reading.
         case confirm(target: JSONValue)
     }
 
@@ -91,6 +96,10 @@ public struct ReadingRestoration: Sendable {
         /// `attempt` is the correcting attempt under way (0 before any), `afterGivingUp`
         /// when restoring already gave up.
         case confirming(target: JSONValue, attempt: Int, current: ReadingObservation, last: ReadingObservation?, afterGivingUp: Bool)
+        /// Restored at `anchor` because the page showed the saved element, and the
+        /// navigator has since reported `current`, another page of that document. Whether
+        /// the element is still shown tells a late report of the restore from a turn.
+        case verifying(anchor: ReadingObservation, target: JSONValue, current: ReadingObservation)
         /// The reader has moved; every report is reading.
         case reading
     }
@@ -178,8 +187,26 @@ public struct ReadingRestoration: Sendable {
             let shown = Self.shows(target, in: current)
             phase = .anchored(current, target: target, failed: !shown)
             return shown ? .settled : .none
+        case let .verifying(anchor, target, _):
+            if Self.samePage(anchor, current) {
+                // Back on the restored page before the answer: nothing has moved.
+                phase = .anchored(anchor, target: target, failed: false)
+                return .none
+            }
+            if Self.documentShown(target, in: current) {
+                phase = .verifying(anchor: anchor, target: target, current: current)
+                return .confirm(target: target)
+            }
+            phase = .reading
+            return .record
         case let .anchored(anchor, target, failed):
             if Self.samePage(anchor, current) { return .none }
+            if let target, Self.isElementTarget(target), !failed, Self.documentShown(target, in: current) {
+                // The element was shown when asked; this report may be the same restore,
+                // measured late. Ask again about this report before calling it reading.
+                phase = .verifying(anchor: anchor, target: target, current: current)
+                return .confirm(target: target)
+            }
             if let target, !Self.isElementTarget(target), Self.shows(target, in: current) {
                 // The saved place arrived late; still not reading.
                 phase = .anchored(current, target: target, failed: false)
@@ -193,6 +220,16 @@ public struct ReadingRestoration: Sendable {
     /// The app's answer to `.confirm` for the report `observation`: whether the saved
     /// element is on screen. An answer about an older report changes nothing.
     public mutating func elementShown(_ visible: Bool, for observation: ReadingObservation) -> Action {
+        if case let .verifying(_, target, current) = phase {
+            guard current == observation else { return .none }
+            if visible {
+                // The report the restore caused, measured after the page scrolled.
+                phase = .anchored(current, target: target, failed: false)
+                return .none
+            }
+            phase = .reading
+            return .record
+        }
         guard case let .confirming(target, attempt, current, _, afterGivingUp) = phase, current == observation else { return .none }
         if visible {
             phase = .anchored(current, target: target, failed: false)

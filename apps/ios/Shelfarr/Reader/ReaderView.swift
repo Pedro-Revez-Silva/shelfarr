@@ -92,7 +92,6 @@ struct ReaderView: View {
         .alert("Go to page", isPresented: $goToPage) {
             TextField("Page", text: $pageEntry)
                 .keyboardType(.numberPad)
-                .accessibilityIdentifier("go-to-page-field")
             Button("Go") {
                 if let target = Int(pageEntry.trimmingCharacters(in: .whitespaces)) { model.goToPage(min(max(target, 1), model.pageCount)) }
                 pageEntry = ""

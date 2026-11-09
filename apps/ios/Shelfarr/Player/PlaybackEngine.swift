@@ -561,10 +561,22 @@ final class PlaybackEngine: ObservableObject {
         return SavedPosition(assetId: trackKey(trackIndex), positionSeconds: position)
     }
 
+    /// Takes the player's own time before a checkpoint. `position` follows the half-second
+    /// observer, so a pause shortly after a track starts would otherwise save where the
+    /// track started: on a hosted iPad, narration paused at 0.439 s into its second file
+    /// saved 0 s, the same place as the file's start, so the pause wrote nothing.
+    /// A seek in flight keeps its target.
+    private func catchUpPosition() {
+        guard isLoaded, !seeking, player.currentItem != nil else { return }
+        let time = player.currentTime()
+        if time.isNumeric { position = time.seconds }
+    }
+
     /// Writes the current place locally, stamped now. The opened place and the replayed
     /// pre-roll before it are not new listening and are skipped.
     private func record() {
         let observedAt = ActivityTime.now()
+        catchUpPosition()
         if program != nil {
             guard let saved = currentPosition(), checkpoints.isActivity(saved) else { return }
             listener?.narration(heard: trackIndex, seconds: saved.positionSeconds ?? 0, observedAt: observedAt, flush: false)
@@ -576,6 +588,7 @@ final class PlaybackEngine: ObservableObject {
 
     private func recordAndFlush(narrationActivity: Bool? = nil) {
         let observedAt = ActivityTime.now()
+        catchUpPosition()
         if program != nil {
             // Lifecycle flushes while paused send the outbox only. Pause edges,
             // deliberate moves and natural file ends explicitly record their activity.

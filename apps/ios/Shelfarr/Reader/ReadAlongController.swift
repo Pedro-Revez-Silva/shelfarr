@@ -41,6 +41,8 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
     /// Where the last follow went, until its report arrives (or a few seconds pass).
     private var followTarget: (href: String, until: Date)?
     private var heardCount = 0
+    /// The last listening checkpoint recorded, as "audio:ms" (Debug UI-test trace only).
+    private var lastSaved = "-"
     private var followCount = 0
     /// Simulator smoke only: every highlight change since narration last began, as
     /// `cue/follows` (`p1/0,-/0,p2/0`). A fixture cue lasts two seconds, about as long as
@@ -288,6 +290,7 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
         let progress = self.progress
         session.heardCheckpoint(cueReached: reached != nil)
         heardCount += 1
+        lastSaved = "\(track):\(ms)"
         let previous = lastWrite
         lastWrite = Task {
             await previous?.value
@@ -369,7 +372,7 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
         let shown = shownCues.isEmpty ? "-" : shownCues.joined(separator: ",")
         var line = "read-along event=\(event) cue=\(cue) playing=\(session.playing ? 1 : 0) follow=\(session.follow ? 1 : 0) "
             + "suspended=\(session.suspended ? 1 : 0) started=\(session.started ? 1 : 0) heard=\(heard) offer=\(session.offer == nil ? 0 : 1) "
-            + "source=\(manifest.source.rawValue) audio=\(fromDevice ? "device" : "stream") generation=\(manifest.generation.prefix(8)) checkpoints=\(heardCount) follows=\(followCount)"
+            + "source=\(manifest.source.rawValue) audio=\(fromDevice ? "device" : "stream") generation=\(manifest.generation.prefix(8)) checkpoints=\(heardCount) saved=\(lastSaved) follows=\(followCount)"
         line += " shown=\(shown)"
         trace = line
     }

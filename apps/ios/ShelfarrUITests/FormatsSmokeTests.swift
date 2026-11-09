@@ -94,10 +94,17 @@ final class FormatsSmokeTests: XCTestCase {
             let pageButton = app.buttons["reader-page"]
             XCTAssertTrue(pageButton.waitForExistence(timeout: wait))
             pageButton.tap()
-            let field = app.textFields["go-to-page-field"]
-            XCTAssertTrue(field.waitForExistence(timeout: wait))
+            // SwiftUI doesn't carry an identifier onto a text field inside an alert (the
+            // hosted iOS 18.5 and 26 hierarchies show it without one), so the alert's own
+            // field is typed into, by its placeholder.
+            let alert = app.alerts["Go to page"]
+            XCTAssertTrue(alert.waitForExistence(timeout: wait), "the Go to page alert opened")
+            XCTAssertTrue(alert.staticTexts["Pages 1 to 6"].exists, "it names the range")
+            let field = alert.textFields.matching(NSPredicate(format: "placeholderValue == %@", "Page")).firstMatch
+            XCTAssertTrue(field.waitForExistence(timeout: wait), "the page field")
             field.typeText("5")
-            app.alerts.buttons["Go"].tap()
+            alert.buttons["Go"].tap()
+            XCTAssertTrue(waitForAbsence(alert))
             XCTAssertTrue(waitForPage(app, 5, of: 6))
             middleTap(app)
             XCTAssertTrue(waitForAbsence(app.buttons["Close book"]))
@@ -236,13 +243,20 @@ final class FormatsSmokeTests: XCTestCase {
                 screenshot(app, "43-comic-spread")
                 XCUIDevice.shared.orientation = .portrait
                 XCTAssertTrue(waitForPage(app, 2, of: 10))
+                // The page label read "Page 2 of 10" in landscape too: wait for the portrait
+                // layout's single page before turning from it.
+                let single = app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "identifier == %@ AND label == %@", "comic-page-2", "Page 2 of 10")).firstMatch
+                XCTAssertTrue(single.waitForExistence(timeout: wait), "page 2 alone again in portrait")
             }
         }
 
         var written = 0
         try step("Right to left: a swipe to the right is the next page") {
             reader(app).swipeRight()
-            XCTAssertTrue(waitForPage(app, 3, of: 10))
+            let turned = waitForPage(app, 3, of: 10)
+            if !turned { attachTrace(app, "45-comic-rtl-turn-trace") }
+            XCTAssertTrue(turned, "the swipe turned to page 3: \(pageLabel(app) ?? "-")")
             XCTAssertTrue(waitFor { self.shownColour(app) == 2 })
             closeReader(app)
             XCTAssertTrue(waitFor(timeout: 40) { (try? self.progressWrites(book))?.lastPage == 3 })
