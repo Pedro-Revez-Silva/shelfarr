@@ -306,6 +306,43 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_selector "[data-consumer-reader-target=elapsed]", text: "0:0#{saved.position_seconds.floor}", wait: 15
   end
 
+  test "the first download retains an audiobook place already confirmed during this visit" do
+    visit at(consumer_publication_path(@audiobook))
+    assert_selector "[data-consumer-reader-target=duration]", text: /0:0[89]/, wait: 15
+    page.execute_script("const seek = document.querySelector('#consumer-seek'); seek.value = 60; seek.dispatchEvent(new Event('input')); seek.dispatchEvent(new Event('change'))")
+    saved = wait_for_progress(@audiobook)
+    assert_text "Your place is saved to your account", wait: 12
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@audiobook))
+    assert_selector "[data-consumer-reader-target=elapsed]", text: "0:0#{saved.position_seconds.floor}", wait: 15
+    assert_equal saved.version, saved.reload.version, "opening the download creates no activity"
+  end
+
+  test "the first download retains an ebook page already confirmed during this visit" do
+    visit at(consumer_publication_path(@ebook))
+    assert_selector ".consumer-ebook iframe", wait: 20
+    find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all, wait: 10
+    saved = wait_for_progress(@ebook)
+    assert_selector "[data-consumer-reader-target=syncStatus]", text: "Your place is saved to your account", visible: :all, wait: 12
+    reveal_reading_controls
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@ebook))
+    assert_selector ".consumer-ebook iframe", wait: 20
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all, wait: 15
+    assert_equal saved.version, saved.reload.version, "opening the download creates no activity"
+  end
+
   test "Downloads Resume refetches completed tracks evicted while the download was paused" do
     tracks = use_two_tracks
     ConsumerReachability.drop = %r{/assets/#{tracks.last.id}\z}

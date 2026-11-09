@@ -13,6 +13,15 @@ export default class extends Controller {
     const data = this.reader?.querySelector("script[data-consumer-reader-target=publication]")
     try { this.publication = JSON.parse(data?.textContent || "null") } catch (_) { this.publication = null }
     if (!this.publication?.progress_scope?.account) return
+    // A place may be confirmed before this browser's first download (or while
+    // its offline module loads). Keep it in the snapshot offered to Download.
+    this.progressHandler = event => {
+      const progress = event.detail
+      if (!Number.isInteger(progress?.version) || (this.publication.progress?.version || 0) > progress.version) return
+      this.publication.progress = progress
+      if (this.key) this.offline.rememberProgress(this.key, progress, this.publication.reading_status).catch(() => {})
+    }
+    this.reader?.addEventListener("consumer-reader:server-progress", this.progressHandler)
     try { this.offline = await import("consumer_offline") } catch (_) { return }
     if (!this.active) return
     const offline = this.offline
@@ -49,8 +58,6 @@ export default class extends Controller {
       if (type === "progress") this.renderProgress(detail)
       else this.refresh()
     })
-    this.progressHandler = event => this.offline.rememberProgress(this.key, event.detail, this.publication.reading_status).catch(() => {})
-    this.reader?.addEventListener("consumer-reader:server-progress", this.progressHandler)
   }
 
   async refresh({ verify = false } = {}) {
