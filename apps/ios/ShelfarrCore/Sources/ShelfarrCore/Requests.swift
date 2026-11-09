@@ -15,12 +15,19 @@ public enum RequestScopes {
 /// Public facts from `/server.json`. Older servers omit `consumer_features`.
 public struct ServerFacts: Decodable, Equatable, Sendable {
     public let consumerFeatures: [String]
+    /// Formats the server can serve, from servers that know about reader formats. It says
+    /// nothing about what this app renders.
+    public let readerFormats: [String]?
 
-    enum CodingKeys: String, CodingKey { case consumerFeatures = "consumer_features" }
+    enum CodingKeys: String, CodingKey {
+        case consumerFeatures = "consumer_features"
+        case readerFormats = "reader_formats"
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         consumerFeatures = try container.decodeIfPresent([String].self, forKey: .consumerFeatures) ?? []
+        readerFormats = (try? container.decodeIfPresent([String].self, forKey: .readerFormats)) ?? nil
     }
 
     public var offersRequesting: Bool { consumerFeatures.contains("requests") }

@@ -78,19 +78,32 @@ public struct DownloadRecord: Codable, Equatable, Sendable, Identifiable {
     public var state: DownloadState
     public var problem: DownloadProblem?
     public var updatedAt: Date
+    /// The reader format a book's download holds (`ReaderFormat.rawValue`). Nil for
+    /// audiobooks and for book downloads made before formats existed; those are worked
+    /// out from the pinned file, so an EPUB downloaded then stays valid.
+    public var format: String?
 
     public var id: String { publicationId }
 
-    public init(publicationId: String, publication: Publication, files: [DownloadedFile], state: DownloadState, problem: DownloadProblem? = nil, updatedAt: Date = Date()) {
+    public init(publicationId: String, publication: Publication, files: [DownloadedFile], state: DownloadState, problem: DownloadProblem? = nil, updatedAt: Date = Date(), format: String? = nil) {
         self.publicationId = publicationId
         self.publication = publication
         self.files = files
         self.state = state
         self.problem = problem
         self.updatedAt = updatedAt
+        self.format = format
     }
 
     public var pinnedAssetIds: [String] { files.map(\.assetId) }
+
+    /// The format of a book's download; nil for an audiobook.
+    public var readerFormat: ReaderFormat? {
+        guard publication.bookType == .ebook else { return nil }
+        if let format, let known = ReaderFormat(rawValue: format) { return known }
+        let pinned = files.first.flatMap { file in publication.assets.first { $0.id == file.assetId } }
+        return pinned?.readerFormat ?? .epub
+    }
 
     /// Nil when the server didn't state every size, so no honest total exists.
     public var bytesTotal: Int64? {
@@ -109,9 +122,10 @@ public struct DownloadRecord: Codable, Equatable, Sendable, Identifiable {
     public var isReady: Bool { state == .ready }
     public var isActive: Bool { state == .queued || state == .downloading }
 
-    /// True when `current` is the same edition this download pinned.
+    /// True when `current` is the same edition of this download's format. A server that
+    /// starts listing another format of the same book doesn't make it stale.
     public func matches(_ current: Publication) -> Bool {
-        current.playableAssets.map(\.id) == pinnedAssetIds
+        current.downloadableAssets(format: readerFormat).map(\.id) == pinnedAssetIds
     }
 }
 
@@ -143,6 +157,7 @@ private struct StorageFailure: Error {}
 private struct Unsupported: Error {}
 private struct LeftServer: Error {}
 private struct GrantRejected: Error {}
+private struct MissingFiles: Error {}
 
 /// Where a download manager's transfers run.
 public struct DownloadExecutors: Sendable {
@@ -346,6 +361,12 @@ public actor DownloadManager: TransferSink {
         record(publicationId).flatMap { $0.isReady ? $0 : nil }
     }
 
+    /// The verified page order kept beside a ready comic download.
+    public func readingOrder(_ record: DownloadRecord, assetId: String) -> ReadingOrder? {
+        guard record.isReady, let pinned = record.files.first(where: { $0.assetId == assetId && $0.complete }) else { return nil }
+        return Self.storedOrder(orderFile(record.publicationId, pinned), assetId: assetId)
+    }
+
     /// The verified local file for one pinned asset of a ready download.
     public func fileURL(_ record: DownloadRecord, assetId: String) -> URL? {
         guard record.isReady, let pinned = record.files.first(where: { $0.assetId == assetId && $0.complete }) else { return nil }
@@ -381,33 +402,44 @@ public actor DownloadManager: TransferSink {
 
     /// Queues `publication`. The transfer fetches the current edition first, so a
     /// download never pins details that were already stale on screen.
-    public func enqueue(_ publication: Publication) {
+    ///
+    /// A book's download holds one `format`. Without one it keeps the format it already
+    /// has, else the only one there is, else EPUB. Choosing another format replaces it.
+    public func enqueue(_ publication: Publication, format: ReaderFormat? = nil) {
         guard !closed else { return }
         load()
         let existing = records[publication.id]
         if let existing, existing.isActive { return }
         grantRejections[publication.id] = nil
-        if let existing, existing.matches(publication), existing.state != .cancelled {
+        let chosen: ReaderFormat? = publication.bookType == .ebook
+            ? format ?? existing?.readerFormat ?? (publication.readerFormats.count == 1 ? publication.readerFormats[0] : .epub)
+            : nil
+        if let existing, existing.readerFormat == chosen, existing.matches(publication), existing.state != .cancelled {
             var record = existing
             record.state = .queued
             record.problem = nil
             record.publication = publication
             record.updatedAt = Date()
+            if record.format == nil { record.format = chosen?.rawValue }
             guard save(record) else { return }
         } else {
             if existing != nil {
                 discardTickets(publication.id)
                 try? files.removeItem(at: folder(publication.id))
             }
-            guard save(DownloadRecord(publicationId: publication.id, publication: publication, files: pin(publication.playableAssets), state: .queued)) else { return }
+            let record = DownloadRecord(
+                publicationId: publication.id, publication: publication,
+                files: pin(publication.downloadableAssets(format: chosen)), state: .queued, format: chosen?.rawValue
+            )
+            guard save(record) else { return }
         }
         schedule(publication.id)
     }
 
-    /// Retries a failed or cancelled download with the details it already has.
+    /// Retries a failed or cancelled download with the details and format it already has.
     public func retry(_ publicationId: String) {
         guard let record = record(publicationId) else { return }
-        enqueue(record.publication)
+        enqueue(record.publication, format: record.readerFormat)
     }
 
     /// Resumes downloads that stopped for a reason that may have passed, such as the connection.
@@ -574,9 +606,11 @@ public actor DownloadManager: TransferSink {
                 await cancelTransfers(discardTickets(publicationId))
                 guard self.current(publicationId, epoch) else { return }
                 try? files.removeItem(at: folder(publicationId))
-                record.files = pin(current.playableAssets)
+                // A new edition keeps this download's format while it still has one.
+                record.files = pin(current.downloadableAssets(format: record.readerFormat))
             }
             if record.files.isEmpty { throw Unsupported() }
+            if record.format == nil { record.format = record.readerFormat?.rawValue }
             record.publication = current
             record.state = .downloading
             record.problem = nil
@@ -586,7 +620,7 @@ public actor DownloadManager: TransferSink {
             let remaining = record.files.filter { !$0.complete }.reduce(Int64(0)) { $0 + max(0, $1.sizeBytes - $1.bytesDone) }
             if let space = usableSpace(), space < remaining + Self.spaceMargin { throw StorageFailure() }
 
-            let assets = Dictionary(current.playableAssets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let assets = Dictionary(current.downloadableAssets(format: record.readerFormat).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             for pinned in record.files where !pinned.complete {
                 guard let asset = assets[pinned.assetId] else { throw EditionChanged() }
                 try await planFile(publicationId, asset, epoch)
@@ -613,6 +647,9 @@ public actor DownloadManager: TransferSink {
                 cursor = max(cursor, (ticket.end ?? length - 1) + 1)
             }
             if cursor < length { return true }
+            // Every byte is here but the file was never finished (a comic whose page order
+            // went missing): finishing it needs the server.
+            if pending.isEmpty { return true }
         }
         return false
     }
@@ -625,6 +662,12 @@ public actor DownloadManager: TransferSink {
             try files.createDirectory(at: folder(publicationId), withIntermediateDirectories: true)
         } catch {
             throw StorageFailure()
+        }
+        if asset.readerFormat == .cbz {
+            // The page order is durable before any byte moves: the comic is only ever
+            // ready with both.
+            try await ensureReadingOrder(publicationId, asset, pinned, epoch)
+            guard current(publicationId, epoch) else { throw CancellationError() }
         }
 
         // The foreground transport refuses redirects that leave the server; a system
@@ -720,6 +763,63 @@ public actor DownloadManager: TransferSink {
                 persist()
                 throw StorageFailure()
             }
+        }
+    }
+
+    /// Fetches, checks and stores a comic's reading order beside its file, unless a valid
+    /// one for this exact generation is already there.
+    private func ensureReadingOrder(_ publicationId: String, _ asset: Asset, _ file: DownloadedFile, _ epoch: Int) async throws {
+        let target = orderFile(publicationId, file)
+        if Self.storedOrder(target, assetId: asset.id) != nil { return }
+        guard let reference = asset.readingOrderUrl, let url = server.resolve(reference), server.contains(url) else { throw Unsupported() }
+        let body = try await fetchReadingOrder(url, scratch: target.appendingPathExtension("part"))
+        guard current(publicationId, epoch) else { throw CancellationError() }
+        let order: ReadingOrder
+        do {
+            order = try ReadingOrder.decode(body, assetId: asset.id)
+        } catch {
+            throw APIError.protocolError
+        }
+        do {
+            try JSONEncoder().encode(order).write(to: target, options: .atomic)
+        } catch {
+            throw StorageFailure()
+        }
+    }
+
+    /// GETs a reading order with the bearer, bounded to `ReadingOrder.maxBytes`.
+    private func fetchReadingOrder(_ url: URL, scratch: URL, replayed: Bool = false) async throws -> Data {
+        let sent = credential
+        var request = authorize(url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let response: HTTPURLResponse
+        let body: Data?
+        do {
+            (response, body) = try await BoundedFetch.fetch(transport, request, scratch: scratch, limit: ReadingOrder.maxBytes)
+        } catch is BoundedFetch.TooLarge {
+            throw APIError.protocolError
+        }
+        switch response.statusCode {
+        case 200 ..< 300:
+            guard let body else { throw APIError.protocolError }
+            return body
+        case 401:
+            if sent != credential, !replayed { return try await fetchReadingOrder(url, scratch: scratch, replayed: true) }
+            switch await resolveRefusal(sent) {
+            case .replay where !replayed && credential != sent:
+                return try await fetchReadingOrder(url, scratch: scratch, replayed: true)
+            case .unconfirmed:
+                try Task.checkCancellation()
+                throw APIError.offline(certificate: false)
+            case .replay, .ended:
+                throw APIError.unauthorized
+            }
+        case 410:
+            // This file generation is gone from the server: a new edition.
+            throw EditionChanged()
+        default:
+            throw Self.failure(response.statusCode)
         }
     }
 
@@ -961,14 +1061,34 @@ public actor DownloadManager: TransferSink {
         let final = folder(publicationId).appendingPathComponent(file.name)
         let length = Self.size(of: part)
         let lengthOK = file.expectedBytes.map { length == $0 } ?? true
-        let epubOK = !asset.isEpub || Self.head(of: part) == Data("PK".utf8)
-        guard lengthOK, epubOK, length > 0 else {
+        let formatOK: Bool
+        switch asset.readerFormat {
+        case .epub: formatOK = Self.head(of: part) == Data("PK".utf8)
+        case .pdf: formatOK = PDFSniff.hasHeader(file: part)
+        case .cbz, nil: formatOK = true
+        }
+        guard lengthOK, formatOK, length > 0 else {
             try? files.removeItem(at: part)
             updateFile(publicationId, asset.id) {
                 $0.bytesDone = 0
                 $0.etag = nil
             }
             throw APIError.protocolError
+        }
+        if asset.readerFormat == .cbz {
+            // Ready only with its page order stored and matching the archive's own directory.
+            guard let order = Self.storedOrder(orderFile(publicationId, file), assetId: asset.id) else { throw MissingFiles() }
+            do {
+                try ComicArchive.open(part, order: order).close()
+            } catch {
+                try? files.removeItem(at: part)
+                try? files.removeItem(at: orderFile(publicationId, file))
+                updateFile(publicationId, asset.id) {
+                    $0.bytesDone = 0
+                    $0.etag = nil
+                }
+                throw APIError.protocolError
+            }
         }
         try? files.removeItem(at: final)
         do {
@@ -1064,7 +1184,7 @@ public actor DownloadManager: TransferSink {
     }
 
     private func assetFor(_ publicationId: String, _ assetId: String) -> Asset? {
-        records[publicationId]?.publication.playableAssets.first { $0.id == assetId }
+        records[publicationId]?.publication.assets.first { $0.id == assetId }
     }
 
     private func refreshBytes(_ publicationId: String, _ assetId: String) {
@@ -1167,7 +1287,15 @@ public actor DownloadManager: TransferSink {
             var file = file
             let final = directory.appendingPathComponent(file.name)
             let finalSize = Self.size(of: final)
-            if file.complete, files.fileExists(atPath: final.path), file.expectedBytes.map({ finalSize == $0 }) ?? true {
+            let comic = record.publication.assets.first { $0.id == file.assetId }?.readerFormat == .cbz
+            if file.complete, comic, Self.storedOrder(orderFile(record.publicationId, file), assetId: file.assetId) == nil {
+                // A comic without its page order can't be read. Its bytes stay as the partial
+                // file, so trying again fetches only the order.
+                file.complete = false
+                try? files.removeItem(at: partial(record.publicationId, file))
+                try? files.moveItem(at: final, to: partial(record.publicationId, file))
+                file.bytesDone = Self.size(of: partial(record.publicationId, file))
+            } else if file.complete, files.fileExists(atPath: final.path), file.expectedBytes.map({ finalSize == $0 }) ?? true {
                 file.bytesDone = finalSize
             } else if file.complete {
                 file.complete = false
@@ -1234,6 +1362,16 @@ public actor DownloadManager: TransferSink {
 
     private func partial(_ publicationId: String, _ file: DownloadedFile) -> URL {
         folder(publicationId).appendingPathComponent(file.name + Self.part)
+    }
+
+    private func orderFile(_ publicationId: String, _ file: DownloadedFile) -> URL {
+        folder(publicationId).appendingPathComponent(file.name + ".order.json")
+    }
+
+    /// A stored reading order, when it is there, readable and for exactly `assetId`.
+    static func storedOrder(_ file: URL, assetId: String) -> ReadingOrder? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? ReadingOrder.decode(data, assetId: assetId)
     }
 
     private func stagedBody(_ ticket: String) -> URL {
@@ -1304,6 +1442,7 @@ public actor DownloadManager: TransferSink {
         case is Unsupported: return .unsupported
         case is LeftServer: return .redirect
         case is GrantRejected: return .server
+        case is MissingFiles: return .missing
         case let error as APIError:
             switch error {
             case let .offline(certificate): return certificate ? .certificate : .offline

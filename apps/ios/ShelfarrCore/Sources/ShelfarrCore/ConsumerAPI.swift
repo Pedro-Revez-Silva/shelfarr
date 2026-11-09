@@ -82,7 +82,14 @@ public final class ConsumerAPI: Sendable {
 
     /// Applies the bearer token, but only for URLs inside the credential's server.
     public func authorized(_ url: URL, method: String = "GET", body: Data? = nil) -> URLRequest {
+        authorized(url, method: method, body: body, readerFormats: false)
+    }
+
+    /// With `readerFormats`, declares the formats this app opens (`ReaderFormat.header`).
+    /// Only library listings, details, Continue and status changes carry it.
+    private func authorized(_ url: URL, method: String = "GET", body: Data? = nil, readerFormats: Bool) -> URLRequest {
         var request = URLRequest(url: url)
+        if readerFormats { request.setValue(ReaderFormat.declared, forHTTPHeaderField: ReaderFormat.header) }
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
@@ -195,12 +202,12 @@ public final class ConsumerAPI: Sendable {
         if let sort = query.sort.query { items.append(("sort", sort)) }
         if let cursor { items.append(("cursor", cursor)) }
         items.append(("limit", String(limit)))
-        return try await decode(perform(authorized(server.api("library", query: items))))
+        return try await decode(perform(authorized(server.api("library", query: items), readerFormats: true)))
     }
 
     /// Library-wide recent activity across every acquired publication.
     public func continueReading(server: ServerAddress, limit: Int = 10) async throws -> [Publication] {
-        let list: ContinueList = try await decode(perform(authorized(server.api("continue", query: [("limit", String(limit))]))))
+        let list: ContinueList = try await decode(perform(authorized(server.api("continue", query: [("limit", String(limit))]), readerFormats: true)))
         return list.items
     }
 
@@ -208,7 +215,7 @@ public final class ConsumerAPI: Sendable {
     public func setReadingStatus(server: ServerAddress, publicationId: String, status: ReadingStatus) async throws -> Publication {
         let url = server.api("library/\(ServerAddress.pathSegment(publicationId))/reading_status")
         let body = try JSONEncoder().encode(["status": status.rawValue])
-        return try await decode(perform(authorized(url, method: "PUT", body: body)))
+        return try await decode(perform(authorized(url, method: "PUT", body: body, readerFormats: true)))
     }
 
     /// Asks for an asset-scoped grant for a background transfer. Older servers answer 404.
@@ -218,7 +225,7 @@ public final class ConsumerAPI: Sendable {
     }
 
     public func publication(server: ServerAddress, id: String) async throws -> Publication {
-        try await decode(perform(authorized(server.api("library/\(ServerAddress.pathSegment(id))"))))
+        try await decode(perform(authorized(server.api("library/\(ServerAddress.pathSegment(id))"), readerFormats: true)))
     }
 
     public func saveProgress(server: ServerAddress, publicationId: String, update: ProgressUpdate) async throws -> ReadingProgress {

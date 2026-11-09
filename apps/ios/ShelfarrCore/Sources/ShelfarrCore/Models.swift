@@ -31,7 +31,14 @@ public enum JSONValue: Codable, Hashable, Sendable {
         switch self {
         case .null: try container.encodeNil()
         case let .bool(value): try container.encode(value)
-        case let .number(value): try container.encode(value)
+        case let .number(value):
+            // A whole number is written as an integer (`12`, never `12.0`): servers check
+            // page positions with an integer type.
+            if value.rounded() == value, abs(value) < 9_007_199_254_740_992 {
+                try container.encode(Int64(value))
+            } else {
+                try container.encode(value)
+            }
         case let .string(value): try container.encode(value)
         case let .array(value): try container.encode(value)
         case let .object(value): try container.encode(value)
@@ -146,8 +153,12 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
     public let sizeBytes: Int64
     public let contentUrl: String
     public let position: Int
+    /// Pages in a CBZ, when the server inspected it. Absent from older servers and other formats.
+    public let pageCount: Int?
+    /// Where a CBZ's authoritative page order is, for this exact file generation.
+    public let readingOrderUrl: String?
 
-    public init(id: String, filename: String = "", mediaType: String = "", format: String = "", sizeBytes: Int64 = 0, contentUrl: String, position: Int = 0) {
+    public init(id: String, filename: String = "", mediaType: String = "", format: String = "", sizeBytes: Int64 = 0, contentUrl: String, position: Int = 0, pageCount: Int? = nil, readingOrderUrl: String? = nil) {
         self.id = id
         self.filename = filename
         self.mediaType = mediaType
@@ -155,6 +166,8 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         self.sizeBytes = sizeBytes
         self.contentUrl = contentUrl
         self.position = position
+        self.pageCount = pageCount
+        self.readingOrderUrl = readingOrderUrl
     }
 
     enum CodingKeys: String, CodingKey {
@@ -162,6 +175,8 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         case mediaType = "media_type"
         case sizeBytes = "size_bytes"
         case contentUrl = "content_url"
+        case pageCount = "page_count"
+        case readingOrderUrl = "reading_order_url"
     }
 
     public init(from decoder: Decoder) throws {
@@ -173,9 +188,31 @@ public struct Asset: Codable, Equatable, Identifiable, Sendable {
         sizeBytes = try container.decodeIfPresent(Int64.self, forKey: .sizeBytes) ?? 0
         contentUrl = try container.decode(String.self, forKey: .contentUrl)
         position = try container.decodeIfPresent(Int.self, forKey: .position) ?? 0
+        // Optional and additive: a malformed value is treated as absent, never a failed listing.
+        pageCount = (try? container.decodeIfPresent(Int.self, forKey: .pageCount)) ?? nil
+        readingOrderUrl = (try? container.decodeIfPresent(String.self, forKey: .readingOrderUrl)) ?? nil
     }
 
     public var isEpub: Bool { format.lowercased() == "epub" || mediaType == "application/epub+zip" }
+
+    /// The reader format this file is, if the reader opens it at all.
+    public var readerFormat: ReaderFormat? {
+        if isEpub { return .epub }
+        let name = format.lowercased()
+        if name == "pdf" || mediaType == ReaderFormat.pdfMediaType { return .pdf }
+        if name == "cbz" || mediaType == ReaderFormat.cbzMediaType { return .cbz }
+        return nil
+    }
+
+    /// A format the reader opens, within the server's caps. A CBZ needs its page order.
+    public var isReadable: Bool {
+        switch readerFormat {
+        case .epub: return true
+        case .pdf: return sizeBytes <= ReaderFormat.maxPDFBytes
+        case .cbz: return sizeBytes <= ReaderFormat.maxCBZBytes && !(readingOrderUrl ?? "").isEmpty
+        case nil: return false
+        }
+    }
 
     public var isAudio: Bool {
         mediaType.hasPrefix("audio/")
@@ -250,8 +287,10 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
     public let progress: ReadingProgress?
     /// Absent from older servers; read `status` instead. Unknown values decode as absent.
     public let readingStatus: ReadingStatus?
+    /// `graphic` for comics, `book` otherwise; only sent to clients that declare reader formats.
+    public let contentKind: String?
 
-    public init(id: String, title: String, author: String? = nil, description: String? = nil, bookType: BookType, coverUrl: String? = nil, assets: [Asset] = [], progress: ReadingProgress? = nil, readingStatus: ReadingStatus? = nil) {
+    public init(id: String, title: String, author: String? = nil, description: String? = nil, bookType: BookType, coverUrl: String? = nil, assets: [Asset] = [], progress: ReadingProgress? = nil, readingStatus: ReadingStatus? = nil, contentKind: String? = nil) {
         self.id = id
         self.title = title
         self.author = author
@@ -261,6 +300,7 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
         self.assets = assets
         self.progress = progress
         self.readingStatus = readingStatus
+        self.contentKind = contentKind
     }
 
     enum CodingKeys: String, CodingKey {
@@ -268,6 +308,7 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
         case bookType = "book_type"
         case coverUrl = "cover_url"
         case readingStatus = "reading_status"
+        case contentKind = "content_kind"
     }
 
     public init(from decoder: Decoder) throws {
@@ -281,6 +322,7 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
         assets = try container.decodeIfPresent([Asset].self, forKey: .assets) ?? []
         progress = try container.decodeIfPresent(ReadingProgress.self, forKey: .progress)
         readingStatus = (try? container.decodeIfPresent(ReadingStatus.self, forKey: .readingStatus)) ?? nil
+        contentKind = (try? container.decodeIfPresent(String.self, forKey: .contentKind)) ?? nil
     }
 
     /// The explicit status, or one derived from the saved place when the server sends none.
@@ -289,16 +331,44 @@ public struct Publication: Codable, Equatable, Identifiable, Sendable {
     }
 
     public func with(readingStatus: ReadingStatus?) -> Publication {
-        Publication(id: id, title: title, author: author, description: description, bookType: bookType, coverUrl: coverUrl, assets: assets, progress: progress, readingStatus: readingStatus)
+        Publication(id: id, title: title, author: author, description: description, bookType: bookType, coverUrl: coverUrl, assets: assets, progress: progress, readingStatus: readingStatus, contentKind: contentKind)
     }
 
     public var orderedAssets: [Asset] { assets.sorted { $0.position < $1.position } }
     public var epubAsset: Asset? { orderedAssets.first(where: \.isEpub) }
     public var audioAssets: [Asset] { orderedAssets.filter(\.isAudio) }
 
+    /// A comic, whatever its file format. Its `bookType` is still `ebook`.
+    public var isGraphic: Bool { contentKind == "graphic" }
+
+    /// One file per format the reader opens: the first of each in the server's order. An
+    /// EPUB-only book is exactly its first EPUB, as before formats existed.
+    public var readableAssets: [Asset] {
+        guard bookType == .ebook else { return [] }
+        var seen: Set<ReaderFormat> = []
+        return orderedAssets.filter { asset in
+            guard asset.isReadable, let format = asset.readerFormat, !seen.contains(format) else { return false }
+            seen.insert(format)
+            return true
+        }
+    }
+
+    public var readerFormats: [ReaderFormat] { readableAssets.compactMap(\.readerFormat) }
+
+    public func asset(for format: ReaderFormat) -> Asset? {
+        readableAssets.first { $0.readerFormat == format }
+    }
+
     /// The assets a saved position may legitimately refer to in this edition.
     public var playableAssets: [Asset] {
-        bookType == .ebook ? [epubAsset].compactMap { $0 } : audioAssets
+        bookType == .ebook ? readableAssets : audioAssets
+    }
+
+    /// What a download of `format` keeps: every track of an audiobook, or the one file of
+    /// that format of a book. Empty when this edition has no such file.
+    public func downloadableAssets(format: ReaderFormat?) -> [Asset] {
+        guard bookType == .ebook else { return audioAssets }
+        return format.flatMap { asset(for: $0) }.map { [$0] } ?? []
     }
 
     public var isReadableHere: Bool { !playableAssets.isEmpty }
