@@ -275,7 +275,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
   test "coexistence sync merges Shelfarr books with the reader's Store library and keeps Kobo's cursor private" do
     coexist!
     stub_request(:get, "#{STORE}/v1/library/sync").with { |request|
-      request.headers["Authorization"] == "Bearer reader-own-kobo" && request.headers["X-Kobo-Synctoken"] == "reader-store-cursor"
+      request.headers["Authorization"] == "Bearer reader-own-kobo" && request.headers["X-Kobo-Synctoken"].nil?
     }.to_return(headers: { "Content-Type" => "application/json", "X-Kobo-Synctoken" => "store-next" },
       body: [ { "NewEntitlement" => { "BookEntitlement" => { "Id" => "store-book" } } } ].to_json)
     get "#{@base}/v1/library/sync", headers: kobo_headers.merge("X-Kobo-Synctoken" => "reader-store-cursor")
@@ -289,7 +289,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     get "#{@base}/v1/library/sync", headers: kobo_headers.merge("X-Kobo-Synctoken" => combined)
     assert_response :success
     assert_equal [], response.parsed_body
-    assert_equal "store-next", Kobo::SyncCursor.new(@device).read(response.headers["x-kobo-synctoken"]).store
+    assert_equal "store-next", Kobo::SyncCursor.new(@device, authorization: kobo_headers.fetch("Authorization")).read(response.headers["x-kobo-synctoken"]).store
 
     # Switching back to Shelfarr-only keeps the local position: no replay.
     @device.update!(store_coexistence: false)
@@ -369,6 +369,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     write_epub(@path, package: '<package version="3.0"><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>',
       extra: { "OEBPS/c.xhtml" => "<html/>" })
     delivery = @device.send_book!(@book)
+    get "#{@base}/download/#{delivery.entitlement_id}/#{delivery.revision_id}"
+    assert_response :success
     read_at = 2.hours.ago.utc
     body = { ReadingStates: [ { EntitlementId: delivery.entitlement_id, CurrentBookmark: { LastModified: read_at.iso8601(7),
       ProgressPercent: 30, ContentSourceProgressPercent: 60, Location: { Type: "KoboSpan", Value: "kobo.4.2", Source: "OEBPS/c.xhtml" } } } ] }

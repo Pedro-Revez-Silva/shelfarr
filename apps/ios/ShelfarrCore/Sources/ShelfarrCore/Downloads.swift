@@ -184,7 +184,10 @@ public actor DownloadManager: TransferSink {
 
     private let root: URL
     private let account: String
-    private let credential: String
+    /// The tag of the token this account's requests use now. It changes only when a
+    /// replacement token for the same sign-in is handed over in place.
+    private let currentCredential: @Sendable () -> String
+    private var credential: String { currentCredential() }
     private let transport: HTTPTransport
     private let executors: DownloadExecutors
     private let router: TransferRouter
@@ -195,7 +198,8 @@ public actor DownloadManager: TransferSink {
     private let chunkSize: Int64
     private let maxTicketsPerLane: Int
     private let usableSpace: @Sendable () -> Int64?
-    private let onUnauthorized: @Sendable () -> Void
+    /// Told the tag of the credential the server refused, only when it was the current one.
+    private let onUnauthorized: @Sendable (_ refusedCredential: String) -> Void
     private let files = FileManager.default
 
     private var records: [String: DownloadRecord] = [:] {
@@ -237,9 +241,39 @@ public actor DownloadManager: TransferSink {
         usableSpace: @escaping @Sendable () -> Int64? = { nil },
         onUnauthorized: @escaping @Sendable () -> Void = {}
     ) {
+        self.init(
+            root: root, account: account, currentCredential: { credential }, transport: transport, executors: executors,
+            router: router, server: server, authorize: authorize, fetchPublication: fetchPublication,
+            maxConcurrent: maxConcurrent, chunkSize: chunkSize, maxTicketsPerLane: maxTicketsPerLane,
+            usableSpace: usableSpace, onUnauthorized: { _ in onUnauthorized() }
+        )
+    }
+
+    /// For a sign-in whose token can be replaced in place. `currentCredential` is the
+    /// `credentialTag` of the token `authorize` and `executors.mintGrant` use at that
+    /// moment; it must change no later than they do. Transfers already sent with the
+    /// earlier token keep running, and if that token is refused they are planned again
+    /// with the new one rather than signing the account out. `onUnauthorized` gets the
+    /// tag that was refused, so the caller can tell it from a token handed over since.
+    public init(
+        root: URL,
+        account: String,
+        currentCredential: @escaping @Sendable () -> String,
+        transport: HTTPTransport,
+        executors: DownloadExecutors,
+        router: TransferRouter,
+        server: ServerAddress,
+        authorize: @escaping @Sendable (URL) -> URLRequest,
+        fetchPublication: @escaping @Sendable (String) async throws -> Publication,
+        maxConcurrent: Int = 2,
+        chunkSize: Int64 = 32 << 20,
+        maxTicketsPerLane: Int = 64,
+        usableSpace: @escaping @Sendable () -> Int64? = { nil },
+        onUnauthorized: @escaping @Sendable (_ refusedCredential: String) -> Void = { _ in }
+    ) {
         self.root = root
         self.account = account
-        self.credential = credential
+        self.currentCredential = currentCredential
         self.transport = transport
         self.executors = executors
         self.router = router
@@ -696,6 +730,7 @@ public actor DownloadManager: TransferSink {
     private func transferURL(_ publicationId: String, _ asset: Asset, contentURL: URL) async throws -> (url: URL, background: Bool) {
         guard let mint = executors.mintGrant, !grantsUnsupported else { return (contentURL, false) }
         let grant: TransferGrant
+        let minting = credential
         do {
             grant = try await mint(publicationId, asset.id)
         } catch APIError.notFound {
@@ -703,7 +738,7 @@ public actor DownloadManager: TransferSink {
             grantsUnsupported = true
             return (contentURL, false)
         } catch APIError.unauthorized {
-            onUnauthorized()
+            onUnauthorized(minting)
             throw APIError.unauthorized
         }
         // A grant is only ever sent to this server, inside its subpath.
@@ -717,6 +752,8 @@ public actor DownloadManager: TransferSink {
     }
 
     private func preflight(_ url: URL) async throws -> Preflight? {
+        // Read before `authorize`, so the tag is never newer than the token sent.
+        let sent = credential
         var request = authorize(url)
         request.httpMethod = "HEAD"
         request.setValue("*/*", forHTTPHeaderField: "Accept")
@@ -730,7 +767,7 @@ public actor DownloadManager: TransferSink {
         case 405, 501:
             return nil
         case 401:
-            onUnauthorized()
+            onUnauthorized(sent)
             throw APIError.unauthorized
         default:
             throw Self.failure(response.statusCode)
@@ -848,7 +885,7 @@ public actor DownloadManager: TransferSink {
                 return replan(ticket.publicationId)
             }
             if ticket.credential == credential {
-                onUnauthorized()
+                onUnauthorized(ticket.credential)
                 throw APIError.unauthorized
             }
             persist()

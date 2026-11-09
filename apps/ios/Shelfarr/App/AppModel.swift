@@ -100,8 +100,10 @@ final class AppModel: ObservableObject {
         let previousState = state
         state = newState
         guard changed else { return }
-        if case let .signedIn(before) = previousState, case let .signedIn(after) = newState, before.hasSameAccountAndToken(after) {
-            // Fresher name or scopes for the same credential: nothing account-bound changes.
+        if case let .signedIn(before) = previousState, case .signedIn = newState, sessions.continuing(before) != nil {
+            // The same sign-in goes on: fresher details, or requesting added in place with a
+            // new token for this account. Playback, an open book, unsent places and downloads
+            // all read the live credential through `sessions.continuing`, so nothing restarts.
             return
         }
         if sessions.signedIn == nil { requesting.detach() }
@@ -125,14 +127,21 @@ final class AppModel: ObservableObject {
         sessions.signedIn
     }
 
+    /// Whether `session` is still the live sign-in, perhaps with a token handed over in place.
+    func isCurrent(_ session: Session?) -> Bool {
+        session.flatMap(sessions.continuing) != nil
+    }
+
     private func accountDirectory(_ session: Session) -> URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("accounts/\(session.accountKey)", isDirectory: true)
     }
 
+    /// A client for `session`'s sign-in. It follows a token handed over in place (so a
+    /// stream or a load that is already running keeps working) and sends nothing once
+    /// that sign-in has ended, so it can never carry another account's token.
     func api(for session: Session) -> ConsumerAPI {
-        let credential = Credential(server: session.server, accessToken: session.accessToken)
-        return ConsumerAPI(transport: transport, credential: { credential }, onRejected: { [sessions] in sessions.markExpired($0) })
+        SignInBinding(session: session, sessions: sessions).api(transport: transport)
     }
 
     func publications(for session: Session) -> AccountPublications {
@@ -162,7 +171,7 @@ final class AppModel: ObservableObject {
     /// Live progress sync for the signed-in account. Accounts never share a store.
     func progressRegistry() -> ProgressRegistry? {
         guard let session else { return nil }
-        if registrySession == session, let registry { return registry }
+        if let registrySession, isCurrent(registrySession), let registry { return registry }
         if let previous = registry { Task { await previous.stopAll() } }
         let store = FileProgressStore(file: accountDirectory(session).appendingPathComponent("progress.json"))
         let created = ProgressRegistry(store: store, remote: SessionProgressRemote.bind(
@@ -176,10 +185,10 @@ final class AppModel: ObservableObject {
     /// Managed downloads for the signed-in account, bound to its own credential.
     func downloadsForSession() -> DownloadManager? {
         guard let session else { return nil }
-        if downloadSession == session, let downloadManager { return downloadManager }
+        if let downloadSession, isCurrent(downloadSession), let downloadManager { return downloadManager }
         let previous = downloadManager
-        let api = self.api(for: session)
-        let sessions = self.sessions
+        let binding = SignInBinding(session: session, sessions: sessions)
+        let api = binding.api(transport: transport)
         let root = accountDirectory(session).appendingPathComponent("downloads", isDirectory: true)
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         var excluded = root
@@ -189,13 +198,15 @@ final class AppModel: ObservableObject {
         let manager = DownloadManager(
             root: root,
             account: session.accountKey,
-            credential: DownloadManager.credentialTag(session.accessToken),
+            // The live token's tag: it changes when requesting is added in place, at the
+            // same moment `api` starts sending the new token.
+            currentCredential: { binding.credentialTag },
             transport: transport,
             executors: DownloadExecutors(
                 foreground: foregroundDownloads,
                 background: backgroundDownloads,
                 mintGrant: { publicationId, assetId in
-                    guard sessions.signedIn == session else { throw CancellationError() }
+                    guard binding.isLive else { throw CancellationError() }
                     return try await api.transferGrant(server: session.server, publicationId: publicationId, assetId: assetId)
                 }
             ),
@@ -203,14 +214,15 @@ final class AppModel: ObservableObject {
             server: session.server,
             authorize: { api.authorized($0) },
             fetchPublication: { id in
-                guard sessions.signedIn == session else { throw APIError.unauthorized }
+                guard binding.isLive else { throw APIError.unauthorized }
                 return try await api.publication(server: session.server, id: id)
             },
             usableSpace: {
                 let values = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
                 return values?.volumeAvailableCapacityForImportantUsage
             },
-            onUnauthorized: { sessions.markExpired(Credential(server: session.server, accessToken: session.accessToken)) }
+            // Only a refusal of the token in use now signs out; an earlier token's late refusals are replanned.
+            onUnauthorized: { binding.refused($0) }
         )
         // Before anything can deliver this account's events.
         manager.connect()

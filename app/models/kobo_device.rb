@@ -49,12 +49,14 @@ class KoboDevice < ApplicationRecord
       save!
       delivery = kobo_deliveries.find_or_initialize_by(book: book)
       delivery.entitlement_id ||= SecureRandom.uuid
-      if delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
+      changed = delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
+      if changed
+        delivery.progress_generation_ambiguous = true if delivery.persisted? && delivery.last_download_at.present?
         delivery.reading_state = nil
         delivery.progress_bridge = nil
       end
       delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision,
-        publication: publication, last_download_at: nil)
+        publication: publication, last_download_at: changed ? nil : delivery.last_download_at)
       delivery
     end
   end

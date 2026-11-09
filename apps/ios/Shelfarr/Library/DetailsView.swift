@@ -19,12 +19,12 @@ final class DetailsModel: ObservableObject {
         let server = session.server, api = app.api(for: session)
         do {
             let metadata = try await app.publications(for: session).load(id: id, server: server, api: api)
-            guard app.session == session else { return }
+            guard app.isCurrent(session) else { return }
             state = .loaded(metadata.publication, offline: metadata.unverified)
         } catch is CancellationError {
             return
         } catch {
-            guard app.session == session else { return }
+            guard app.isCurrent(session) else { return }
             if case .loaded = state { return }
             // Offline, a download still knows its book. Sign-in and certificate errors stay visible.
             if (error as? APIError)?.isPlainOffline == true, let record = await app.downloadsForSession()?.record(id) {
@@ -44,7 +44,7 @@ final class DetailsModel: ObservableObject {
         statusError = nil
         do {
             let updated = try await app.api(for: session).setReadingStatus(server: session.server, publicationId: publication.id, status: status)
-            guard app.session == session else { return }
+            guard app.isCurrent(session) else { return }
             app.remember(updated, for: session)
             state = .loaded(updated, offline: false)
             app.libraryGeneration += 1

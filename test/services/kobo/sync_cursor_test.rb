@@ -6,7 +6,7 @@ class Kobo::SyncCursorTest < ActiveSupport::TestCase
   setup do
     @device, = KoboDevice.issue(user: users(:one), name: "Reader", base_url: "https://shelfarr.example")
     @device.save!
-    @cursor = Kobo::SyncCursor.new(@device)
+    @cursor = Kobo::SyncCursor.new(@device, authorization: "Bearer reader-own")
   end
 
   test "both positions round-trip in an envelope that hides the Store cursor" do
@@ -33,8 +33,8 @@ class Kobo::SyncCursorTest < ActiveSupport::TestCase
     assert_nil @cursor.read(forged).store
   end
 
-  test "a reader's own Store cursor from direct Kobo syncing is kept, unless unsafe" do
-    assert_equal Kobo::SyncCursor::Parts.new(local: nil, store: "eyJTdG9yZSI6MX0"), @cursor.read("eyJTdG9yZSI6MX0")
+  test "unbound Store cursors are replayed instead of attached to an assumed account" do
+    assert_equal Kobo::SyncCursor::EMPTY, @cursor.read("eyJTdG9yZSI6MX0")
     assert_equal Kobo::SyncCursor::EMPTY, @cursor.read("bad\r\nvalue")
     assert_equal Kobo::SyncCursor::EMPTY, @cursor.read("x" * (Kobo::SyncCursor::MAX_STORE_BYTES + 1))
     assert_equal Kobo::SyncCursor::EMPTY, @cursor.read(nil)
@@ -42,5 +42,20 @@ class Kobo::SyncCursorTest < ActiveSupport::TestCase
 
   test "an unsafe Store cursor is dropped rather than stored" do
     assert_nil @cursor.read(@cursor.write(local: "l", store: "x" * (Kobo::SyncCursor::MAX_STORE_BYTES + 1))).store
+  end
+
+  test "changing the reader sign-in drops only the Store position" do
+    token = @cursor.write(local: "local-progress", store: "account-A-position")
+    other = Kobo::SyncCursor.new(@device, authorization: "Bearer account-B")
+    assert_equal Kobo::SyncCursor::Parts.new(local: "local-progress", store: nil), other.read(token)
+    assert_equal "account-A-position", @cursor.read(token).store
+    assert_equal "local-progress", Kobo::SyncCursor.new(@device).read(token).local
+    assert_nil Kobo::SyncCursor.new(@device).read(token).store
+  end
+
+  test "older encrypted envelopes retain local progress but cannot lend an unbound Store position" do
+    claims = { "device" => @device.id, "generation" => @device.token_digest, "local" => "local", "store" => "unbound" }
+    old = "sf2." + @cursor.send(:encryptor).encrypt_and_sign(claims, purpose: "kobo-sync-cursor")
+    assert_equal Kobo::SyncCursor::Parts.new(local: "local", store: nil), @cursor.read(old)
   end
 end

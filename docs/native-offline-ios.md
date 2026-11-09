@@ -102,6 +102,14 @@ handler on the main queue.
   the grant expired or was refused. It is planned again with a fresh grant, never
   signs out, and fails as a server problem after three refusals in a row. A late 401
   for a ticket sent with an older token can't expire the current session.
+- **Requesting added in place.** Allowing requesting replaces the token of the same
+  sign-in (`SessionManager.replaceToken`). The app's services follow it through
+  `SignInBinding` instead of restarting. Playback, an open book, unsent places and
+  running transfers carry on. A request the server refuses because it still carried
+  the old token is sent once more with the new one. A transfer sent with the old
+  token is planned again if it is refused. Only a refusal of the token in use signs
+  out. Any other sign-in, an expiry or a sign-out ends the binding, so its work never
+  sends another sign-in's token.
 - **Keychain and backups.** These are unchanged: the session stays in the Keychain
   (`AfterFirstUnlockThisDeviceOnly`), and `downloads/` stays excluded from backup. No
   bearer is written to disk outside the Keychain. A grant does sit in the system's

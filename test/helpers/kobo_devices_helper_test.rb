@@ -34,12 +34,14 @@ class KoboDevicesHelperTest < ActionView::TestCase
       place.merge("status" => "needs_choice", "reason" => "same_time") => [ :choice, /same moment.*Shelfarr place: 80%/, true ],
       place.merge("status" => "needs_choice", "reason" => "saved_time_unknown") => [ :choice, /no reading time/, true ],
       place.merge("status" => "needs_choice", "reason" => "concurrent") => [ :choice, /while this one arrived/, true ],
+      place.merge("status" => "needs_choice", "reason" => "edition_unverified") => [ :choice, /previous edition.*chapter and percentage fit the current file/, true ],
       place.merge("status" => "unknown_time") => [ :choice, /didn't say when/, true ],
       place.merge("status" => "clock_ahead") => [ :choice, /clock is ahead/, true ],
       { "status" => "unsupported", "reason" => "no_location", "percent" => 12.0 } => [ :warning, /only a percentage \(12%\)/, false ],
       { "status" => "unsupported", "reason" => "invalid_percent" } => [ :warning, /can't read/, false ],
       { "status" => "unsupported", "reason" => "location_not_in_edition" } => [ :warning, /doesn't match a chapter/, false ],
       { "status" => "edition_changed" } => [ :warning, /file changed after it was sent/, false ],
+      { "status" => "edition_changed", "reason" => "not_downloaded" } => [ :warning, /Waiting for this reader to download/, false ],
       { "status" => "unavailable" } => [ :warning, /couldn't check/, false ],
       { "status" => "superseded", "percent" => 35.0 } => [ :warning, /newer place/, false ]
     }

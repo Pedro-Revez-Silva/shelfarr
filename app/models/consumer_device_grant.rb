@@ -118,14 +118,19 @@ class ConsumerDeviceGrant < ApplicationRecord
       elsif approved_at.nil?
         update!(last_polled_at: now)
         { error: "authorization_pending" }
-      elsif upgrade? && replaces_api_token&.user_id != user_id
+      elsif upgrade? && (replaces_api_token&.user_id != user_id || !replaces_api_token&.usable?)
         # Defence in depth: approval already refuses this.
         update!(consumed_at: now)
         { error: "access_denied" }
       else
         scope_list = granted_scopes
-        _, raw = APIToken.issue!(name: client_name, user: user, scopes: scope_list, expires_at: TOKEN_LIFETIME.from_now,
-          issued_via: APIToken::CONSUMER_DEVICE, replaces: replaces_api_token)
+        begin
+          _, raw = APIToken.issue!(name: client_name, user: user, scopes: scope_list, expires_at: TOKEN_LIFETIME.from_now,
+            issued_via: APIToken::CONSUMER_DEVICE, replaces: replaces_api_token)
+        rescue APIToken::InactiveReplacement
+          update!(consumed_at: now)
+          return { error: "access_denied" }
+        end
         update!(consumed_at: now)
         { access_token: raw, token_type: "Bearer", scope: scope_list.join(" "), expires_in: TOKEN_LIFETIME.to_i }
       end

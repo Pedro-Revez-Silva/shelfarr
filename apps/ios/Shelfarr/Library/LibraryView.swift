@@ -59,12 +59,12 @@ final class LibraryModel: ObservableObject {
             do {
                 let page = try await source.load(listing, downloads: downloads)
                 // A response for an older query or account never replaces the current one.
-                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
+                guard !Task.isCancelled, self.generation == generation, app.isCurrent(session) else { return }
                 apply(page, append: false)
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
+                guard !Task.isCancelled, self.generation == generation, app.isCurrent(session) else { return }
                 self.error = error
                 items = []
                 next = nil
@@ -93,10 +93,10 @@ final class LibraryModel: ObservableObject {
         pageRequest = Task {
             do {
                 let page = try await source.load(listing, after: cursor, shown: shown, downloads: downloads)
-                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
+                guard !Task.isCancelled, self.generation == generation, app.isCurrent(session) else { return }
                 apply(page, append: true)
             } catch {
-                guard !Task.isCancelled, self.generation == generation, app.session == session else { return }
+                guard !Task.isCancelled, self.generation == generation, app.isCurrent(session) else { return }
                 pageFailed = true
             }
             loadingMore = false

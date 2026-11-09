@@ -39,15 +39,22 @@ public final class ConsumerAPI: Sendable {
     private let transport: HTTPTransport
     private let credential: @Sendable () -> Credential?
     private let onRejected: @Sendable (Credential) -> Void
+    private let replaysAfterHandover: Bool
 
+    /// With `replaysAfterHandover`, a request refused while it carried a token that
+    /// `credential` has since replaced is sent once more with the replacement. Only pass
+    /// it when `credential` follows one sign-in (`SessionManager.continuing`), never
+    /// whoever is signed in, so a replay can't reach another account.
     public init(
         transport: HTTPTransport,
         credential: @escaping @Sendable () -> Credential?,
-        onRejected: @escaping @Sendable (Credential) -> Void = { _ in }
+        onRejected: @escaping @Sendable (Credential) -> Void = { _ in },
+        replaysAfterHandover: Bool = false
     ) {
         self.transport = transport
         self.credential = credential
         self.onRejected = onRejected
+        self.replaysAfterHandover = replaysAfterHandover
     }
 
     private struct ErrorBody: Decodable {
@@ -231,8 +238,27 @@ public final class ConsumerAPI: Sendable {
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let result = try await transport.send(request)
+        if result.1.statusCode == 401, let replay = replayedAfterHandover(request) {
+            // Requesting was added while this was out: the server may already have retired
+            // the token it carried. One more try with the replacement, never a loop.
+            let second = try await transport.send(replay)
+            noteRejection(second.1, replay)
+            return second
+        }
         noteRejection(result.1, request)
         return result
+    }
+
+    /// The request with the live bearer, when it was sent with a different one.
+    private func replayedAfterHandover(_ request: URLRequest) -> URLRequest? {
+        guard replaysAfterHandover, let sent = request.value(forHTTPHeaderField: "Authorization"),
+              let url = request.url, let credential = credential(), credential.server.contains(url)
+        else { return nil }
+        let live = "Bearer \(credential.accessToken)"
+        guard sent != live else { return nil }
+        var replay = request
+        replay.setValue(live, forHTTPHeaderField: "Authorization")
+        return replay
     }
 
     private func noteRejection(_ response: HTTPURLResponse, _ request: URLRequest) {

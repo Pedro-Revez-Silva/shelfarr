@@ -147,6 +147,11 @@ keeps the read-and-listen pair. Existing tokens never change scope.
   token keeps working until the new one is first used, then it is revoked, so a lost
   token response never strands the app. Clients replace the credential in place and
   keep the server, account files, downloads, settings and saved places.
+- Explicitly revoking that connection invalidates pending upgrades and every
+  replacement it has issued, including one already adopted by the app. An
+  internal connection lineage survives adoption; it is never a credential or
+  returned by the API. Automatic retirement of the old token does not revoke
+  the replacement. Expired or revoked origins cannot mint replacement tokens.
 - A fresh connection may ask for the bundle too; the page then offers *Connect and
   allow requesting*.
 - Tokens from device approval are marked as such and never act as admin tokens on

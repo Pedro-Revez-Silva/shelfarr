@@ -29,7 +29,7 @@ final class HomeModel: ObservableObject {
             let continuing = fetched ?? items
                 .filter { $0.progress?.isUsable == true }
                 .sorted { ($0.progress?.updatedAt ?? "") > ($1.progress?.updatedAt ?? "") }
-            guard app.session == session else { return }
+            guard app.isCurrent(session) else { return }
             state = .loaded(
                 inProgress: continuing.filter { $0.status == .inProgress },
                 books: items.filter { $0.bookType == .ebook },
@@ -39,7 +39,7 @@ final class HomeModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            guard app.session == session else { return }
+            guard app.isCurrent(session) else { return }
             if case let .loaded(_, _, _, offline) = state, offline == nil { return }
             if (error as? APIError)?.isPlainOffline == true {
                 state = .loaded(inProgress: [], books: [], audiobooks: [], offline: error)
