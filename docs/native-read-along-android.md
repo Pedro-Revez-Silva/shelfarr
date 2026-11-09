@@ -140,12 +140,26 @@ On a book's page, a book with an available alignment downloads "with narration"
   one generation (checked again after every restart);
 - a newer generation is fetched beside a complete older one, which stays in use
   until the new set is whole; a failed update changes nothing;
+- asking for narration is durable intent from the moment it is asked, before
+  any manifest exists: if it stops before the manifest is pinned (the app
+  stopped or was killed, the sign-in expired, the connection or server failed),
+  the request stays on the ready book with why it stopped. It is resumed like
+  the book's own downloads: by the next host when only paused, by signing in
+  again to the same account, by the foreground or a running host for a
+  connection or server problem, or by "Resume narration" / "Try narration
+  again". Until its files are whole for one generation nothing about it looks
+  downloaded, and a complete earlier generation keeps playing;
+- an expired sign-in keeps the account's downloads (including that request) for
+  the same account; explicitly disconnecting is a purge that deletes the
+  account's files, so nothing of it can come back, and another account's
+  downloads live in its own storage and never see it;
 - removing narration, stopping it, or cancelling or removing the book bumps an
   epoch: a fetch still waiting for its manifest can no longer save, pin or
   promote anything, and unrecorded narration files are deleted. Cancelling a
   ready book from the Downloads list or the notification stops only its
-  narration. Other downloads, including the paired audiobook downloaded on its
-  own, are never touched.
+  narration. Cancelling or removing also cancels the request itself: no recovery
+  path resumes it, and "Download again" fetches the book alone. Other downloads,
+  including the paired audiobook downloaded on its own, are never touched.
 
 Nothing is shared between accounts: storage paths, the HTTP stack, the Keystore
 session and the updater are unchanged, and the evictable EPUB cache is still
@@ -166,6 +180,8 @@ response is byte-identical to before.
 | `reader/ReadAlongWiringTest` | coordinator + account services + Readium + controller: adopted places with loaded narration, waiting Play, lock-screen play, paused page turns through background, offer with loaded narration |
 | `reader/ReadAlongReadingTest` | restore/follow/layout are not reading, page cues, offer decisions |
 | `core/NarrationDownloadTest` | extraction, imported transfer, failures keep the book, updates keep the old set, cancellation during manifest fetch |
+| `core/NarrationRecoveryTest` | a request stopped before its manifest, across fresh-manager relaunches: interruption, host pause, expired sign-in and same-account re-sign-in, transient failures, update keeping the old generation, removal/cancel never resurrected, other accounts and a separately downloaded audiobook untouched, disconnect purge |
+| `ui/NarrationRecoveryCopyTest` | stopped-request words, retry labels and the book page's single narration retry |
 | `reader/ReadAlongScreenshotTest` | rendered controls, pill, offer, unavailable note, large text, small phone, download states |
 | `androidTest/.../ReadAlongSmokeTest` | real Activity, WebView highlight, Media3 notification, browse, silent reopen, offline imported narration with paired places |
 | `apps/scripts/tests/test_mock_read_along.py` | the mock's fixtures, routes and opt-in behaviour |

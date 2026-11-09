@@ -60,13 +60,23 @@ data class DownloadCopy(val title: String, val detail: String, val canRetry: Boo
 private fun defaultIsEpub(publication: Publication): Boolean = defaultReadingAsset(publication)?.isEpub == true
 
 /** The words on a stopped download's retry button. */
-fun retryLabel(record: DownloadRecord): String = when {
-    record.state == DownloadState.CANCELLED -> "Download again"
-    record.problem == DownloadProblem.INTERRUPTED || record.problem == DownloadProblem.OFFLINE -> "Resume"
-    else -> "Try again"
+fun retryLabel(record: DownloadRecord): String {
+    // A ready book's only stopped transfer is its narration.
+    val problem = if (record.isReady) record.narrationStopProblem else record.problem
+    return when {
+        record.state == DownloadState.CANCELLED -> "Download again"
+        record.isReady && (problem == DownloadProblem.INTERRUPTED || problem == DownloadProblem.OFFLINE) -> "Resume narration"
+        record.isReady -> "Try narration again"
+        problem == DownloadProblem.INTERRUPTED || problem == DownloadProblem.OFFLINE -> "Resume"
+        else -> "Try again"
+    }
 }
 
-fun downloadCopy(record: DownloadRecord): DownloadCopy {
+/**
+ * What a download is doing. [narrationShown]: the narration's own words are on screen too
+ * (the book's page), so a stopped narration isn't explained twice.
+ */
+fun downloadCopy(record: DownloadRecord, narrationShown: Boolean = false): DownloadCopy {
     val total = record.bytesTotal
     val amount = if (total != null) "${formatBytes(record.bytesDone)} of ${formatBytes(total)}" else "${formatBytes(record.bytesDone)} so far"
     val kept = if (record.bytesDone > 0) " ${formatBytes(record.bytesDone)} kept." else ""
@@ -78,6 +88,12 @@ fun downloadCopy(record: DownloadRecord): DownloadCopy {
         )
         DownloadState.READY -> if (record.narrationActive) {
             DownloadCopy("Downloaded · fetching narration", "The book opens without a connection; read-along offline needs the narration too.")
+        } else if (record.narrationStopProblem != null && record.withNarration && record.narrationStopProblem != DownloadProblem.UNSUPPORTED) {
+            DownloadCopy(
+                "Downloaded · narration stopped",
+                if (narrationShown) "${formatBytes(record.bytesDone)} on this device. Opens without a connection." else "The book opens without a connection. ${narrationStopWords(record.narrationStopProblem)}",
+                canRetry = true,
+            )
         } else {
             DownloadCopy("Downloaded", "${formatBytes(record.bytesDone)} on this device. Opens without a connection.")
         }
@@ -122,7 +138,14 @@ fun narrationCopy(record: DownloadRecord, current: ReadAlongSummary?, offline: B
     val work = record.narrationWork
     val size = available?.audioBytes?.takeIf { it > 0 }?.let { " · ${formatBytes(it)}" }.orEmpty()
     return when {
-        record.narrationPending && work == null -> NarrationCopy("Preparing narration…", NarrationAction.STOP, 0f)
+        record.narrationRequested && record.narrationProblem == null -> NarrationCopy("Preparing narration…", NarrationAction.STOP, 0f)
+        // Stopped before anything was pinned: the request is kept and resumes from the start.
+        record.narrationRequested -> {
+            val why = narrationStopWords(record.narrationProblem)
+            val keptNote = if (kept != null) " The earlier narration on this device still plays offline." else " The book itself reads offline."
+            val retry = NarrationAction.RETRY.takeIf { !offline && available != null && record.narrationProblem != DownloadProblem.UNSUPPORTED }
+            NarrationCopy(why + keptNote, retry)
+        }
         work != null && work.isActive -> {
             val fraction = work.bytesTotal.takeIf { it > 0 }?.let { (work.bytesDone.toFloat() / it).coerceIn(0f, 1f) }
             val label = if (kept != null) "Updating narration" else "Downloading narration"
@@ -133,16 +156,7 @@ fun narrationCopy(record: DownloadRecord, current: ReadAlongSummary?, offline: B
             )
         }
         work != null && work.state == NarrationState.FAILED -> {
-            val why = when (work.problem) {
-                DownloadProblem.OFFLINE -> "Narration paused: no connection. It continues when you're back online."
-                DownloadProblem.STORAGE -> "Narration didn't fit on this device. Free some space, then try again."
-                DownloadProblem.CHANGED -> "The narration changed on your server while downloading."
-                DownloadProblem.UNSUPPORTED -> "This edition no longer has narration on your server."
-                DownloadProblem.SIGN_IN -> "Narration stopped: signed out. Sign in to this account again to continue."
-                DownloadProblem.MISSING -> "Some narration files are no longer on this device."
-                DownloadProblem.INTERRUPTED -> "Narration stopped before it finished."
-                else -> "The narration didn't download."
-            }
+            val why = narrationStopWords(work.problem)
             val keptNote = if (kept != null) " The earlier narration on this device still plays offline." else " The book itself reads offline."
             NarrationCopy(why + keptNote, NarrationAction.RETRY.takeIf { !offline && available != null })
         }
@@ -152,6 +166,19 @@ fun narrationCopy(record: DownloadRecord, current: ReadAlongSummary?, offline: B
         available != null && !offline -> NarrationCopy("Narration for read-along isn't on this device$size.", NarrationAction.DOWNLOAD)
         else -> null
     }
+}
+
+/** Why narration stopped, in words, whether before or after its files were pinned. */
+fun narrationStopWords(problem: DownloadProblem?): String = when (problem) {
+    DownloadProblem.OFFLINE -> "Narration paused: no connection. It continues when you're back online."
+    DownloadProblem.SERVER -> "Narration paused: your server had a problem. It tries again shortly."
+    DownloadProblem.STORAGE -> "Narration didn't fit on this device. Free some space, then try again."
+    DownloadProblem.CHANGED -> "The narration changed on your server while downloading."
+    DownloadProblem.UNSUPPORTED -> "This edition no longer has narration on your server."
+    DownloadProblem.SIGN_IN -> "Narration stopped: signed out. Sign in to this account again to continue."
+    DownloadProblem.MISSING -> "Some narration files are no longer on this device."
+    DownloadProblem.INTERRUPTED -> "Narration stopped before it finished."
+    else -> "The narration didn't download."
 }
 
 private fun fileCount(record: DownloadRecord): String {
@@ -231,7 +258,7 @@ fun DownloadPanel(
                 if (offline) Caption("Connect to your server to download.")
             }
             else -> {
-                val copy = downloadCopy(record)
+                val copy = downloadCopy(record, narrationShown = narrationCopy(record, readAlong, offline) != null)
                 val outdated = record.isReady && !offline && !record.matches(publication)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (record.isReady) {
@@ -253,7 +280,7 @@ fun DownloadPanel(
                 if (outdated) {
                     Caption("A newer edition is on your server. Reading and listening use the server's copy until you update.")
                     TextButton(onClick = onDownload) { Text("Update download") }
-                } else if (copy.canRetry && !offline) {
+                } else if (copy.canRetry && !offline && !record.isReady) {
                     TextButton(onClick = if (record.state == DownloadState.CANCELLED) onDownload else onRetry) {
                         Text(retryLabel(record))
                     }
