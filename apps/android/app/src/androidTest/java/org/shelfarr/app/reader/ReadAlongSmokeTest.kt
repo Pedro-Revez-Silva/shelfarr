@@ -7,6 +7,8 @@ import android.os.SystemClock
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.WebView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.test.core.app.ActivityScenario
@@ -41,6 +43,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.readium.r2.navigator.epub.EpubNavigatorFragment
+import org.readium.r2.shared.publication.Locator
 import org.shelfarr.app.R
 import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.core.ActivityTime
@@ -49,6 +52,7 @@ import org.shelfarr.app.core.Asset
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.Me
 import org.shelfarr.app.core.Progress
+import org.shelfarr.app.core.ProgressSync
 import org.shelfarr.app.core.ProgressUpdate
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.ReadAlongAudiobook
@@ -149,17 +153,21 @@ class ReadAlongSmokeTest {
     @Test
     fun mediaOverlayNarrationHighlightsFollowsBrowsesAndRestoresSilently() {
         start()
+        val sync = requireNotNull(app.container.currentAccount()).progress.sync("garden")
         val openedAt = System.currentTimeMillis()
         ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "garden")).use { scenario ->
             awaitText(scenario, "Cue 1 sounds")
             await("read-along ready") { model(scenario).readAlongUi.value is ReadAlongUi.Ready }
             // Plain reading adds nothing to the page until narration is played.
             assertFalse((model(scenario).readAlongUi.value as ReadAlongUi.Ready).started)
+            // Readium has laid out the opening page, not only repeated where it was asked to open.
+            await("the opening page laid out") { shown(scenario).locations.position != null }
             scenario.onActivity { it.narrationActions.toggle() }
             await("narration playing in the shared service") {
                 val snapshot = app.container.playback.snapshot.value
                 snapshot.isPlaying && snapshot.narration?.publicationId == "garden"
             }
+            assertFalse("playing from the opening page is not browsing", (model(scenario).readAlongUi.value as ReadAlongUi.Ready).browsing)
             // The cue being heard is highlighted by Readium in the page.
             await("a narration highlight in the page") { evaluate(scenario, HIGHLIGHT_COUNT).toIntOrNull() == 1 }
             // Lock screen and notification controls come from the same Media3 session.
@@ -167,40 +175,55 @@ class ReadAlongSmokeTest {
                 val manager = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 manager.activeNotifications.any { it.notification.extras.getCharSequence("android.title")?.toString() == "The Narrated Garden" }
             }
-            // Heard places reach the server as the reached cue's element plus the exact offset.
-            await("a read-along checkpoint on the server") { writes.any { it.first == "garden" && it.second.locator?.readAlong() != null } }
-            val heard = writes.last { it.first == "garden" }.second
-            val observed = requireNotNull(ActivityTime.parse(heard.observedAt))
-            assertTrue(observed in openedAt..System.currentTimeMillis())
+            // Heard places are kept on this device as they are heard; sending them waits for the sync debounce.
+            await("a read-along checkpoint on this device") { runBlocking { sync.snapshot() }.position?.locator?.readAlong() != null }
 
             // Browsing while it plays writes nothing and offers the way back.
             val before = writes.size
+            val opening = shown(scenario)
             scenario.onActivity { activity ->
                 val navigator = activity.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment
                 navigator.lifecycleScope.launch { navigator.goForward(animated = false) }
             }
             await("browsing noticed") {
-                // MediaController reads, like its playback commands, require its application thread.
-                val noticed = AtomicReference(false)
-                scenario.onActivity { activity ->
-                    val state = ViewModelProvider(activity)[ReaderViewModel::class.java].readAlongUi.value as ReadAlongUi.Ready
-                    noticed.set(state.browsing || !app.container.playback.isListening)
-                }
-                noticed.get()
+                shown(scenario).locations.progression != opening.locations.progression &&
+                    (model(scenario).readAlongUi.value as ReadAlongUi.Ready).browsing
+            }
+            assertTrue("narration ended before the pause", listening(scenario))
+
+            val pressedAt = System.currentTimeMillis()
+            scenario.onActivity { it.narrationActions.toggle() } // pause
+            await("paused") { !listening(scenario) }
+            assertFalse("narration ended before the pause", app.container.playback.snapshot.value.ended)
+            // Pausing sends the place it stopped at at once: the server then holds exactly this device's place.
+            await("the pause checkpoint sent") {
+                val local = runBlocking { sync.snapshot() }
+                val last = writes.lastOrNull()?.second
+                !local.hasUnsyncedChanges && last != null && last.locator == local.position?.locator &&
+                    (ActivityTime.parse(last.observedAt) ?: 0L) >= pressedAt
             }
             writes.drop(before).forEach { (_, update) -> assertTrue("browse wrote $update", update.locator?.readAlong() != null) }
-
-            scenario.onActivity { it.narrationActions.toggle() } // pause
-            await("paused") { !app.container.playback.snapshot.value.isPlaying }
-            await("the pause checkpoint sent") { writes.lastOrNull()?.second?.locator?.readAlong() != null }
+            // Heard places reach the server as the reached cue's element plus the exact offset, with when they were heard.
+            val heard = writes.last { it.first == "garden" }.second
+            assertTrue(heard.locator?.readAlong() != null)
+            val observed = requireNotNull(ActivityTime.parse(heard.observedAt))
+            assertTrue(observed in openedAt..System.currentTimeMillis())
         }
-        // Reopening at the narration place is not activity: nothing new is written.
+        // Leaving the paused book is not listening either.
+        awaitBackground()
+        // Reopening at the narration place is not activity: nothing new is written, here or on the server.
         val settled = writes.size
+        val place = runBlocking { sync.snapshot() }
+        assertFalse(place.hasUnsyncedChanges)
         ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "garden")).use { scenario ->
             awaitText(scenario, "Cue")
             await("read-along ready again") { model(scenario).readAlongUi.value is ReadAlongUi.Ready }
             SystemClock.sleep(6_000)
             assertEquals(settled, writes.size)
+            val reopened = runBlocking { sync.snapshot() }
+            assertEquals(place.position, reopened.position)
+            assertEquals(place.observedAtEpochMs, reopened.observedAtEpochMs)
+            assertFalse(reopened.hasUnsyncedChanges)
         }
     }
 
@@ -213,21 +236,56 @@ class ReadAlongSmokeTest {
         assertTrue(services.downloads.record("lighthouse")!!.isReady)
         // Now the server is gone: everything plays from this device.
         web.close()
+        var pressedAt = Long.MAX_VALUE
         ActivityScenario.launch<ReaderActivity>(ReaderActivity.intent(app, "lighthouse")).use { scenario ->
             awaitText(scenario, "Cue 1 sounds")
             await("offline read-along ready") { (model(scenario).readAlongUi.value as? ReadAlongUi.Ready)?.fromDevice == true }
             scenario.onActivity { it.narrationActions.toggle() }
             await("narration playing from files") { app.container.playback.snapshot.value.let { it.isPlaying && it.fromDevice } }
             SystemClock.sleep(6_000)
+            pressedAt = System.currentTimeMillis()
             scenario.onActivity { it.narrationActions.toggle() }
-            await("paused") { !app.container.playback.snapshot.value.isPlaying }
+            await("paused") { !listening(scenario) }
         }
-        val book = runBlocking { services.progress.sync("lighthouse").snapshot() }
-        val audio = runBlocking { services.progress.sync("lighthouse-audio").snapshot() }
+        // Both places of one checkpoint are written together, so they are read together too.
+        fun places() = runBlocking {
+            ProgressSync.together { services.progress.sync("lighthouse").snapshot() to services.progress.sync("lighthouse-audio").snapshot() }
+        }
+        await("the pause checkpoint on this device") { (places().first.observedAtEpochMs ?: 0L) >= pressedAt }
+        val paused = places()
+        // Leaving the paused book is not listening: nothing is heard again with a later time.
+        awaitBackground()
+        val (book, audio) = places()
+        assertEquals(paused.first.position, book.position)
+        assertEquals(paused.second.position, audio.position)
         assertTrue(book.position?.locator?.readAlong() != null)
         assertEquals(book.observedAtEpochMs, audio.observedAtEpochMs)
+        assertEquals(paused.first.observedAtEpochMs, book.observedAtEpochMs)
         assertTrue(audio.position?.assetId in setOf("lh-1", "lh-2"))
         assertTrue(book.hasUnsyncedChanges && audio.hasUnsyncedChanges)
+    }
+
+    /** What the navigator reports it shows. */
+    private fun shown(scenario: ActivityScenario<ReaderActivity>): Locator {
+        val shown = AtomicReference<Locator>()
+        scenario.onActivity { activity ->
+            shown.set((activity.supportFragmentManager.findFragmentById(R.id.reader_navigator) as EpubNavigatorFragment).currentLocator.value)
+        }
+        return shown.get()
+    }
+
+    /** The app has left the foreground, which checkpoints whatever is playing. */
+    private fun awaitBackground() = await("the app in the background") {
+        val state = AtomicReference<Lifecycle.State>()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { state.set(ProcessLifecycleOwner.get().lifecycle.currentState) }
+        !state.get().isAtLeast(Lifecycle.State.STARTED)
+    }
+
+    /** Playing, or about to; MediaController reads, like its playback commands, require its application thread. */
+    private fun listening(scenario: ActivityScenario<ReaderActivity>): Boolean {
+        val listening = AtomicReference(false)
+        scenario.onActivity { listening.set(app.container.playback.isListening) }
+        return listening.get()
     }
 
     private fun model(scenario: ActivityScenario<ReaderActivity>): ReaderViewModel {
