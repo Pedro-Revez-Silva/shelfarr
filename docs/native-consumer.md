@@ -22,6 +22,10 @@ app can also [update itself](native-updates-android.md) from a publisher feed.
 
 ### Android
 
+Fixture instrumentation is emulator-only because it replaces the sign-in with
+test accounts. Use [device acceptance](device-acceptance.md) for a personal
+phone and read-only package/version collection.
+
 Needs JDK 17 or later (CI uses Temurin 21) and an Android SDK with platform 37.
 Gradle arrives through the wrapper, whose distribution is pinned by SHA-256.
 

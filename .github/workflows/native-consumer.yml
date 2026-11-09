@@ -31,10 +31,10 @@ jobs:
       - name: Check design tokens and contrast
         run: python3 apps/scripts/check-design-tokens.py
 
-      - name: Check Android manifest and compatibility catalog tooling
+      - name: Check Android publishing and device-test tooling
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 -m unittest discover -s apps/scripts/tests -p 'test_android_update*.py' -q
+        run: python3 -m unittest discover -s apps/scripts/tests -p 'test_android_*.py' -q
 
   android:
     runs-on: ubuntu-latest

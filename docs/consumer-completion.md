@@ -68,3 +68,6 @@ Physical devices, Apple signing/distribution access and any human-only approval
 are recorded as gates rather than marked complete by simulator results. The
 existing server, account credentials, personal library and device configuration
 must be preserved throughout implementation and deployment.
+
+Use [the device acceptance guide](device-acceptance.md) for the physical pass and
+read-only Android version collection. Fixture instrumentation is emulator-only.
