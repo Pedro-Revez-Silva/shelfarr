@@ -153,8 +153,11 @@ final class ReadAlongSmokeTests: XCTestCase {
         XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.lastReadAlong != nil }, "pause saved the heard place")
 
         showChrome(app, false)
+        // On iPad hiding the controls hides the status bar. Only the safe area changes,
+        // not the page: it must not make the next turn an anchor.
+        XCTAssertFalse(restoreTrace(app).contains { $0.hasPrefix("layout") }, "showing and hiding the controls is not a layout: \(restoreTrace(app).joined(separator: "\n"))")
         app.webViews.firstMatch.swipeLeft()
-        XCTAssertTrue(waitFor { ((try? self.progressWrites(book))?.reading ?? 0) > 0 }, "a turn while paused saved a reading place")
+        XCTAssertTrue(waitFor { ((try? self.progressWrites(book))?.reading ?? 0) > 0 }, "a turn while paused saved a reading place: \(restoreTrace(app).joined(separator: "\n"))")
         let read = try progressWrites(book)
         XCTAssertNil(read.lastReadAlong)
         let time = try XCTUnwrap(read.lastObservedAt)

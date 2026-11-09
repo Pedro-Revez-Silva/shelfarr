@@ -92,7 +92,10 @@ The page is quiet: nothing is added until narration has played in this session.
   narration on that page (the first cue starting on it, else the cue it continues, else
   the next narrated document's first cue).
 - **Layout**: changing text settings or the window size while reading along makes the
-  next report an anchor, not a reading place.
+  next report an anchor, not a reading place. The size is the reading surface's
+  (rotation, a resized window); showing or hiding the controls, which on iPad hides the
+  status bar and changes only the safe area, is not a layout, so the next page turned
+  while paused is still saved.
 
 Narration plays through the app's one `PlaybackEngine`, so it keeps background audio,
 lock-screen, headset and Control Center commands, interruptions, the sleep timer and the

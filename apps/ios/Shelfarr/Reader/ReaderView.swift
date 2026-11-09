@@ -63,9 +63,13 @@ struct ReaderView: View {
             model.book?.apply($0)
             model.applyTheme($0.theme)
         }
+        // The reading surface's size, as the navigator (which ignores the safe area) is
+        // laid out: rotation or a resized window. On iPad, hiding the controls hides the
+        // status bar and changes only the safe area; that is not a layout, and treating it
+        // as one made the next page turned an anchor instead of a reading place.
         .background(GeometryReader { proxy in
             Color.clear.onChange(of: proxy.size) { _ in model.layoutChanged() }
-        })
+        }.ignoresSafeArea())
         .onChange(of: scenePhase) { if $0 != .active { model.flush() } }
         .onDisappear { model.leave() }
         .sheet(item: $sheet) { which in
