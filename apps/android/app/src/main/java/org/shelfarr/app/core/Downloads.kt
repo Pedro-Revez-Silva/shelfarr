@@ -716,11 +716,14 @@ class DownloadManager(
                 synchronized(jobsLock) {
                     if (jobs[publicationId] === job) {
                         jobs.remove(publicationId)
-                        // FAILED can be observed before this worker has finished.
-                        // If Retry queued it during that window, hand it to a new
-                        // worker now. Stop/pause remove ownership first, so their
-                        // cancellation must never restart a transfer.
-                        if (!closed && scope.isActive && record(publicationId)?.state == DownloadState.QUEUED) {
+                        // Ready/Failed can be observed before this worker finishes.
+                        // A retry or narration update queued during that window must
+                        // reach a new worker, even when the book itself stays READY.
+                        // Stop/pause remove ownership first and never restart it here.
+                        val queued = record(publicationId)?.let {
+                            it.state == DownloadState.QUEUED || (it.isReady && it.narrationActive)
+                        } == true
+                        if (!closed && scope.isActive && queued) {
                             launch(publicationId)
                         }
                     }

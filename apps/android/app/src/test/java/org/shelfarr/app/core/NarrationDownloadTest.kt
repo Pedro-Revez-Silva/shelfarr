@@ -2,12 +2,16 @@ package org.shelfarr.app.core
 
 import java.io.File
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableJob
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -40,15 +44,15 @@ class NarrationDownloadTest {
     private lateinit var server: ServerAddress
     private val scopes = mutableListOf<CoroutineScope>()
     private val requests = ConcurrentLinkedQueue<RecordedRequest>()
-    private val routes = HashMap<String, (RecordedRequest) -> MockResponse>()
+    private val routes = ConcurrentHashMap<String, (RecordedRequest) -> MockResponse>()
 
     private val gardenEpub = ReadAlongFixtures.epub(overlay = true)
     private val lighthouseEpub = ReadAlongFixtures.epub(overlay = false)
     private val track1 = ReadAlongFixtures.wav(8_000)
     private val track2 = ReadAlongFixtures.wav(8_000).also { it[it.size - 1] = 7 }
 
-    private var gardenGeneration = ReadAlongFixtures.GENERATION
-    private var publications = mapOf<String, Publication>()
+    @Volatile private var gardenGeneration = ReadAlongFixtures.GENERATION
+    @Volatile private var publications = mapOf<String, Publication>()
     @Volatile private var detailsFailure = false
 
     private fun summary(source: String, generation: String, manifest: String, audio: Long) =
@@ -107,13 +111,14 @@ class NarrationDownloadTest {
 
     private val root get() = File(folder.root, "acct/downloads")
 
-    private fun manager(): DownloadManager {
+    private fun manager(beforeFetch: suspend () -> Unit = {}): DownloadManager {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scopes += it }
         return DownloadManager(
             root = root,
             client = buildHttpClient({ Credential(server, "secret") }),
             server = server,
             fetchPublication = { id ->
+                beforeFetch()
                 if (detailsFailure) throw ApiException.Offline()
                 publications[id] ?: throw ApiException.NotFound()
             },
@@ -281,6 +286,88 @@ class NarrationDownloadTest {
         assertEquals(ReadAlongFixtures.GENERATION, downloads.narrationFor(record)!!.generation)
         assertNull(record.narrationUpdate)
         assertEquals(oldFiles, narrationFiles("garden-1"))
+    }
+
+    @Test
+    fun `a narration update queued while the ready worker finishes starts afterwards`() = runBlocking {
+        var finishing: CompletableJob? = null
+        val downloads = manager {
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(garden(), narration = true)
+            downloads.await("garden-1") { it.narration?.isReady == true }
+            gardenGeneration = "4".repeat(64)
+            publications = mapOf("garden-1" to garden())
+            downloads.enqueue(garden(), narration = true)
+            assertTrue(downloads.record("garden-1")!!.narrationRequested)
+            requireNotNull(finishing).complete()
+            val updated = downloads.await("garden-1") { it.narration?.generation == gardenGeneration && it.narration?.isReady == true }
+            assertTrue(updated.isReady)
+            assertEquals(gardenGeneration, downloads.narrationFor(updated)!!.generation)
+        } finally {
+            finishing?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `retrying narration before the failed worker finishes starts afterwards`() = runBlocking {
+        var finishing: CompletableJob? = null
+        routes["/files/lh-2"] = { MockResponse.Builder().code(404).build() }
+        val downloads = manager {
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(lighthouse(), narration = true)
+            val failed = downloads.await("lighthouse-1") { it.narration?.state == NarrationState.FAILED }
+            assertTrue(failed.isReady)
+            val firstTrackFetches = requests.count { it.target == "/files/lh-1" }
+            routes["/files/lh-2"] = { bytes(track2, "\"lh2\"") }
+            downloads.retry("lighthouse-1")
+            assertEquals(NarrationState.QUEUED, downloads.record("lighthouse-1")!!.narrationWork!!.state)
+            requireNotNull(finishing).complete()
+            val ready = downloads.await("lighthouse-1") { it.narration?.isReady == true }
+            assertTrue(ready.isReady)
+            assertEquals(firstTrackFetches, requests.count { it.target == "/files/lh-1" })
+            val local = downloads.narrationFor(ready)!!
+            assertArrayEquals(track1, local.tracks[0].readBytes())
+            assertArrayEquals(track2, local.tracks[1].readBytes())
+        } finally {
+            finishing?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `cancelling queued narration before the worker finishes keeps the ready generation stopped`() = runBlocking {
+        var finishing: CompletableJob? = null
+        var fetches = 0
+        val downloads = manager {
+            fetches++
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(garden(), narration = true)
+            val first = downloads.await("garden-1") { it.narration?.isReady == true }
+            val files = narrationFiles("garden-1")
+            gardenGeneration = "4".repeat(64)
+            publications = mapOf("garden-1" to garden())
+            downloads.enqueue(garden(), narration = true)
+            assertTrue(downloads.record("garden-1")!!.narrationRequested)
+            downloads.cancel("garden-1")
+            requireNotNull(finishing).complete()
+            val stopped = downloads.record("garden-1")!!
+            assertTrue(stopped.isReady)
+            assertFalse(stopped.isActive)
+            assertEquals(first.narration, stopped.narration)
+            assertEquals(files, narrationFiles("garden-1"))
+            assertEquals(1, fetches)
+            assertNotNull(downloads.fileFor(stopped, ReadAlongFixtures.EPUB_ID))
+        } finally {
+            finishing?.complete()
+            downloads.close()
+        }
     }
 
     @Test
