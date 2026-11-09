@@ -86,8 +86,10 @@ GitHub asset, match the tested APK's SHA-256.
 The exact APK passes the API 35 emulator suite: 23 passed cases and two expected
 skips. This includes opening a requested ebook and audiobook in the real reader
 and player. A separate real-provider ebook request acquired a Gutenberg EPUB
-and reopened its saved page; audiobook acquisition from a real provider remains
-unverified.
+and reopened its saved page. A LibriVox request acquired a real MP3 and verified
+streaming, pause, resume, reopening and saved places. The browser approvals in
+these two runs were granted by the test harness; they do not establish the real
+browser sign-in flow.
 
 The published code 5 to 6 update passed through the app's own download and
 Android's permission and installer confirmation screens. Android records
