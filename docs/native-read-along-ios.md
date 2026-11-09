@@ -178,8 +178,10 @@ the folder is removed, so no late write recreates it):
   transfer when it resumes. Asking for the same edition and generation again keeps the
   running preparation.
 - Cancel deletes what that download stored but never made current; a usable earlier
-  generation stays for the next download. The cleanup is skipped if the book was
-  downloaded again in the meantime, since the new preparation owns its folder.
+  generation stays for the next download. Cleanup is bound to the stopped request;
+  a newer download or automatic preparation owns its folder even after preparation
+  finishes. Relaunch cleanup is accepted only before this launch has handled a new
+  request for that book, so an old cancelled-record callback cannot delete new work.
 - A paired audiobook queued by a book's download is cancelled with it only while it is
   unfinished (queued, downloading or failed), no other book uses it, and the user hasn't
   asked for (or retried) that audiobook themselves. A complete audiobook is never

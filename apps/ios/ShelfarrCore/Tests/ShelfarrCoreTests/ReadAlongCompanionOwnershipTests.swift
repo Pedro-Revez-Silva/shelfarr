@@ -140,7 +140,8 @@ final class ReadAlongCompanionOwnershipTests: ReadAlongPreparationTestCase {
         XCTAssertTrue(before)
         await preparations.resumeReleases(downloads: downloads)
         // What the service does for a cancelled book at launch.
-        await preparations.cleanUp("12", removing: false, released: [], library: library, downloads: nil)
+        let cleanup = try XCTUnwrap(preparations.interruptedCleanup("12"))
+        await preparations.cleanUp(cleanup, removing: false, library: library, downloads: nil)
 
         let state = await companionState()
         XCTAssertEqual(state, .cancelled)

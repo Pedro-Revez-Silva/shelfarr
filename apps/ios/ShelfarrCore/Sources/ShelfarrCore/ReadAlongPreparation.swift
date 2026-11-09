@@ -55,6 +55,14 @@ public final class ReadAlongPreparations: @unchecked Sendable {
         fileprivate let key: String
     }
 
+    /// Cleanup belongs to the stopped request, even after a later preparation finishes.
+    public struct Cleanup: Sendable {
+        public let publicationId: String
+        fileprivate let epoch: UInt64
+        fileprivate let request: Int
+        fileprivate let released: [String]
+    }
+
     /// What finishing a stored generation came to.
     public enum Outcome: Equatable, Sendable {
         /// The ticket was invalidated: nothing more was written or reported.
@@ -217,8 +225,10 @@ public final class ReadAlongPreparations: @unchecked Sendable {
             if let existing = running[publicationId] {
                 if existing.ticket.key == key { return (nil, existing.task, nil) }
                 superseded = existing.task
-                bump(publicationId)
             }
+            // A completed preparation still supersedes older cleanup. Its identity
+            // must survive leaving `running`, including automatic preparations.
+            bump(publicationId)
             let ticket = Ticket(publicationId: publicationId, epoch: epochs[publicationId] ?? 0, key: key)
             running[publicationId] = Running(ticket: ticket)
             return (ticket, nil, superseded)
@@ -250,16 +260,29 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     }
 
     /// The book's download was cancelled, removed or replaced: its preparation stops now.
-    /// Returns the companions nothing needs any more, for `cleanUp` to cancel.
+    /// Returns its identity and companions nothing needs any more, for `cleanUp`.
     @discardableResult
-    public func invalidate(_ publicationId: String) -> [String] {
-        let (task, released): (Task<Void, Never>?, [String]) = update {
+    public func invalidate(_ publicationId: String) -> Cleanup {
+        let (task, cleanup): (Task<Void, Never>?, Cleanup) = update {
             bump(publicationId)
             let task = running.removeValue(forKey: publicationId)?.task
-            return (task, unclaim(publicationId, except: nil))
+            let released = unclaim(publicationId, except: nil)
+            return (task, Cleanup(publicationId: publicationId, epoch: epochs[publicationId] ?? 0,
+                                  request: requests[publicationId] ?? 0, released: released))
         }
         task?.cancel()
-        return released
+        return cleanup
+    }
+
+    /// A persisted cancelled entry may need cleanup interrupted by process death.
+    /// Once this launch has seen a request/preparation/stop for it, only that operation's
+    /// own cleanup may act; a delayed old records callback cannot bind to the new request.
+    public func interruptedCleanup(_ publicationId: String) -> Cleanup? {
+        lock.withLock {
+            guard !ended, epochs[publicationId] == nil, requests[publicationId] == nil,
+                  running[publicationId] == nil else { return nil }
+            return Cleanup(publicationId: publicationId, epoch: 0, request: 0, released: [])
+        }
     }
 
     /// The account ended: every preparation stops, and nothing is cancelled for it.
@@ -500,9 +523,9 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     /// preparation stops now, and the returned task cleans up after it (`cleanUp`).
     @discardableResult
     public func stopped(_ publicationId: String, removing: Bool, library: ReadAlongLibrary, downloads: ReadAlongDownloads?) -> Task<Void, Never> {
-        let released = invalidate(publicationId)
+        let cleanup = invalidate(publicationId)
         return Task {
-            await self.cleanUp(publicationId, removing: removing, released: released, library: library, downloads: downloads)
+            await self.cleanUp(cleanup, removing: removing, library: library, downloads: downloads)
         }
     }
 
@@ -511,13 +534,18 @@ public final class ReadAlongPreparations: @unchecked Sendable {
     /// everything kept for the book), then cancels the companions it released. Deleting
     /// is skipped when the book's download was asked for again since: its new preparation
     /// owns the folder.
-    public func cleanUp(_ publicationId: String, removing: Bool, released: [String], library: ReadAlongLibrary, downloads: ReadAlongDownloads?) async {
-        let idle: @Sendable () -> Bool = { [self] in !isPreparing(publicationId) }
-        if removing {
-            await library.remove(publicationId, while: idle)
-        } else {
-            await library.discardPending(publicationId, while: idle)
+    public func cleanUp(_ cleanup: Cleanup, removing: Bool, library: ReadAlongLibrary, downloads: ReadAlongDownloads?) async {
+        let unchanged: @Sendable () -> Bool = { [self] in
+            lock.withLock {
+                !ended && (epochs[cleanup.publicationId] ?? 0) == cleanup.epoch
+                    && (requests[cleanup.publicationId] ?? 0) == cleanup.request
+            }
         }
-        if let downloads { await release(released, downloads) }
+        if removing {
+            await library.remove(cleanup.publicationId, while: unchanged)
+        } else {
+            await library.discardPending(cleanup.publicationId, while: unchanged)
+        }
+        if let downloads { await release(cleanup.released, downloads) }
     }
 }

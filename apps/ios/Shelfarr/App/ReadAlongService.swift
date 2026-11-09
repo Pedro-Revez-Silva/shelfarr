@@ -189,7 +189,9 @@ final class ReadAlongService: ObservableObject {
             // finishes a cleanup the app ended before (a usable generation stays).
             if record.state == .cancelled {
                 status[id] = nil
-                Task { await preparations.cleanUp(id, removing: false, released: [], library: library, downloads: nil) }
+                if let cleanup = preparations.interruptedCleanup(id) {
+                    Task { await preparations.cleanUp(cleanup, removing: false, library: library, downloads: nil) }
+                }
                 continue
             }
             guard let ticket = preparations.snapshot(id) else { continue }

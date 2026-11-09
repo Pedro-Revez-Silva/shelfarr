@@ -437,12 +437,12 @@ final class ReadAlongPreparationTests: ReadAlongPreparationTestCase {
 
         // Cancel, then download again before the cancel's cleanup reaches the library.
         preparations.userStopped("12")
-        let released = preparations.invalidate("12")
+        let cleanup = preparations.invalidate("12")
         await downloads.cancel("12")
         await downloads.enqueue(ebook)
         let secondGate = HoldPoint()
         let second = try XCTUnwrap(request(ebook, fetched: imported(), manifestGate: secondGate))
-        await preparations.cleanUp("12", removing: false, released: released, library: library, downloads: downloads)
+        await preparations.cleanUp(cleanup, removing: false, library: library, downloads: downloads)
         XCTAssertEqual(generations(), [F.generation], "the resumed download's folder isn't cleaned under it")
 
         await secondGate.release()
