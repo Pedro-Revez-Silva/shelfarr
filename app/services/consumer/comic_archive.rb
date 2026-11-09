@@ -22,6 +22,7 @@ class Consumer::ComicArchive
   MAX_DIRECTORY_BYTES = 2.megabytes
   MAX_METADATA_BYTES = 8.megabytes
   MAX_IMAGE_BYTES = 32.megabytes
+  MAX_COMPRESSED_IMAGE_BYTES = MAX_IMAGE_BYTES + 64.kilobytes
   MAX_TOTAL_BYTES = 2.gigabytes
   MAX_NAME_BYTES = 1024
   IMAGE_TYPES = { "jpg" => "image/jpeg", "jpeg" => "image/jpeg", "png" => "image/png", "webp" => "image/webp" }.freeze
@@ -66,6 +67,9 @@ class Consumer::ComicArchive
       type = IMAGE_TYPES[File.extname(entry.name).delete_prefix(".").downcase]
       next unless type
       raise Invalid, "A comic page exceeds 32 MiB" unless entry.size.between?(1, MAX_IMAGE_BYTES)
+      unless entry.compressed_size.between?(1, MAX_COMPRESSED_IMAGE_BYTES)
+        raise Invalid, "A comic page exceeds the safe compressed download limit"
+      end
 
       total += entry.size
       raise Invalid, "Comic pages exceed 2 GiB" if total > MAX_TOTAL_BYTES

@@ -174,6 +174,11 @@ class ConsumerPagesTest < ApplicationSystemTestCase
     second = bytes.index("pages/002.png") + "pages/002.png".bytesize + 8
     bytes.setbyte(second, bytes.getbyte(second) ^ 0xff)
     File.binwrite(@comic_path, bytes)
+    asset = Consumer::LibraryAssets.new(@comic, formats: Consumer::ReaderFormats::SUPPORTED).list.sole
+    saved = users(:one).consumer_progresses.create!(book: @comic, asset_id: asset.id, version: 1,
+      client_mutation_id: SecureRandom.uuid, observed_at: 1.hour.ago,
+      locator: { "href" => "pages/001.png", "type" => "image/png", "locations" => { "position" => 1 } })
+    saved_attributes = saved.attributes.slice("locator", "version", "observed_at", "client_mutation_id")
     visit at(consumer_publication_path(@comic))
     wait_for_page(1)
     find(".consumer-pages").send_keys(:arrow_right)
@@ -181,9 +186,16 @@ class ConsumerPagesTest < ApplicationSystemTestCase
     assert_selector ".consumer-page__unavailable", text: "Page 2 couldn't be shown."
     assert_no_selector ".consumer-page img", visible: :all
     capture("comic-damaged-page-mobile.png")
+    visit at(consumer_publication_path(@comic))
+    wait_for_page(1)
+    assert_equal fixed_layout_page_color(1), image_pixel
+    assert_equal saved_attributes, saved.reload.attributes.slice(*saved_attributes.keys), "the unseen page must not replace the saved place or time"
+    find(".consumer-pages").send_keys(:arrow_right)
+    assert_selector ".consumer-page__unavailable", text: "Page 2 couldn't be shown."
     find(".consumer-pages").send_keys(:arrow_right)
     wait_for_page(3)
     assert_equal fixed_layout_page_color(3), image_pixel
+    assert_equal 3, wait_for_progress(@comic, version: 2).locator.dig("locations", "position")
     assert_no_selector "[data-consumer-reader-target=error]", visible: true
   end
 

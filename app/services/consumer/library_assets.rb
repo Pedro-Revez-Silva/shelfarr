@@ -53,7 +53,10 @@ class Consumer::LibraryAssets
   end
 
   def list
-    candidates.each_with_index.filter_map { |path, index| asset_for(path, index) }
+    candidates.each_with_index.filter_map do |path, index|
+      asset = available_candidate(path, index)
+      asset unless RemoteResult.failed?(asset)
+    end
       .each_with_index.map { |asset, position| asset.with(position: position) }
   rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, ArgumentError, EncodingError
     raise Unavailable, "Media is missing or outside the authorized library"
@@ -66,8 +69,8 @@ class Consumer::LibraryAssets
 
     positions = 0
     candidates.each do |path|
-      asset = asset_for(path, positions, inspect: false)
-      next unless asset
+      asset = available_candidate(path, positions, inspect: false)
+      next if asset.nil? || RemoteResult.failed?(asset)
 
       return asset_for(path, positions) if asset.id == asset_id
 
@@ -107,6 +110,15 @@ class Consumer::LibraryAssets
   end
 
   private
+
+  # A removed reference target or unsafe sidecar is not an identity match.
+  # Root/folder failures still raise from candidates, and the requested file
+  # must still pass inspection and the pinned-open generation checks.
+  def available_candidate(path, position, inspect: true)
+    asset_for(path, position, inspect: inspect)
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, ArgumentError, EncodingError => error
+    RemoteResult::Failed.new(error)
+  end
 
   def download_book
     @book

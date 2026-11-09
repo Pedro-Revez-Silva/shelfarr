@@ -107,4 +107,33 @@ class Consumer::ComicArchiveTest < ActiveSupport::TestCase
     assert_refused fixed_layout_zip({ "ComicInfo.xml" => "<ComicInfo/>", "notes.txt" => "no pages" }), "no images"
     assert_refused fixed_layout_zip({ "001.png" => { data: png, method: 0, compressed_size: png.bytesize - 1 } }), "stored size mismatch"
   end
+
+  test "a tiny image with excessive valid deflate padding is refused without inflating it" do
+    image = fixed_layout_png(width: 2, height: 2)
+    deflater = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -Zlib::MAX_WBITS)
+    compressed = deflater.deflate(image, Zlib::FINISH)
+    deflater.close
+    # Every empty non-final stored block is valid DEFLATE and emits no bytes.
+    # Write it in small chunks to disk, rather than allocating the whole span.
+    empty = "\x00\x00\x00\xff\xff".b
+    blocks = ((32.megabytes + 64.kilobytes + 1 - compressed.bytesize) / 5.0).ceil
+    compressed_size = blocks * 5 + compressed.bytesize
+    name = "001.png".b
+    crc = Zlib.crc32(image)
+    offset = 30 + name.bytesize + compressed_size
+    directory = [ 0x02014b50, 0x0314, 20, 0x0800, 8, 0, 0x5b21, crc, compressed_size,
+      image.bytesize, name.bytesize, 0, 0, 0, 0, 0o100644 << 16, 0 ].pack("VvvvvvvVVVvvvvvVV") + name
+    path = File.join(@directory, "padded.cbz")
+    File.open(path, "wb") do |file|
+      file.write([ 0x04034b50, 20, 0x0800, 8, 0, 0x5b21, crc, compressed_size,
+        image.bytesize, name.bytesize, 0 ].pack("VvvvvvVVVvv") + name)
+      chunk = empty * 8192
+      (blocks / 8192).times { file.write(chunk) }
+      file.write(empty * (blocks % 8192))
+      file.write(compressed)
+      file.write(directory)
+      file.write([ 0x06054b50, 0, 0, 1, 1, directory.bytesize, offset, 0 ].pack("VvvvvVVv"))
+    end
+    File.open(path, "rb") { |file| assert_raises(Consumer::ComicArchive::Invalid) { Consumer::ComicArchive.pages(file) } }
+  end
 end

@@ -91,6 +91,8 @@ already-authorized file descriptor and checks only:
     (without a data descriptor) CRC and sizes; entries do not overlap;
   - pages are `.jpg`, `.jpeg`, `.png` or `.webp` files, 1 byte to 32 MiB each and
     2 GiB in total, ignoring hidden and `__MACOSX` entries. At least one page.
+    Each page's compressed input is capped at 32 MiB plus 64 KiB for DEFLATE
+    overhead, before any page bytes are fetched or allocated by the web reader.
   - the page list response stays within 8 MiB.
 
   Any violation leaves the CBZ out of the listing (and a progress or

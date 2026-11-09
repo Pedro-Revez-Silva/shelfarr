@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { deflateRawSync, crc32 as zlibCrc32 } from "node:zlib"
-import { ComicPages, LIMITS, PageError, checkImage, crc32, entryNameBytes, imageInfo, inflateRaw, localDataStart, pageLocator,
+import { ComicPages, LIMITS, PageError, PageReader, checkImage, crc32, entryNameBytes, imageInfo, inflateRaw, localDataStart, pageLocator,
   resourceFactory, restoredPage, validateReadingOrder } from "../../app/javascript/consumer_page_reader.js"
 import { assetUrls, snapshot } from "../../app/javascript/consumer_offline.js"
 
@@ -87,6 +87,52 @@ test("hrefs decode to the exact ZIP entry bytes", () => {
   expect([...entryNameBytes("a%20b/%C3%A9.png")]).toEqual([...encoder.encode("a b/é.png")])
   expect(() => entryNameBytes("bad%zz")).toThrow(PageError)
   expect(() => entryNameBytes("space here")).toThrow(PageError)
+})
+
+test("a failed page is not reading and a successful retry of that page is", async () => {
+  const changes = []
+  const reader = new PageReader({ format: "pdf", onChange: (position, count, state) => changes.push({ position, ...state }) })
+  reader.source = { count: 3 }
+  let shown = true
+  reader.draw = async () => shown
+  await reader.show(1)
+  shown = false
+  await reader.next()
+  expect(changes.at(-1)).toEqual({ position: 2, activity: false, shown: false })
+  shown = true
+  await reader.go(2)
+  expect(changes.at(-1)).toEqual({ position: 2, activity: true, shown: true })
+  await reader.go(2)
+  expect(changes.at(-1).activity).toBe(false)
+})
+
+test("compressed page budgets are enforced before fetching or allocating the span", async () => {
+  const { items, asset } = comic([png(2, 2)])
+  const oversized = { ...items[0], compressed_size: 35 * 1024 * 1024 }
+  const largeAsset = { ...asset, size_bytes: oversized.compressed_size + 4096 }
+  expect(() => validateReadingOrder({ asset_id: asset.id, format: "cbz", items: [oversized] }, largeAsset)).toThrow(PageError)
+  let calls = 0
+  const reader = new ComicPages({ url: "x", asset: largeAsset, items: [oversized], fetch: async () => { calls += 1; throw new Error("must not fetch") } })
+  await expect(reader.bytes(0)).rejects.toThrow(PageError)
+  expect(calls).toBe(0)
+})
+
+test("a range response is stopped when its actual body exceeds the requested span", async () => {
+  let pulls = 0, cancelled = false
+  const body = new ReadableStream({
+    pull(controller) {
+      pulls += 1
+      controller.enqueue(new Uint8Array(4))
+      if (pulls === 1024) controller.close()
+    },
+    cancel() { cancelled = true }
+  })
+  const asset = { id: "a".repeat(64), size_bytes: 4096 }
+  const reader = new ComicPages({ url: "x", asset, items: [], fetch: async () => new Response(body,
+    { status: 206, headers: { ETag: `"${asset.id}"`, "Content-Range": "bytes 0-2/4096" } }) })
+  await expect(reader.range(0, 2)).rejects.toThrow(PageError)
+  expect(cancelled).toBe(true)
+  expect(pulls).toBeLessThan(10)
 })
 
 test("a page is range-read, inflated within its size and verified", async () => {

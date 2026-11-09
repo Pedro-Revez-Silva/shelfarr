@@ -152,6 +152,29 @@ class API::Consumer::V1::FixedLayoutTest < ActionDispatch::IntegrationTest
     assert_response :gone
   end
 
+  test "unavailable other-format sidecars do not block a legacy EPUB or its transfer grant" do
+    epub = publication(@mixed).fetch("assets").sole
+    File.symlink(File.join(@root, "absent.pdf"), File.join(@folder, "A.pdf"))
+    File.symlink(File.join(@root, "absent.cbz"), File.join(@folder, "A.cbz"))
+    assert_equal [ epub.fetch("id") ], publication(@mixed).fetch("assets").map { |asset| asset.fetch("id") }
+    get epub.fetch("content_url"), headers: @headers
+    assert_response :success
+    assert_equal File.binread(File.join(@folder, "Mixed.epub")), response.body.b
+    assert_equal %w[cbz epub pdf], publication(@mixed, FORMATS).fetch("assets").map { |asset| asset.fetch("format") }.sort
+    head epub.fetch("content_url"), headers: @headers
+    assert_response :success
+    put "/api/consumer/v1/library/#{@mixed.id}/progress", headers: @headers, as: :json,
+      params: { asset_id: epub.fetch("id"), expected_version: 0, client_mutation_id: SecureRandom.uuid,
+        locator: { href: "OEBPS/chapter.xhtml", locations: { progression: 0.5 } } }
+    assert_response :success
+    post "/api/consumer/v1/library/#{@mixed.id}/assets/#{epub.fetch("id")}/transfer_grant", headers: @headers, as: :json, params: {}
+    assert_response :created
+    grant_url = response.parsed_body.fetch("url")
+    get grant_url
+    assert_response :success
+    assert_equal File.binread(File.join(@folder, "Mixed.epub")), response.body.b
+  end
+
   test "PDF and CBZ bytes download as sandboxed attachments with ranges and transfer grants" do
     pdf = asset_of(@mixed, "pdf")
     get pdf.fetch("content_url"), headers: @headers.merge("Range" => "bytes=0-7")

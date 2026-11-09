@@ -18,6 +18,9 @@
 export const LIMITS = Object.freeze({
   pages: 100_000,
   pageBytes: 32 * 1024 * 1024,
+  // Enough for ordinary DEFLATE overhead, without accepting arbitrarily many
+  // empty blocks for a tiny decoded image.
+  compressedPageBytes: 32 * 1024 * 1024 + 64 * 1024,
   imageSide: 16_384,
   imagePixels: 40_000_000,
   canvasPixels: 16_000_000,
@@ -62,7 +65,7 @@ export function validateReadingOrder(order, asset) {
   items.forEach((item, index) => {
     const ok = item && item.position === index + 1 && typeof item.href === "string" && item.href.length > 0 && item.href.length <= 4096 &&
       IMAGE_TYPES.includes(item.media_type) && (item.compression_method === 0 || item.compression_method === 8) &&
-      isCount(item.size_bytes, LIMITS.pageBytes) && item.size_bytes > 0 && isCount(item.compressed_size) &&
+      isCount(item.size_bytes, LIMITS.pageBytes) && item.size_bytes > 0 && isCount(item.compressed_size, LIMITS.compressedPageBytes) && item.compressed_size > 0 &&
       (item.compression_method === 8 || item.compressed_size === item.size_bytes) &&
       isCount(item.local_header_offset) && item.local_header_offset + 30 + item.compressed_size <= asset.size_bytes &&
       /^[0-9a-f]{8}$/.test(item.crc32 || "")
@@ -196,6 +199,10 @@ export class ComicPages {
 
   async range(start, end, signal) {
     const last = Math.min(end, this.asset.size_bytes - 1)
+    const expected = last - start + 1
+    if (!isCount(start) || !isCount(last) || expected <= 0 || expected > LIMITS.compressedPageBytes + 30 + 4096 + 65535) {
+      throw new PageError("This page's compressed data exceeds the safe download limit.", "verify")
+    }
     const response = await this.fetch(this.url, { credentials: "same-origin", redirect: "error", signal, cache: "no-store",
       headers: { Range: `bytes=${start}-${last}`, "If-Range": `"${this.asset.id}"` } })
     if (response.status === 410) throw new PageError("This comic changed on the server. Refresh to open the new edition.", "changed")
@@ -207,14 +214,34 @@ export class ComicPages {
     if (!match || Number(match[1]) !== start || Number(match[2]) !== last || Number(match[3]) !== this.asset.size_bytes) {
       throw new PageError("This page arrived incomplete.", "verify")
     }
-    const bytes = new Uint8Array(await response.arrayBuffer())
-    if (bytes.length !== last - start + 1) throw new PageError("This page arrived incomplete.", "verify")
+    const reader = response.body?.getReader()
+    if (!reader) throw new PageError("This page arrived incomplete.", "verify")
+    const bytes = new Uint8Array(expected)
+    let length = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (value.byteLength > expected - length) {
+          reader.cancel().catch(() => {})
+          throw new PageError("This page arrived larger than requested.", "verify")
+        }
+        bytes.set(value, length)
+        length += value.byteLength
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    if (length !== expected) throw new PageError("This page arrived incomplete.", "verify")
     return bytes
   }
 
   async bytes(index, signal) {
     const item = this.items[index]
     if (!item) throw new PageError("This page isn't in the comic.", "order")
+    if (!isCount(item.compressed_size, LIMITS.compressedPageBytes) || item.compressed_size === 0) {
+      throw new PageError("This page's compressed data exceeds the safe download limit.", "verify")
+    }
     const name = entryNameBytes(item.href)
     const offset = item.local_header_offset
     let chunk = await this.range(offset, offset + 30 + name.length + LIMITS.localHeaderSlack + item.compressed_size - 1, signal)
@@ -457,6 +484,7 @@ export class PageReader {
     this.label = label || "Page"
     this.zoom = 1
     this.position = 0
+    this.displayedPosition = 0
     this.active = true
     this.abort = new AbortController()
     this.pointers = new Map()
@@ -490,11 +518,13 @@ export class PageReader {
     if (!this.source || !this.active) return
     const target = Math.max(1, Math.min(this.count, Math.round(position)))
     const changed = target !== this.position
+    const moved = target !== this.displayedPosition
     this.position = target
     if (changed && !this.preserveZoom) this.zoom = 1
     const shown = await this.draw()
     if (!this.active || this.position !== target) return
-    this.onChange?.(target, this.count, { activity: activity && changed, shown })
+    if (shown) this.displayedPosition = target
+    this.onChange?.(target, this.count, { activity: activity && moved && shown === true, shown: shown === true })
     if (this.format === "cbz") this.source.prefetch(target + 1)
   }
 

@@ -339,7 +339,7 @@ export default class extends Controller {
     this.pageNumberTarget.value = String(position)
     this.pageSliderTarget.value = String(position)
     this.zoomLabelTarget.textContent = reader.zoomed ? `${Math.round(reader.zoom * 100)}%` : "Fit"
-    if (!activity || !this.readerReady) return
+    if (!shown || !activity || !this.readerReady) return
     if (this.hasAnnounceTarget) this.announceTarget.textContent = label
     this.recordPlace({ asset_id: this.currentAsset.id, locator: reader.locator(position) })
   }
