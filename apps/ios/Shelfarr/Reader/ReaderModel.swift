@@ -377,7 +377,7 @@ final class ReaderModel: ObservableObject {
         fraction = location.fraction
         position = location.position
         if let chapter = location.chapter { self.chapter = chapter }
-        guard let asset, let sync, let locator = JSONValue.parse(jsonString: location.locatorJSON) else { return }
+        guard asset != nil, sync != nil, let locator = JSONValue.parse(jsonString: location.locatorJSON) else { return }
         lastLocator = locator
         let viewport = location.visible.map { visible in
             ReadingViewport(resources: visible
@@ -389,9 +389,16 @@ final class ReaderModel: ObservableObject {
         note("report \(RestoreTrace.describe(locator)) viewport \(RestoreTrace.describe(viewport)) -> \(RestoreTrace.describe(action))")
         guard action == .record else {
             // Restoring is not reading: the saved place and its time stay as they were.
-            apply(action, for: observation)
+            apply(action, for: observation, observedAt: observedAt)
             return
         }
+        save(observation, observedAt: observedAt)
+    }
+
+    /// The reader moved to `observation`: save it with the time it was reported.
+    private func save(_ observation: ReadingObservation, observedAt: Int64) {
+        guard let asset, let sync else { return }
+        let locator = observation.locator
         // Read-along: a page followed to, or turned while narration plays, is not reading.
         let saved = SavedPosition(assetId: asset.id, locator: locator)
         if let readAlong {
@@ -407,10 +414,14 @@ final class ReaderModel: ObservableObject {
 
     private static let restoreFailed = "Couldn't show your saved page. It stays your saved place until you turn a page."
 
-    private func apply(_ action: ReadingRestoration.Action, for observation: ReadingObservation? = nil) {
+    private func apply(_ action: ReadingRestoration.Action, for observation: ReadingObservation? = nil, observedAt: Int64? = nil) {
         switch action {
-        case .none, .record:
+        case .none:
             return
+        case .record:
+            // Only an element answer about a report already classified arrives here.
+            guard let observation, let observedAt else { return }
+            save(observation, observedAt: observedAt)
         case .confirm:
             // A place heard names its element: ask the page whether that element is shown.
             guard let observation, let book, let href = observation.locator["href"]?.stringValue,
@@ -422,7 +433,7 @@ final class ReaderModel: ObservableObject {
                 guard let self, self.book === book else { return }
                 let next = self.restoration.elementShown(visible, for: observation)
                 self.note("element \(fragment) visible=\(visible) -> \(RestoreTrace.describe(next))")
-                self.apply(next, for: observation)
+                self.apply(next, for: observation, observedAt: observedAt)
             }
         case let .correct(target, attempt):
             correct(to: target, attempt: attempt)

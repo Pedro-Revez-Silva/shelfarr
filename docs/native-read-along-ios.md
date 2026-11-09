@@ -135,7 +135,12 @@ read-along mode they go to `ReadAlongProgress`:
 - **Restoring**: a heard place names an element and no progression, so the restore gate
   (`ReadingRestoration`) asks the page whether that element is on screen (`.confirm`)
   instead of comparing progressions. The usual bounded correction, retry and give-up
-  apply; an answer about an older report is ignored.
+  apply; an answer about an older report is ignored. The page answers about what it
+  shows when asked, which can be after Readium scrolled to the element but before it
+  reported that scroll. So once the element has anchored the restore, a later report of
+  another page in that document is asked about too: the element still shown means the
+  same restore measured late (nothing written); gone means a real turn, saved with the
+  time it was reported. Another document is reading at once.
 - **Offers**: for an imported alignment, the paired audiobook's newer place (its local
   record or the server's, whichever was heard later) is offered when it was heard later
   than the ebook's place and lands on another cue ("Your audiobook is further along than
@@ -237,7 +242,8 @@ Core (ShelfarrCore, `swift test`, Linux and macOS):
   truncated files never ready, a failed update keeping the previous generation, imported
   readiness needing every audiobook file on disk, other editions, closing; the streaming
   decoder matching the whole decoder on every vector at 1-byte to 64 KiB reads and
-  refusing what it refuses; element restores confirmed, corrected, retried and given up.
+  refusing what it refuses; element restores confirmed, corrected, retried and given up,
+  a late report of the restored page versus a real turn forward or back.
 
 Fixture (`apps/ios/RuntimeSmoke/read_along_fixture.py`, checked by
 `test_read_along_fixture.py` before the simulator smoke): a real EPUB 3 Media Overlay book

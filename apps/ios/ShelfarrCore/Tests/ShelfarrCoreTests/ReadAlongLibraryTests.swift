@@ -243,7 +243,83 @@ final class ReadingRestorationElementTests: XCTestCase {
         XCTAssertEqual(restoring.elementShown(true, for: first), .none, "an answer about an older report changes nothing")
         XCTAssertEqual(restoring.elementShown(true, for: landed), .settled)
         XCTAssertEqual(restoring.observe(landed), .none, "the same page again is not reading")
-        XCTAssertEqual(restoring.observe(report("OEBPS/c1.xhtml", 0.6, 0.8)), .record, "a real turn afterwards is")
+        let turned = report("OEBPS/c1.xhtml", 0.6, 0.8)
+        XCTAssertEqual(restoring.observe(turned), .confirm(target: target), "is the element still shown?")
+        XCTAssertEqual(restoring.elementShown(false, for: turned), .record, "a real turn afterwards is reading")
+        XCTAssertEqual(restoring.observe(report("OEBPS/c1.xhtml", 0.4, 0.6)), .record, "and every report after it")
+    }
+
+    /// The hosted failure (iPhone 16.4 and iPad 26): the navigator reported the chapter's
+    /// first page, the page was asked after it had already scrolled to the element, and the
+    /// report of that scroll arrived later. That report is the restore, not reading.
+    func testALateReportOfTheRestoredPageIsNotReading() {
+        var restoring = ReadingRestoration(opening: target)
+        let stale = report("OEBPS/c1.xhtml", 0, 0.25)
+        XCTAssertEqual(restoring.observe(stale), .confirm(target: target))
+        XCTAssertEqual(restoring.elementShown(true, for: stale), .settled, "the element is on screen now")
+        let arrived = report("OEBPS/c1.xhtml", 0.75, 1)
+        XCTAssertEqual(restoring.observe(arrived), .confirm(target: target), "asked again, about this report")
+        XCTAssertEqual(restoring.elementShown(true, for: arrived), .none, "the same restore, measured late")
+        XCTAssertEqual(restoring.observe(arrived), .none, "that page again is not reading")
+        // The real backward turn from there is still reading.
+        let back = report("OEBPS/c1.xhtml", 0.5, 0.75)
+        XCTAssertEqual(restoring.observe(back), .confirm(target: target))
+        XCTAssertEqual(restoring.elementShown(false, for: back), .record)
+        XCTAssertEqual(restoring.observe(arrived), .record, "returning is reading once moved")
+    }
+
+    /// Negative control: the old classifier's immediate turn, forward or back, still records.
+    func testAnImmediateTurnAfterAnElementRestoreIsReading() {
+        for turn in [report("OEBPS/c1.xhtml", 0.6, 0.8), report("OEBPS/c1.xhtml", 0.2, 0.4)] {
+            var restoring = ReadingRestoration(opening: target)
+            let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+            XCTAssertEqual(restoring.observe(shown), .confirm(target: target))
+            XCTAssertEqual(restoring.elementShown(true, for: shown), .settled)
+            XCTAssertEqual(restoring.observe(turn), .confirm(target: target))
+            XCTAssertEqual(restoring.elementShown(false, for: turn), .record)
+        }
+        var restoring = ReadingRestoration(opening: target)
+        let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+        _ = restoring.observe(shown)
+        _ = restoring.elementShown(true, for: shown)
+        XCTAssertEqual(restoring.observe(report("OEBPS/c2.xhtml", 0, 0.2)), .record, "another document needs no question")
+    }
+
+    func testOnlyTheAnswerAboutTheNewestReportCounts() {
+        var restoring = ReadingRestoration(opening: target)
+        let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+        _ = restoring.observe(shown)
+        _ = restoring.elementShown(true, for: shown)
+        let next = report("OEBPS/c1.xhtml", 0.6, 0.8)
+        XCTAssertEqual(restoring.observe(next), .confirm(target: target))
+        let further = report("OEBPS/c1.xhtml", 0.8, 1)
+        XCTAssertEqual(restoring.observe(further), .confirm(target: target), "a newer report replaces the question")
+        XCTAssertEqual(restoring.elementShown(false, for: next), .none, "the older answer changes nothing")
+        XCTAssertEqual(restoring.elementShown(false, for: further), .record)
+        XCTAssertEqual(restoring.elementShown(false, for: further), .none, "answered once")
+    }
+
+    func testComingBackToTheRestoredPageBeforeTheAnswerIsNotReading() {
+        var restoring = ReadingRestoration(opening: target)
+        let shown = report("OEBPS/c1.xhtml", 0.4, 0.6)
+        _ = restoring.observe(shown)
+        _ = restoring.elementShown(true, for: shown)
+        let away = report("OEBPS/c1.xhtml", 0.6, 0.8)
+        XCTAssertEqual(restoring.observe(away), .confirm(target: target))
+        XCTAssertEqual(restoring.observe(shown), .none, "back on the restored page")
+        XCTAssertEqual(restoring.elementShown(false, for: away), .none, "the abandoned question changes nothing")
+        XCTAssertEqual(restoring.observe(away), .confirm(target: target), "a turn from there is asked about again")
+        XCTAssertEqual(restoring.elementShown(false, for: away), .record)
+    }
+
+    func testAfterGivingUpATurnIsReadingWithoutAsking() {
+        var restoring = ReadingRestoration(opening: target)
+        let first = report("OEBPS/c1.xhtml", 0, 0.2)
+        _ = restoring.observe(first)
+        XCTAssertEqual(restoring.elementShown(false, for: first), .correct(target: target, attempt: 1))
+        XCTAssertEqual(restoring.timedOut(attempt: 1), .correct(target: target, attempt: 2))
+        XCTAssertEqual(restoring.timedOut(attempt: 2), .gaveUp)
+        XCTAssertEqual(restoring.observe(report("OEBPS/c1.xhtml", 0.2, 0.4)), .record, "the shown page was never the element's")
     }
 
     func testAnotherDocumentIsCorrectedWithoutAsking() {
