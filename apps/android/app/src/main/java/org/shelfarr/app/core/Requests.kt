@@ -12,9 +12,13 @@ object RequestScopes {
     fun allows(scopes: Collection<String>?): Boolean = scopes != null && scopes.containsAll(REQUESTING)
 }
 
-/** Public facts from `/server.json`. Older servers omit `consumer_features`. */
+/** Public facts from `/server.json`. Older servers omit `consumer_features` and `reader_formats`. */
 @Serializable
-data class ServerFacts(@SerialName("consumer_features") val consumerFeatures: List<String> = emptyList()) {
+data class ServerFacts(
+    @SerialName("consumer_features") val consumerFeatures: List<String> = emptyList(),
+    /** Formats the server can offer readers that declare them. Null: an older, EPUB-only server. */
+    @SerialName("reader_formats") val readerFormats: List<String>? = null,
+) {
     val offersRequesting: Boolean get() = "requests" in consumerFeatures
 }
 

@@ -94,8 +94,37 @@ data class Asset(
     @SerialName("size_bytes") val sizeBytes: Long = 0,
     @SerialName("content_url") val contentUrl: String,
     val position: Int = 0,
+    /** CBZ only: how many pages the generation's reading order lists. Absent elsewhere and from older servers. */
+    @SerialName("page_count") val pageCount: Int? = null,
+    /** CBZ only: where this exact generation's page order is. Bound by the same origin and subpath rules as content. */
+    @SerialName("reading_order_url") val readingOrderUrl: String? = null,
 ) {
     val isEpub: Boolean get() = format.equals("epub", ignoreCase = true) || mediaType == "application/epub+zip"
+
+    /**
+     * The reading format, by the declared format first and the media type second. Null for
+     * audio and anything this app can't read. A CBZ without its reading order can't be
+     * paged, and a file over the format's size limit is refused rather than opened.
+     */
+    val readingFormat: ReadingFormat?
+        get() {
+            val declared = declaredFormat ?: return null
+            if (declared.isPaged && sizeBytes > declared.maxBytes) return null
+            if (declared == ReadingFormat.CBZ && readingOrderUrl.isNullOrBlank()) return null
+            return declared
+        }
+
+    /** The format this file says it is, before any size or reading-order check. */
+    val declaredFormat: ReadingFormat?
+        get() {
+            // EPUB is recognized exactly as before, so an EPUB-only book keeps the same file.
+            if (isEpub) return ReadingFormat.EPUB
+            return ReadingFormat.fromWire(format.lowercase()) ?: when (mediaType) {
+                PDF_MEDIA_TYPE -> ReadingFormat.PDF
+                CBZ_MEDIA_TYPE -> ReadingFormat.CBZ
+                else -> null
+            }
+        }
 
     val isAudio: Boolean
         get() = mediaType.startsWith("audio/") || format.lowercase() in AUDIO_FORMATS
@@ -117,6 +146,8 @@ data class Publication(
     val progress: Progress? = null,
     /** Absent from older servers; read [status] instead. Unknown values decode as absent. */
     @SerialName("reading_status") val readingStatus: ReadingStatus? = null,
+    /** `graphic` for comics and other page-image books, `book` otherwise. Absent from older servers. */
+    @SerialName("content_kind") val contentKind: String? = null,
 ) {
     /** The explicit status, or one derived from the saved place when the server sends none. */
     val status: ReadingStatus
@@ -126,9 +157,22 @@ data class Publication(
     val epubAsset: Asset? get() = orderedAssets.firstOrNull { it.isEpub }
     val audioAssets: List<Asset> get() = orderedAssets.filter { it.isAudio }
 
+    /**
+     * One file per reading format, the first of each in the server's order. An EPUB-only
+     * book gives exactly [epubAsset], as before PDF and CBZ existed.
+     */
+    val readingAssets: List<Asset>
+        get() = if (bookType == BookType.EBOOK) {
+            orderedAssets.filter { it.readingFormat != null }.distinctBy { it.readingFormat }
+        } else {
+            emptyList()
+        }
+
     /** The assets a saved position may legitimately refer to in this edition. */
     val playableAssets: List<Asset>
         get() = if (bookType == BookType.EBOOK) listOfNotNull(epubAsset) else audioAssets
+
+    val isGraphic: Boolean get() = contentKind == "graphic"
 
     val isReadableHere: Boolean get() = playableAssets.isNotEmpty()
 }
