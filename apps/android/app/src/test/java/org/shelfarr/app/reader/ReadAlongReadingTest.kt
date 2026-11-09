@@ -45,6 +45,49 @@ class ReadAlongReadingTest {
     }
 
     @Test
+    fun `reopening at a narration place stays silent after Readium repeats the opening`() {
+        // As on a device: the navigator first reports the very locator it was opened with,
+        // then the page it actually laid out, with a progression the saved place never had.
+        val saved = place("OEBPS/chapter2.xhtml", fragment = "c7", generation = ReadAlongFixtures.GENERATION)
+        val echo = OpeningEcho(saved)
+        val restoration = ReadingRestoration(saved)
+        val reports = listOf(saved, place("OEBPS/chapter2.xhtml", progression = 0.5), place("OEBPS/chapter2.xhtml", progression = 0.5))
+        val read = reports.filterNot(echo::isEcho).map(restoration::isReading)
+        assertEquals(listOf(false, false), read)
+        // Turning on from the restored page is still reading.
+        assertTrue(restoration.isReading(place("OEBPS/chapter2.xhtml", progression = 0.75)))
+    }
+
+    @Test
+    fun `the opened page laid out after Play is not browsing, a page turned from it is`() {
+        val fresh = ReadingRestoration(null)
+        assertTrue(fresh.isOpening(place("OEBPS/chapter1.xhtml", progression = 0.0)))
+        fresh.adopt(place("OEBPS/chapter1.xhtml", progression = 0.0))
+        assertFalse(fresh.isOpening(place("OEBPS/chapter1.xhtml", progression = 0.34)))
+
+        val saved = ReadingRestoration(place("OEBPS/chapter2.xhtml", fragment = "c7", generation = ReadAlongFixtures.GENERATION))
+        assertFalse(saved.isOpening(place("OEBPS/chapter1.xhtml", progression = 0.0)))
+        assertTrue(saved.isOpening(place("OEBPS/chapter2.xhtml", progression = 0.5)))
+        saved.adopt(place("OEBPS/chapter2.xhtml", progression = 0.5))
+        assertFalse(saved.isOpening(place("OEBPS/chapter2.xhtml", progression = 0.75)))
+    }
+
+    @Test
+    fun `only the first report can be the opening repeated`() {
+        val saved = place("OEBPS/chapter1.xhtml", progression = 0.25)
+        // A first report that already moved is not the echo, and the chance is gone.
+        val moved = OpeningEcho(saved)
+        assertFalse(moved.isEcho(place("OEBPS/chapter1.xhtml", progression = 0.2)))
+        assertFalse(moved.isEcho(saved))
+        // Coming back to the opening later is an ordinary report.
+        val repeated = OpeningEcho(saved)
+        assertTrue(repeated.isEcho(saved))
+        assertFalse(repeated.isEcho(saved))
+        // A new book has no opening locator of its own to compare until one is given.
+        assertFalse(OpeningEcho<JsonObject>(null).isEcho(saved))
+    }
+
+    @Test
     fun `a page shown for narration or a layout change becomes the place to move away from`() {
         val restoration = ReadingRestoration(place("OEBPS/chapter1.xhtml", progression = 0.1))
         assertFalse(restoration.isReading(place("OEBPS/chapter1.xhtml", progression = 0.1)))

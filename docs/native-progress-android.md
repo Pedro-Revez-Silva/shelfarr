@@ -73,7 +73,8 @@ device** adopts the server place and its time.
 
 Nothing creates activity by itself: opening a book, restoring the saved place
 (Readium's first restored report, which can land at the start of the page holding the
-saved progression), choosing the other device's place, acknowledgements and the resume
+saved progression; the navigator's initial value, which only repeats the locator it was
+opened with, is not that report), choosing the other device's place, acknowledgements and the resume
 rewind do not write a new checkpoint.
 Once the actual restored page is established, even a short backward page turn counts
 as reading; repeated reports of that same page remain silent.
@@ -148,8 +149,8 @@ Instrumentation (`apps/scripts/android-reader-smoke.sh`, run by CI's emulator):
   physical devices offline remain in the acceptance flow.
 - Without an audio device the CI emulator cannot advance playback, so audio cadence and
   rewind are verified with the scripted player rather than ExoPlayer decoding.
-- Restoration detection relies on Readium's first restored report identifying the
-  actual page. The initial page-start tolerance does not apply to subsequent turns.
+- Restoration detection relies on Readium's first restored report, after its initial
+  repetition of the opening locator, identifying the actual page. The initial page-start tolerance does not apply to subsequent turns.
 - A device whose clock is wrong by more than five minutes asks on most conflicts; the
   server refuses its future times (kept locally) until the clock is fixed.
 - An adopted later place is not shown in an open session; it is used on the next open.

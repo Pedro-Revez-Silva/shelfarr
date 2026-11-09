@@ -23,6 +23,16 @@ internal class ReadingRestoration(opening: JsonObject?) {
         reading = false
     }
 
+    /**
+     * True while [current] is still Readium settling on the place this session opened at,
+     * before anything else was shown: the page being restored, not the reader moving.
+     */
+    fun isOpening(current: JsonObject): Boolean {
+        if (established) return false
+        val start = anchor
+        return start == null || isRestoredPlace(start, current)
+    }
+
     fun isReading(current: JsonObject): Boolean {
         if (reading) return true
         val start = anchor
@@ -37,6 +47,20 @@ internal class ReadingRestoration(opening: JsonObject?) {
         ) return false
         reading = true
         return true
+    }
+}
+
+/**
+ * Readium's navigator starts out reporting the place it was asked to open (or the first
+ * document's start) before any page has been laid out. That first value says nothing about
+ * where the page landed, so it must not use up [ReadingRestoration]'s tolerance for the
+ * restored report that follows. Only the very first report can be that echo.
+ */
+internal class OpeningEcho<T>(private var opening: T?) {
+    fun isEcho(report: T): Boolean {
+        val requested = opening
+        opening = null
+        return requested != null && requested == report
     }
 }
 
