@@ -220,8 +220,8 @@ user id; normalizing (lowercase scheme and host, no trailing slash) is unchanged
   the new version's process, checks the same installation was updated (same
   `firstInstallTime`, later `lastUpdateTime`, higher version code) and that the session,
   account key, preferences, the book's bytes and manifest, and the queued place are all
-  intact. It exercises Android's update path, not Shelfarr's own confirmation screen;
-  that screen is Android's and needs a person. The seed
+  intact. It exercises Android's update path, not Shelfarr's Update card or Android's
+  confirmation screen; the next check covers those. The seed
   (`apps/android/tools/upgrade-seed/UpgradeSeedTest.kt`) is compiled into a test APK
   built from the baseline's own sources, because it runs inside the old app: test code
   compiled against the current sources calls constructors the old app lacks as soon as a
@@ -229,6 +229,20 @@ user id; normalizing (lowercase scheme and host, no trailing slash) is unchanged
   verify stage a plain JSON record. The script requires both stages to pass rather than
   skip, checks `adb install -r` reports `Success`, and refuses a changed
   `firstInstallTime`; the app is never uninstalled between versions.
+- `apps/android/tools/in-app-update-acceptance.py` (device; emulator only, needs the
+  package not yet installed) is the update as a person does it. It installs an actual
+  published APK, seeds it with the same seed, then taps through the app's own Update
+  card: it downloads the version the live feed offers, opens "Install unknown apps",
+  turns on "Allow from this source", returns and confirms Android's "Do you want to
+  update this app?" prompt. Nothing installs the new version with adb; the app's own
+  PackageInstaller session does, so `installerPackageName` becomes the app. A controller
+  outside the device drives Android's UI from fresh accessibility snapshots, because
+  the update kills the app and its instrumentation. It only reads the feed and stops
+  if the feed, the APK's SHA-256, the version shown or the version installed differ
+  from the expected ones. Afterwards a verifier compiled against the NEW version's
+  exact sources runs `UpgradePreservationTest#verify`. Each snapshot and screenshot,
+  the package records and the logcat stay in `--out`. It is emulator evidence, not
+  phone acceptance; a phone's installer and settings screens may differ.
 - The updater's own steps up to `PackageInstaller` have unit and rendering coverage,
   including state saved by v3.
 

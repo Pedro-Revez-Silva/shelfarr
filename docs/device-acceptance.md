@@ -27,8 +27,9 @@ does not read credentials, app storage, library contents or system logs. It
 explicitly records that no behavioral tests have run.
 
 The Android fixture instrumentation suite signs in synthetic accounts. Run
-`apps/scripts/android-reader-smoke.sh` and
-`apps/android/tools/upgrade-preservation.sh` on an emulator only. Both refuse
+`apps/scripts/android-reader-smoke.sh`,
+`apps/android/tools/upgrade-preservation.sh` and
+`apps/android/tools/in-app-update-acceptance.py` on an emulator only. All refuse
 a physical or unidentified device before installing or changing anything. Do
 not bypass those guards on a personal phone. A dedicated disposable test
 installation needs its own explicit test setup; the cases below use the app UI.
