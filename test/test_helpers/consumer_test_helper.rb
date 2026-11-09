@@ -3,6 +3,21 @@
 require "zip"
 
 module ConsumerTestHelper
+  OFFLINE_STORAGE = "service_workers,cache_storage,indexeddb,local_storage"
+
+  # Removes everything offline reading keeps for the test server's origin:
+  # worker registrations, Cache Storage, IndexedDB (accounts and downloads)
+  # and localStorage. Cookies stay; sign-in sets the session separately.
+  #
+  # This goes through the browser, not page script. A page's unregister() is
+  # queued behind the worker's update check, which Chrome starts after each
+  # navigation the worker controls, so it lasts as long as that request does;
+  # and deleteDatabase() only reports "blocked" while a connection stays open.
+  # Chrome's own clear cancels both and returns once the data is gone.
+  def clear_browser_offline_state
+    page.driver.browser.execute_cdp("Storage.clearDataForOrigin", origin: page.server.base_url, storageTypes: OFFLINE_STORAGE)
+  end
+
   def prepare_consumer_library
     @root = Dir.mktmpdir("consumer-library")
     SettingsService.set(:ebook_output_path, @root)

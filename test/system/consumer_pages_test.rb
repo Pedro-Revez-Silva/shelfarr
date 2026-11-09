@@ -35,12 +35,8 @@ class ConsumerPagesTest < ApplicationSystemTestCase
 
   teardown do
     ConsumerReachability.reset!
-    begin
-      visit at("/read/offline")
-      clear_browser_offline_state
-    rescue StandardError
-      nil
-    end
+    clear_browser_offline_state
+  ensure
     Capybara.app = @previous_app
     ActionController::Base.relative_url_root = @previous_root
     Rails.application.importmap.send(:clear_cache)
@@ -344,21 +340,10 @@ class ConsumerPagesTest < ApplicationSystemTestCase
   def sign_in(user, clear: true)
     session = user.sessions.create!
     signed = ActionDispatch::TestRequest.create.cookie_jar.tap { |jar| jar.signed[:session_id] = session.id }[:session_id]
-    visit at("/read/offline")
-    page.driver.browser.manage.add_cookie(name: "session_id", value: signed, path: "/")
     clear_browser_offline_state if clear
-  end
-
-  def clear_browser_offline_state
-    page.evaluate_async_script(<<~JS)
-      const done = arguments[arguments.length - 1]
-      ;(async () => {
-        for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister()
-        for (const name of await caches.keys()) await caches.delete(name)
-        await new Promise(resolve => { const request = indexedDB.deleteDatabase("shelfarr-offline"); request.onsuccess = request.onerror = request.onblocked = resolve })
-        localStorage.clear()
-      })().then(() => done(true), error => done(String(error)))
-    JS
+    # A page without scripts: nothing opens offline storage before the test does.
+    visit at("/up")
+    page.driver.browser.manage.add_cookie(name: "session_id", value: signed, path: "/")
   end
 
   def media_entries

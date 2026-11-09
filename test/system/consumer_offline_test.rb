@@ -32,12 +32,8 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
 
   teardown do
     ConsumerReachability.reset!
-    begin
-      visit "#{BASE}/read/offline"
-      clear_browser_offline_state
-    rescue StandardError
-      nil
-    end
+    clear_browser_offline_state
+  ensure
     Capybara.app = @previous_app
     ActionController::Base.relative_url_root = @previous_root
     Rails.application.importmap.send(:clear_cache)
@@ -424,7 +420,44 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_equal [ "b" * 64 ], media_entries.map { |url| url[/\h{64}\z/] }
   end
 
+  # Each test starts from this cleanup, so it must finish, and leave nothing,
+  # while Chrome is still checking the worker for an update: it starts that
+  # check after every navigation the worker controls, and unregister() from
+  # page script would wait for it.
+  test "clearing offline state between tests does not wait for the worker's update check" do
+    download_audiobook
+    page.execute_script("localStorage.setItem('shelfarr-test', '1')")
+    worker = %r{/read-offline-worker\.js\z}
+    ConsumerReachability.requests.clear
+    ConsumerReachability.hold = worker
+    visit at("/read/offline")
+    assert page.evaluate_script("Boolean(navigator.serviceWorker.controller)")
+    wait_until("the update check asks for the worker") { Array.new(ConsumerReachability.requests.size) { ConsumerReachability.requests.pop }.any?(worker) }
+    # Leave the shell page, so nothing on the page writes again after the clear.
+    visit at("/up")
+    assert_equal({ "registrations" => 1, "caches" => 2, "databases" => 1, "local_storage" => 1 }, offline_storage_counts)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    clear_browser_offline_state
+    assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 5, "the cleanup waited for the held update check"
+    assert_equal({ "registrations" => 0, "caches" => 0, "databases" => 0, "local_storage" => 0 }, offline_storage_counts)
+  ensure
+    ConsumerReachability.release!
+  end
+
   private
+
+  def offline_storage_counts
+    page.evaluate_async_script(<<~JS)
+      const done = arguments[arguments.length - 1]
+      ;(async () => ({
+        registrations: (await navigator.serviceWorker.getRegistrations()).length,
+        caches: (await caches.keys()).length,
+        databases: (await indexedDB.databases()).filter(database => database.name === "shelfarr-offline").length,
+        local_storage: localStorage.length
+      }))().then(done, error => done(String(error)))
+    JS
+  end
 
   def download_audiobook
     visit at(consumer_publication_path(@audiobook))
@@ -482,22 +515,10 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
   def sign_in(user, clear: true)
     session = user.sessions.create!
     signed = ActionDispatch::TestRequest.create.cookie_jar.tap { |jar| jar.signed[:session_id] = session.id }[:session_id]
-    visit at("/read/offline")
-    page.driver.browser.manage.add_cookie(name: "session_id", value: signed, path: "/")
     clear_browser_offline_state if clear
-  end
-
-  # Synthetic cleanup of this test origin's offline state between tests.
-  def clear_browser_offline_state
-    page.evaluate_async_script(<<~JS)
-      const done = arguments[arguments.length - 1]
-      ;(async () => {
-        for (const registration of await navigator.serviceWorker.getRegistrations()) await registration.unregister()
-        for (const name of await caches.keys()) await caches.delete(name)
-        await new Promise(resolve => { const request = indexedDB.deleteDatabase("shelfarr-offline"); request.onsuccess = request.onerror = request.onblocked = resolve })
-        localStorage.clear()
-      })().then(() => done(true), error => done(String(error)))
-    JS
+    # A page without scripts: nothing opens offline storage before the test does.
+    visit at("/up")
+    page.driver.browser.manage.add_cookie(name: "session_id", value: signed, path: "/")
   end
 
   def wait_for_progress(book, version: 1, timeout: 20)
