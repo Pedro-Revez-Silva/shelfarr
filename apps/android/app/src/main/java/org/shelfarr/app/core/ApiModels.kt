@@ -16,7 +16,11 @@ val ApiJson = Json {
 }
 
 @Serializable
-data class DeviceRequest(@SerialName("client_name") val clientName: String)
+data class DeviceRequest(
+    @SerialName("client_name") val clientName: String,
+    /** Omitted for the read-and-listen connection; the whole requesting bundle when opting in. */
+    val scope: String? = null,
+)
 
 @Serializable
 data class DeviceGrant(
@@ -45,10 +49,22 @@ data class TokenResponse(
 }
 
 @Serializable
-data class ErrorBody(val error: String? = null, val progress: Progress? = null)
+data class ErrorBody(
+    val error: String? = null,
+    val progress: Progress? = null,
+    val message: String? = null,
+    @SerialName("publication_id") val publicationId: String? = null,
+    @SerialName("required_scope") val requiredScope: String? = null,
+)
 
 @Serializable
-data class Me(val id: String, val name: String? = null, val username: String? = null) {
+data class Me(
+    val id: String,
+    val name: String? = null,
+    val username: String? = null,
+    /** What this credential may do. Absent from servers that predate requesting. */
+    val scopes: List<String>? = null,
+) {
     val displayName: String get() = name?.takeIf(String::isNotBlank) ?: username ?: "Reader"
 }
 

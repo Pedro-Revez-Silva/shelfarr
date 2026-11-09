@@ -16,6 +16,15 @@ either side of the conflicting write's observed_at. Progress follows the
 observed_at/resolve_conflict rules in docs/consumer-api.md. Use
 --extra-books N to add N more small mock books, enough to page the library and
 to see Continue find a book beyond the first page.
+
+Requesting: tokens get the read/listen pair unless the app asks for the
+requesting bundle (an already connected app asks with its bearer and keeps its
+account). /discover searches a small fixture catalogue and /requests follows a
+request one stage per poll until a new fixture book appears in the library.
+--grant-requesting gives every new token the requesting bundle,
+--old-server behaves like a server without requesting (no consumer_features,
+scope ignored), and --request-outcome not_found|failed ends new requests there.
+Nothing is acquired or bought.
 """
 
 import argparse
@@ -35,6 +44,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 PREFIX = "/api/consumer/v1"
+BASE_SCOPES = ["library:read", "progress:write"]
+REQUEST_SCOPES = ["search:read", "requests:read", "requests:write"]
+# Fixture catalogue: (work_id, title, author, year, series). "work-in-library"
+# matches book-1, and "work-elsewhere" has an audiobook someone else requested.
+CATALOGUE = [
+    ("mock:work-lighthouse", "The Lighthouse Keeper", "Mara Quill", 2019, "Coastline"),
+    ("mock:work-in-library", "A Test Book", "Mock Author", 2021, None),
+    ("mock:work-elsewhere", "Rivers Remember", "Tomas Vey", 2016, None),
+    ("mock:work-orchard", "Orchard Hours", "Ines Calder", 2023, None),
+]
+# One step per poll: (stage, download percent).
+STEPS = [("queued", None), ("searching", None), ("downloading", 30), ("downloading", 70), ("processing", None), ("available", None)]
 OBSERVED_AT = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(\.\d{1,9})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")
 
@@ -146,14 +167,20 @@ def build_tone(seconds, hertz):
 
 
 class State:
-    def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0, conflict_observed="unknown"):
+    def __init__(self, auto_approve, conflict_after, slow_down, extra_books=0, conflict_observed="unknown",
+                 grant_requesting=False, old_server=False, request_outcome="available"):
         self.lock = threading.Lock()
+        self.grant_requesting = grant_requesting
+        self.old_server = old_server
+        self.request_outcome = request_outcome
+        self.requests = {}
+        self.request_counter = 0
         self.auto_approve = auto_approve
         self.conflict_after = conflict_after
         self.conflict_observed = conflict_observed
         self.slow_down = slow_down
         self.devices = {}
-        self.tokens = set()
+        self.tokens = {}
         self.progress = {}
         self.statuses = {}
         self.activity = {}
@@ -171,6 +198,49 @@ class State:
         for n in range(1, extra_books + 1):
             self.files[f"epub-x{n}"] = (f"mock-{n}.epub",) + epub[1:]
             self.books[f"book-x{n}"] = (f"Mock Book {n:03d}", "Mock Author", "ebook", [f"epub-x{n}"])
+
+    def request_view(self, request_id):
+        r = self.requests[request_id]
+        stage = r["stage"]
+        return {
+            "id": request_id, "status": {"queued": "pending", "available": "completed"}.get(stage, stage),
+            "stage": stage, "attention_needed": False, "title": r["title"], "author": r["author"],
+            "book_type": r["book_type"], "cover_url": None,
+            "download_percent": r.get("percent") if stage == "downloading" else None,
+            "can_cancel": stage not in ("available", "failed"), "next_retry_at": None,
+            "publication_id": r.get("publication_id") if stage == "available" else None,
+            "created_at": r["created_at"], "updated_at": r["updated_at"],
+        }
+
+    def advance(self, request_id):
+        """Moves an open request one stage on, as polling would observe it."""
+        r = self.requests[request_id]
+        if r["stage"] in ("available", "failed", "not_found"):
+            return
+        if r["stage"] == "searching" and self.request_outcome in ("not_found", "failed"):
+            r["stage"] = self.request_outcome
+        else:
+            r["step"] = r.get("step", 0) + 1
+            r["stage"], r["percent"] = STEPS[r["step"]]
+        r["updated_at"] = format_time(time.time())
+        if r["stage"] == "available" and not r.get("publication_id"):
+            publication_id = f"req-{request_id}"
+            assets = ["epub-1"] if r["book_type"] == "ebook" else ["track-1", "track-2"]
+            self.books[publication_id] = (r["title"], r["author"], r["book_type"], assets)
+            r["publication_id"] = publication_id
+
+    def format_state(self, work_id, book_type):
+        if work_id == "mock:work-in-library" and book_type == "ebook":
+            return {"book_type": book_type, "state": "in_library", "publication_id": "book-1", "request": None}
+        if work_id == "mock:work-elsewhere" and book_type == "audiobook":
+            return {"book_type": book_type, "state": "requested_by_someone", "publication_id": None, "request": None}
+        for request_id, r in self.requests.items():
+            if r["work_id"] == work_id and r["book_type"] == book_type:
+                if r["stage"] == "available":
+                    return {"book_type": book_type, "state": "in_library", "publication_id": r["publication_id"], "request": None}
+                if r["stage"] not in ("failed", "not_found"):
+                    return {"book_type": book_type, "state": "requested", "publication_id": None, "request": self.request_view(request_id)}
+        return {"book_type": book_type, "state": "requestable", "publication_id": None, "request": None}
 
     def touch(self, publication_id, at=None):
         self.activity[publication_id] = time.time() if at is None else at
@@ -248,17 +318,37 @@ class Handler(BaseHTTPRequestHandler):
             path = path[len(self.base):]
         return path
 
-    def authorized(self):
+    def bearer(self):
         header = self.headers.get("Authorization", "")
-        if header.startswith("Bearer ") and header[7:] in self.state.tokens:
-            return True
-        self.respond(401, {"error": "invalid_token"})
-        return False
+        return header[7:] if header.startswith("Bearer ") else None
+
+    def authorized(self, scope=None):
+        token = self.bearer()
+        if token not in self.state.tokens:
+            self.respond(401, {"error": "invalid_token"})
+            return False
+        if scope and scope not in self.state.tokens[token]:
+            self.respond(403, {"error": "insufficient_scope", "required_scope": scope})
+            return False
+        return True
 
     def do_POST(self):
         path = self.route()
         if path == f"{PREFIX}/auth/device":
-            self.body()
+            body = self.body()
+            scopes = BASE_SCOPES + (REQUEST_SCOPES if self.state.grant_requesting else [])
+            if not self.state.old_server and "scope" in body:
+                asked = str(body["scope"]).split()
+                extra = [x for x in asked if x not in BASE_SCOPES]
+                if sorted(extra) not in ([], sorted(REQUEST_SCOPES)):
+                    return self.respond(400, {"error": "invalid_scope"})
+                if extra:
+                    scopes = BASE_SCOPES + REQUEST_SCOPES
+            replaces = None
+            if self.bearer() is not None and not self.state.old_server:
+                if self.bearer() not in self.state.tokens:
+                    return self.respond(401, {"error": "invalid_token"})
+                replaces = self.bearer()
             device_code = uuid.uuid4().hex
             user_code = uuid.uuid4().hex[:8].upper()
             user_code = f"{user_code[:4]}-{user_code[4:]}"
@@ -269,6 +359,8 @@ class Handler(BaseHTTPRequestHandler):
                     "approved": self.state.auto_approve,
                     "polls": 0,
                     "expires": time.time() + 600,
+                    "scopes": scopes,
+                    "replaces": replaces,
                 }
             self.respond(200, {
                 "device_code": device_code,
@@ -280,7 +372,8 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif path == f"{PREFIX}/auth/token":
             with self.state.lock:
-                device = self.state.devices.get(self.body().get("device_code"))
+                self.body_device_code = self.body().get("device_code")
+                device = self.state.devices.get(self.body_device_code)
                 if device is None or device["expires"] < time.time():
                     return self.respond(400, {"error": "expired_token"})
                 device["polls"] += 1
@@ -289,30 +382,106 @@ class Handler(BaseHTTPRequestHandler):
                 if not device["approved"]:
                     return self.respond(400, {"error": "authorization_pending"})
                 token = uuid.uuid4().hex
-                self.state.tokens.add(token)
+                self.state.tokens[token] = device["scopes"]
+                # The replaced token stays valid; the real server retires it on first use.
+                self.state.devices.pop(self.body_device_code, None)
             self.respond(200, {
                 "access_token": token,
                 "token_type": "Bearer",
-                "scope": "library:read progress:write",
+                "scope": " ".join(device["scopes"]),
                 "expires_in": 2592000,
             })
         elif path == f"{PREFIX}/auth/revoke":
             if self.authorized():
-                self.state.tokens.discard(self.headers["Authorization"][7:])
+                self.state.tokens.pop(self.bearer(), None)
                 self.respond(204)
+        elif path == f"{PREFIX}/requests" and not self.state.old_server:
+            if not self.authorized("requests:write"):
+                return None
+            body = self.body()
+            work = next((w for w in CATALOGUE if w[0] == body.get("work_id")), None)
+            if work is None or body.get("book_type") not in ("ebook", "audiobook") or not body.get("title"):
+                return self.respond(422, {"error": "invalid_request"})
+            with self.state.lock:
+                current = self.state.format_state(work[0], body["book_type"])
+                if current["state"] == "in_library":
+                    return self.respond(409, {"error": "already_in_library", "message": "Already in the library.",
+                                              "publication_id": current["publication_id"]})
+                if current["state"] == "requested_by_someone":
+                    return self.respond(409, {"error": "already_requested", "message":
+                                              "Someone on this server has already requested this. It will appear in the library when it arrives."})
+                if current["state"] == "requested":
+                    return self.respond(200, {"request": current["request"], "existing": True})
+                self.state.request_counter += 1
+                request_id = f"r{self.state.request_counter}"
+                now = format_time(time.time())
+                self.state.requests[request_id] = {"work_id": work[0], "title": work[1], "author": work[2],
+                                                   "book_type": body["book_type"], "stage": "queued",
+                                                   "created_at": now, "updated_at": now}
+                return self.respond(201, {"request": self.state.request_view(request_id), "warnings": []})
         else:
             self.respond(404, {"error": "not_found"})
+
+    def do_DELETE(self):
+        match = re.fullmatch(PREFIX + r"/requests/([^/]+)", self.route())
+        if not match or self.state.old_server:
+            return self.respond(404, {"error": "not_found"})
+        if not self.authorized("requests:write"):
+            return None
+        with self.state.lock:
+            r = self.state.requests.get(match[1])
+            if r is None:
+                return self.respond(404, {"error": "not_found"})
+            if r["stage"] in ("available", "processing"):
+                return self.respond(422, {"error": "cannot_cancel", "message": "This request is being finished and can't be cancelled now."})
+            r["stage"] = "failed"
+            r["updated_at"] = format_time(time.time())
+            return self.respond(200, {"request": self.state.request_view(match[1])})
 
     def do_GET(self):
         path = self.route()
         if path == "/device":
             return self.approve()
+        if path == f"{PREFIX}/server.json":
+            payload = {"schema_version": 1, "server_version": "mock", "consumer_api_versions": [1], "android": {}}
+            if not self.state.old_server:
+                payload["consumer_features"] = ["requests"]
+            return self.respond(200, payload)
         if not self.authorized():
             return
         with self.state.lock:
             if path == f"{PREFIX}/me":
-                return self.respond(200, {"id": "user-1", "name": "Mock Reader", "username": "mock"})
+                me = {"id": "user-1", "name": "Mock Reader", "username": "mock"}
+                if not self.state.old_server:
+                    me["scopes"] = self.state.tokens[self.bearer()]
+                return self.respond(200, me)
             query = parse_qs(urlparse(self.path).query)
+            if path == f"{PREFIX}/discover" and not self.state.old_server:
+                if "search:read" not in self.state.tokens[self.bearer()]:
+                    return self.respond(403, {"error": "insufficient_scope", "required_scope": "search:read"})
+                text = (query.get("q", [""])[0] or "").strip().lower()
+                if not text:
+                    return self.respond(422, {"error": "invalid_query"})
+                hits = [w for w in CATALOGUE if text in w[1].lower() or text in w[2].lower()]
+                return self.respond(200, {"items": [{
+                    "id": w[0], "work_id": w[0], "source_work_ids": [], "title": w[1], "author": w[2], "year": w[3],
+                    "description": f"Fixture catalogue entry for {w[1]}.", "cover_url": None, "series_name": w[4],
+                    "series_position": "1" if w[4] else None, "source_name": "Mock catalogue",
+                    "formats": [self.state.format_state(w[0], t) for t in ("ebook", "audiobook")],
+                } for w in hits]})
+            request_match = re.fullmatch(PREFIX + r"/requests(?:/([^/]+))?", path)
+            if request_match and not self.state.old_server:
+                if "requests:read" not in self.state.tokens[self.bearer()]:
+                    return self.respond(403, {"error": "insufficient_scope", "required_scope": "requests:read"})
+                if request_match[1]:
+                    if request_match[1] not in self.state.requests:
+                        return self.respond(404, {"error": "not_found"})
+                    self.state.advance(request_match[1])
+                    return self.respond(200, {"request": self.state.request_view(request_match[1])})
+                for request_id in self.state.requests:
+                    self.state.advance(request_id)
+                ordered = sorted(self.state.requests, key=lambda i: self.state.requests[i]["updated_at"], reverse=True)
+                return self.respond(200, {"items": [self.state.request_view(i) for i in ordered]})
             if path == f"{PREFIX}/library":
                 # The cursor binds every filter and the sort, as the real API's does.
                 bound = json.dumps({k: query.get(k) for k in ("type", "status", "sort", "q")}, sort_keys=True)
@@ -456,9 +625,14 @@ def main():
     parser.add_argument("--conflict-observed", choices=("unknown", "older", "newer"), default="unknown",
                         help="Activity time of the simulated other device's place, relative to the conflicting write")
     parser.add_argument("--extra-books", type=int, default=0, metavar="N", help="Add N more mock books to exercise paging")
+    parser.add_argument("--grant-requesting", action="store_true", help="Give every new token the requesting scopes")
+    parser.add_argument("--old-server", action="store_true", help="Behave like a server without requesting")
+    parser.add_argument("--request-outcome", choices=("available", "not_found", "failed"), default="available",
+                        help="Where new requests end after searching")
     args = parser.parse_args()
 
-    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books, args.conflict_observed)
+    Handler.state = State(args.auto_approve, args.conflict_after, args.slow_down, args.extra_books, args.conflict_observed,
+                          args.grant_requesting, args.old_server, args.request_outcome)
     Handler.base = args.base.rstrip("/")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Mock Shelfarr consumer API on http://{args.host}:{args.port}{Handler.base}", flush=True)

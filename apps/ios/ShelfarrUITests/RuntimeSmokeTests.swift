@@ -261,6 +261,64 @@ final class RuntimeSmokeTests: XCTestCase {
 
     // MARK: App
 
+    /// Find → allow requesting through the real browser approval → search → choose a
+    /// format → request (with repeated taps) → follow it → listen. The fixture server
+    /// approves in the browser by itself and moves the request one stage per poll;
+    /// nothing is searched for, bought or acquired.
+    func testFindRequestFollowAndOpen() throws {
+        let app = launch(reset: true)
+
+        try step("A read-only connection asks first") {
+            XCTAssertTrue(tab(app, "Find").waitForExistence(timeout: wait))
+            tab(app, "Find").tap()
+            let allow = app.buttons["find-explainer-action"]
+            XCTAssertTrue(allow.waitForExistence(timeout: wait), "Find explains requesting before anything else")
+            XCTAssertEqual(allow.label, "Allow requesting")
+            screenshot(app, "20-find-allow-requesting")
+            allow.tap()
+            // The approval page opens in the browser; the fixture approves it.
+            app.activate()
+            XCTAssertTrue(app.textFields["find-query"].waitForExistence(timeout: 60), "approval adds requesting to this connection in place")
+            screenshot(app, "21-find-allowed")
+        }
+
+        try step("Find, choose a format and request it once") {
+            let field = app.textFields["find-query"]
+            field.tap()
+            field.typeText("lighthouse\n")
+            let result = app.buttons["result:mock:work-lighthouse"]
+            XCTAssertTrue(result.waitForExistence(timeout: wait))
+            screenshot(app, "22-find-results")
+            result.tap()
+            app.buttons["format:audiobook"].tap()
+            let submit = app.buttons["request-submit"]
+            XCTAssertTrue(submit.waitForExistence(timeout: wait))
+            screenshot(app, "23-find-choose-format")
+            submit.tap()
+            if submit.exists && submit.isHittable { submit.tap() }
+            XCTAssertTrue(app.descendants(matching: .any)["request-stage"].waitForExistence(timeout: wait))
+        }
+
+        try step("Follow it until it can be opened") {
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Downloading")).firstMatch.waitForExistence(timeout: 90))
+            screenshot(app, "24-request-downloading")
+            let listen = app.buttons["request-open"]
+            XCTAssertTrue(listen.waitForExistence(timeout: 90), "the request becomes ready")
+            XCTAssertEqual(listen.label, "Listen now")
+            screenshot(app, "25-request-ready")
+            listen.tap()
+            XCTAssertTrue(toggle(app, "Pause").waitForExistence(timeout: wait) || toggle(app, "Play").waitForExistence(timeout: wait), "the acquired audiobook opens in the player")
+            screenshot(app, "26-request-opened")
+            press(app, "Close player")
+        }
+
+        try step("The request is listed once, as ready") {
+            app.navigationBars.buttons.firstMatch.tap()
+            XCTAssertTrue(app.buttons["request:r1"].waitForExistence(timeout: wait))
+            XCTAssertFalse(app.buttons["request:r2"].exists, "repeated taps made one request")
+        }
+    }
+
     private func launch(reset: Bool) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-shelfarr-ui-test"] + (reset ? ["-shelfarr-ui-test-reset"] : [])

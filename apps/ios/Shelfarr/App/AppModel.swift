@@ -79,11 +79,32 @@ final class AppModel: ObservableObject {
         backgroundDownloads.activate()
     }
 
+    /// Adding the opt-in requesting permission to this connection, in place.
+    lazy var requesting: RequestingAccess = {
+        let transport = self.transport
+        let access = RequestingAccess(
+            backend: RequestingBackend(
+                sessions: sessions,
+                api: api,
+                apiFor: { credential in ConsumerAPI(transport: transport, credential: { credential }) }
+            ),
+            clientName: "Shelfarr iOS"
+        )
+        if let session = sessions.signedIn { access.resume(session) }
+        return access
+    }()
+
     private func apply() {
         let newState = sessions.state
         let changed = state != newState
+        let previousState = state
         state = newState
         guard changed else { return }
+        if case let .signedIn(before) = previousState, case let .signedIn(after) = newState, before.hasSameAccountAndToken(after) {
+            // Fresher name or scopes for the same credential: nothing account-bound changes.
+            return
+        }
+        if sessions.signedIn == nil { requesting.detach() }
         let previous = registry
         registry = nil
         registrySession = nil

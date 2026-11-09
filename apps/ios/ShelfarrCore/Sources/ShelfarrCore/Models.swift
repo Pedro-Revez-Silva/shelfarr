@@ -110,11 +110,14 @@ public struct Me: Codable, Equatable, Sendable {
     public let id: String
     public let name: String?
     public let username: String?
+    /// What this credential may do. Absent from servers that predate requesting.
+    public let scopes: [String]?
 
-    public init(id: String, name: String? = nil, username: String? = nil) {
+    public init(id: String, name: String? = nil, username: String? = nil, scopes: [String]? = nil) {
         self.id = id
         self.name = name
         self.username = username
+        self.scopes = scopes
     }
 
     public var displayName: String {

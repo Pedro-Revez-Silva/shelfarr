@@ -15,6 +15,8 @@ struct MainTabs: View {
                 .tabItem { Label("Home", systemImage: "book") }
             NavigationStack { LibraryView(open: start) }
                 .tabItem { Label("Library", systemImage: "books.vertical") }
+            FindTab(app: model, open: start)
+                .tabItem { Label("Find", systemImage: "magnifyingglass") }
             NavigationStack { SettingsView() }
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }

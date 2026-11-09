@@ -49,8 +49,60 @@ class ConsumerApi(
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
 
-    suspend fun startDeviceAuthorization(server: ServerAddress, clientName: String): DeviceGrant =
-        post(server.api("auth/device"), ApiJson.encodeToString(DeviceRequest(clientName))).parse()
+    /**
+     * Starts a browser approval. With [scope], an app asks for more than reading and
+     * listening; when already signed in, the HTTP stack sends its bearer, so the server
+     * adds the permission to this connection and only its own account may approve it.
+     */
+    suspend fun startDeviceAuthorization(server: ServerAddress, clientName: String, scope: String? = null): DeviceGrant =
+        post(server.api("auth/device"), ApiJson.encodeToString(DeviceRequest(clientName, scope))).parse()
+
+    /** Public, bearer-free server facts. A server without the file answers 404. */
+    suspend fun serverFacts(server: ServerAddress): ServerFacts = get(server.api("server.json")).parse()
+
+    /** Metadata search beyond the library. Needs `search:read`. */
+    suspend fun discover(server: ServerAddress, query: String, limit: Int = 12): List<DiscoverItem> {
+        val url = server.api("discover").newBuilder()
+            .addQueryParameter("q", query)
+            .addQueryParameter("limit", limit.toString())
+            .build()
+        return get(url).parse<DiscoverPage>().items
+    }
+
+    /** This account's requests, most recently changed first. */
+    suspend fun requests(server: ServerAddress, limit: Int = 30): List<RequestItem> {
+        val url = server.api("requests").newBuilder().addQueryParameter("limit", limit.toString()).build()
+        return get(url).parse<RequestList>().items
+    }
+
+    suspend fun request(server: ServerAddress, id: String): RequestItem =
+        get(server.api("requests/${encodePath(id)}")).parse<RequestEnvelope>().request
+
+    /**
+     * Asks for one format of a title. A duplicate is never an error: the server answers
+     * with what already exists, which this reports as anything but [RequestOutcome.Created].
+     */
+    suspend fun createRequest(server: ServerAddress, request: NewRequest): RequestOutcome {
+        val reply = post(server.api("requests"), ApiJson.encodeToString(request))
+        val error = if (reply.isSuccessful) null else runCatching { ApiJson.decodeFromString<ErrorBody>(reply.body) }.getOrNull()
+        return when {
+            reply.code == 201 -> RequestOutcome.Created(reply.parse<RequestEnvelope>().request)
+            reply.isSuccessful -> RequestOutcome.Existing(reply.parse<RequestEnvelope>().request)
+            reply.code == 409 && error?.error == "already_in_library" -> RequestOutcome.InLibrary(error.publicationId, error.message)
+            reply.code == 409 && error?.error == "already_requested" -> RequestOutcome.RequestedBySomeone(error.message)
+            reply.code == 422 && error?.error == "request_rejected" -> RequestOutcome.Refused(error.message)
+            else -> {
+                reply.requireSuccess()
+                throw ApiException.Protocol()
+            }
+        }
+    }
+
+    /** Stops a request that hasn't finished. The server decides whether it still can be. */
+    suspend fun cancelRequest(server: ServerAddress, id: String): RequestItem {
+        val request = Request.Builder().url(server.api("requests/${encodePath(id)}")).delete().build()
+        return execute(request).parse<RequestEnvelope>().request
+    }
 
     /** Polls once. Pending and terminal states arrive as [ApiException.Authorization]. */
     suspend fun exchangeDeviceCode(server: ServerAddress, deviceCode: String): TokenResponse {
@@ -152,15 +204,18 @@ class ConsumerApi(
         if (isSuccessful) return
         when (code) {
             401 -> throw ApiException.Unauthorized()
-            403 -> throw ApiException.Forbidden()
+            403 -> {
+                val scope = runCatching { ApiJson.decodeFromString<ErrorBody>(body).requiredScope }.getOrNull()
+                throw ApiException.Forbidden(scope)
+            }
             404 -> throw ApiException.NotFound()
             409 -> {
                 val current = runCatching { ApiJson.decodeFromString<ErrorBody>(body).progress }.getOrNull()
                 throw ApiException.ProgressConflict(current)
             }
             400, 422 -> {
-                val error = runCatching { ApiJson.decodeFromString<ErrorBody>(body).error }.getOrNull()
-                throw ApiException.Rejected(error)
+                val error = runCatching { ApiJson.decodeFromString<ErrorBody>(body) }.getOrNull()
+                throw ApiException.Rejected(error?.error, error?.message)
             }
             in 500..599 -> throw ApiException.Server(code)
             else -> throw ApiException.Protocol()

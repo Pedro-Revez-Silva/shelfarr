@@ -121,6 +121,8 @@ Rails.application.routes.draw do
         get "me", to: "accounts#show"
         get "server", to: "server#show", as: :server, format: true, constraints: { format: "json" }
         get "continue", to: "library#continue"
+        get "discover", to: "discover#index"
+        resources :requests, only: [ :index, :show, :create, :destroy ]
         get "library/:id/assets/:asset_id", to: "library#asset", as: :asset
         post "library/:id/assets/:asset_id/transfer_grant", to: "library#transfer_grant", as: :asset_transfer_grant
         get "library/:id/assets/:asset_id/transfer", to: "transfers#show", as: :asset_transfer
