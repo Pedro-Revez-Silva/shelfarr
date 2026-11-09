@@ -97,16 +97,26 @@ final class ReadAlongSmokeTests: XCTestCase {
         }
 
         var paused = 0
+        var pausedAudio = 0
         try step("Pausing saves the element heard and its exact offset at once") {
             app.buttons["read-along-pill"].tap()
             XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "0" })
-            XCTAssertTrue(waitFor { (try? self.progressWrites(book))?.lastReadAlong != nil }, "the pause checkpoint reached the server")
+            // The pause's own checkpoint, not an earlier one already on the server: no more
+            // are made while paused, so the last one recorded is the pause's.
+            let heard = try XCTUnwrap(place(trace(app)["heard"]), traceLine(app))
+            let saved = try XCTUnwrap(place(trace(app)["saved"]), traceLine(app))
+            XCTAssertEqual(saved.audio, heard.audio, "saved in the file paused in: \(traceLine(app))")
+            XCTAssertLessThanOrEqual(abs(saved.ms - heard.ms), 150, "saved where playback paused, not where the file started: \(traceLine(app))")
+            XCTAssertTrue(waitFor {
+                guard let point = (try? self.progressWrites(book))?.lastReadAlong else { return false }
+                return point["audio"] as? Int == saved.audio && point["offset_ms"] as? Int == saved.ms
+            }, "the pause checkpoint \(saved) reached the server")
             let last = try progressWrites(book)
             let point = try XCTUnwrap(last.lastReadAlong)
             paused = try XCTUnwrap(point["offset_ms"] as? Int)
             XCTAssertEqual((point["generation"] as? String)?.count, 64)
-            XCTAssertNotNil(point["audio"] as? Int)
             let audio = try XCTUnwrap(point["audio"] as? Int)
+            pausedAudio = audio
             XCTAssertEqual(last.lastFragments, [expectedFragment(audio: audio, ms: paused)], "the element reached at that offset")
             XCTAssertEqual(last.withoutObservedAt, 0)
             XCTAssertEqual(last.resolving, 0)
@@ -131,9 +141,13 @@ final class ReadAlongSmokeTests: XCTestCase {
             showChrome(app, true)
             app.buttons["read-along-play"].tap()
             XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "1" })
-            // The first ticks played come from five seconds before the saved place.
-            XCTAssertTrue(waitFor(timeout: 5) { (self.heardMs(app)).map { (paused - 6500 ... paused - 3500).contains($0) } ?? false },
-                          "resumed five seconds before \(paused): \(traceLine(app))")
+            // The first ticks played come from five seconds before the saved place, clamped
+            // to the start of its file (ListeningCheckpoints.rewind).
+            let resumeAt = max(0, paused - 5000)
+            XCTAssertTrue(waitFor(timeout: 5) {
+                guard let heard = self.place(self.trace(app)["heard"]), heard.audio == pausedAudio else { return false }
+                return (max(0, resumeAt - 1500) ... resumeAt + 1500).contains(heard.ms)
+            }, "resumed five seconds before \(pausedAudio):\(paused): \(traceLine(app))")
             app.buttons["read-along-play"].tap()
             XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "0" })
             sleep(2)
@@ -363,6 +377,12 @@ final class ReadAlongSmokeTests: XCTestCase {
 
     private func heardMs(_ app: XCUIApplication) -> Int? {
         trace(app)["heard"]?.split(separator: ":").last.flatMap { Int($0) }
+    }
+
+    /// An "audio:ms" trace field.
+    private func place(_ field: String?) -> (audio: Int, ms: Int)? {
+        guard let parts = field?.split(separator: ":"), parts.count == 2, let audio = Int(parts[0]), let ms = Int(parts[1]) else { return nil }
+        return (audio, ms)
     }
 
     private func restoreTrace(_ app: XCUIApplication) -> [String] {
