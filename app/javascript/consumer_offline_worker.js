@@ -27,7 +27,8 @@
   const ASSETS = new Set((CONFIG.assets || []).map(path => new URL(path, ORIGIN).pathname))
   const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const PAGE = new RegExp(`^${escape(BASE)}/read(?:/|/offline|/downloads/?|/[1-9]\\d{0,18}/?)?$`)
-  const MEDIA = new RegExp(`^${escape(BASE)}/read/[1-9]\\d{0,18}/assets/[0-9a-f]{64}$`)
+  // Downloaded media, and a downloaded comic's reading order.
+  const MEDIA = new RegExp(`^${escape(BASE)}/read/[1-9]\\d{0,18}/assets/[0-9a-f]{64}(?:/reading_order)?$`)
   const UNREACHABLE = new Set([502, 503, 504])
 
   // One single range: "bytes=a-b", "bytes=a-" or "bytes=-n". Null without a

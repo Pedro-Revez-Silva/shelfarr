@@ -52,8 +52,8 @@ class Consumer::OfflineController < ApplicationController
       return render json: { error: "invalid_publications" }, status: :unprocessable_entity
     end
 
-    books = Book.acquired.where(book_type: %w[ebook audiobook], id: ids).to_a
-    representations = Consumer::Publication.many(books, user: Current.user, routes: self)
+    books = Book.acquired.where(book_type: Consumer::LibraryScope.types(nil, graphic: true), id: ids).to_a
+    representations = Consumer::Publication.many(books, user: Current.user, routes: self, reader_formats: web_reader_formats)
     render json: { account: Current.user.id.to_s, missing: ids - books.map { |book| book.id.to_s },
       publications: books.map { |book| web_publication(book, representations.fetch(book)) } }
   end
@@ -73,7 +73,9 @@ class Consumer::OfflineController < ApplicationController
 
   def offline_asset_paths
     imports = JSON.parse(Rails.application.importmap.to_json(resolver: helpers)).fetch("imports").values
-    [ helpers.stylesheet_path("consumer"), *OFFLINE_FONTS.map { |font| helpers.asset_path(font) }, *imports ].uniq
+    # The PDF renderer's worker, fonts, CMaps and decoders are needed offline too.
+    pdf = Consumer::LibraryHelper.pdf_resource_paths.map { |path| helpers.asset_path(path) }
+    [ helpers.stylesheet_path("consumer"), *OFFLINE_FONTS.map { |font| helpers.asset_path(font) }, *imports, *pdf ].uniq
   end
 
   def private_response

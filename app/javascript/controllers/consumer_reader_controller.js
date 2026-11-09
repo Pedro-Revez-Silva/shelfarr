@@ -13,8 +13,12 @@ const STATUS = {
   conflict: ["Choose which place to keep.", false, true]
 }
 
+const FORMAT_LABELS = { epub: "EPUB", pdf: "PDF", cbz: "Comic (CBZ)" }
+const PAGE_FORMATS = new Set(["pdf", "cbz"])
+
 export default class extends Controller {
-  static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote"]
+  static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote",
+    "pdfResources", "textFrame", "pages", "announce", "editionPicker", "edition", "editionNote", "pageTools", "textTools", "pageNumber", "pageTotal", "pageSlider", "zoomLabel"]
 
   connect() {
     this.publication = JSON.parse(this.publicationTarget.textContent)
@@ -48,16 +52,32 @@ export default class extends Controller {
     // A checkpoint still waiting in this browser can be newer than the server.
     const restored = this.sync.restorePlace(server)
     const place = restored?.progress
-    this.assetIndex = Math.max(0, this.publication.assets.findIndex(asset => asset.id === place?.asset_id))
+    this.savedPlace = place || null
+    const placeIndex = this.publication.assets.findIndex(asset => asset.id === place?.asset_id)
+    this.assetIndex = placeIndex >= 0 ? placeIndex : this.preferredAsset()
     this.initialProgress = place?.asset_id === this.currentAsset.id ? place : null
     if (server && !this.initialProgress && !this.publication.assets.some(asset => asset.id === server.asset_id)) this.showSyncStatus("message", "The file changed. This edition starts afresh.")
     else if (restored?.source === "local") this.showSyncStatus("local")
     if (!this.sync.durable) this.showSyncStatus("storage")
     if (this.sync.conflict) this.showConflict(this.sync.conflict.remote)
     else if (this.sync.waiting) this.sync.flush()
-    if (this.publication.book_type === "ebook") this.openEbook()
+    if (this.publication.book_type === "ebook") this.openReading()
     else this.openAudio(false)
   }
+
+  // Without a saved place, open the format that suits the publication: comics
+  // as pages, other books as text when there is an EPUB.
+  preferredAsset() {
+    if (this.publication.book_type !== "ebook") return 0
+    const order = this.publication.content_kind === "graphic" ? ["cbz", "pdf", "epub"] : ["epub", "pdf", "cbz"]
+    for (const format of order) {
+      const index = this.publication.assets.findIndex(asset => asset.format === format)
+      if (index >= 0) return index
+    }
+    return 0
+  }
+
+  get pageFormat() { return PAGE_FORMATS.has(this.currentAsset?.format) }
 
   disconnect() {
     this.leave()
@@ -67,6 +87,7 @@ export default class extends Controller {
     this.statusAbort?.abort()
     clearTimeout(this.tapTimer)
     this.book?.destroy()
+    this.pageReader?.destroy()
     if (this.hasAudioTarget) {
       this.audioTarget.pause()
       this.audioTarget.removeAttribute("src")
@@ -84,8 +105,8 @@ export default class extends Controller {
 
   get currentAsset() { return this.publication.assets[this.assetIndex] }
 
-  assetURL() {
-    const url = new URL(this.currentAsset.content_url, window.location.href)
+  assetURL(path = this.currentAsset.content_url) {
+    const url = new URL(path, window.location.href)
     if (url.origin !== window.location.origin) throw new Error("Invalid media origin")
     return url.href
   }
@@ -128,6 +149,8 @@ export default class extends Controller {
     const describe = progress => {
       if (!progress) return "no saved place"
       if (Number.isFinite(progress.position_seconds)) return this.time(progress.position_seconds)
+      const page = progress.locator?.locations?.position
+      if (/^(application\/pdf|image\/)/.test(progress.locator?.type || "") && Number.isInteger(page)) return `page ${page}`
       const total = progress.locator?.locations?.totalProgression
       return Number.isFinite(total) ? `${Math.round(total * 100)}% through` : "a different place"
     }
@@ -157,7 +180,17 @@ export default class extends Controller {
 
   applyPlace(progress) {
     if (this.publication.book_type === "ebook") {
+      const index = this.publication.assets.findIndex(asset => asset.id === progress.asset_id)
+      if (index < 0) return
+      // A place in another format of this book opens that format; one
+      // format's place is never applied to another.
+      if (index !== this.assetIndex) return this.switchAsset(index, progress)
       if (!this.readerReady) { this.deferredPlace = progress; return }
+      if (this.pageReader) {
+        const { position } = this.pageModule.restoredPage(this.currentAsset.format, progress.locator, this.pageReader.count, this.pageReader.items())
+        this.pageReader.show(position).catch(() => this.showError("Couldn't open the other device's place."))
+        return
+      }
       this.userMoved = false
       const locator = progress.locator
       const target = locator?.locations?.cfi || (locator?.href ? this.book.path.relative(`/${locator.href.replace(/^\/+/, "")}`) : undefined)
@@ -194,9 +227,151 @@ export default class extends Controller {
   useServerProgress() { this.sync.useRemote(); window.location.reload() }
   keepLocalProgress() { this.conflictTarget.hidden = true; this.sync.keepLocal() }
 
+  // Reading formats ------------------------------------------------------------
+
+  openReading() {
+    this.renderEditions()
+    this.pageMode(this.pageFormat)
+    if (this.pageFormat) this.openPages()
+    else this.openEbook()
+  }
+
+  // Text and page readers share the overlay; each shows only its own tools.
+  pageMode(on) {
+    if (this.hasTextFrameTarget) this.textFrameTarget.hidden = on
+    if (this.hasPagesTarget) this.pagesTarget.hidden = !on
+    if (this.hasPageToolsTarget) this.pageToolsTarget.hidden = !on
+    if (this.hasTextToolsTarget) this.textToolsTarget.hidden = on
+    this.element.classList.toggle("consumer-reading-session--pages", on)
+  }
+
+  get readingSurface() { return this.pageFormat && this.hasPagesTarget ? this.pagesTarget : this.viewportTarget }
+
+  // Several formats of one book: choose one. The saved place belongs to one
+  // file; another format opens at its beginning until a page is turned there.
+  renderEditions() {
+    if (!this.hasEditionTarget) return
+    const assets = this.publication.assets
+    this.editionPickerTarget.hidden = assets.length < 2
+    const saved = this.savedPlace?.asset_id
+    this.editionTarget.replaceChildren(...assets.map((asset, index) => Object.assign(document.createElement("option"), {
+      value: String(index), selected: index === this.assetIndex,
+      textContent: `${FORMAT_LABELS[asset.format] || asset.format.toUpperCase()} · ${asset.filename}${asset.id === saved ? " · your place" : ""}`
+    })))
+    const savedAsset = assets.find(asset => asset.id === saved)
+    const note = savedAsset && savedAsset.id !== this.currentAsset.id
+      ? `Your saved place is in the ${FORMAT_LABELS[savedAsset.format] || savedAsset.format}. This ${FORMAT_LABELS[this.currentAsset.format] || "file"} opens at its beginning; turning a page here saves your place in it instead.`
+      : ""
+    if (this.hasEditionNoteTarget) { this.editionNoteTarget.hidden = !note; this.editionNoteTarget.textContent = note }
+  }
+
+  chooseEdition() {
+    const index = Number(this.editionTarget.value)
+    if (!Number.isInteger(index) || index === this.assetIndex || !this.publication.assets[index]) return
+    const place = this.savedPlace?.asset_id === this.publication.assets[index].id ? this.savedPlace : null
+    this.switchAsset(index, place)
+  }
+
+  switchAsset(index, progress) {
+    this.abort?.abort()
+    this.book?.destroy()
+    this.book = null
+    this.rendition = null
+    this.pageReader?.destroy()
+    this.pageReader = null
+    this.readerReady = false
+    this.deferredPlace = null
+    if (this.hasErrorTarget) this.errorTarget.hidden = true
+    this.assetIndex = index
+    this.initialProgress = progress?.asset_id === this.currentAsset.id ? progress : null
+    if (progress) this.savedPlace = progress
+    if (!this.pageFormat) this.viewportTarget.replaceChildren(Object.assign(document.createElement("p"), { className: "consumer-opening", textContent: "Opening your book…" }))
+    this.openReading()
+  }
+
+  // PDF and CBZ ------------------------------------------------------------------
+
+  async openPages() {
+    const asset = this.currentAsset
+    this.locationTarget.textContent = "Opening…"
+    try {
+      this.pageModule ||= await import("consumer_page_reader")
+      if (!this.active || this.currentAsset !== asset) return
+      let resources = null
+      try { resources = JSON.parse(this.hasPdfResourcesTarget ? this.pdfResourcesTarget.textContent : "null") } catch (_) { resources = null }
+      const reader = new this.pageModule.PageReader({
+        element: this.pagesTarget, asset, format: asset.format, resources,
+        orderURL: asset.reading_order_url ? this.assetURL(asset.reading_order_url) : null,
+        label: "Page",
+        onChange: (position, count, { activity, shown }) => this.pagePosition(reader, position, count, activity, shown),
+        onTap: zone => this.pageTap(zone),
+        onError: message => this.showError(message)
+      })
+      this.pageReader = reader
+      const count = await reader.open(this.assetURL())
+      if (!this.active || this.pageReader !== reader) return
+      this.pageSliderTarget.max = String(count)
+      this.pageNumberTarget.max = String(count)
+      this.pageTotalTarget.textContent = `of ${count}`
+      // Restoring is display only: an unusable saved place is kept, not
+      // replaced by an invented page-one activity.
+      const restored = this.pageModule.restoredPage(asset.format, this.initialProgress?.locator, count, reader.items())
+      await reader.show(restored.position)
+      if (!this.active || this.pageReader !== reader) return
+      if (this.initialProgress && !restored.exact) this.showSyncStatus("message", `Your saved page isn't in this file any more; showing page ${restored.position}. Your saved place is kept until you turn a page.`)
+      this.readerReady = true
+      if (this.deferredPlace) { const place = this.deferredPlace; this.deferredPlace = null; this.applyPlace(place) }
+    } catch (error) {
+      if (error?.name !== "AbortError" && this.active && this.currentAsset === asset) {
+        this.showError(error?.message || "This file couldn't be opened.")
+        this.locationTarget.textContent = "Unavailable"
+        if (this.hasControlsTarget) this.showControls()
+      }
+    }
+  }
+
+  pagePosition(reader, position, count, activity, shown) {
+    if (!this.active || reader !== this.pageReader) return
+    // A page that now shows replaces an earlier page's error.
+    if (shown && this.hasErrorTarget) this.errorTarget.hidden = true
+    const label = `Page ${position} of ${count}`
+    this.locationTarget.textContent = label
+    this.pageNumberTarget.value = String(position)
+    this.pageSliderTarget.value = String(position)
+    this.zoomLabelTarget.textContent = reader.zoomed ? `${Math.round(reader.zoom * 100)}%` : "Fit"
+    if (!activity || !this.readerReady) return
+    if (this.hasAnnounceTarget) this.announceTarget.textContent = label
+    this.recordPlace({ asset_id: this.currentAsset.id, locator: reader.locator(position) })
+  }
+
+  pageTap(zone) {
+    if (!this.controlsTarget.hidden) return this.hideControls()
+    if (zone === "previous") return this.previousPage()
+    if (zone === "next") return this.nextPage()
+    this.showControls()
+  }
+
+  movePage(move, message) {
+    if (!this.pageReader || !this.readerReady) return
+    Promise.resolve(move(this.pageReader)).catch(() => { if (this.active) this.showError(message) })
+  }
+
+  jumpToPage(event) {
+    event?.preventDefault?.()
+    const value = Number(this.pageNumberTarget.value)
+    if (Number.isFinite(value)) this.movePage(reader => reader.go(value), "This page couldn't be opened.")
+  }
+  previewPage() { this.pageNumberTarget.value = this.pageSliderTarget.value }
+  slidePage() { this.movePage(reader => reader.go(Number(this.pageSliderTarget.value)), "This page couldn't be opened.") }
+  zoomIn() { this.movePage(reader => reader.zoomIn().then(() => this.zoomShown(reader)), "Couldn't zoom this page.") }
+  zoomOut() { this.movePage(reader => reader.zoomOut().then(() => this.zoomShown(reader)), "Couldn't zoom this page.") }
+  zoomFit() { this.movePage(reader => reader.fit().then(() => this.zoomShown(reader)), "Couldn't fit this page.") }
+  zoomShown(reader) { if (this.active && reader === this.pageReader) this.zoomLabelTarget.textContent = reader.zoomed ? `${Math.round(reader.zoom * 100)}%` : "Fit" }
+
   // Ebook --------------------------------------------------------------------
 
   async openEbook() {
+    const asset = this.currentAsset
     try {
       if (this.currentAsset.size_bytes > 32 * 1024 * 1024) throw new Error("This ebook is larger than the web preview's 32 MiB limit. Use the native reader or download the file.")
       this.abort = new AbortController()
@@ -205,7 +380,7 @@ export default class extends Controller {
       ])
       if (!response.ok) throw new Error("This ebook is unavailable. Refresh the publication or sign in again.")
       const buffer = await response.arrayBuffer()
-      if (!this.active) return
+      if (!this.active || this.currentAsset !== asset) return
       this.book = ePub(undefined, { replacements: "blobUrl" })
       const sanitize = (html, section) => {
         const clean = DOMPurify.sanitize(html, {
@@ -399,6 +574,13 @@ export default class extends Controller {
       return
     }
     if (event.target.closest?.("select, input, textarea")) return
+    if (this.pageReader) {
+      if (event.key === "+" || event.key === "=") { event.preventDefault(); return this.zoomIn() }
+      if (event.key === "-") { event.preventDefault(); return this.zoomOut() }
+      if (event.key === "0") { event.preventDefault(); return this.zoomFit() }
+      if (event.key === "Home") { event.preventDefault(); return this.movePage(reader => reader.go(1), "This page couldn't be opened.") }
+      if (event.key === "End") { event.preventDefault(); return this.movePage(reader => reader.go(reader.count), "This page couldn't be opened.") }
+    }
     if (event.key === "ArrowRight" || event.key === "PageDown") { event.preventDefault(); this.nextPage() }
     if (event.key === "ArrowLeft" || event.key === "PageUp") { event.preventDefault(); this.previousPage() }
   }
@@ -416,11 +598,11 @@ export default class extends Controller {
     const hadFocus = this.controlsTarget.contains(document.activeElement)
     this.controlsTarget.hidden = true
     this.revealTarget.setAttribute("aria-expanded", "false")
-    if (hadFocus || document.activeElement === document.body) this.viewportTarget.focus({ preventScroll: true })
+    if (hadFocus || document.activeElement === document.body) this.readingSurface.focus({ preventScroll: true })
   }
 
   ebookPosition(location) {
-    if (!this.active) return
+    if (!this.active || this.pageReader || !this.book) return
     const start = location.start
     const fraction = Math.max(0, (start.displayed.page - 1) / Math.max(1, start.displayed.total))
     const total = Math.min(1, (start.index + fraction) / Math.max(1, this.book.spine.length))
@@ -476,8 +658,14 @@ export default class extends Controller {
     } catch (_) { if (this.active) this.showError(message) }
   }
 
-  previousPage() { this.moveEbook(() => this.rendition.prev(), "Couldn't open the previous page.") }
-  nextPage() { this.moveEbook(() => this.rendition.next(), "Couldn't open the next page.") }
+  previousPage() {
+    if (this.pageReader) return this.movePage(reader => reader.previous(), "Couldn't open the previous page.")
+    this.moveEbook(() => this.rendition.prev(), "Couldn't open the previous page.")
+  }
+  nextPage() {
+    if (this.pageReader) return this.movePage(reader => reader.next(), "Couldn't open the next page.")
+    this.moveEbook(() => this.rendition.next(), "Couldn't open the next page.")
+  }
   chooseChapter() {
     const chapter = this.chaptersTarget.value
     this.moveEbook(() => this.showPlace(chapter), "This chapter couldn't be opened.")

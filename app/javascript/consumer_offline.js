@@ -16,6 +16,8 @@
 //   done         asset IDs of `pending` already stored and verified
 //   error        why `pending` stopped: { kind, message }
 // An update keeps the old complete copy usable until the new one is ready.
+// A CBZ asset is two cache entries: its bytes and its reading order (the page
+// list for that exact file generation). It is stored only when both are.
 
 export const DB_NAME = "shelfarr-offline"
 const DB_VERSION = 1
@@ -64,13 +66,18 @@ export const recordKey = (scope, id) => `${scope}|${id}`
 export const mediaCacheName = scope => `${MEDIA_PREFIX}|${scope}`
 export const shellCachePrefix = deployment => `${SHELL_PREFIX}|${deployment}|`
 const absolute = path => new URL(path, globalThis.location.origin).href
+// Every cache entry an asset needs before it counts as stored.
+export const assetUrls = asset => [asset.content_url, asset.reading_order_url].filter(Boolean).map(absolute)
+const isStored = (stored, asset) => assetUrls(asset).every(url => stored.has(url))
 
 // The parts of a page's publication this browser keeps for offline use.
 export function snapshot(publication) {
   const assets = (publication.assets || []).map(asset => ({ id: asset.id, filename: asset.filename, format: asset.format,
-    media_type: asset.media_type, size_bytes: asset.size_bytes, position: asset.position, content_url: asset.content_url }))
+    media_type: asset.media_type, size_bytes: asset.size_bytes, position: asset.position, content_url: asset.content_url,
+    ...(asset.reading_order_url ? { page_count: asset.page_count, reading_order_url: asset.reading_order_url } : {}) }))
   return { id: String(publication.id), title: publication.title || "", author: publication.author || "",
     description: String(publication.description || "").slice(0, 2000), book_type: publication.book_type,
+    content_kind: publication.content_kind || null,
     cover_style: publication.cover_style || "stone", reading_status: publication.reading_status || null,
     progress: publication.progress || null, progress_url: publication.progress_url,
     progress_scope: publication.progress_scope, assets }
@@ -278,7 +285,7 @@ export async function verify(record) {
   if (!await caches.has(mediaCacheName(record.scope))) return false
   const cache = await caches.open(mediaCacheName(record.scope))
   const stored = new Set((await cache.keys()).map(entry => entry.url))
-  return record.publication.assets.every(asset => stored.has(absolute(asset.content_url)))
+  return record.publication.assets.every(asset => isStored(stored, asset))
 }
 
 // After the browser evicted files: keep no false "ready" state.
@@ -381,7 +388,7 @@ export async function download(publication) {
     return key
   }
   const stored = await storedUrls(scope)
-  const done = next.assets.filter(asset => stored.has(absolute(asset.content_url))).map(asset => asset.id)
+  const done = next.assets.filter(asset => isStored(stored, asset)).map(asset => asset.id)
   const needed = next.assets.filter(asset => !done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0)
   await checkSpace(scope, needed, key)
   // An update keeps the previous complete edition readable until it finishes.
@@ -438,7 +445,7 @@ function run(key) {
       const stored = new Set((await cache.keys()).map(entry => entry.url))
       // IndexedDB may still remember files the browser evicted while paused.
       // Rebuild completion under the download lock before skipping any file.
-      record = await current(saved => ({ ...saved, done: saved.pending.assets.filter(asset => stored.has(absolute(asset.content_url))).map(asset => asset.id) }))
+      record = await current(saved => ({ ...saved, done: saved.pending.assets.filter(asset => isStored(stored, asset)).map(asset => asset.id) }))
       await checkSpace(record.scope, record.pending.assets.filter(asset => !record.done.includes(asset.id)).reduce((sum, asset) => sum + asset.size_bytes, 0), key)
       for (const asset of record.pending.assets) {
         if (record.done.includes(asset.id)) continue
@@ -447,6 +454,7 @@ function run(key) {
           if (!active || active.expired || active.account !== record.account) throw new OfflineError("account")
           await store(cache, asset, controller.signal, bytes => { job.received += bytes; reportProgress(key, job) })
         }
+        if (asset.reading_order_url && !stored.has(absolute(asset.reading_order_url))) await storeOrder(cache, asset, controller.signal)
         job.received = 0
         record = await current(saved => ({ ...saved, done: [...new Set([...saved.done, asset.id])] }))
         notify(key)
@@ -456,7 +464,7 @@ function run(key) {
       record = await current(saved => ({ ...saved, publication: saved.pending, pending: null, done: [], error: null, completedAt: Date.now() }))
       // Files only the replaced edition used are no longer needed.
       const kept = new Set(record.publication.assets.map(asset => asset.id))
-      for (const asset of previous?.assets || []) if (!kept.has(asset.id)) await cache.delete(absolute(asset.content_url))
+      for (const asset of previous?.assets || []) if (!kept.has(asset.id)) for (const url of assetUrls(asset)) await cache.delete(url)
     } catch (error) {
       if (error instanceof EditionChanged) {
         restart = true
@@ -464,8 +472,8 @@ function run(key) {
         // Keep everything used by the current complete/pending editions.
         try {
           const latest = await getRecord(key)
-          const kept = new Set([...(latest?.publication?.assets || []), ...(latest?.pending?.assets || [])].map(asset => absolute(asset.content_url)))
-          for (const asset of pending?.assets || []) if (!kept.has(absolute(asset.content_url))) await cache?.delete(absolute(asset.content_url))
+          const kept = new Set([...(latest?.publication?.assets || []), ...(latest?.pending?.assets || [])].flatMap(assetUrls))
+          for (const url of (pending?.assets || []).flatMap(assetUrls)) if (!kept.has(url)) await cache?.delete(url)
         } catch (_) { /* Cleanup cannot prevent the selected edition from starting; its runner reports storage failures. */ }
       } else {
         if (job.reason === "cancel" || job.reason === "remove") return
@@ -523,6 +531,24 @@ async function store(cache, asset, signal, onBytes) {
   }
 }
 
+// A CBZ's page list for exactly this generation, kept beside its bytes.
+const MAX_ORDER_BYTES = 8 * 1024 * 1024
+async function storeOrder(cache, asset, signal) {
+  const url = absolute(asset.reading_order_url)
+  const response = await fetch(url, { credentials: "same-origin", redirect: "manual", cache: "no-store", signal, headers: { Accept: "application/json" } })
+  if (response.type === "opaqueredirect" || response.status === 401 || response.status === 403) throw new OfflineError("signin")
+  if (response.status === 410) throw new OfflineError("changed")
+  if (response.status === 404) throw new OfflineError("missing")
+  if (response.status >= 500) throw new OfflineError("network")
+  if (response.status !== 200) throw new OfflineError("verify")
+  const text = await response.text()
+  let order = null
+  try { order = text.length <= MAX_ORDER_BYTES ? JSON.parse(text) : null } catch (_) { order = null }
+  if (!order || order.asset_id !== asset.id || order.format !== "cbz" || !Array.isArray(order.items) || !order.items.length ||
+    (Number.isInteger(asset.page_count) && order.items.length !== asset.page_count)) throw new OfflineError("changed")
+  await cache.put(url, new Response(text, { status: 200, headers: { "Content-Type": "application/json", "X-Shelfarr-Asset": asset.id } }))
+}
+
 // Stop a download and discard what it stored. An update's older copy stays.
 export async function cancel(key) {
   running.get(key)?.stop("cancel")
@@ -532,7 +558,7 @@ export async function cancel(key) {
     if (!record?.pending) return
     const cache = await caches.open(mediaCacheName(record.scope))
     const kept = new Set((record.publication?.assets || []).map(asset => asset.id))
-    for (const asset of record.pending.assets) if (!kept.has(asset.id)) await cache.delete(absolute(asset.content_url))
+    for (const asset of record.pending.assets) if (!kept.has(asset.id)) for (const url of assetUrls(asset)) await cache.delete(url)
     await updateRecord(key, current => current?.publication ? { ...current, pending: null, done: [], error: null } : null)
   })
   notify(key)
@@ -545,7 +571,7 @@ export async function remove(key) {
     const record = await getRecord(key)
     if (!record) return
     const cache = await caches.open(mediaCacheName(record.scope))
-    for (const asset of [...(record.publication?.assets || []), ...(record.pending?.assets || [])]) await cache.delete(absolute(asset.content_url))
+    for (const url of [...(record.publication?.assets || []), ...(record.pending?.assets || [])].flatMap(assetUrls)) await cache.delete(url)
     await deleteRecord(key)
   })
   notify(key)
