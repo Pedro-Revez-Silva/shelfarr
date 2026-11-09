@@ -54,6 +54,7 @@ import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.ReadingStatus
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.ui.components.BookCover
 import org.shelfarr.app.ui.components.LoadingState
 import org.shelfarr.app.ui.components.MessageState
@@ -83,6 +84,9 @@ data class StatusEdit(val saving: ReadingStatus? = null, val error: ApiException
 /** Everything the publication page can ask for besides opening it. */
 interface DetailsActions {
     fun download() {}
+
+    /** Download one format of a book that has several, by the reader's explicit choice. */
+    fun downloadFormat(format: ReadingFormat) {}
     fun cancelDownload() {}
     fun removeDownload() {}
     fun retryDownload() {}
@@ -128,10 +132,23 @@ class DetailsViewModel(private val container: AppContainer, private val id: Stri
         load()
     }
 
+    /** The format the next [download] keeps; null keeps the saved or already downloaded one. */
+    private var downloadFormat: ReadingFormat? = null
+
+    fun prepareDownload(format: ReadingFormat?) {
+        downloadFormat = format
+    }
+
     override fun download() {
         val services = account ?: return
         val publication = (mutableState.value as? DetailsState.Loaded)?.publication ?: return
-        viewModelScope.launch { services.downloads.enqueue(publication) }
+        val format = downloadFormat
+        viewModelScope.launch { services.downloads.enqueue(publication, format) }
+    }
+
+    override fun downloadFormat(format: ReadingFormat) {
+        prepareDownload(format)
+        download()
     }
 
     override fun cancelDownload() {
@@ -279,6 +296,7 @@ private fun Details(
                     onCancel = actions::cancelDownload,
                     onRemove = actions::removeDownload,
                     onRetry = actions::retryDownload,
+                    onDownloadFormat = actions::downloadFormat,
                 )
             }
             StatusPicker(publication, state.offline, statusEdit, host, actions::setStatus)

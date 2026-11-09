@@ -87,6 +87,7 @@ import org.shelfarr.app.playback.PlaybackController
 import org.shelfarr.app.reader.ReaderActivity
 import org.shelfarr.app.ui.components.ShelfarrIcons
 import org.shelfarr.app.ui.details.DetailsActions
+import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.ui.details.DetailsScreen
 import org.shelfarr.app.ui.details.DetailsViewModel
 import org.shelfarr.app.ui.downloads.DownloadsScreen
@@ -444,7 +445,15 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
             val startDownload = rememberDownloadStarter(container) { viewModel.download() }
             val actions = remember(viewModel, startDownload) {
                 object : DetailsActions by viewModel {
-                    override fun download() = startDownload()
+                    override fun download() {
+                        viewModel.prepareDownload(null)
+                        startDownload()
+                    }
+
+                    override fun downloadFormat(format: ReadingFormat) {
+                        viewModel.prepareDownload(format)
+                        startDownload()
+                    }
                 }
             }
             DetailsScreen(

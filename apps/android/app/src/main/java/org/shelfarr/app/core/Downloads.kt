@@ -97,8 +97,22 @@ data class DownloadRecord(
     val state: DownloadState,
     val problem: DownloadProblem? = null,
     val updatedAtEpochMs: Long = 0,
+    /**
+     * The reading format a book's download keeps (`epub`, `pdf` or `cbz`). Absent from
+     * records written before PDF and CBZ, which are worked out from the pinned file.
+     */
+    val format: String? = null,
 ) {
     val pinnedAssetIds: List<String> get() = files.map { it.assetId }
+
+    /** The book format this download follows across editions. Null for audiobooks. */
+    val pinnedFormat: ReadingFormat?
+        get() {
+            if (publication.bookType != BookType.EBOOK) return null
+            ReadingFormat.fromWire(format)?.let { return it }
+            val first = files.firstOrNull()?.assetId
+            return publication.assets.firstOrNull { it.id == first }?.declaredFormat ?: ReadingFormat.EPUB
+        }
 
     /** Null when the server didn't state every size, so no honest total exists. */
     val bytesTotal: Long? get() = if (files.any { it.sizeBytes <= 0 }) null else files.sumOf { it.sizeBytes }
@@ -111,12 +125,29 @@ data class DownloadRecord(
 
     val isActive: Boolean get() = state == DownloadState.QUEUED || state == DownloadState.DOWNLOADING
 
-    /** True when [current] is the same edition this download pinned. */
-    fun matches(current: Publication): Boolean = downloadableAssets(current).map { it.id } == pinnedAssetIds
+    /** True when [current] is the same edition, in the same format, as this download pinned. */
+    fun matches(current: Publication): Boolean = downloadableAssets(current, pinnedFormat).map { it.id } == pinnedAssetIds
 }
 
-/** Every file a download needs: the EPUB for a book, all audio files in order for an audiobook. */
-fun downloadableAssets(publication: Publication): List<Asset> = publication.playableAssets
+/**
+ * Every file a download needs: one reading file for a book, all audio files in order
+ * for an audiobook. A book keeps [format] when its edition has it; without one, the
+ * format of the saved place, then EPUB (as before PDF and CBZ), then the first file.
+ */
+fun downloadableAssets(publication: Publication, format: ReadingFormat? = null): List<Asset> {
+    if (publication.bookType != BookType.EBOOK) return publication.audioAssets
+    val readable = publication.readingAssets
+    if (format != null) return listOfNotNull(readable.firstOrNull { it.readingFormat == format })
+    return listOfNotNull(defaultReadingAsset(publication))
+}
+
+/** The file a book opens or downloads when nothing more specific was chosen. */
+fun defaultReadingAsset(publication: Publication): Asset? {
+    val readable = publication.readingAssets
+    return readable.firstOrNull { it.id == publication.progress?.assetId }
+        ?: readable.firstOrNull { it.readingFormat == ReadingFormat.EPUB }
+        ?: readable.firstOrNull()
+}
 
 private class EditionChanged : Exception("The pinned file changed on the server")
 private class StorageFailure(cause: IOException) : Exception("Could not write the download", cause)
@@ -147,6 +178,7 @@ class DownloadManager(
     private val onQueued: suspend () -> Unit = {},
 ) {
     private val manifestFile = File(root, "manifest.json")
+    private val orders = ReadingOrderClient(client)
     private val manifestMutex = Mutex()
     private val permits = Semaphore(maxConcurrent)
     private val jobs = HashMap<String, Job>()
@@ -267,8 +299,10 @@ class DownloadManager(
         val files = record.files.map { file ->
             val final = File(folder, file.name)
             val partial = File(folder, file.name + PART)
+            // A comic is only readable offline with its verified page order beside it.
+            val orderPresent = !file.name.endsWith(".cbz") || File(folder, file.name + ORDER).isFile
             when {
-                file.complete && final.isFile && (file.sizeBytes <= 0 || final.length() == file.sizeBytes) ->
+                file.complete && final.isFile && (file.sizeBytes <= 0 || final.length() == file.sizeBytes) && orderPresent ->
                     file.copy(bytesDone = final.length())
                 file.complete -> file.copy(complete = false, bytesDone = 0)
                 else -> file.copy(bytesDone = if (partial.isFile) partial.length() else 0)
@@ -302,6 +336,12 @@ class DownloadManager(
         return File(folder(record.publicationId), pinned.name).takeIf { it.isFile }
     }
 
+    /** The verified page order kept with a ready CBZ download, or null. */
+    fun readingOrderFor(record: DownloadRecord, assetId: String): ReadingOrder? {
+        val file = fileFor(record, assetId) ?: return null
+        return ReadingOrderFile.read(File(file.path + ORDER))
+    }
+
     /** Local files for every pinned asset, in order, or null unless the whole download is ready. */
     fun filesFor(record: DownloadRecord): Map<String, File>? {
         val found = record.files.associate { it.assetId to fileFor(record, it.assetId) }
@@ -314,21 +354,25 @@ class DownloadManager(
      * Queues [publication]. The job fetches the current edition before transferring,
      * so a download never pins details that were already stale on screen.
      */
-    suspend fun enqueue(publication: Publication) {
+    suspend fun enqueue(publication: Publication, format: ReadingFormat? = null) {
         if (closed) return
         load()
-        val assets = downloadableAssets(publication)
         val existing = record(publication.id)
         if (existing != null && existing.isActive) {
             // Already queued; make sure something will run it.
             onQueued()
             return
         }
-        val record = if (existing != null && existing.matches(publication) && existing.state != DownloadState.CANCELLED) {
+        // An explicit choice, else the format this download already keeps while the edition has it.
+        val keep = format ?: existing?.pinnedFormat?.takeIf { kept -> publication.readingAssets.any { it.readingFormat == kept } }
+        val chosen = if (publication.bookType == BookType.EBOOK) keep ?: defaultReadingAsset(publication)?.readingFormat else null
+        val assets = downloadableAssets(publication, chosen)
+        val sameFormat = format == null || existing?.pinnedFormat == format
+        val record = if (existing != null && sameFormat && existing.matches(publication) && existing.state != DownloadState.CANCELLED) {
             existing.copy(state = DownloadState.QUEUED, problem = null, publication = publication, updatedAtEpochMs = clock())
         } else {
             if (existing != null) withContext(Dispatchers.IO) { folder(publication.id).deleteRecursively() }
-            DownloadRecord(publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock())
+            DownloadRecord(publication.id, publication, pin(assets), DownloadState.QUEUED, updatedAtEpochMs = clock(), format = chosen?.wire)
         }
         if (!save(record)) return
         onQueued()
@@ -458,7 +502,7 @@ class DownloadManager(
             val current = fetchPublication(publicationId)
             if (!record.matches(current)) {
                 folder(publicationId).deleteRecursively()
-                record = record.copy(files = pin(downloadableAssets(current)))
+                record = record.copy(files = pin(downloadableAssets(current, record.pinnedFormat)))
             }
             if (record.files.isEmpty()) throw Unsupported()
             record = record.copy(publication = current, state = DownloadState.DOWNLOADING, problem = null, updatedAtEpochMs = clock())
@@ -467,7 +511,7 @@ class DownloadManager(
             val remaining = record.files.filterNot { it.complete }.sumOf { (it.sizeBytes - it.bytesDone).coerceAtLeast(0) }
             if (usableSpace() < remaining + SPACE_MARGIN_BYTES) throw StorageFailure(IOException("Not enough space"))
 
-            val assets = downloadableAssets(current).associateBy { it.id }
+            val assets = downloadableAssets(current, record.pinnedFormat).associateBy { it.id }
             // In order, one file at a time, so a long audiobook fills from the start.
             for (pinned in record.files) {
                 coroutineContextActive()
@@ -534,26 +578,54 @@ class DownloadManager(
                 else -> fail(response)
             }
             if (!append) updateFile(publicationId, asset.id) { it.copy(etag = tag, bytesDone = 0) }
-            write(publicationId, asset.id, response, partial, append)
+            write(publicationId, asset.id, response, partial, append, limitFor(asset))
         }
         finish(publicationId, asset, partial, final)
+    }
+
+    /** PDF and CBZ only: bytes past the announced size are refused as they arrive. */
+    private fun limitFor(asset: Asset): Long? {
+        val format = asset.declaredFormat?.takeIf { it.isPaged } ?: return null
+        return if (asset.sizeBytes > 0) minOf(asset.sizeBytes, format.maxBytes) else format.maxBytes
     }
 
     private suspend fun finish(publicationId: String, asset: Asset, partial: File, final: File) {
         val length = partial.length()
         val lengthOk = asset.sizeBytes <= 0 || length == asset.sizeBytes
-        val epubOk = !asset.isEpub || partial.inputStream().use { it.read() == 'P'.code && it.read() == 'K'.code }
-        if (!lengthOk || !epubOk || length == 0L) {
-            partial.delete()
-            updateFile(publicationId, asset.id) { it.copy(bytesDone = 0, etag = null) }
-            throw ApiException.Protocol()
+        val format = asset.declaredFormat
+        if (!lengthOk || length == 0L || !looksLike(format, partial)) discard(publicationId, asset, partial)
+        if (format == ReadingFormat.CBZ) {
+            // Complete means the archive and its verified page order, so it opens offline.
+            val order = try {
+                orders.fetch(server, asset)
+            } catch (_: GenerationGone) {
+                throw EditionChanged()
+            } catch (_: UnreadableFile) {
+                discard(publicationId, asset, partial)
+            }
+            try {
+                ComicArchive.open(partial, order.validate(asset), asset.sizeBytes).close()
+            } catch (_: UnreadableFile) {
+                discard(publicationId, asset, partial)
+            }
+            try {
+                ReadingOrderFile.write(File(final.path + ORDER), order)
+            } catch (error: IOException) {
+                throw StorageFailure(error)
+            }
         }
         final.delete()
         if (!partial.renameTo(final)) throw StorageFailure(IOException("Could not finish the file"))
         updateFile(publicationId, asset.id, persist = true) { it.copy(complete = true, bytesDone = length) }
     }
 
-    private suspend fun write(publicationId: String, assetId: String, response: Response, target: File, append: Boolean) {
+    private suspend fun discard(publicationId: String, asset: Asset, partial: File): Nothing {
+        partial.delete()
+        updateFile(publicationId, asset.id) { it.copy(bytesDone = 0, etag = null) }
+        throw ApiException.Protocol()
+    }
+
+    private suspend fun write(publicationId: String, assetId: String, response: Response, target: File, append: Boolean, limit: Long? = null) {
         val context = kotlin.coroutines.coroutineContext
         val output = try {
             RandomAccessFile(target, "rw").apply {
@@ -565,7 +637,7 @@ class DownloadManager(
         }
         var written = output.length()
         try {
-            output.use { writeBody(publicationId, assetId, response, output, context) { written = it } }
+            output.use { writeBody(publicationId, assetId, response, output, context, limit) { written = it } }
         } finally {
             // Keep the on-screen size honest even when the connection dropped mid-file.
             val done = written
@@ -579,6 +651,7 @@ class DownloadManager(
         response: Response,
         output: RandomAccessFile,
         context: kotlin.coroutines.CoroutineContext,
+        limit: Long?,
         onWritten: (Long) -> Unit,
     ) {
         var written = output.length()
@@ -593,6 +666,7 @@ class DownloadManager(
                     throw ApiException.Offline(error)
                 }
                 if (count < 0) break
+                if (limit != null && written + count > limit) throw ApiException.Protocol()
                 try {
                     output.write(buffer, 0, count)
                 } catch (error: IOException) {
@@ -745,6 +819,8 @@ class DownloadManager(
     private companion object {
         const val TAG = "ShelfarrDownloads"
         const val PART = ".part"
+        /** Beside a CBZ: its verified reading order. */
+        const val ORDER = ".order.json"
         const val REPORT_EVERY_BYTES = 256L * 1024
         const val SPACE_MARGIN_BYTES = 64L * 1024 * 1024
         val TRANSIENT = setOf(DownloadProblem.OFFLINE, DownloadProblem.SERVER)

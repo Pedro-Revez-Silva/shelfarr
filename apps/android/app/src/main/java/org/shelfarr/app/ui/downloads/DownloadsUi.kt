@@ -40,6 +40,7 @@ import org.shelfarr.app.core.DownloadProblem
 import org.shelfarr.app.core.DownloadRecord
 import org.shelfarr.app.core.DownloadState
 import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.core.downloadableAssets
 import org.shelfarr.app.ui.components.BookCover
 import org.shelfarr.app.ui.components.MessageState
@@ -108,21 +109,33 @@ fun DownloadPanel(
     onRemove: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Several reading formats and no saved one: Download asks which, then calls this. */
+    onDownloadFormat: (ReadingFormat) -> Unit = {},
 ) {
     var confirmRemove by remember { mutableStateOf(false) }
-    val size = downloadableAssets(publication).sumOf { it.sizeBytes }
+    var choosing by remember { mutableStateOf(false) }
+    val choices = publication.readingAssets
+    // A saved place keeps its format; with none, a book offered in several formats asks.
+    val mustChoose = record == null && choices.size > 1 && choices.none { it.id == publication.progress?.assetId }
+    val size = if (mustChoose) 0 else downloadableAssets(publication, record?.pinnedFormat).sumOf { it.sizeBytes }
     Column(modifier.fillMaxWidth()) {
         when {
             record == null -> {
                 OutlinedButton(
-                    onClick = onDownload,
+                    onClick = if (mustChoose) ({ choosing = true }) else onDownload,
                     enabled = !offline,
                     border = BorderStroke(1.dp, ShelfarrTheme.extended.hairline),
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     Icon(ShelfarrIcons.Download, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(if (size > 0) "Download · ${formatBytes(size)}" else "Download")
+                    Text(
+                        when {
+                            mustChoose -> "Download…"
+                            size > 0 -> "Download · ${formatBytes(size)}"
+                            else -> "Download"
+                        },
+                    )
                 }
                 if (offline) Caption("Connect to your server to download.")
             }
@@ -144,6 +157,7 @@ fun DownloadPanel(
                     ProgressRule(record.fraction ?: 0f, Modifier.padding(vertical = 4.dp))
                 }
                 Caption(copy.detail)
+                if (choices.size > 1) record.pinnedFormat?.let { Caption("Keeps the ${it.label} copy on this device.") }
                 if (outdated) {
                     Caption("A newer edition is on your server. Reading and listening use the server's copy until you update.")
                     TextButton(onClick = onDownload) { Text("Update download") }
@@ -154,6 +168,33 @@ fun DownloadPanel(
                 }
             }
         }
+    }
+    if (choosing) {
+        AlertDialog(
+            onDismissRequest = { choosing = false },
+            title = { Text("Download which format?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    choices.forEach { asset ->
+                        val format = asset.readingFormat ?: return@forEach
+                        TextButton(
+                            onClick = {
+                                choosing = false
+                                onDownloadFormat(format)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                if (asset.sizeBytes > 0) "${format.label} · ${formatBytes(asset.sizeBytes)}" else format.label,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { choosing = false }) { Text("Cancel") } },
+        )
     }
     if (confirmRemove) {
         AlertDialog(

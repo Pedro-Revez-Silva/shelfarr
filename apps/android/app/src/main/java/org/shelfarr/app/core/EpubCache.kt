@@ -20,17 +20,22 @@ data class CachedEpub(
     val file: File,
     /** True when the copy could not be checked against the server just now. */
     val unverified: Boolean,
+    /** CBZ only: the generation's verified reading order, kept beside the copy for offline reopening. */
+    val order: ReadingOrder? = null,
 )
 
 @Serializable
 private data class EntryInfo(val etag: String? = null, val sizeBytes: Long = 0)
 
 /**
- * A working copy of EPUB files so Readium can open them from disk. It lives in the
- * cache directory: the OS may evict it, so this is not an offline library.
+ * A working copy of reading files (EPUB, PDF and CBZ) so the readers can open them from
+ * disk. It lives in the cache directory: the OS may evict it, so this is not an offline
+ * library, and online page streaming here is never reported as a download.
  *
  * Files are scoped by account and asset id. The server's ETag decides when a copy
- * is stale, and the token is only ever sent as a header by the HTTP stack.
+ * is stale, and the token is only ever sent as a header by the HTTP stack. EPUB copies
+ * keep the names earlier versions used. A CBZ copy is usable only with its verified
+ * reading order beside it.
  */
 class EpubCache(
     private val root: File,
@@ -38,6 +43,7 @@ class EpubCache(
     private val maxBytes: Long = 1L shl 30,
 ) {
     private val mutex = Mutex()
+    private val orders = ReadingOrderClient(client)
 
     private fun entryDirectory(accountKey: String, assetId: String): File =
         File(File(root, accountKey), sha256(assetId))
@@ -51,9 +57,11 @@ class EpubCache(
         withContext(Dispatchers.IO) {
             val url = server.resolve(asset.contentUrl)
             if (url == null || !server.contains(url)) throw ApiException.Protocol()
+            val format = asset.declaredFormat ?: ReadingFormat.EPUB
+            if (format.isPaged && asset.sizeBytes > format.maxBytes) throw UnreadableFile("This file is larger than Shelfarr can open")
 
             val directory = entryDirectory(accountKey, asset.id).apply { mkdirs() }
-            val book = File(directory, "book.epub")
+            val book = File(directory, fileName(format))
             val partial = File(directory, "book.part")
             val infoFile = File(directory, "book.json")
             val partialInfoFile = File(directory, "part.json")
@@ -69,7 +77,7 @@ class EpubCache(
                     // An untrusted certificate is not "offline": surface it.
                     if (error.certificate) throw error
                     onProgress(1f)
-                    return@withContext CachedEpub(book, unverified = true)
+                    return@withContext CachedEpub(book, unverified = true, order = storedOrder(format, directory, book, asset))
                 }
                 response.use {
                     // Servers may ignore If-None-Match, so a 200 with the same tag is unchanged too.
@@ -78,27 +86,64 @@ class EpubCache(
                     if (it.code == 304 || (it.isSuccessful && (sameTag || sameSize))) {
                         book.setLastModified(System.currentTimeMillis())
                         onProgress(1f)
-                        return@withContext CachedEpub(book, unverified = false)
+                        return@withContext CachedEpub(book, unverified = false, order = currentOrder(format, server, directory, book, asset))
                     }
                     partial.delete()
                     partialInfoFile.delete()
                     if (!it.isSuccessful) failFor(it)
-                    write(it, partial, append = false, expected = asset.sizeBytes, onProgress = onProgress)
+                    write(it, partial, append = false, expected = asset.sizeBytes, onProgress = onProgress, limit = limitFor(format, asset))
                     writeInfo(partialInfoFile, EntryInfo(it.header("ETag"), partial.length()))
                 }
             } else {
                 download(url, asset, partial, partialInfoFile, onProgress)
             }
 
-            verify(partial, asset)
+            verify(partial, asset, format)
             val finished = readInfo(partialInfoFile) ?: EntryInfo(null, partial.length())
             book.delete()
+            File(directory, ORDER_FILE).delete()
             if (!partial.renameTo(book)) throw IOException("Could not finish download")
             writeInfo(infoFile, finished)
             partialInfoFile.delete()
             trim(keep = directory)
-            CachedEpub(book, unverified = false)
+            CachedEpub(book, unverified = false, order = currentOrder(format, server, directory, book, asset))
         }
+    }
+
+    /**
+     * Online: the generation's order, fetched, checked against the copy's own ZIP directory
+     * and saved beside it. A lost connection falls back to the saved order.
+     */
+    private suspend fun currentOrder(format: ReadingFormat, server: ServerAddress, directory: File, book: File, asset: Asset): ReadingOrder? {
+        if (format != ReadingFormat.CBZ) return null
+        val order = try {
+            orders.fetch(server, asset)
+        } catch (error: ApiException.Offline) {
+            if (error.certificate) throw error
+            return storedOrder(format, directory, book, asset) ?: throw error
+        }
+        ComicArchive.open(book, order.validate(asset), asset.sizeBytes).close()
+        ReadingOrderFile.write(File(directory, ORDER_FILE), order)
+        return order
+    }
+
+    private fun storedOrder(format: ReadingFormat, directory: File, book: File, asset: Asset): ReadingOrder? {
+        if (format != ReadingFormat.CBZ) return null
+        val order = ReadingOrderFile.read(File(directory, ORDER_FILE)) ?: throw ApiException.Offline()
+        ComicArchive.open(book, order.validate(asset), asset.sizeBytes).close()
+        return order
+    }
+
+    private fun limitFor(format: ReadingFormat, asset: Asset): Long? = when {
+        !format.isPaged -> null
+        asset.sizeBytes > 0 -> asset.sizeBytes
+        else -> format.maxBytes
+    }
+
+    private fun fileName(format: ReadingFormat): String = when (format) {
+        ReadingFormat.EPUB -> "book.epub"
+        ReadingFormat.PDF -> "book.pdf"
+        ReadingFormat.CBZ -> "book.cbz"
     }
 
     private suspend fun download(
@@ -111,6 +156,8 @@ class EpubCache(
         val resumeInfo = readInfo(partialInfoFile)
         val offset = if (partial.exists() && resumeInfo?.etag != null) partial.length() else 0L
         if (offset == 0L) partial.delete()
+        val format = asset.declaredFormat ?: ReadingFormat.EPUB
+        val limit = limitFor(format, asset)
 
         val request = Request.Builder().url(url).apply {
             if (offset > 0) {
@@ -122,10 +169,10 @@ class EpubCache(
         call(request).use { response ->
             when {
                 response.code == 206 && offset > 0 && contentRangeStart(response) == offset ->
-                    write(response, partial, append = true, expected = asset.sizeBytes, onProgress = onProgress)
+                    write(response, partial, append = true, expected = asset.sizeBytes, onProgress = onProgress, limit = limit)
                 response.code == 200 -> {
                     writeInfo(partialInfoFile, EntryInfo(response.header("ETag"), asset.sizeBytes))
-                    write(response, partial, append = false, expected = asset.sizeBytes, onProgress = onProgress)
+                    write(response, partial, append = false, expected = asset.sizeBytes, onProgress = onProgress, limit = limit)
                 }
                 response.code == 416 -> {
                     partial.delete()
@@ -146,6 +193,8 @@ class EpubCache(
         append: Boolean,
         expected: Long,
         onProgress: (Float?) -> Unit,
+        /** PDF and CBZ only: stop at once rather than fill the disk past the announced size. */
+        limit: Long? = null,
     ) {
         val context = kotlin.coroutines.coroutineContext
         val total = expected.takeIf { it > 0 } ?: response.body.contentLength().takeIf { it > 0 }
@@ -160,6 +209,7 @@ class EpubCache(
                         context.ensureActive()
                         val count = input.read(buffer)
                         if (count < 0) break
+                        if (limit != null && written + count > limit) throw ApiException.Protocol()
                         output.write(buffer, 0, count)
                         written += count
                         onProgress(total?.let { (written.toFloat() / it).coerceIn(0f, 1f) })
@@ -171,10 +221,9 @@ class EpubCache(
         }
     }
 
-    private fun verify(file: File, asset: Asset) {
+    private fun verify(file: File, asset: Asset, format: ReadingFormat) {
         val lengthMatches = asset.sizeBytes <= 0 || file.length() == asset.sizeBytes
-        val looksLikeZip = file.inputStream().use { it.read() == 'P'.code && it.read() == 'K'.code }
-        if (!lengthMatches || !looksLikeZip) {
+        if (!lengthMatches || !looksLike(format, file)) {
             file.delete()
             throw ApiException.Protocol()
         }
@@ -206,7 +255,7 @@ class EpubCache(
         val entries = root.listFiles().orEmpty()
             .flatMap { it.listFiles().orEmpty().toList() }
             .filter { it.isDirectory && it != keep }
-            .sortedBy { File(it, "book.epub").lastModified() }
+            .sortedBy { entry -> entry.listFiles().orEmpty().maxOfOrNull(File::lastModified) ?: 0L }
         var total = entries.sumOf(::sizeOf) + sizeOf(keep)
         for (entry in entries) {
             if (total <= maxBytes) break
@@ -226,6 +275,10 @@ class EpubCache(
     }
 
     private fun writeInfo(file: File, info: EntryInfo) = file.writeText(ApiJson.encodeToString(info))
+
+    private companion object {
+        const val ORDER_FILE = "order.json"
+    }
 
     private fun sha256(value: String): String =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).take(16).joinToString("") { "%02x".format(it) }
