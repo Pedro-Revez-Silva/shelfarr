@@ -155,10 +155,14 @@ Other statuses carry `status`, `source` (when known) and `reason`. An
 
 - `cues` are in reading order (spine order, then document order). Each is
   `[text index, element ID, audio index, begin ms, end ms or null]`.
+  Imports are normalized to that order without changing audio indexes or
+  intervals, even when their input cues are listed in a different order.
 - `audio[].kind` is `epub_resource` (an entry inside the same EPUB, by `href`)
   or `publication_asset` (an audiobook asset, by `publication_id` and
   `asset_id`, plus `filename`; the API also gives its normal `content_url`, so
   native clients download it with the existing transfer grant).
+  A manifest has at most 2,000 audio tracks (indexes 0–1,999), matching the
+  clients and saved-place format; an overlay above that limit is invalid.
 - `resources` lists every entry a streaming reader may load for the text
   (container, package, and manifest items except audio, video, SMIL and
   script). `resources_bytes` is their total.

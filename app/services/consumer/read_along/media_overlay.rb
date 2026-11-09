@@ -61,6 +61,9 @@ class Consumer::ReadAlong::MediaOverlay
         raise Consumer::ReadAlong::CueList::Invalid, "Narration audio exceeds 2 GiB" if item.size > Consumer::EpubPackage::MAX_AUDIO_BYTES
 
         position = audio_positions[audio_path] ||= begin
+          if audio.size >= Consumer::ReadAlong::CueList::MAX_TRACKS
+            raise Consumer::ReadAlong::CueList::Invalid, "This alignment has more than #{Consumer::ReadAlong::CueList::MAX_TRACKS} audio tracks"
+          end
           audio << { href: audio_path, media_type: item.media_type, size_bytes: item.size }
           audio.size - 1
         end

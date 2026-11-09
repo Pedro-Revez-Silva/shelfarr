@@ -16,6 +16,7 @@ class Consumer::ReadAlong::TextIndex
     @documents = {}
     @bytes = 0
     @spine_paths = package.spine_items.map(&:path).to_set
+    @spine_positions = @spine_paths.each_with_index.to_h
   end
 
   def spine_document?(path)
@@ -31,7 +32,8 @@ class Consumer::ReadAlong::TextIndex
       raise Consumer::EpubPackage::Invalid, "This book's text is too large to align" if @bytes > MAX_TOTAL_BYTES
 
       xml = Consumer::EpubPackage.parse_xml(bytes, strict: false)
-      ids = xml.xpath("//@id").map(&:value).to_set
+      ids = {}
+      xml.xpath("//@id").each_with_index { |id, position| ids[id.value] ||= position }
       body = xml.at_xpath("//x:body", "x" => XHTML_NS) || xml.at_xpath("//*[local-name()='body']")
       Document.new(path: path, ids: ids, text: body.to_s.empty? ? false : body.text.match?(/[[:alnum:]]/))
     end
@@ -41,6 +43,12 @@ class Consumer::ReadAlong::TextIndex
   def element?(path, fragment)
     fragment.is_a?(String) && fragment.bytesize.between?(1, MAX_FRAGMENT_BYTES) &&
       !fragment.match?(/[\s\x00-\x1f]/) && document(path).ids.include?(fragment)
+  end
+
+  # Match the spine and actual element order, not fragment spelling or the
+  # order an imported alignment happened to list its cues in.
+  def reading_order(path, fragment)
+    [ @spine_positions.fetch(path), document(path).ids.fetch(fragment) ]
   end
 
   # Reading-order sections with readable text, and those of them with cues.

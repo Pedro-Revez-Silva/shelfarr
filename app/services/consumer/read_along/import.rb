@@ -18,7 +18,7 @@ class Consumer::ReadAlong::Import
 
   FORMAT = "shelfarr-read-along"
   MAX_DOCUMENT_BYTES = 32.megabytes
-  MAX_TRACKS = 2_000
+  MAX_TRACKS = Consumer::ReadAlong::CueList::MAX_TRACKS
   MAX_TOOL_BYTES = 128
   DOCUMENT_KEYS = %w[format version tool ebook audio cues].freeze
   CUE_KEYS = %w[href fragment audio begin end].freeze

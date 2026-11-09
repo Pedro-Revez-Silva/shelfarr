@@ -81,4 +81,82 @@ class API::Consumer::V1::ReadAlongTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
     assert token
   end
+
+  test "overlays publish at most 2000 tracks and the final supported track can save progress" do
+    [ 2000, 2001 ].each do |count|
+      write_many_track_overlay(count)
+      asset = Consumer::LibraryAssets.new(@ebook).list.first
+      get "/api/consumer/v1/library/#{@ebook.id}/assets/#{asset.id}/read_along", headers: @headers
+      if count == 2001
+        assert_response :unprocessable_entity
+        assert_equal "invalid", response.parsed_body.fetch("status")
+        next
+      end
+
+      assert_response :success
+      manifest = response.parsed_body
+      assert_equal count, manifest.fetch("audio").size
+      assert_equal 1999, manifest.fetch("cues").last[2]
+      locator = { href: "OEBPS/chapter1.xhtml", locations: { fragments: [ "c0" ],
+        readAlong: { generation: manifest.fetch("generation"), audio: 1999, offset_ms: 100 } } }
+      put "/api/consumer/v1/library/#{@ebook.id}/progress", headers: @headers, as: :json,
+        params: { asset_id: asset.id, expected_version: 0, client_mutation_id: SecureRandom.uuid,
+          observed_at: Time.current.utc.iso8601(3), locator: locator }
+      assert_response :success
+      assert_equal 1999, response.parsed_body.dig("progress", "locator", "locations", "readAlong", "audio")
+    end
+  end
+
+  test "imported cues follow the actual spine and element order while retaining their audio intervals" do
+    ids = %w[zebra apple moon river amber willow gate birch]
+    cues = default_read_along_cues.each_with_index.map { |cue, index| cue.merge(id: ids[index]) }
+    write_read_along_epub(@epub_path, overlay: false, cues: cues)
+    # Deliberately differ from filename order as well as fragment spelling.
+    zip64 = Zip.write_zip64_support
+    begin
+      Zip.write_zip64_support = false
+      Zip::File.open(@epub_path) do |zip|
+        opf = zip.read("OEBPS/content.opf")
+        reordered = opf.sub('<itemref idref="doc0"/><itemref idref="doc1"/>', '<itemref idref="doc1"/><itemref idref="doc0"/>')
+        assert_not_equal opf, reordered
+        zip.get_output_stream("OEBPS/content.opf") { |out| out.write(reordered) }
+      end
+    ensure
+      Zip.write_zip64_support = zip64
+    end
+    FileUtils.cp(TONES, @audio_path)
+    document = read_along_document(epub_path: @epub_path, audio_path: @audio_path, cues: cues.reverse)
+    Consumer::ReadAlong::Import.new(ebook: @ebook, audiobook: @audiobook).call(document)
+    asset = Consumer::LibraryAssets.new(@ebook).list.first
+    get "/api/consumer/v1/library/#{@ebook.id}/assets/#{asset.id}/read_along", headers: @headers
+    assert_response :success
+    manifest = response.parsed_body
+    assert_equal %w[OEBPS/chapter2.xhtml OEBPS/chapter1.xhtml], manifest.fetch("text").map { |text| text.fetch("href") }
+    order = [ 5, 6, 7, 0, 1, 2, 3, 4 ]
+    assert_equal order.map { |index| [ index >= 5 ? 0 : 1, ids[index], 0, index * 2000, index * 2000 + 1800 ] }, manifest.fetch("cues")
+  end
+
+  private
+
+  def write_many_track_overlay(count)
+    write_read_along_epub(@epub_path, cues: default_read_along_cues.first(1))
+    zip64 = Zip.write_zip64_support
+    Zip.write_zip64_support = false
+    bytes = File.binread(Rails.root.join("test/fixtures/files/consumer_sample.mp3"))
+    Zip::File.open(@epub_path) do |zip|
+      items = count.times.map { |index| %(<item id="a#{index}" href="audio/t#{index}.mp3" media-type="audio/mpeg"/>) }.join
+      opf = zip.read("OEBPS/content.opf").sub("</manifest>", "#{items}</manifest>")
+      zip.get_output_stream("OEBPS/content.opf") { |out| out.write(opf) }
+      pars = count.times.map do |index|
+        %(<par><text src="chapter1.xhtml#c0"/><audio src="audio/t#{index}.mp3" clipBegin="0s" clipEnd="1s"/></par>)
+      end.join
+      zip.get_output_stream("OEBPS/chapter1.smil") do |out|
+        out.write(%(<smil xmlns="http://www.w3.org/ns/SMIL"><body><seq>#{pars}</seq></body></smil>))
+      end
+      count.times { |index| zip.get_output_stream("OEBPS/audio/t#{index}.mp3") { |out| out.write(bytes) } }
+    end
+    Consumer::ReadAlong.forget_all
+  ensure
+    Zip.write_zip64_support = zip64 unless zip64.nil?
+  end
 end

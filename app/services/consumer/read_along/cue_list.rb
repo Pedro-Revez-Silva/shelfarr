@@ -13,6 +13,7 @@ class Consumer::ReadAlong::CueList
   class Invalid < StandardError; end
 
   MAX_CUES = 200_000
+  MAX_TRACKS = 2_000
   # Rounded clip values in real overlays can touch; real overlap cannot.
   OVERLAP_TOLERANCE_MS = 5
 
@@ -40,6 +41,9 @@ class Consumer::ReadAlong::CueList
   # Per audio resource, intervals sorted by start must not overlap, and an
   # open-ended cue must be the last.
   def check!(audio_count)
+    unless audio_count.is_a?(Integer) && audio_count.between?(1, MAX_TRACKS)
+      raise Invalid, "This alignment must have between 1 and #{MAX_TRACKS} audio tracks"
+    end
     raise Invalid, "This alignment has no cues" if @cues.empty?
 
     @cues.group_by { |cue| cue[2] }.each do |audio, cues|
@@ -51,6 +55,7 @@ class Consumer::ReadAlong::CueList
         raise Invalid, "Two cues overlap in the same audio" if following[3] < previous[4] - OVERLAP_TOLERANCE_MS
       end
     end
+    order_by_text
     self
   end
 
@@ -60,5 +65,18 @@ class Consumer::ReadAlong::CueList
 
   def audio_ms
     @cues.sum { |cue| cue[4] ? cue[4] - cue[3] : 0 }
+  end
+
+  private
+
+  def order_by_text
+    @cues.sort_by! { |cue| [ *@index.reading_order(@texts.fetch(cue[0]), cue[1]), cue[2], cue[3] ] }
+    paths = @texts
+    @texts = []
+    @text_positions = {}
+    @cues.each do |cue|
+      path = paths.fetch(cue[0])
+      cue[0] = (@text_positions[path] ||= (@texts << path).size - 1)
+    end
   end
 end
