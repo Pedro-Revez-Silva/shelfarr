@@ -574,6 +574,7 @@ class RealServerRequestTest {
         assertTrue("reader state ${readerState(reader)}", readerState(reader) is ReaderState.Ready)
         assertEquals("the preparing screen is gone", 0, compose.onAllNodesWithText("Opening", substring = true).fetchSemanticsNodes().size)
         awaitCondition("a painted page of text in the reader's window for $name") {
+            compose.waitForIdle()
             captureWindow(reader)?.let { image -> textRows(image).also { image.recycle() } >= MIN_TEXT_ROWS } == true
         }
         var shown: Bitmap? = null

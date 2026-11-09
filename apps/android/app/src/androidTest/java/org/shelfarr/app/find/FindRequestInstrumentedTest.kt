@@ -407,16 +407,22 @@ class FindRequestInstrumentedTest {
      * The reader open (not preparing), and a page of text both in the window's submitted
      * buffer and on the display itself. Text rows must fill much of the page, so neither
      * the "Opening…" screen nor a blank or stale frame passes. The display image is saved.
+     *
+     * Under this Compose test rule every Compose root in the process, the reader's own
+     * overlay included, runs on the test's frame clock, which advances only when the test
+     * synchronises with Compose. Each attempt lets it run, as it always does on a device;
+     * without that a real-server run held "Opening…" on screen for 90 seconds.
      */
     private fun readerScreenshot(reader: ReaderActivity, name: String) {
         assertTrue("reader state ${readerState(reader)}", readerState(reader) is ReaderState.Ready)
         assertEquals("the preparing screen is gone", 0, compose.onAllNodesWithText("Opening", substring = true).fetchSemanticsNodes().size)
         awaitCondition("a painted page of text in the reader's window for $name") {
+            compose.waitForIdle()
             captureWindow(reader)?.let { image -> textRows(image).also { image.recycle() } >= MIN_TEXT_ROWS } == true
         }
         var shown: Bitmap? = null
         awaitCondition("a page of text on the display for $name") {
-            instrumentation.waitForIdleSync()
+            compose.waitForIdle()
             val image = instrumentation.uiAutomation.takeScreenshot() ?: return@awaitCondition false
             val ok = textRows(image) >= MIN_TEXT_ROWS
             if (ok) shown = image else image.recycle()
