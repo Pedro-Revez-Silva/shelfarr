@@ -130,6 +130,63 @@ test("restoring a place plays and records nothing; a resume rewinds five seconds
   expect(saved[0]).toEqual({ asset_id: trackKey(0), position_seconds: 16 })
 })
 
+test("failed narration restoration finishes without activity and the same track can be retried", async () => {
+  const { value, audio, saved } = session()
+  audio.load = () => queueMicrotask(() => audio.emit("error"))
+  expect(await value.prepare(0, 3000)).toBe(false)
+  expect(value.ready).toBe(false)
+  expect(saved).toEqual([])
+  audio.load = FakeAudio.prototype.load.bind(audio)
+  expect(await value.prepare(0, 3000)).toBe(true)
+  expect(audio.currentTime).toBe(3)
+  expect(audio.paused).toBe(true)
+  expect(saved).toEqual([])
+  value.close()
+})
+
+test("closing a pending narration restore releases its waiter without playing or saving", async () => {
+  const { value, audio, saved } = session()
+  audio.load = () => {}
+  const pending = value.prepare(0, 3000)
+  value.close()
+  expect(await pending).toBe(false)
+  expect(audio.paused).toBe(true)
+  expect(audio.src).toBe(null)
+  expect(saved).toEqual([])
+})
+
+test("retrying failed narration keeps the requested place and its replay floor", async () => {
+  const { value, audio, saved } = session()
+  audio.load = () => queueMicrotask(() => audio.emit("error"))
+  expect(await value.prepare(0, 15000)).toBe(false)
+  audio.load = FakeAudio.prototype.load.bind(audio)
+  await value.resume()
+  expect(audio.currentTime).toBe(10)
+  expect(saved).toEqual([])
+  // Failure within the replayed span must not lower the original 15s floor.
+  audio.currentTime = 11
+  audio.emit("error")
+  await value.resume()
+  expect(audio.currentTime).toBe(11)
+  value.pause()
+  expect(saved).toEqual([])
+  value.close()
+})
+
+test("an audio error immediately saves the last point actually heard", async () => {
+  const { value, audio, saved, tick } = session()
+  await value.prepare(0, 0)
+  await value.playFrom(0)
+  tick(1000)
+  audio.advance(1)
+  const before = saved.length
+  audio.currentTime = 1.75
+  audio.emit("error")
+  expect(saved.length).toBe(before + 1)
+  expect(saved.at(-1)).toEqual({ asset_id: trackKey(0), position_seconds: 1.75 })
+  value.close()
+})
+
 test("playing saves at most every five seconds of activity, and pause saves at once", async () => {
   const { value, audio, saved, tick } = session()
   await value.prepare(0, 0)

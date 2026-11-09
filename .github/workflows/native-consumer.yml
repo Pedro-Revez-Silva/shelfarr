@@ -118,7 +118,7 @@ jobs:
           XCODEGEN_VERSION: 2.46.0
           XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
         run: |
-          curl -fsSL -o xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
           echo "$XCODEGEN_SHA256  xcodegen.zip" | shasum -a 256 -c -
           unzip -q xcodegen.zip -d "$RUNNER_TEMP/xcodegen"
           echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"

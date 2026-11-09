@@ -245,9 +245,14 @@ Rules every client follows (the web reader does):
   toggles narration; the browser's media session controls work.
 - Highlight: the element of the cue being heard (nothing between cues); the
   page turns only when that element is out of view and follow is on.
+- Resume: an accepted later place from another device is restored before
+  narration resumes. A failed restore stays paused and retains that place
+  for retry; restoring it never records listening activity.
 - Offline: Download stores the manifest, every listed resource and every
   narration file. It is ready only when all are in this account's cache; a
   partly evicted download is shown as removed; a new generation is an update.
+  Cancel reclaims resources already stored by an interrupted transfer. Cancelling
+  an update preserves the earlier complete copy.
 
 ## Native implementations
 

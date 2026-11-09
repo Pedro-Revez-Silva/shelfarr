@@ -182,13 +182,14 @@ export class ReadAlongSession {
     this.cue = -1
     this.ready = false
     this.closed = false
+    this.retry = null
     this.listeners = {
       loadedmetadata: () => this.loaded(),
       timeupdate: () => this.tick(),
       play: () => { this.onState("playing"); this.loop() },
       pause: () => this.paused(),
       ended: () => this.ended(),
-      error: () => { if (!this.closed && this.audio.getAttribute("src")) this.onError("The narration couldn't be loaded. Check the connection or sign in again.") }
+      error: () => this.failed()
     }
     for (const [type, listener] of Object.entries(this.listeners)) audio.addEventListener(type, listener)
   }
@@ -198,18 +199,24 @@ export class ReadAlongSession {
 
   // Show a place without playing or recording it (restoring is not activity).
   prepare(track, ms) {
-    if (this.closed || !this.prepared.audio[track]) return Promise.resolve()
-    if (track !== this.track) return this.load(track, ms, { autoplay: false, restored: true })
+    if (this.closed || !this.prepared.audio[track]) return Promise.resolve(false)
+    if (track !== this.track || !this.ready) return this.load(track, ms, { autoplay: false, restored: true })
     this.audio.currentTime = ms / 1000
     this.checkpoints.restored(this.audio.currentTime, trackKey(track))
     this.report()
-    return Promise.resolve()
+    return Promise.resolve(true)
   }
 
   // A genuine resume: rewinds once (five seconds) and plays.
   async resume() {
     if (this.closed || this.track < 0) return
-    if (!this.ready) { this.playWhenReady = true; return }
+    if (!this.ready) {
+      if (this.pending) { this.playWhenReady = true; return }
+      const retry = this.retry || { ms: this.positionMs }
+      const loaded = await this.load(this.track, retry.ms, { ...retry, autoplay: false })
+      if (loaded === false || this.closed) return false
+      return this.resume()
+    }
     const from = this.checkpoints.resume(this.audio.currentTime)
     if (from !== this.audio.currentTime) this.audio.currentTime = from
     await this.start()
@@ -220,7 +227,7 @@ export class ReadAlongSession {
   async playFrom(cue) {
     if (this.closed || cue < 0 || cue >= this.prepared.count) return
     const track = this.prepared.audioOf[cue], ms = this.prepared.begins[cue]
-    if (track !== this.track) {
+    if (track !== this.track || !this.ready) {
       await this.load(track, ms, { autoplay: true, deliberate: true })
       return
     }
@@ -248,6 +255,9 @@ export class ReadAlongSession {
 
   close() {
     this.closed = true
+    this.pending?.resolve?.(false)
+    this.pending = null
+    this.retry = null
     for (const [type, listener] of Object.entries(this.listeners)) this.audio.removeEventListener(type, listener)
     this.audio.pause()
     this.audio.removeAttribute("src")
@@ -258,6 +268,7 @@ export class ReadAlongSession {
 
   load(track, ms, { autoplay, restored = false, deliberate = false, continued = false }) {
     this.ready = false
+    this.retry = null
     this.track = track
     this.pending = { ms, autoplay, restored, deliberate, continued }
     this.playWhenReady = false
@@ -283,7 +294,23 @@ export class ReadAlongSession {
     const start = autoplay || this.playWhenReady
     this.playWhenReady = false
     const result = start ? (restored ? this.resume() : this.start()) : Promise.resolve()
-    result.finally(() => resolve?.())
+    result.finally(() => resolve?.(true))
+  }
+
+  failed() {
+    if (this.closed || !this.audio.getAttribute("src")) return
+    if (this.ready) {
+      this.checkpoints.settle(this.audio.currentTime, trackKey(this.track))
+      this.onRecord("error")
+    }
+    const pending = this.pending
+    this.retry = pending ? { ms: pending.ms, restored: pending.restored, deliberate: pending.deliberate, continued: pending.continued } : { ms: this.positionMs }
+    this.pending = null
+    this.playWhenReady = false
+    this.ready = false
+    pending?.resolve?.(false)
+    this.onState("paused")
+    this.onError("The narration couldn't be loaded. Check the connection or sign in again.")
   }
 
   async start() {

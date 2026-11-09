@@ -20,8 +20,9 @@
 // list for that exact file generation). It is stored only when both are.
 // A read-along EPUB is read entry by entry: its download is the manifest for
 // that exact generation plus every text resource and narration file the
-// manifest lists (recorded as `read_along.files` once the manifest arrives).
-// Until all of them are stored, and while the list is unknown, it is not.
+// manifest lists. Its validated `read_along.files` ownership list is saved
+// before any resource arrives, so Cancel can remove an interrupted transfer.
+// Readiness still requires the manifest (stored last) and every file.
 
 export const DB_NAME = "shelfarr-offline"
 const DB_VERSION = 1
@@ -478,13 +479,15 @@ function run(key) {
         if (streamedReadAlong(asset)) {
           const active = await activeAccount(record.deployment.slice(globalThis.location.origin.length))
           if (!active || active.expired || active.account !== record.account) throw new OfflineError("account")
-          const files = await storeReadAlong(cache, asset, stored, controller.signal, bytes => { job.received += bytes; reportProgress(key, job) })
+          await storeReadAlong(cache, asset, stored, controller.signal, bytes => { job.received += bytes; reportProgress(key, job) }, async files => {
+            // Retain ownership before writing any bytes, including when the
+            // transfer fails, the edition changes, or another tab cancels it.
+            record = await current(saved => ({ ...saved,
+              pending: { ...saved.pending, assets: saved.pending.assets.map(item => item.id === asset.id ? { ...item, read_along: { ...item.read_along, files } } : item) } }))
+            pending = record.pending
+          })
           job.received = 0
-          // The file list becomes part of the pending edition only with the
-          // asset marked done, so readiness never rests on a partial list.
-          record = await current(saved => ({ ...saved,
-            pending: { ...saved.pending, assets: saved.pending.assets.map(item => item.id === asset.id ? { ...item, read_along: { ...item.read_along, files } } : item) },
-            done: [...new Set([...saved.done, asset.id])] }))
+          record = await current(saved => ({ ...saved, done: [...new Set([...saved.done, asset.id])] }))
           notify(key)
           continue
         }
@@ -587,7 +590,7 @@ async function storeFile(cache, { url, size, mediaType, etag, generation, asset 
 // generation, then each text resource and narration file it lists. Returns
 // the file list that readiness is checked against.
 const MAX_MANIFEST_BYTES = 32 * 1024 * 1024
-async function storeReadAlong(cache, asset, stored, signal, onBytes) {
+async function storeReadAlong(cache, asset, stored, signal, onBytes, onFiles) {
   const summary = asset.read_along
   const url = absolute(summary.manifest_url)
   const response = await fetch(url, { credentials: "same-origin", redirect: "manual", cache: "no-store", signal, headers: { Accept: "application/json" } })
@@ -610,6 +613,7 @@ async function storeReadAlong(cache, asset, stored, signal, onBytes) {
   for (const file of files) {
     if (!Number.isInteger(file.size_bytes) || file.size_bytes < 0 || typeof file.url !== "string" || new URL(file.url, globalThis.location.origin).origin !== globalThis.location.origin) throw new OfflineError("changed")
   }
+  await onFiles(files.map(file => ({ url: file.url, size_bytes: file.size_bytes })))
   for (const file of files) {
     const target = absolute(file.url)
     if (stored.has(target)) continue

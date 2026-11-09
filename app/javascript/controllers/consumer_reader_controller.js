@@ -177,11 +177,18 @@ export default class extends Controller {
     if (this.hasRemoteTarget) this.remoteTarget.hidden = false
   }
 
-  goToRemote() {
+  async goToRemote() {
     const remote = this.remotePending
+    if (!remote) return
     this.remotePending = null
     if (this.hasRemoteTarget) this.remoteTarget.hidden = true
-    if (remote) this.applyPlace(remote)
+    if (this.hasErrorTarget) this.errorTarget.hidden = true
+    const applied = await this.applyPlace(remote)
+    if (applied === false && this.active && !this.remotePending) {
+      this.remotePending = remote
+      if (this.hasRemoteTarget) this.remoteTarget.hidden = false
+    }
+    return applied
   }
 
   applyPlace(progress) {
@@ -194,13 +201,11 @@ export default class extends Controller {
       if (!this.readerReady) { this.deferredPlace = progress; return }
       if (this.pageReader) {
         const { position } = this.pageModule.restoredPage(this.currentAsset.format, progress.locator, this.pageReader.count, this.pageReader.items())
-        this.pageReader.show(position).catch(() => this.showError("Couldn't open the other device's place."))
-        return
+        return this.pageReader.show(position).catch(() => { this.showError("Couldn't open the other device's place."); return false })
       }
       this.userMoved = false
-      this.showLocator(progress.locator).then(() => this.readAlongRestored(progress.locator))
-        .catch(() => this.showError("Couldn't open the other device's place."))
-      return
+      return this.showLocator(progress.locator).then(() => this.readAlongRestored(progress.locator, progress.observed_at))
+        .catch(() => { this.showError("Couldn't open the other device's place."); return false })
     }
     const index = this.publication.assets.findIndex(asset => asset.id === progress.asset_id)
     if (index < 0) return
@@ -237,8 +242,7 @@ export default class extends Controller {
   openReading() {
     this.renderEditions()
     this.pageMode(this.pageFormat)
-    if (this.pageFormat) this.openPages()
-    else this.openEbook()
+    return this.pageFormat ? this.openPages() : this.openEbook()
   }
 
   // Text and page readers share the overlay; each shows only its own tools.
@@ -293,7 +297,7 @@ export default class extends Controller {
     this.initialProgress = progress?.asset_id === this.currentAsset.id ? progress : null
     if (progress) this.savedPlace = progress
     if (!this.pageFormat) this.viewportTarget.replaceChildren(Object.assign(document.createElement("p"), { className: "consumer-opening", textContent: "Opening your book…" }))
-    this.openReading()
+    return this.openReading()
   }
 
   // PDF and CBZ ------------------------------------------------------------------
@@ -902,7 +906,7 @@ export default class extends Controller {
   // After the text shows a saved or remote place, put the narration there
   // too, without playing or recording. A read-along place names its exact
   // audio offset; a reading place names an element or nothing.
-  async readAlongRestored(locator) {
+  async readAlongRestored(locator, observedAt = null) {
     const readAlong = this.readAlong
     if (!readAlong || readAlong.session.playing) return
     const { module, prepared } = readAlong
@@ -913,7 +917,7 @@ export default class extends Controller {
     const audiobookPlace = readAlong.pairedSync?.restorePlace(readAlong.paired?.progress)
     const audiobook = audiobookPlace?.progress
     const heard = audiobook ? module.placeFromAudio(prepared, audiobook.asset_id, audiobook.position_seconds) : null
-    const ebookTime = timeOf(this.sync.restorePlace(this.publication.progress))
+    const ebookTime = observedAt ? Date.parse(observedAt) : timeOf(this.sync.restorePlace(this.publication.progress))
     const audioTime = timeOf(audiobookPlace)
     const later = Number.isFinite(audioTime) && (!Number.isFinite(ebookTime) || audioTime > ebookTime)
     if (heard && (!place || later) && heard.cue !== place?.cue) {
@@ -921,7 +925,8 @@ export default class extends Controller {
       if (this.hasReadAlongOfferTarget) this.readAlongOfferTarget.hidden = false
     }
     if (!place) return
-    await readAlong.session.prepare(place.track, place.ms)
+    const restored = await readAlong.session.prepare(place.track, place.ms)
+    if (restored === false || !this.active || this.readAlong !== readAlong) return false
     readAlong.readSinceHeard = !locator?.locations?.readAlong
   }
 
@@ -996,18 +1001,28 @@ export default class extends Controller {
     const { session } = readAlong
     if (session.playing && !forcePlay) return session.pause()
     if (session.playing) return
-    if (this.remotePending && !this.sessionMoved) this.goToRemote()
-    // After reading on (or with no narration place yet), start with the
-    // narration of the page in view; otherwise resume where it paused.
-    if (readAlong.readSinceHeard || session.track < 0 || readAlong.finished) {
-      readAlong.finished = false
-      const cue = this.visibleCue()
+    if (readAlong.resuming) return
+    readAlong.resuming = true
+    try {
+      // A genuine resume is the safe point for an accepted remote place,
+      // even after this visit has listened. Text and narration must both be
+      // restored before playback; a second Play cannot bypass that work.
+      if (this.remotePending && await this.goToRemote() === false) return
+      if (!this.active || !this.readerReady || this.readAlong !== readAlong) return
+      // After reading on (or with no narration place yet), start with the
+      // narration of the page in view; otherwise resume where it paused.
+      if (readAlong.readSinceHeard || session.track < 0 || readAlong.finished) {
+        readAlong.finished = false
+        const cue = this.visibleCue()
+        readAlong.suspended = false
+        readAlong.readSinceHeard = false
+        return await session.playFrom(cue >= 0 ? cue : 0)
+      }
       readAlong.suspended = false
-      readAlong.readSinceHeard = false
-      return session.playFrom(cue >= 0 ? cue : 0)
+      return await session.resume()
+    } finally {
+      readAlong.resuming = false
     }
-    readAlong.suspended = false
-    return session.resume()
   }
 
   toggleFollow() {
