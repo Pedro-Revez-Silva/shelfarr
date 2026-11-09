@@ -2,7 +2,11 @@
 # Runs the iOS app on a simulator against a local fixture server and drives it with
 # XCUITest: library and search, details, a rendered EPUB, downloads through the system
 # background session, a local audiobook, reopening everything offline, the activity
-# time sent with progress, a silent reader reopen and the audiobook resume rewind.
+# time sent with progress, a silent reader reopen and the audiobook resume rewind; and
+# PDFs and CBZ comics (FormatsSmokeTests): rendered pages, page turns, rotation and
+# reopening without writes, an impossible saved page kept, each format downloaded, the
+# choice of format, and a comic read offline that syncs on reconnecting. The fixture's
+# own format checks (RuntimeSmoke/test_formats_fixture.py) run first.
 #
 # Needs macOS, Xcode 16.4+, XcodeGen and python3.
 #
@@ -128,6 +132,13 @@ for runtime, devices in json.load(sys.stdin)["devices"].items():
             json.dump({"family": family, "name": device["name"], "udid": udid, "runtime": runtime,
                        "sdk": sdk, "booted_by_script": booted == "1"}, sys.stdout, indent=2)
 ' "$udid" "$family" "$sdk_version" "$booted_here" > "$out/device.json" || true
+
+# The fixture must serve the real format and locator shapes before the app is judged by it.
+if ! python3 -B RuntimeSmoke/test_formats_fixture.py > "$out/fixture-tests.log" 2>&1; then
+  echo "The fixture's format tests failed:" >&2
+  tail -n 40 "$out/fixture-tests.log" >&2
+  exit 1
+fi
 
 python3 -B RuntimeSmoke/smoke_server.py --port "$port" --control-port "$control_port" > "$out/server.log" 2>&1 &
 server_pid=$!

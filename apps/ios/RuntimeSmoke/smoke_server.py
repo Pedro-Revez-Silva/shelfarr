@@ -10,8 +10,11 @@ It serves apps/scripts/mock_consumer_server.py unchanged and adds, for the smoke
 * counters that let the test prove downloads used grants and never sent the bearer
   with them;
 * a record of progress writes per publication (count, and the latest body's
-  `observed_at`, `resolve_conflict` and place), so the test can check activity times
-  and that reopening a saved place writes nothing.
+  `observed_at`, `resolve_conflict` and place, with the asset and page of a PDF or
+  comic place), so the test can check activity times and that reopening a saved place
+  writes nothing;
+* `POST /place` on the control port, which saves a page place as another device would
+  (`{"publication", "asset", "page"}`), including a page the file doesn't have.
 
 Development only: no real security, in memory, bound to 127.0.0.1.
 
@@ -28,6 +31,7 @@ import socketserver
 import sys
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -65,12 +69,17 @@ class ProgressLog:
         self.writes = {}
 
     def record(self, publication_id, body):
+        locator = body.get("locator") if isinstance(body.get("locator"), dict) else {}
+        locations = locator.get("locations") if isinstance(locator.get("locations"), dict) else {}
         entry = {
             "observed_at": body.get("observed_at"),
             "resolve_conflict": body.get("resolve_conflict"),
             "position_seconds": body.get("position_seconds"),
             "has_locator": body.get("locator") is not None,
             "client_mutation_id": body.get("client_mutation_id"),
+            "asset_id": body.get("asset_id"),
+            "page": locations.get("position"),
+            "href": locator.get("href"),
         }
         with self.lock:
             log = self.writes.setdefault(publication_id, {"count": 0, "last": None, "resolving": 0, "without_observed_at": 0})
@@ -226,6 +235,28 @@ class SmokeHandler(mock.Handler):
         })
 
 
+def save_place(request):
+    """Another device's page place, observed a minute ago. Not validated against the page
+    count: a PDF place past the end is exactly what the reader must keep."""
+    state = mock.Handler.state
+    publication, asset, page = request["publication"], request["asset"], int(request["page"])
+    if state.files[asset][2] == "pdf":
+        locator = {"href": "document.pdf", "type": "application/pdf",
+                   "locations": {"position": page, "fragments": [f"page={page}"]}}
+    else:
+        item = state.orders[asset][page - 1]
+        locator = {"href": item["href"], "type": item["media_type"], "locations": {"position": page}}
+    observed = time.time() - 60
+    with state.lock:
+        current = state.progress.get(publication)
+        saved = {"asset_id": asset, "locator": locator, "position_seconds": None,
+                 "observed_at": mock.format_time(observed), "version": (current["version"] if current else 0) + 1,
+                 "updated_at": mock.format_time(time.time()), "client_mutation_id": str(uuid.uuid4())}
+        state.progress[publication] = saved
+        state.touch(publication, observed)
+    return {"progress": saved}
+
+
 class ControlHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -242,8 +273,10 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b""
+        if self.path == "/place":
+            self.reply(save_place(json.loads(body or b"{}")))
+            return
         if self.path == "/offline":
             SWITCH.down()
         elif self.path == "/online":

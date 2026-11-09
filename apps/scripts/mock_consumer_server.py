@@ -22,9 +22,17 @@ requesting bundle (an already connected app asks with its bearer and keeps its
 account). /discover searches a small fixture catalogue and /requests follows a
 request one stage per poll until a new fixture book appears in the library.
 --grant-requesting gives every new token the requesting bundle,
---old-server behaves like a server without requesting (no consumer_features,
-scope ignored), and --request-outcome not_found|failed ends new requests there.
+--old-server behaves like a server without requesting or reader formats (no
+consumer_features or reader_formats, scope and X-Shelfarr-Reader-Formats ignored),
+and --request-outcome not_found|failed ends new requests there.
 Nothing is acquired or bought.
+
+Reader formats: clients that send X-Shelfarr-Reader-Formats (see
+docs/consumer-formats.md) also see three fixture books made of generated files: a
+six-page PDF, a ten-page CBZ comic (stored as a comic record, served as an ebook with
+content_kind "graphic") and a book with both an EPUB and a PDF. Clients that don't
+send the header see exactly the EPUB and audio library above. Comic reading orders are
+served at reading_order_url, and page places are checked as the server checks them.
 """
 
 import argparse
@@ -39,6 +47,7 @@ import time
 import uuid
 import wave
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -152,6 +161,120 @@ def build_epub():
     return buffer.getvalue()
 
 
+# Distinct page colours, so a test can tell from the pixels which page is on screen.
+PAGE_COLOURS = [(204, 64, 51), (51, 153, 77), (51, 89, 191), (230, 191, 38), (153, 64, 166),
+                (38, 166, 179), (230, 115, 38), (115, 115, 115), (191, 51, 115), (89, 140, 38)]
+READER_FORMATS = ("cbz", "epub", "pdf")
+LEGACY_FORMATS = ("epub",)
+FIXED_LOCATOR_KEYS = {"href", "type", "title", "locations", "text"}
+FIXED_LOCATION_KEYS = {"position", "progression", "totalProgression", "fragments"}
+IMAGE_TYPES = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+
+
+def build_pdf(pages=6):
+    """A small valid PDF: each page a full colour block with "Page N" in large type, and
+    on page 1 an external link that a reader must never follow."""
+    objects = {1: b"<< /Type /Catalog /Pages 2 0 R >>",
+               3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"}
+    kids = []
+    number = 4
+    for index in range(pages):
+        red, green, blue = (c / 255 for c in PAGE_COLOURS[index % len(PAGE_COLOURS)])
+        content = (f"{red:.3f} {green:.3f} {blue:.3f} rg 36 36 540 720 re f "
+                   f"1 1 1 rg BT /F1 72 Tf 150 380 Td (Page {index + 1}) Tj ET").encode()
+        annots = ""
+        if index == 0:
+            objects[number + 2] = (b"<< /Type /Annot /Subtype /Link /Rect [36 36 576 200] /Border [0 0 0] "
+                                   b"/A << /S /URI /URI (https://example.invalid/never-opened) >> >>")
+            annots = f" /Annots [{number + 2} 0 R]"
+        objects[number] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+                           f"/Resources << /Font << /F1 3 0 R >> >> /Contents {number + 1} 0 R{annots} >>").encode()
+        objects[number + 1] = b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream"
+        kids.append(number)
+        number += 3 if index == 0 else 2
+    objects[2] = ("<< /Type /Pages /Kids [" + " ".join(f"{k} 0 R" for k in kids) + f"] /Count {pages} >>").encode()
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = {}
+    for num in sorted(objects):
+        offsets[num] = len(out)
+        out += b"%d 0 obj\n" % num + objects[num] + b"\nendobj\n"
+    xref = len(out)
+    size = max(objects) + 1
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % size
+    for num in range(1, size):
+        out += b"%010d 00000 n \n" % offsets[num] if num in offsets else b"0000000000 65535 f \n"
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (size, xref)
+    return bytes(out)
+
+
+def build_png(width, height, colour):
+    """A solid page with a dark band across the middle."""
+    row = bytes([0]) + bytes(colour) * width
+    band = bytes([0]) + bytes((24, 24, 24)) * width
+    raw = b"".join(band if 0.45 * height <= y < 0.55 * height else row for y in range(height))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def build_cbz(pages=10):
+    """A comic of PNG pages named so natural order matters (p2 before p10), stored and
+    deflated alternately, with metadata entries that are not pages."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        def add(name, data, method):
+            info = zipfile.ZipInfo(name, date_time=(2026, 11, 9, 12, 0, 0))
+            info.external_attr = 0o100644 << 16
+            info.compress_type = method
+            archive.writestr(info, data)
+        add("ComicInfo.xml", b"<ComicInfo><Title>A Test Comic</Title></ComicInfo>", zipfile.ZIP_DEFLATED)
+        for page in range(pages, 0, -1):
+            add(f"Issue 1/p{page}.png", build_png(600, 900, PAGE_COLOURS[(page - 1) % len(PAGE_COLOURS)]),
+                zipfile.ZIP_STORED if page % 2 else zipfile.ZIP_DEFLATED)
+        add("Issue 1/.thumbnail.png", build_png(10, 15, (0, 0, 0)), zipfile.ZIP_STORED)
+        add("__MACOSX/Issue 1/._p1.png", b"\0" * 32, zipfile.ZIP_STORED)
+    return buffer.getvalue()
+
+
+def escape_href(name):
+    return "".join(chr(b) if (chr(b).isascii() and (chr(b).isalnum() or chr(b) in "-._~/")) else f"%{b:02X}"
+                   for b in name.encode())
+
+
+def natural_key(name):
+    return ([int(part) if index % 2 else part for index, part in enumerate(re.split(r"(\d+)", name.lower()))],
+            name.encode())
+
+
+def reading_order(data):
+    """The page list the server derives from a CBZ's ZIP metadata."""
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        pages = []
+        for info in archive.infolist():
+            parts = info.filename.split("/")
+            kind = IMAGE_TYPES.get(info.filename.rsplit(".", 1)[-1].lower()) if "." in parts[-1] else None
+            if info.is_dir() or kind is None or any(p.startswith(".") or p == "__MACOSX" for p in parts):
+                continue
+            pages.append((info, kind))
+    pages.sort(key=lambda page: natural_key(page[0].filename))
+    return [{"position": n + 1, "href": escape_href(info.filename), "media_type": kind,
+             "size_bytes": info.file_size, "compressed_size": info.compress_size,
+             "compression_method": info.compress_type, "local_header_offset": info.header_offset,
+             "crc32": f"{info.CRC:08x}"} for n, (info, kind) in enumerate(pages)]
+
+
+def parse_reader_formats(value):
+    """The client's declared formats, normalized, or LEGACY_FORMATS without the header."""
+    if value is None:
+        return LEGACY_FORMATS
+    names = [name.strip() for name in value.split(",")]
+    if not 1 <= len(value.encode()) <= 64 or not all(name in READER_FORMATS for name in names):
+        raise ValueError("Unknown or empty reader format; supported formats are cbz,epub,pdf")
+    return tuple(sorted(set(names)))
+
+
 def build_tone(seconds, hertz):
     rate = 16000
     frames = bytearray()
@@ -198,6 +321,22 @@ class State:
         for n in range(1, extra_books + 1):
             self.files[f"epub-x{n}"] = (f"mock-{n}.epub",) + epub[1:]
             self.books[f"book-x{n}"] = (f"Mock Book {n:03d}", "Mock Author", "ebook", [f"epub-x{n}"])
+        # Listed only to clients that declare PDF or CBZ, so the library an older app sees
+        # (and every count or page it expects) is unchanged.
+        pdf, cbz = build_pdf(), build_cbz()
+        self.files.update({
+            "pdf-1": ("A Test PDF.pdf", "application/pdf", "pdf", pdf),
+            "cbz-1": ("Issue 1.cbz", "application/vnd.comicbook+zip", "cbz", cbz),
+            "epub-m": ("Two Formats.epub",) + epub[1:],
+            "pdf-m": ("Two Formats.pdf", "application/pdf", "pdf", pdf),
+        })
+        self.books.update({
+            "pdf-1": ("A Test PDF", "Mock Author", "ebook", ["pdf-1"]),
+            "comic-1": ("A Test Comic", "Mock Artist", "comicbook", ["cbz-1"]),
+            "multi-1": ("Two Formats", "Mock Author", "ebook", ["epub-m", "pdf-m"]),
+        })
+        self.format_books = {"pdf-1", "comic-1", "multi-1"}
+        self.orders = {"cbz-1": reading_order(cbz)}
 
     def request_view(self, request_id):
         r = self.requests[request_id]
@@ -250,9 +389,9 @@ class State:
             return self.statuses[publication_id]
         return "in_progress" if self.progress.get(publication_id) else "unread"
 
-    def asset(self, base, asset_id, position):
+    def asset(self, base, asset_id, position, publication_id=None):
         name, media_type, fmt, data = self.files[asset_id]
-        return {
+        asset = {
             "id": asset_id,
             "filename": name,
             "media_type": media_type,
@@ -261,26 +400,74 @@ class State:
             "content_url": f"{base}{PREFIX}/assets/{asset_id}/content",
             "position": position,
         }
+        if fmt == "cbz":
+            asset["page_count"] = len(self.orders[asset_id])
+            asset["reading_order_url"] = f"{base}{PREFIX}/library/{publication_id}/assets/{asset_id}/reading_order"
+        return asset
 
-    def publication(self, base, publication_id):
+    def visible(self, publication_id, formats):
+        """Whether a client declaring `formats` sees this publication at all."""
+        if publication_id not in self.format_books:
+            return True
+        return formats != LEGACY_FORMATS and bool(set(formats) & {"pdf", "cbz"})
+
+    def publication(self, base, publication_id, formats=LEGACY_FORMATS):
         title, author, kind, assets = self.books[publication_id]
-        return {
+        declared = formats != LEGACY_FORMATS
+        shown = [a for a in assets if self.files[a][2] in formats or self.files[a][2] not in READER_FORMATS]
+        item = {
             "id": publication_id,
             "title": title,
             "author": author,
             "description": "Development fixture served by mock_consumer_server.py.",
-            "book_type": kind,
+            # A comic record is an ebook to every client; no new book_type reaches old apps.
+            "book_type": "ebook" if kind == "comicbook" else kind,
             "cover_url": None,
-            "assets": [self.asset(base, a, n) for n, a in enumerate(assets)],
+            "assets": [self.asset(base, a, n, publication_id) for n, a in enumerate(assets) if a in shown],
             "progress": self.progress.get(publication_id),
             "reading_status": self.status(publication_id),
         }
+        if declared:
+            item["content_kind"] = "graphic" if kind == "comicbook" else "book"
+        return item
 
-    def listing(self, base, query):
+    def fixed_layout_error(self, publication_id, asset_id, locator):
+        """The server's page-place checks (ProgressWriter#validate_fixed_layout), or None."""
+        if asset_id not in self.files or self.files[asset_id][2] not in ("pdf", "cbz"):
+            return None
+        if asset_id not in self.books[publication_id][3]:
+            return "That file isn't part of this publication"
+        locations = locator.get("locations") if isinstance(locator, dict) else None
+        if not isinstance(locations, dict) or len(json.dumps(locator).encode()) > 16384:
+            return "A page place needs a locator with locations"
+        position = locations.get("position")
+        title, text = locator.get("title"), locator.get("text")
+        fractions_ok = all(key not in locations or (type(locations[key]) in (int, float) and 0 <= locations[key] <= 1)
+                           for key in ("progression", "totalProgression"))
+        if (set(locator) - FIXED_LOCATOR_KEYS or set(locations) - FIXED_LOCATION_KEYS or type(position) is not int
+                or not 1 <= position <= 100000 or not fractions_ok
+                or (title is not None and (not isinstance(title, str) or len(title.encode()) > 1024))
+                or (text is not None and not isinstance(text, dict))):
+            return "A page place needs a one-based locations.position and no text position"
+        if self.files[asset_id][2] == "pdf":
+            fragments = locations.get("fragments")
+            if locator.get("href") != "document.pdf" or locator.get("type") != "application/pdf" \
+                    or (fragments is not None and fragments != [f"page={position}"]):
+                return "A PDF place is document.pdf with type application/pdf and an optional page=N fragment"
+            return None
+        if "fragments" in locations:
+            return "A comic place has no fragments"
+        pages = self.orders[asset_id]
+        page = pages[position - 1] if position <= len(pages) else None
+        if page is None or locator.get("href") != page["href"] or locator.get("type") != page["media_type"]:
+            return f"This page is not page {position} of the comic's reading order; refresh the publication"
+        return None
+
+    def listing(self, base, query, formats=LEGACY_FORMATS):
         kind = query.get("type", [None])[0]
         status = query.get("status", [None])[0]
         text = (query.get("q", [""])[0] or "").lower()
-        items = [self.publication(base, p) for p in self.books]
+        items = [self.publication(base, p, formats) for p in self.books if self.visible(p, formats)]
         items = [i for i in items if kind in (None, i["book_type"])]
         items = [i for i in items if status in (None, i["reading_status"])]
         items = [i for i in items if text in i["title"].lower() or text in (i["author"] or "").lower()]
@@ -312,7 +499,7 @@ class Handler(BaseHTTPRequestHandler):
     def body(self):
         return json.loads(self.raw_body() or b"{}")
 
-    def respond(self, code, payload=None):
+    def respond(self, code, payload=None, vary=False):
         # Every request body is read before answering, also when a handler doesn't need
         # it (auth/revoke, refusals): on a keep-alive connection an unread body would be
         # parsed as the start of the next request ("{}GET ...", 501).
@@ -321,6 +508,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if vary:
+            self.send_header("Vary", "X-Shelfarr-Reader-Formats")
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -330,6 +519,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.base and path.startswith(self.base + "/"):
             path = path[len(self.base):]
         return path
+
+    def reader_formats(self):
+        """The declared formats; None after answering 400 for an invalid declaration."""
+        if self.state.old_server:
+            # A server from before reader formats ignores the header.
+            return LEGACY_FORMATS
+        try:
+            return parse_reader_formats(self.headers.get("X-Shelfarr-Reader-Formats"))
+        except ValueError as error:
+            self.respond(400, {"error": "invalid_request", "message": str(error)}, vary=True)
+            return None
 
     def bearer(self):
         header = self.headers.get("Authorization", "")
@@ -459,6 +659,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"schema_version": 1, "server_version": "mock", "consumer_api_versions": [1], "android": {}}
             if not self.state.old_server:
                 payload["consumer_features"] = ["requests"]
+                payload["reader_formats"] = list(READER_FORMATS)
             return self.respond(200, payload)
         if not self.authorized():
             return
@@ -495,9 +696,23 @@ class Handler(BaseHTTPRequestHandler):
                     self.state.advance(request_id)
                 ordered = sorted(self.state.requests, key=lambda i: self.state.requests[i]["updated_at"], reverse=True)
                 return self.respond(200, {"items": [self.state.request_view(i) for i in ordered]})
+            order_match = re.fullmatch(PREFIX + r"/library/([^/]+)/assets/([^/]+)/reading_order", path)
+            if order_match:
+                book = self.state.books.get(order_match[1])
+                if book is None or order_match[2] not in book[3] or order_match[2] not in self.state.orders:
+                    return self.respond(410, {"error": "asset_unavailable"})
+                return self.respond(200, {"asset_id": order_match[2], "format": "cbz", "items": self.state.orders[order_match[2]]})
+            formats = LEGACY_FORMATS
+            if path in (f"{PREFIX}/library", f"{PREFIX}/continue") or re.fullmatch(PREFIX + r"/library/[^/]+", path):
+                formats = self.reader_formats()
+                if formats is None:
+                    return None
             if path == f"{PREFIX}/library":
-                # The cursor binds every filter and the sort, as the real API's does.
-                bound = json.dumps({k: query.get(k) for k in ("type", "status", "sort", "q")}, sort_keys=True)
+                # The cursor binds every filter, the sort and (beyond the default) the formats.
+                binding = {k: query.get(k) for k in ("type", "status", "sort", "q")}
+                if formats != LEGACY_FORMATS:
+                    binding["formats"] = list(formats)
+                bound = json.dumps(binding, sort_keys=True)
                 start = 0
                 if "cursor" in query:
                     offset, _, key = query["cursor"][0].partition(":")
@@ -505,23 +720,24 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond(400, {"error": "invalid_cursor"})
                     start = int(offset)
                 limit = max(1, min(int(query.get("limit", ["30"])[0]), 100))
-                items = self.state.listing(self.base, query)
+                items = self.state.listing(self.base, query, formats)
                 page = items[start:start + limit]
                 more = start + limit < len(items)
                 cursor = f"{start + limit}:{hashlib.sha256(bound.encode()).hexdigest()[:12]}" if more else None
-                return self.respond(200, {"items": page, "next_cursor": cursor})
+                return self.respond(200, {"items": page, "next_cursor": cursor}, vary=True)
             if path == f"{PREFIX}/continue":
                 limit = max(1, min(int(query.get("limit", ["10"])[0]), 50))
-                items = [self.state.publication(self.base, p) for p in self.state.books]
-                items = [i for i in items if i["id"] in self.state.activity]
+                items = [self.state.publication(self.base, p, formats) for p in self.state.books if self.state.visible(p, formats)]
+                # Only a place on a file this client can open is offered.
+                items = [i for i in items if i["id"] in self.state.activity and (
+                    not i["progress"] or i["progress"]["asset_id"] in {a["id"] for a in i["assets"]})]
                 items.sort(key=lambda i: -self.state.activity[i["id"]])
-                return self.respond(200, {"items": items[:limit]})
+                return self.respond(200, {"items": items[:limit]}, vary=True)
             match = re.fullmatch(PREFIX + r"/library/([^/]+)(/progress)?", path)
-            if match and match[1] in self.state.books:
-                publication = self.state.publication(self.base, match[1])
+            if match and match[1] in self.state.books and (match[2] or self.state.visible(match[1], formats)):
                 if match[2]:
-                    return self.respond(200, {"progress": publication["progress"]})
-                return self.respond(200, publication)
+                    return self.respond(200, {"progress": self.state.progress.get(match[1])})
+                return self.respond(200, self.state.publication(self.base, match[1], formats), vary=True)
         match = re.fullmatch(PREFIX + r"/assets/([^/]+)/content", path)
         if match and match[1] in self.state.files:
             return self.serve(self.state.files[match[1]])
@@ -534,6 +750,9 @@ class Handler(BaseHTTPRequestHandler):
         if status_match:
             if not self.authorized():
                 return None
+            formats = self.reader_formats()
+            if formats is None:
+                return None
             status = self.body().get("status")
             with self.state.lock:
                 if status_match[1] not in self.state.books:
@@ -543,7 +762,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Explicit status wins over progress and keeps the saved place.
                 self.state.statuses[status_match[1]] = status
                 self.state.touch(status_match[1])
-                return self.respond(200, self.state.publication(self.base, status_match[1]))
+                return self.respond(200, self.state.publication(self.base, status_match[1], formats), vary=True)
         match = re.fullmatch(PREFIX + r"/library/([^/]+)/progress", self.route())
         if not match or not self.authorized():
             return None if match else self.respond(404, {"error": "not_found"})
@@ -557,6 +776,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(422, {"error": "invalid_progress", "message": "resolve_conflict must be true or false"})
         place = {"asset_id": update.get("asset_id"), "locator": update.get("locator"),
                  "position_seconds": update.get("position_seconds"), "observed_at": format_time(observed)}
+        if match[1] in self.state.books:
+            refusal = self.state.fixed_layout_error(match[1], place["asset_id"], place["locator"])
+            if refusal:
+                return self.respond(422, {"error": "invalid_progress", "message": refusal})
         with self.state.lock:
             current = self.state.progress.get(match[1])
             version = current["version"] if current else 0
@@ -618,6 +841,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", media_type)
         self.send_header("Accept-Ranges", "bytes")
+        if media_type in ("application/pdf", "application/vnd.comicbook+zip"):
+            # As the server sends them: never rendered in place.
+            self.send_header("Content-Disposition", "attachment")
+            self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("ETag", etag)
         self.send_header("Content-Length", str(end - start + 1))
         if status == 206:
