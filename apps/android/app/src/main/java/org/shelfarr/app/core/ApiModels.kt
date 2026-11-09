@@ -170,7 +170,7 @@ data class Publication(
 
     /** The assets a saved position may legitimately refer to in this edition. */
     val playableAssets: List<Asset>
-        get() = if (bookType == BookType.EBOOK) listOfNotNull(epubAsset) else audioAssets
+        get() = if (bookType == BookType.EBOOK) readingAssets else audioAssets
 
     val isGraphic: Boolean get() = contentKind == "graphic"
 

@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -50,11 +53,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import org.shelfarr.app.core.Progress
+import org.shelfarr.app.core.ReadingFormat
+import org.shelfarr.app.reader.pages.PagedReader
 import org.shelfarr.app.core.SavedPosition
 import org.shelfarr.app.core.SyncStatus
 import org.shelfarr.app.ui.components.MessageState
@@ -104,6 +110,31 @@ fun ReaderScreen(
             onClose,
             null,
         )
+        is ReaderState.Damaged -> ReaderMessage(theme, "Can't open this file", current.message, onClose, null)
+        is ReaderState.ChooseFormat -> FormatChoice(theme, current, onClose, viewModel::chooseFormat)
+        is ReaderState.Paged -> {
+            val page by viewModel.page.collectAsState()
+            // A rotation rebuilds the pager on the page already shown, so it reports nothing new.
+            androidx.compose.runtime.key(current.format, current.pageCount) {
+                PagedReader(
+                    title = current.title,
+                    format = current.format,
+                    pageCount = current.pageCount,
+                    initialPage = page,
+                    theme = theme,
+                    chromeVisible = chromeVisible,
+                    render = viewModel::renderPage,
+                    onPageSettled = viewModel::onPageSettled,
+                    onToggleChrome = onToggleChrome,
+                    onClose = onClose,
+                    commands = viewModel.pageCommands,
+                    notice = current.notice,
+                    invalidPlace = current.invalidPlace,
+                    onResolveInvalidPlace = viewModel::resolveInvalidPlace,
+                )
+            }
+            SyncOverlays(sync, theme, viewModel::keepThisPlace, onUseOtherPlace)
+        }
         is ReaderState.Ready -> {
             ReaderChrome(
                 ready = current,
@@ -115,27 +146,92 @@ fun ReaderScreen(
                 onScrub = onScrub,
                 onSettings = { change -> viewModel.updateSettings(change) },
             )
-            (sync as? SyncStatus.Conflict)?.let { conflict ->
-                conflict.local?.let { local ->
-                    ResumeChoiceDialog(
-                        local = local,
-                        server = conflict.server,
-                        onKeepLocal = viewModel::keepThisPlace,
-                        onUseServer = onUseOtherPlace,
-                    )
-                }
-            }
-            syncProblemCopy(sync)?.let { problem ->
-                Box(Modifier.fillMaxSize()) {
-                    Snackbar(
-                        containerColor = theme.barColor,
-                        contentColor = theme.textColor,
-                        modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp),
-                    ) { Text(problem) }
+            SyncOverlays(sync, theme, viewModel::keepThisPlace, onUseOtherPlace)
+        }
+    }
+}
+
+@Composable
+private fun SyncOverlays(sync: SyncStatus, theme: ReaderTheme, onKeepLocal: () -> Unit, onUseOtherPlace: () -> Unit) {
+    (sync as? SyncStatus.Conflict)?.let { conflict ->
+        conflict.local?.let { local ->
+            ResumeChoiceDialog(
+                local = local,
+                server = conflict.server,
+                onKeepLocal = onKeepLocal,
+                onUseServer = onUseOtherPlace,
+            )
+        }
+    }
+    syncProblemCopy(sync)?.let { problem ->
+        Box(Modifier.fillMaxSize()) {
+            Snackbar(
+                containerColor = theme.barColor,
+                contentColor = theme.textColor,
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(16.dp),
+            ) { Text(problem) }
+        }
+    }
+}
+
+/** Several formats and nothing saved to go by: the reader chooses, and nothing is written yet. */
+@Composable
+internal fun FormatChoice(theme: ReaderTheme, state: ReaderState.ChooseFormat, onClose: () -> Unit, onChoose: (String) -> Unit) {
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().background(theme.pageColor)) {
+        val viewport = maxHeight
+        // Scrolls under large text; centred when it fits.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = viewport)
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(start = 32.dp, end = 32.dp, top = 56.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+        ) {
+            Text(
+                "How would you like to read it?",
+                style = MaterialTheme.typography.titleLarge,
+                color = theme.textColor,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(
+                "${state.title} is on your server in more than one format. Your place is saved separately for each.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = theme.mutedColor,
+            )
+            state.options.forEach { option ->
+                val format = option.readingFormat ?: return@forEach
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, theme.hairlineColor, RoundedCornerShape(12.dp))
+                        .clickable(role = Role.Button) { onChoose(option.id) }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                ) {
+                    Column {
+                        Text(format.label, style = MaterialTheme.typography.titleMedium, color = theme.textColor)
+                        Text(formatHint(format, option.sizeBytes), style = MaterialTheme.typography.bodySmall, color = theme.mutedColor)
+                    }
                 }
             }
         }
+        // Drawn last so it stays above the scrolling text.
+        Box(Modifier.fillMaxWidth().background(theme.pageColor).statusBarsPadding()) {
+            CloseButton(theme, onClose, Modifier.padding(4.dp))
+        }
     }
+}
+
+private fun formatHint(format: ReadingFormat, size: Long): String {
+    val kind = when (format) {
+        ReadingFormat.EPUB -> "Reflowing text, with your font and size"
+        ReadingFormat.PDF -> "Fixed pages, as printed"
+        ReadingFormat.CBZ -> "Page images, as drawn"
+    }
+    return if (size > 0) "$kind · ${org.shelfarr.app.ui.formatBytes(size)}" else kind
 }
 
 @Composable

@@ -137,13 +137,13 @@ class ConsumerApi(
             cursor?.let { addQueryParameter("cursor", it) }
             addQueryParameter("limit", limit.toString())
         }.build()
-        return get(url).parse()
+        return library(url).parse()
     }
 
     /** Library-wide recent activity across every acquired publication. */
     suspend fun continueReading(server: ServerAddress, limit: Int = 10): List<Publication> {
         val url = server.api("continue").newBuilder().addQueryParameter("limit", limit.toString()).build()
-        return get(url).parse<ContinueList>().items
+        return library(url).parse<ContinueList>().items
     }
 
     /** Sets the explicit status. The saved place is kept by the server. */
@@ -151,12 +151,13 @@ class ConsumerApi(
         val request = Request.Builder()
             .url(server.api("library/${encodePath(publicationId)}/reading_status"))
             .put(ApiJson.encodeToString(ReadingStatusUpdate(status)).toRequestBody(JSON))
+            .header(READER_FORMATS_HEADER, READER_FORMATS)
             .build()
         return execute(request).parse()
     }
 
     suspend fun publication(server: ServerAddress, id: String): Publication =
-        get(server.api("library/${encodePath(id)}")).parse()
+        library(server.api("library/${encodePath(id)}")).parse()
 
     suspend fun progress(server: ServerAddress, publicationId: String): Progress? =
         get(server.api("library/${encodePath(publicationId)}/progress"))
@@ -174,6 +175,14 @@ class ConsumerApi(
     }
 
     private suspend fun get(url: HttpUrl): Reply = execute(Request.Builder().url(url).get().build())
+
+    /**
+     * Every answer that describes publications declares the formats this app reads, so
+     * listings, details, Continue and status changes describe the same files and cached
+     * details never lose a PDF or CBZ. Older servers ignore it and send EPUB only.
+     */
+    private suspend fun library(url: HttpUrl): Reply =
+        execute(Request.Builder().url(url).get().header(READER_FORMATS_HEADER, READER_FORMATS).build())
 
     private suspend fun post(url: HttpUrl, body: String): Reply =
         execute(Request.Builder().url(url).post(body.toRequestBody(JSON)).build())

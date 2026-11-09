@@ -1,13 +1,19 @@
 package org.shelfarr.app.reader
 
 import android.app.Application
+import android.graphics.Bitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.json.JSONObject
@@ -27,12 +33,27 @@ import org.readium.r2.streamer.parser.DefaultPublicationParser
 import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.Asset
+import org.shelfarr.app.core.ComicArchive
+import org.shelfarr.app.core.ComicPage
+import org.shelfarr.app.core.DownloadRecord
+import org.shelfarr.app.core.FormatChoice
 import org.shelfarr.app.core.Progress
 import org.shelfarr.app.core.ProgressSync
 import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingFormat
 import org.shelfarr.app.core.ResumeDecision
 import org.shelfarr.app.core.SavedPosition
 import org.shelfarr.app.core.SyncStatus
+import org.shelfarr.app.core.UnreadableFile
+import org.shelfarr.app.core.validate
+import org.shelfarr.app.reader.pages.ComicPages
+import org.shelfarr.app.reader.pages.InvalidPlace
+import org.shelfarr.app.reader.pages.PageBitmapCache
+import org.shelfarr.app.reader.pages.PageCommand
+import org.shelfarr.app.reader.pages.PageDocument
+import org.shelfarr.app.reader.pages.PageLocators
+import org.shelfarr.app.reader.pages.PageRestore
+import org.shelfarr.app.reader.pages.PdfPages
 
 /** One entry of the flattened table of contents. */
 data class ContentsEntry(val title: String, val link: Link, val depth: Int)
@@ -42,6 +63,9 @@ sealed interface ReaderState {
 
     /** This device and another disagree. The reader picks before anything opens. */
     data class ChooseResume(val local: SavedPosition, val server: Progress) : ReaderState
+
+    /** Several formats and no saved place or download to go by: the reader picks one. */
+    data class ChooseFormat(val title: String, val options: List<Asset>) : ReaderState
 
     data class Ready(
         val title: String,
@@ -53,13 +77,27 @@ sealed interface ReaderState {
         val notice: String?,
     ) : ReaderState
 
+    /** A PDF or comic, open at [initialPage] (0-based). */
+    data class Paged(
+        val title: String,
+        val format: ReadingFormat,
+        val pageCount: Int,
+        val initialPage: Int,
+        val notice: String?,
+        /** Set while a saved place this file can't show waits for the reader's choice. */
+        val invalidPlace: InvalidPlace? = null,
+    ) : ReaderState
+
     data class Failed(val error: Throwable) : ReaderState
 
     /** Readium could not open the file, or it uses DRM we cannot read. */
     data object Unreadable : ReaderState
+
+    /** A PDF or comic that is damaged, protected or unsafe, with the reason. */
+    data class Damaged(val message: String) : ReaderState
 }
 
-/** Where the open EPUB came from, for tests and diagnostics. */
+/** Where the open file came from, for tests and diagnostics. */
 enum class ReaderSource { DOWNLOAD, CACHE }
 
 data class ReadingPlace(
@@ -67,6 +105,9 @@ data class ReadingPlace(
     val position: Int? = null,
     val chapter: String? = null,
 )
+
+/** A resume decided before its format was known, held while the reader picks one. */
+private data class Start(val position: SavedPosition?, val baseVersion: Int, val observedAtEpochMs: Long?)
 
 @OptIn(ExperimentalReadiumApi::class)
 class ReaderViewModel(application: Application, private val publicationId: String) : AndroidViewModel(application) {
@@ -79,6 +120,13 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     private val mutablePlace = MutableStateFlow(ReadingPlace())
     val place: StateFlow<ReadingPlace> = mutablePlace.asStateFlow()
 
+    /** The page a PDF or comic shows (0-based). Changed silently by restoring, by reading otherwise. */
+    private val mutablePage = MutableStateFlow(0)
+    val page: StateFlow<Int> = mutablePage.asStateFlow()
+
+    private val mutableCommands = MutableSharedFlow<PageCommand>(extraBufferCapacity = 8)
+    val pageCommands: SharedFlow<PageCommand> = mutableCommands.asSharedFlow()
+
     val settings get() = container.readerSettings.settings
     val serverHost: String? get() = account?.session?.server?.host
 
@@ -87,13 +135,22 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
 
     private var asset: Asset? = null
     private var details: Publication? = null
+    private var download: DownloadRecord? = null
+    private var offline = false
     private var opened: ReadiumPublication? = null
+    private var document: PageDocument? = null
+    private var comicPages: List<ComicPage> = emptyList()
+    private val bitmaps = PageBitmapCache.forRuntime()
     private var notice: String? = null
+    private var pendingStart: Start? = null
 
     /** Which copy is open: a managed download or the evictable cache. */
     @Volatile
     var fileSource: ReaderSource? = null
         private set
+
+    /** The format that is open, once one is. */
+    val openFormat: ReadingFormat? get() = asset?.readingFormat
 
     init {
         open()
@@ -105,75 +162,130 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             return
         }
         mutableState.value = ReaderState.Preparing(null)
-        viewModelScope.launch {
-            try {
-                val session = services.session
-                var offline = false
-                val online = try {
-                    services.publication(publicationId)
-                } catch (error: ApiException.Offline) {
-                    // Only a lost connection falls back. An untrusted certificate is surfaced.
-                    if (error.certificate) throw error
-                    offline = true
-                    null
-                }
-                val download = services.downloads.find(publicationId)?.takeIf { it.isReady }
-                // A download pins one edition. Online, it is used only while it is still the server's edition.
-                val useDownload = download != null && (online == null || download.matches(online))
-                val publication = when {
-                    online != null -> online
-                    download != null -> download.publication
-                    else -> services.recall(publicationId) ?: throw ApiException.Offline()
-                }
-                val epub = publication.epubAsset ?: run {
-                    mutableState.value = ReaderState.Unreadable
-                    return@launch
-                }
-                asset = epub
-                details = publication
+        guarded {
+            offline = false
+            notice = null
+            val online = try {
+                services.publication(publicationId)
+            } catch (error: ApiException.Offline) {
+                // Only a lost connection falls back. An untrusted certificate is surfaced.
+                if (error.certificate) throw error
+                offline = true
+                null
+            }
+            val ready = services.downloads.find(publicationId)?.takeIf { it.isReady }
+            // A download pins one edition. Online, it is used only while it is still the server's edition.
+            download = ready?.takeIf { online == null || it.matches(online) }
+            val publication = when {
+                online != null -> online
+                ready != null -> ready.publication
+                else -> services.recall(publicationId) ?: throw ApiException.Offline()
+            }
+            details = publication
+            if (publication.readingAssets.isEmpty()) {
+                mutableState.value = ReaderState.Unreadable
+                return@guarded
+            }
 
-                val downloaded = if (useDownload) download?.let { services.downloads.fileFor(it, epub.id) } else null
-                val file = if (downloaded != null) {
-                    mutableState.value = ReaderState.Preparing(1f)
-                    if (offline) notice = "Reading the download on this device. Your place will sync when you're back online."
-                    downloaded
-                } else {
-                    val cached = container.epubCache.obtain(session.accountKey, session.server, epub) { fraction ->
-                        mutableState.value = ReaderState.Preparing(fraction)
-                    }
-                    if (cached.unverified) notice = "Reading the copy on this device. Your place will sync when you're back online."
-                    cached.file
+            // The saved place decides the format, so this is settled before any file is fetched.
+            val local = sync?.snapshot()
+            when (val decision = ResumeDecision.decide(publication, publication.progress, local, offline = offline)) {
+                ResumeDecision.Beginning -> proceed(Start(null, 0, null))
+                is ResumeDecision.Continue -> proceed(Start(decision.position, decision.baseVersion, decision.observedAtEpochMs))
+                is ResumeDecision.Choose -> mutableState.value = ReaderState.ChooseResume(decision.local, decision.server)
+                is ResumeDecision.EditionChanged -> {
+                    notice = "This book's file was replaced, so your old place doesn't apply. Starting from the beginning."
+                    proceed(Start(null, decision.staleVersion, null))
                 }
-                fileSource = if (downloaded != null) ReaderSource.DOWNLOAD else ReaderSource.CACHE
-
-                val readium = openWithReadium(file) ?: run {
-                    mutableState.value = ReaderState.Unreadable
-                    return@launch
-                }
-                opened = readium
-
-                val local = sync?.snapshot()
-                when (val decision = ResumeDecision.decide(publication, publication.progress, local, offline = offline)) {
-                    ResumeDecision.Beginning -> ready(null, baseVersion = 0)
-                    is ResumeDecision.Continue -> ready(decision.position, decision.baseVersion, decision.observedAtEpochMs)
-                    is ResumeDecision.Choose -> mutableState.value = ReaderState.ChooseResume(decision.local, decision.server)
-                    is ResumeDecision.EditionChanged -> {
-                        notice = "This book's file was replaced, so your old place doesn't apply. Starting from the beginning."
-                        ready(null, decision.staleVersion)
-                    }
-                }
-            } catch (error: ApiException) {
-                mutableState.value = ReaderState.Failed(error)
             }
         }
     }
 
     fun chooseResume(keepLocal: Boolean) {
         val choice = mutableState.value as? ReaderState.ChooseResume ?: return
-        viewModelScope.launch {
+        mutableState.value = ReaderState.Preparing(null)
+        guarded {
             val position = if (keepLocal) choice.local else SavedPosition.from(choice.server)
             sync?.chooseAtOpen(position, choice.server, keepLocal)
-            ready(position, choice.server.version)
+            proceed(Start(position, choice.server.version, null))
+        }
+    }
+
+    /** The reader's explicit format choice. Nothing is saved until they turn a page. */
+    fun chooseFormat(assetId: String) {
+        val start = pendingStart ?: return
+        val chosen = details?.readingAssets?.firstOrNull { it.id == assetId } ?: return
+        pendingStart = null
+        mutableState.value = ReaderState.Preparing(null)
+        guarded { load(chosen, start) }
+    }
+
+    private suspend fun proceed(start: Start) {
+        val publication = details ?: return
+        when (val choice = FormatChoice.decide(publication, start.position, download?.pinnedAssetIds?.singleOrNull())) {
+            FormatChoice.None -> mutableState.value = ReaderState.Unreadable
+            is FormatChoice.Ask -> {
+                pendingStart = start
+                mutableState.value = ReaderState.ChooseFormat(publication.title, choice.options)
+            }
+            is FormatChoice.Use -> load(choice.asset, start)
+        }
+    }
+
+    private suspend fun load(chosen: Asset, start: Start) {
+        val services = account ?: return
+        val session = services.session
+        val format = chosen.readingFormat ?: run {
+            mutableState.value = ReaderState.Unreadable
+            return
+        }
+        asset = chosen
+        val record = download
+        val downloaded = record?.let { services.downloads.fileFor(it, chosen.id) }
+        val file: java.io.File
+        var order = if (downloaded != null && format == ReadingFormat.CBZ) {
+            record?.let { services.downloads.readingOrderFor(it, chosen.id) }
+                ?: throw UnreadableFile("The downloaded comic is missing its page list. Remove the download and download it again.")
+        } else {
+            null
+        }
+        if (downloaded != null) {
+            mutableState.value = ReaderState.Preparing(1f)
+            if (offline) notice = "Reading the download on this device. Your place will sync when you're back online."
+            file = downloaded
+        } else {
+            val cached = container.epubCache.obtain(session.accountKey, session.server, chosen) { fraction ->
+                mutableState.value = ReaderState.Preparing(fraction)
+            }
+            if (cached.unverified) notice = "Reading the copy on this device. Your place will sync when you're back online."
+            file = cached.file
+            order = cached.order
+        }
+        fileSource = if (downloaded != null) ReaderSource.DOWNLOAD else ReaderSource.CACHE
+
+        when (format) {
+            ReadingFormat.EPUB -> {
+                // Only an EPUB ever reaches Readium's EPUB parser and navigator.
+                val readium = openWithReadium(file) ?: run {
+                    mutableState.value = ReaderState.Unreadable
+                    return
+                }
+                opened = readium
+                ready(start.position, start.baseVersion, start.observedAtEpochMs)
+            }
+            ReadingFormat.PDF -> {
+                val pdf = withContext(Dispatchers.IO) { PdfPages.open(file) }
+                document = pdf
+                paged(format, pdf, start)
+            }
+            ReadingFormat.CBZ -> {
+                val pages = (order ?: throw UnreadableFile("This comic's page list is missing")).validate(chosen)
+                val archive = withContext(Dispatchers.IO) { ComicArchive.open(file, pages, chosen.sizeBytes) }
+                comicPages = pages
+                val comic = ComicPages(archive)
+                document = comic
+                paged(format, comic, start)
+            }
         }
     }
 
@@ -204,6 +316,77 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
             positionCount = positions.size,
             notice = notice,
         )
+    }
+
+    /**
+     * Shows a PDF or comic at its saved page. Restoring is not reading: the session is
+     * anchored on the saved place, and only a later, different page is written. A place
+     * this file can't show stays saved and waits for the reader's choice.
+     */
+    private suspend fun paged(format: ReadingFormat, pages: PageDocument, start: Start) {
+        sync?.begin(start.position, start.baseVersion, start.observedAtEpochMs, details?.playableAssets?.map { it.id })
+        val restore = when (format) {
+            ReadingFormat.PDF -> PageLocators.restorePdf(start.position?.locator, pages.pageCount)
+            else -> PageLocators.restoreComic(start.position?.locator, comicPages)
+        }
+        val (index, invalid) = when (restore) {
+            PageRestore.Beginning -> 0 to null
+            is PageRestore.At -> restore.index to null
+            is PageRestore.Invalid -> 0 to InvalidPlace(restore.saved, pages.pageCount)
+        }
+        mutablePage.value = index
+        mutableState.value = ReaderState.Paged(
+            title = details?.title.orEmpty(),
+            format = format,
+            pageCount = pages.pageCount,
+            initialPage = index,
+            notice = notice,
+            invalidPlace = invalid,
+        )
+    }
+
+    /** Draws a page, reusing recent bitmaps. Runs on the document's own worker. */
+    suspend fun renderPage(index: Int, width: Int, height: Int): Bitmap {
+        val pages = document ?: throw UnreadableFile("This book was closed")
+        val key = "$index@${width}x$height"
+        bitmaps.get(key)?.let { return it }
+        return pages.render(index, width, height).also { bitmaps.put(key, it) }
+    }
+
+    /**
+     * The pager settled on [index]. A page other than the one already shown is the reader
+     * turning pages: it is written straight away with the time it was reached. The same
+     * page again (opening, rotation, zoom, re-layout) is not.
+     */
+    fun onPageSettled(index: Int) {
+        val observedAt = System.currentTimeMillis()
+        val paged = mutableState.value as? ReaderState.Paged ?: return
+        if (index !in 0 until paged.pageCount || index == mutablePage.value) return
+        mutablePage.value = index
+        if (paged.invalidPlace != null) mutableState.value = paged.copy(invalidPlace = null)
+        val opened = asset ?: return
+        val locator = if (paged.format == ReadingFormat.PDF) {
+            PageLocators.pdf(index, paged.pageCount)
+        } else {
+            PageLocators.comic(comicPages[index], paged.pageCount)
+        }
+        viewModelScope.launch { sync?.update(SavedPosition(opened.id, locator), observedAt) }
+    }
+
+    /** A page turn from the keyboard or chrome. It is saved once the pager settles there. */
+    fun turnPage(delta: Int) {
+        val paged = mutableState.value as? ReaderState.Paged ?: return
+        val target = (mutablePage.value + delta).coerceIn(0, paged.pageCount - 1)
+        if (target != mutablePage.value) mutableCommands.tryEmit(PageCommand(target, animate = true))
+    }
+
+    /** The reader's answer to a saved place this file can't show. Looking is not reading. */
+    fun resolveInvalidPlace(index: Int) {
+        val paged = mutableState.value as? ReaderState.Paged ?: return
+        val target = index.coerceIn(0, paged.pageCount - 1)
+        mutablePage.value = target
+        mutableState.value = paged.copy(invalidPlace = null, initialPage = target)
+        mutableCommands.tryEmit(PageCommand(target, animate = false))
     }
 
     private fun flatten(links: List<Link>, depth: Int): List<ContentsEntry> = links.flatMap { link ->
@@ -249,6 +432,23 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
     /** Adopts the other device's place and hands back where to go. */
     suspend fun useOtherPlace(): Locator? {
         val position = sync?.useServer() ?: return null
+        val paged = mutableState.value as? ReaderState.Paged
+        if (paged != null) {
+            // Another format's place applies on the next open; this file stays where it is.
+            if (position.assetId != asset?.id) return null
+            val restore = if (paged.format == ReadingFormat.PDF) {
+                PageLocators.restorePdf(position.locator, paged.pageCount)
+            } else {
+                PageLocators.restoreComic(position.locator, comicPages)
+            }
+            // Going there is the reader's choice of a saved place, not new reading.
+            if (restore is PageRestore.At) {
+                mutablePage.value = restore.index
+                mutableCommands.tryEmit(PageCommand(restore.index, animate = false))
+            }
+            return null
+        }
+        if (position.assetId != asset?.id) return null
         // Going there is the reader's choice of a saved place, not new reading.
         restoration = ReadingRestoration(position.locator)
         return position.locator?.let { Locator.fromJSON(JSONObject(it.toString())) }
@@ -256,8 +456,25 @@ class ReaderViewModel(application: Application, private val publicationId: Strin
 
     fun updateSettings(transform: (ReaderSettings) -> ReaderSettings) = container.readerSettings.update(transform)
 
+    /** Runs [block], showing what went wrong instead of crashing: server errors and unreadable files alike. */
+    private fun guarded(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try {
+                block()
+            } catch (error: ApiException) {
+                mutableState.value = ReaderState.Failed(error)
+            } catch (error: UnreadableFile) {
+                mutableState.value = ReaderState.Damaged(error.message.orEmpty())
+            } catch (error: java.io.IOException) {
+                mutableState.value = ReaderState.Damaged("This file couldn't be read from this device's storage.")
+            }
+        }
+    }
+
     override fun onCleared() {
         opened?.close()
+        document?.close()
+        bitmaps.clear()
         flush()
     }
 }

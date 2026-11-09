@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.enableEdgeToEdge
@@ -41,7 +42,8 @@ import org.shelfarr.app.ShelfarrApplication
 import org.shelfarr.app.ui.theme.ShelfarrTheme
 
 /**
- * Hosts Readium's EPUB navigator with native Compose chrome laid over it.
+ * Hosts Readium's EPUB navigator with native Compose chrome laid over it, or, for a PDF
+ * or comic, the Compose page reader on its own.
  *
  * The reader always rebuilds from the saved locator, so fragment state is
  * deliberately not restored after process death (Readium cannot restore a
@@ -110,7 +112,9 @@ class ReaderActivity : FragmentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.CREATED) {
                 viewModel.state.collect { state ->
+                    // Only an EPUB gets Readium's navigator. PDFs and comics are drawn by the Compose pager.
                     if (state is ReaderState.Ready && navigator == null) attachNavigator(state)
+                    updateBars()
                 }
             }
         }
@@ -188,11 +192,30 @@ class ReaderActivity : FragmentActivity() {
         controller.isAppearanceLightStatusBars = theme != ReaderTheme.NIGHT
         controller.isAppearanceLightNavigationBars = theme != ReaderTheme.NIGHT
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        if (chromeVisible || navigator == null) {
+        val immersive = navigator != null || viewModel.state.value is ReaderState.Paged
+        if (chromeVisible || !immersive) {
             controller.show(WindowInsetsCompat.Type.systemBars())
         } else {
             controller.hide(WindowInsetsCompat.Type.systemBars())
         }
+    }
+
+    /**
+     * Hardware keys turn PDF and comic pages: Page Up/Down, Space (Shift+Space back) and
+     * the arrows. This only sees keys no focused control used, so arrows still move focus
+     * between the controls while they are shown. The pager saves the page once it settles
+     * there, like any other turn.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (viewModel.state.value !is ReaderState.Paged) return super.onKeyDown(keyCode, event)
+        val delta = when (keyCode) {
+            KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+            KeyEvent.KEYCODE_PAGE_UP, KeyEvent.KEYCODE_DPAD_LEFT -> -1
+            KeyEvent.KEYCODE_SPACE -> if (event.isShiftPressed) -1 else 1
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        viewModel.turnPage(delta)
+        return true
     }
 
     override fun onPause() {

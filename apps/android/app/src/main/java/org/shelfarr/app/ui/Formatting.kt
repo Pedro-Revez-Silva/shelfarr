@@ -4,6 +4,8 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -35,10 +37,19 @@ fun formatBytes(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
-/** A saved place in words: a percentage for books, a timestamp for audio. */
+/** The one-based page of a PDF or comic locator, or null for EPUB and audio places. */
+fun pageOf(locator: JsonObject?): Long? {
+    val type = runCatching { locator?.get("type")?.jsonPrimitive?.contentOrNull }.getOrNull() ?: return null
+    if (type != "application/pdf" && !type.startsWith("image/")) return null
+    return runCatching { locator?.get("locations")?.jsonObject?.get("position")?.jsonPrimitive?.longOrNull }.getOrNull()
+}
+
+/** A saved place in words: a page for PDFs and comics, a percentage for books, a timestamp for audio. */
 fun describePlace(locator: JsonObject?, positionSeconds: Double?): String {
     val total = locator?.get("locations")?.jsonObject?.get("totalProgression")?.jsonPrimitive?.doubleOrNull
+    val page = pageOf(locator)
     return when {
+        page != null -> "page $page"
         total != null -> "${(total * 100).roundToInt()}% through"
         positionSeconds != null -> formatDuration((positionSeconds * 1_000).toLong())
         else -> "Unknown place"
@@ -48,6 +59,7 @@ fun describePlace(locator: JsonObject?, positionSeconds: Double?): String {
 /** Short status for a publication in progress, e.g. `42%` or `Track 3 · 12:20`. */
 fun Publication.progressLabel(): String? {
     val saved = progress ?: return null
+    pageOf(saved.locator)?.let { page -> return "Page $page" + (saved.totalProgression?.let { " · ${(it * 100).roundToInt()}%" } ?: "") }
     saved.totalProgression?.let { return "${(it * 100).roundToInt()}%" }
     val time = saved.positionSeconds?.let { formatDuration((it * 1_000).toLong()) } ?: return null
     val tracks = audioAssets
