@@ -357,7 +357,9 @@ class ComicArchive private constructor(
             if (at != directory.size) bad("its directory is damaged")
 
             val images = central.values.filter { entry ->
-                !entry.name.endsWith("/") && ComicLimits.IMAGE_TYPES.containsKey(entry.name.substringAfterLast('.', "").lowercase())
+                !entry.name.endsWith("/") &&
+                    entry.name.split('/').none { it.startsWith(".") || it == "__MACOSX" } &&
+                    ComicLimits.IMAGE_TYPES.containsKey(entry.name.substringAfterLast('.', "").lowercase())
             }
             if (images.size != pages.size) bad("its pages don't match the server's page list")
             return LongArray(pages.size) { index ->

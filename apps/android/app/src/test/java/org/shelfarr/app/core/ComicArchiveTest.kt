@@ -38,6 +38,22 @@ class ComicArchiveTest {
     }
 
     @Test
+    fun `hidden image metadata is excluded like the actual server reading order`() {
+        val visible = Entry("001.png", ComicFixtures.page("visible"))
+        val built = ComicFixtures.zip(listOf(visible,
+            Entry("__MACOSX/._001.png", "metadata".toByteArray()),
+            Entry("pages/.cache/002.jpg", "metadata".toByteArray()),
+            Entry(".hidden.png", "metadata".toByteArray())))
+        val serverPages = built.items.filter { it.href == "001.png" }
+        open(built, serverPages).use { archive ->
+            assertArrayEquals(visible.data, archive.pageBytes(0))
+        }
+        val encryptedMetadata = ComicFixtures.zip(listOf(visible,
+            Entry("__MACOSX/._001.png", "metadata".toByteArray(), flags = 1)))
+        refused("encrypted") { open(encryptedMetadata, encryptedMetadata.items.filter { it.href == "001.png" }).close() }
+    }
+
+    @Test
     fun `reads stored and deflated pages in the server's order, with escaped names`() {
         val built = ComicFixtures.zip(pages)
         assertEquals(listOf("001.png", "chapter%202/002.jpg", "caf%C3%A9/003.webp"), built.items.map { it.href })
