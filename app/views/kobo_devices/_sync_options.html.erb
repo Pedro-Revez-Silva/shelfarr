@@ -1,0 +1,24 @@
+<fieldset class="space-y-3">
+  <legend class="block text-sm text-gray-300 mb-2">Kobo Store on this reader</legend>
+  <label class="flex gap-3 rounded-lg border border-gray-700 bg-gray-800/60 p-4 cursor-pointer has-[:checked]:border-blue-500 has-[:checked]:bg-blue-950/30">
+    <%= form.radio_button :store_coexistence, true, class: "mt-1 shrink-0 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900", aria: { describedby: "kobo-mode-store-help" } %>
+    <span class="min-w-0">
+      <span class="block font-medium text-white">Keep my Kobo Store library <span class="ml-1 rounded bg-blue-900/60 px-1.5 py-0.5 text-xs font-normal text-blue-200">Recommended</span></span>
+      <span id="kobo-mode-store-help" class="mt-1 block text-sm text-gray-400">Shelfarr books appear beside your purchases. The reader stays signed in to its own Kobo account: Shelfarr passes Store requests to Kobo and never saves that sign-in. Needs an HTTPS address.</span>
+    </span>
+  </label>
+  <label class="flex gap-3 rounded-lg border border-gray-700 bg-gray-800/60 p-4 cursor-pointer has-[:checked]:border-blue-500 has-[:checked]:bg-blue-950/30">
+    <%= form.radio_button :store_coexistence, false, class: "mt-1 shrink-0 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900", aria: { describedby: "kobo-mode-local-help" } %>
+    <span class="min-w-0">
+      <span class="block font-medium text-white">Shelfarr books only</span>
+      <span id="kobo-mode-local-help" class="mt-1 block text-sm text-gray-400">Replaces Store syncing. Store books already on the reader stay, but new purchases and Store reading places wait until you restore the original endpoint.</span>
+    </span>
+  </label>
+</fieldset>
+<label class="flex gap-3 rounded-lg border border-gray-700 bg-gray-800/60 p-4 cursor-pointer">
+  <%= form.check_box :share_progress, class: "mt-1 shrink-0 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900", aria: { describedby: "kobo-share-help" } %>
+  <span class="min-w-0">
+    <span class="block font-medium text-white">Share reading places with Shelfarr</span>
+    <span id="kobo-share-help" class="mt-1 block text-sm text-gray-400">When you read a Shelfarr book on this Kobo, the web and mobile readers resume there, if it is the same edition and the most recent place. Kobo places are shared by chapter and percentage, so the exact page can differ. Places that can't be compared automatically wait here for you to choose.</span>
+  </span>
+</label>

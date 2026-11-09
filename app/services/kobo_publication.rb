@@ -95,6 +95,32 @@ class KoboPublication
     raise Unavailable, "This EPUB cover is unavailable"
   end
 
+  # Spine resources of the open edition, keyed by their decoded ZIP-root path.
+  # Values keep the manifest's own (URL-encoded) spelling, which is what the
+  # web reader saves as a locator href. Unsafe or missing items are skipped.
+  def reading_order(file)
+    with_archive(file) do |zip|
+      package_path, package = package_document(zip)
+      base = Pathname(File.dirname(package_path))
+      manifest = package.xpath("//*[local-name()='manifest']/*[local-name()='item']").index_by { |item| item["id"] }
+      package.xpath("//*[local-name()='spine']/*[local-name()='itemref']").each_with_object({}) do |reference, order|
+        item = manifest[reference["idref"]]
+        href = item&.[]("href").to_s.sub(/[?#].*\z/, "")
+        next if href.empty? || href.match?(%r{\A/|:|\\}) || href.include?("\0")
+
+        decoded = URI::DEFAULT_PARSER.unescape(href)
+        next if decoded.match?(/[\x00-\x1f]/)
+
+        path = base.join(decoded).cleanpath.to_s
+        next if path.start_with?("../") || path == ".."
+
+        order[path] ||= { "href" => base.join(href).cleanpath.to_s, "type" => item["media-type"].presence || "application/xhtml+xml" }
+      end.then { |order| { "package_dir" => base.to_s, "items" => order } }
+    end
+  rescue Zip::Error, Nokogiri::XML::SyntaxError, IOError, ArgumentError, EncodingError
+    raise Unavailable, "This EPUB's reading order is unavailable"
+  end
+
   private
 
   def download_book

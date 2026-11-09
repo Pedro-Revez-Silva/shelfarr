@@ -1,12 +1,20 @@
 # frozen_string_literal: true
 
 class KoboDevice < ApplicationRecord
+  # The stock Store endpoint, shown so a lost configuration backup can be
+  # restored. Shelfarr cannot read the reader's own configuration file.
+  STORE_ENDPOINT = Kobo::StoreProxy::ORIGIN
+  STORE_STATUSES = %w[ok unavailable rejected authorization].freeze
+
   belongs_to :user
   has_many :kobo_deliveries, dependent: :destroy
 
   validates :name, presence: true, length: { maximum: 80 }
   validates :token_digest, presence: true, uniqueness: true
+  validates :store_status, inclusion: { in: STORE_STATUSES }, allow_nil: true
   validate :valid_base_url
+  # The reader's own Kobo sign-in passes through Shelfarr in this mode.
+  validate :coexistence_requires_https
 
   normalizes :name, with: ->(value) { value.strip }
   normalizes :base_url, with: ->(value) { value.strip.sub(%r{/+\z}, "") }
@@ -41,7 +49,10 @@ class KoboDevice < ApplicationRecord
       save!
       delivery = kobo_deliveries.find_or_initialize_by(book: book)
       delivery.entitlement_id ||= SecureRandom.uuid
-      delivery.reading_state = nil if delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
+      if delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
+        delivery.reading_state = nil
+        delivery.progress_bridge = nil
+      end
       delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision,
         publication: publication, last_download_at: nil)
       delivery
@@ -49,6 +60,14 @@ class KoboDevice < ApplicationRecord
   end
 
   private
+
+  def coexistence_requires_https
+    return unless store_coexistence?
+
+    errors.add(:base_url, "must use HTTPS to keep the Kobo Store on this reader") unless URI.parse(base_url.to_s).scheme == "https"
+  rescue URI::InvalidURIError
+    nil
+  end
 
   def valid_base_url
     uri = URI.parse(base_url.to_s)

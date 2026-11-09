@@ -23,7 +23,7 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action=?]", send_book_kobo_device_path(@device)
     get kobo_devices_path
     assert_response :success
-    assert_select "body", text: /Kobo Store sync endpoint/
+    assert_select "body", text: /keep its own Kobo Store library/
   end
 
   test "new connection address is shown once with no-store and no secret in flash or subsequent pages" do
@@ -95,7 +95,12 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_response :not_found
     delete kobo_device_path(other)
     assert_response :not_found
+    patch kobo_device_path(other), params: { kobo_device: { store_coexistence: true } }
+    assert_response :not_found
+    post use_kobo_place_kobo_device_path(other), params: { entitlement_id: "x" }
+    assert_response :not_found
     assert KoboDevice.exists?(other.id)
+    assert_not other.reload.store_coexistence?
   end
 
   test "regeneration invalidates old address but keeps selection and revoke removes access" do
@@ -117,5 +122,73 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_response :redirect
     post kobo_devices_path, params: { kobo_device: { name: "Reader", base_url: @device.base_url } }
     assert_response :redirect
+  end
+
+  test "the connect form defaults to keeping the Store over HTTPS and explains both modes" do
+    get kobo_devices_path, headers: { "X-Forwarded-Proto" => "https" }
+    assert_select "input[type=radio][name='kobo_device[store_coexistence]'][value=true][checked]"
+    assert_select "input[type=checkbox][name='kobo_device[share_progress]'][checked]"
+    post kobo_devices_path, params: { kobo_device: { name: "Libra", base_url: "https://reader.example/shelfarr", store_coexistence: "true", share_progress: "1" } }
+    assert_response :success
+    assert_select "[data-testid=kobo-mode]", text: /Kobo Store \+ Shelfarr/
+    assert_select "[data-testid=kobo-store-endpoint]", text: "api_endpoint=https://storeapi.kobo.com"
+    device = users(:one).kobo_devices.find_by!(name: "Libra")
+    assert device.store_coexistence?
+    assert device.share_progress?
+  end
+
+  test "keeping the Store needs HTTPS because the reader's own sign-in passes through" do
+    assert_no_difference "KoboDevice.count" do
+      post kobo_devices_path, params: { kobo_device: { name: "Plain", base_url: "http://shelfarr.local:3000", store_coexistence: "true" } }
+    end
+    assert_response :unprocessable_entity
+    assert_select "[role=alert]", text: /HTTPS/
+    @device.update!(base_url: "http://shelfarr.local")
+    patch kobo_device_path(@device), params: { kobo_device: { store_coexistence: "true" } }
+    assert_response :unprocessable_entity
+    assert_select "[role=alert]", text: /HTTPS/
+    assert_not @device.reload.store_coexistence?
+  end
+
+  test "changing the mode keeps the address, selections and reading places, and says what happens next" do
+    @device.send_book!(@book)
+    digest = @device.token_digest
+    patch kobo_device_path(@device), params: { kobo_device: { store_coexistence: "true", share_progress: "1" } }
+    assert_redirected_to kobo_device_path(@device)
+    assert_match(/Store library and Shelfarr books both arrive/, flash[:notice])
+    assert_equal digest, @device.reload.token_digest
+    assert_equal 1, @device.kobo_deliveries.count
+    patch kobo_device_path(@device), params: { kobo_device: { store_coexistence: "false", base_url: "https://evil.example", name: "Renamed" } }
+    assert_match(/Shelfarr books only/, flash[:notice])
+    assert_equal [ "https://shelfarr.example", "My Kobo" ], @device.reload.values_at(:base_url, :name)
+  end
+
+  test "an unapplied Kobo place is explained and can be chosen explicitly" do
+    @device.update!(share_progress: true, store_coexistence: true, store_status: "unavailable", store_checked_at: 1.minute.ago)
+    delivery = @device.send_book!(@book)
+    asset = Consumer::LibraryAssets.new(@book).list.sole.id
+    Consumer::ProgressWriter.new(user: users(:one), book: @book).call("asset_id" => asset, "expected_version" => 0,
+      "client_mutation_id" => SecureRandom.uuid, "observed_at" => 1.minute.ago.utc.iso8601(3), "locator" => { "href" => "a.xhtml", "locations" => { "totalProgression" => 0.8 } })
+    delivery.update_columns(progress_bridge: { "status" => "superseded", "percent" => 35.0, "observed_at" => 2.hours.ago.utc.iso8601(3),
+      "asset_id" => asset, "locator" => { "href" => "b.xhtml", "type" => "application/xhtml+xml", "locations" => { "totalProgression" => 0.35 } } })
+    get kobo_device_path(@device)
+    assert_select "[data-testid=kobo-store-status]", text: /couldn't be reached.*Shelfarr books still synced/
+    assert_select "[data-testid=kobo-place]", text: /Kept a newer place from another device \(80%, read 1 minute ago\). Kobo place: 35%, read about 2 hours ago/
+    assert_select "button", text: "Use Kobo place"
+    post use_kobo_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }
+    assert_redirected_to kobo_device_path(@device)
+    assert_equal "b.xhtml", users(:one).consumer_progresses.find_by!(book: @book).locator["href"]
+    follow_redirect!
+    assert_select "[data-testid=kobo-place]", text: /the Kobo place you chose \(35%/
+    assert_select "button", text: "Use Kobo place", count: 0
+    post use_kobo_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }
+    assert_match(/no unapplied Kobo place/, flash[:alert])
+
+    delivery.update_columns(progress_bridge: delivery.progress_bridge.merge("status" => "superseded"))
+    File.rename(@path, "#{@path}.old")
+    write_epub(@path)
+    post use_kobo_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }
+    assert_match(/belongs to an edition/, flash[:alert])
+    assert_equal "b.xhtml", users(:one).consumer_progresses.find_by!(book: @book).locator["href"]
   end
 end

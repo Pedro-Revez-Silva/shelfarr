@@ -42,8 +42,9 @@ does not request content-access keys, download protected files, remove DRM,
 purchase anything, or send Store books to a reader. A catalogue entry is not
 evidence that a protected book can open on a different account's Kobo.
 
-Reader delivery and Store coexistence remain separate work. The existing
-[send-to-Kobo preview](kobo.md) still has its documented limitations. No Android
+Reader delivery is separate. A [reader that keeps its Kobo Store](kobo.md#kobo-store-coexistence)
+uses its own sign-in, never these account credentials, and an account
+connection does not configure or sign in a reader. No Android
 or iOS update is needed to use this web account-connection screen.
 
 Before calling the account flow verified with real purchases, record a
