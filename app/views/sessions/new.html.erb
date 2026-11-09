@@ -1,4 +1,5 @@
 <div class="mx-auto md:w-2/3 w-full">
+  <div hidden data-controller="consumer-offline-signed-out" data-consumer-offline-signed-out-base-value="<%= request.script_name %>"></div>
   <h1 class="font-bold text-4xl text-white">Sign in</h1>
 
   <% if params[:local].present? && SettingsService.oidc_auto_redirect? %>

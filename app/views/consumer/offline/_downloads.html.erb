@@ -1,0 +1,20 @@
+<%# This browser's downloads for one account, rendered by the browser from its own records. %>
+<div class="consumer-downloads" data-controller="consumer-downloads" data-consumer-downloads-base-value="<%= request.script_name %>" data-consumer-downloads-account-value="<%= account %>" data-consumer-downloads-mode-value="<%= mode %>">
+  <p class="consumer-downloads__unsupported" data-consumer-downloads-target="unsupported" hidden></p>
+  <div class="consumer-downloads__storage" data-consumer-downloads-target="storage" hidden>
+    <p data-consumer-downloads-target="usage" role="status"></p>
+    <p class="consumer-downloads__note" data-consumer-downloads-target="persistence"></p>
+  </div>
+  <ul class="consumer-downloads__list" data-consumer-downloads-target="list" aria-label="Downloads on this device"></ul>
+  <div class="consumer-empty" data-consumer-downloads-target="empty" hidden>
+    <span aria-hidden="true">✦</span>
+    <h2>Nothing downloaded yet</h2>
+    <p><% if mode == "offline" %>Books and audiobooks you download while online appear here, ready without a connection.<% else %>Open an ebook's reading controls or an audiobook's player and choose <strong>Download</strong> to keep it on this device.<% end %></p>
+    <%= link_to "Back to your library", consumer_library_path, class: "consumer-button consumer-button--subtle" %>
+  </div>
+  <div class="consumer-downloads__footer" data-consumer-downloads-target="footer" hidden>
+    <p data-consumer-downloads-target="others" hidden></p>
+    <button type="button" class="consumer-button consumer-button--subtle" data-consumer-downloads-target="removeOthers" data-action="consumer-downloads#removeOthers" hidden>Remove other accounts' downloads</button>
+    <button type="button" class="consumer-button consumer-button--subtle" data-consumer-downloads-target="removeAll" data-action="consumer-downloads#removeAll" hidden>Remove all my downloads</button>
+  </div>
+</div>

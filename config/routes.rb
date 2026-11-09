@@ -157,7 +157,12 @@ Rails.application.routes.draw do
 
   get "consumer/connect", to: "consumer/connections#show", as: :consumer_connect
   post "consumer/connect", to: "consumer/connections#create"
+  get "read-offline-worker.js", to: "consumer/offline#worker", as: :consumer_offline_worker, format: false
   get "read", to: "consumer/library#index", as: :consumer_library
+  get "read/offline", to: "consumer/offline#shell", as: :consumer_offline_shell, format: false
+  get "read/offline/account", to: "consumer/offline#account", as: :consumer_offline_account, defaults: { format: :json }
+  get "read/offline/publications", to: "consumer/offline#publications", as: :consumer_offline_publications, defaults: { format: :json }
+  get "read/downloads", to: "consumer/offline#downloads", as: :consumer_downloads, format: false
   get "read/:id", to: "consumer/library#show", as: :consumer_publication
   get "read/:id/assets/:asset_id", to: "consumer/library#asset", as: :consumer_asset
   put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress

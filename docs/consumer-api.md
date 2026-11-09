@@ -386,8 +386,8 @@ form, or top-navigation permission. The web player uses normal HTML audio and
 optional Media Session controls; background behavior remains browser-dependent.
 Text size and listening speed persist on this browser. Changing tracks while
 paused keeps playback paused; reaching a track end continues automatically.
-The web reader needs a connection to open a book and does not offer offline
-downloads.
+Opening a book needs a connection unless it was deliberately downloaded, as
+described under [Offline reading and listening](#offline-reading-and-listening).
 
 Reading an EPUB shows only the book text across the whole viewport: no header,
 cover, description, status form, chapter or font toolbar, or page buttons.
@@ -451,6 +451,71 @@ says so and syncs only while it stays open. Browsers may suspend background tabs
 reliable background progress needs the native apps. Unsent places for an account
 remain in that browser's storage after sign-out until that account syncs them.
 
+### Offline reading and listening
+
+An ebook's reading controls and an audiobook's player offer **Download**. Only
+media the web reader can open again is offered: EPUBs within its 32 MiB limit and
+supported audio tracks. Nothing is stored until the reader chooses Download, and
+no service worker is registered before that. The control then shows
+*Downloading* with its progress, *Paused* (the connection dropped or the page
+closed) with **Resume**, *Stopped* with the reason and **Try again**, or
+*Available offline* with its size and **Remove**. **Cancel** stops a download and
+discards what it stored. **Library → Downloads on this device** (`/read/downloads`)
+lists this browser's downloads with their state, storage used, the browser's
+remaining quota and whether the browser agreed to keep the data. Downloaded books
+are marked on the shelf.
+
+- **Storage.** The page streams each file into Cache Storage, one at a time, and
+  keeps its state in IndexedDB. A file counts only after the Cache API stored all
+  of it and its byte count and identity match the edition; a book is *available*
+  only when every file is. Before starting, the space it needs is checked against
+  an 8 GB limit per account in each browser and the browser's reported quota.
+  After a deliberate download Shelfarr asks the browser to keep the data
+  (`navigator.storage.persist()`), and says plainly whether it agreed. Without
+  that, browsers may remove the data under storage pressure or after a period
+  without use; files are checked before a book opens or is listed, and missing
+  ones mark it *stopped* with **Try again**, never *available*.
+- **Accounts.** Each account on each deployment (origin and subpath) has its own
+  cache and records. Offline pages open downloads only for the account that last
+  opened the reader in this browser. That account is replaced when another
+  account opens the reader, forgotten whenever this browser shows the sign-in
+  page (including after signing out), and lapses after the server's session
+  lifetime. Other accounts' downloads stay hidden: the Downloads page shows only
+  how much space they use and can remove them. Unsent places are kept per account
+  as before.
+- **Opening offline.** The worker at `<subpath>/read-offline-worker.js`, scoped to
+  `<subpath>/read`, precaches a static shell and the reader's own digested assets.
+  When `/read`, `/read/downloads` or `/read/<id>` can't reach the server (a network
+  error, 502, 503 or 504) it serves that shell, which opens the downloaded book in
+  the usual text-only reader or player, or lists downloads. Downloaded media is
+  served from the account's cache, with single byte ranges for audio seeking, even
+  online. The worker never stores responses itself and passes every other request,
+  including sign-in, device approval, API, token and progress routes, to the
+  network. The shell and worker contain no session token, account or book data.
+- **Places.** Reading and listening offline use the same outbox, checkpoints and
+  activity-time rules as online. The download keeps the latest place the server
+  confirmed, so it opens there even after the outbox has emptied. When the shell
+  is back online it asks `GET /read/offline/account` who is signed in. The same
+  account receives a fresh form token, its waiting places sync and a later place
+  from another device is offered as usual. A different account reloads into its
+  own library, and a signed-out browser keeps the places until that account signs
+  in again.
+- **Editions.** Asset IDs name an exact file generation. When the server has a new
+  edition, the download says so and offers **Update**; the old copy stays usable
+  offline until the update is complete, then files only it used are removed.
+  `GET /read/offline/publications?ids=` (up to 50) reports current editions, saved
+  places and titles no longer in the library, which stay readable until removed.
+- **Tabs.** A Web Lock lets only one tab download a book; other tabs show its
+  progress through a BroadcastChannel and can cancel it.
+
+Offline use needs a secure context: HTTPS, or `localhost`. Over plain HTTP on a
+local network browsers disable service workers and Cache Storage, and the control
+says so instead of offering Download. Downloads run in the page: closing every tab
+pauses them. A connection that hangs instead of failing waits for the browser's
+own timeout before the shell appears. Automated browser tests cover Chromium;
+Safari and Firefox apply their own storage and service-worker policies and have
+not been verified on devices.
+
 The browser engine is checked in at `vendor/javascript/consumer_reader_engine.js`.
 Production does not install JavaScript packages or fetch reader code from a CDN.
 To reproduce it with Bun 1.4.4:
@@ -458,7 +523,7 @@ To reproduce it with Bun 1.4.4:
 ```sh
 cd apps/web-reader
 bun install --frozen-lockfile
-bun test   # includes the progress outbox and listening checkpoint rules
+bun test   # progress outbox, listening checkpoints and offline download rules
 bun audit
 bun run build
 git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js
@@ -469,6 +534,9 @@ versions, patched XML-parser override, third-party notices and licenses are kept
 beside the build source. Shared fonts and design colors live under `apps/design`.
 The Ruby quality gate includes actual browser tests for EPUB rendering/safety,
 text-only reading with overlay controls, page navigation, real audio playback,
-the resume rewind, offline reload recovery, cross-device progress and mobile overflow, plus API
+the resume rewind, offline reload recovery, cross-device progress and mobile overflow,
+deliberate downloads under a deployment subpath (offline reading and listening with
+seeking, reconnection, account changes and sign-out, interrupted, cancelled and
+cross-tab downloads, edition updates and evicted files), plus API
 authorization, generation-bound media, byte ranges and competing SQLite writes.
 Native build and physical-device validation are documented with the native apps.
