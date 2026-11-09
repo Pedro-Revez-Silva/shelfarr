@@ -76,7 +76,8 @@ class KoboController < ActionController::API
     ids = params[:entitlement_id].to_s.split(",")
     selected = @device.kobo_deliveries.where(entitlement_id: ids).index_by(&:entitlement_id)
     # A shared book whose grant ended is answered by nobody: never the Store.
-    ended = selected.reject { |_, entry| entry.deliverable? }.keys
+    ended = local_entitlement_ids(ids) - selected.keys
+    ended |= selected.reject { |_, entry| entry.deliverable? }.keys
     selected.except!(*ended)
     ids -= ended
     return head(:not_found) if ids.empty?
@@ -219,6 +220,12 @@ class KoboController < ActionController::API
   end
 
   def proxy_store
+    # Delivery deletion removes access, not knowledge that this UUID was
+    # issued locally. Never forward a later private bookmark to Kobo's Store,
+    # including batched IDs or methods handled by the unsupported-path relay.
+    ids = store_path.match(%r{\A/v1/library/([^/]+)(?:/|\z)})&.[](1)&.split(",")
+    return head(:not_found) if ids && local_entitlement_ids(ids).any?
+
     method = request.head? ? "HEAD" : request.request_method
     body = request.raw_post.to_s if %w[POST PUT PATCH DELETE].include?(method)
     return head(:content_too_large) if body.to_s.bytesize > MAX_BODY_BYTES
@@ -243,6 +250,7 @@ class KoboController < ActionController::API
   # a redirect, so no Store request or credential is relayed for images.
   def store_image
     return head(:not_found) unless coexisting?
+    return head(:not_found) if local_entitlement_ids([ params[:entitlement_id] ]).any?
 
     id, width, height, quality, greyscale = params.values_at(:entitlement_id, :width, :height, :quality, :greyscale).map(&:to_s)
     unless id.match?(/\A[A-Za-z0-9-]{1,80}\z/) && [ width, height ].all? { |value| value.match?(/\A\d{1,5}\z/) } &&
@@ -255,6 +263,10 @@ class KoboController < ActionController::API
 
   def sync_service
     KoboSync.new(@device, endpoint: endpoint)
+  end
+
+  def local_entitlement_ids(ids)
+    @device.kobo_local_entitlements.where(entitlement_id: ids).pluck(:entitlement_id)
   end
 
   def delivery

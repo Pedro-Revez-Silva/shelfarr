@@ -1,5 +1,4 @@
-
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_020000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_09_030000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -462,6 +461,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_020000) do
     t.index ["user_id"], name: "index_kobo_devices_on_user_id"
   end
 
+  create_table "kobo_local_entitlements", force: :cascade do |t|
+    t.integer "kobo_device_id", null: false
+    t.string "entitlement_id", null: false
+    t.index ["kobo_device_id", "entitlement_id"], name: "idx_on_kobo_device_id_entitlement_id_17aca6c006", unique: true
+    t.index ["kobo_device_id"], name: "index_kobo_local_entitlements_on_kobo_device_id"
+  end
+
   create_table "library_items", force: :cascade do |t|
     t.string "asin"
     t.string "audiobookshelf_id", null: false
@@ -889,6 +895,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_020000) do
   add_foreign_key "kobo_deliveries", "kobo_account_shares"
   add_foreign_key "kobo_deliveries", "kobo_devices"
   add_foreign_key "kobo_devices", "users"
+  add_foreign_key "kobo_local_entitlements", "kobo_devices", on_delete: :cascade
   add_foreign_key "notifications", "users"
   add_foreign_key "owned_library_connections", "users", column: "automatic_backup_user_id", on_delete: :nullify
   add_foreign_key "owned_library_items", "books", on_delete: :nullify

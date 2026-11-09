@@ -8,6 +8,7 @@ class KoboDevice < ApplicationRecord
 
   belongs_to :user
   has_many :kobo_deliveries, dependent: :destroy
+  has_many :kobo_local_entitlements, dependent: :delete_all
 
   validates :name, presence: true, length: { maximum: 80 }
   validates :token_digest, presence: true, uniqueness: true
@@ -79,6 +80,7 @@ class KoboDevice < ApplicationRecord
       end
       delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision,
         publication: publication, last_download_at: changed ? nil : delivery.last_download_at, **attributes)
+      kobo_local_entitlements.create_or_find_by!(entitlement_id: delivery.entitlement_id)
       delivery
     end
   end

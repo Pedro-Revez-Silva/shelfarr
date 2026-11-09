@@ -71,6 +71,10 @@ valid EPUB, or does not match Kobo's stated size is rejected.
   no longer lists as an eligible purchase, or a copy that is no longer ready all
   stop delivery, including download addresses a reader already received. A new
   share after revoking does not revive an earlier delivery.
+  Locally issued entitlement UUIDs remain classified for that reader after
+  revocation or disconnection, so later private bookmarks and cover requests
+  cannot be forwarded to the Kobo Store. This record retains only the reader
+  and random UUID, and is removed when the reader connection is deleted.
 - **Not in the shared library.** Copies are never added to Shelfarr's library,
   search, requests or the web and mobile readers. They live in a private cache
   (`storage/kobo_account_cache`, or `KOBO_ACCOUNT_CACHE_PATH`) in directories
@@ -80,7 +84,11 @@ valid EPUB, or does not match Kobo's stated size is rejected.
   (`KOBO_ACCOUNT_CACHE_MAX_BYTES`). When full, the least recently used copies
   that no reader is waiting for are removed; copies a delivery still needs are
   never removed. A failed, incomplete or out-of-space download never replaces a
-  copy that is already ready. Each user can request 20 copies an hour.
+  copy that is already ready. Space is reserved before transfers start, across
+  job workers; ready copies and in-flight reservations share the same bound.
+  A title being replaced keeps its earlier copy throughout the attempt, so a
+  replacement may wait for enough room to stage both copies. Each user can
+  request 20 copies an hour.
 - **Fixed download hosts.** Shelfarr asks Kobo for a fresh signed link each
   time it prepares a copy and never stores or logs it. The download must start
   at `https://storedownloads.kobo.com` and may redirect only to

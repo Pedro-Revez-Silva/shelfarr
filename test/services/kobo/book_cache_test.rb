@@ -89,6 +89,87 @@ class Kobo::BookCacheTest < ActiveSupport::TestCase
     assert_not_requested :get, /evil\.example/
   end
 
+  test "a replacement without staging capacity preserves the earlier valid edition" do
+    previous = prepare_copy
+    path = File.join(@kobo_cache, previous.storage_key)
+    @shared_book.update!(revision_id: "edition-2")
+    stub_book_metadata(revision: "edition-2")
+    stub_book_download("truncated", length: synthetic_epub.bytesize)
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => (synthetic_epub.bytesize * 1.5).to_i.to_s) do
+      row = Kobo::BookCache.request!(@shared_book, @owner)
+      Kobo::BookCache.new(row).call
+      assert_equal [ "failed", "cache_full" ], [ row.reload.status, row.error ]
+      assert previous.reload.ready?
+      assert_equal synthetic_epub, File.binread(path)
+      assert_equal previous, @shared_book.ready_file
+    end
+  end
+
+  test "overlapping fetches reserve capacity before either downloads" do
+    other = @account.kobo_account_books.create!(entitlement_id: "22222222-2222-3333-4444-555555555555", title: "Second",
+      ownership_type: "purchased", rights: "drm_free", rights_checked_at: Time.current)
+    stub_book_metadata
+    stub_book_metadata(other)
+    stub_book_download
+    first = Kobo::BookCache.request!(@shared_book, @owner)
+    second = Kobo::BookCache.request!(other, @owner)
+    downloader = Kobo::BookDownload.new
+    overlap = Object.new
+    overlap.define_singleton_method(:call) do |url, **options|
+      Kobo::BookCache.new(second).call
+      downloader.call(url, **options)
+    end
+    cap = (synthetic_epub.bytesize * 1.5).to_i
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => cap.to_s) do
+      Kobo::BookCache.new(first, downloader: overlap).call
+      assert first.reload.ready?
+      assert_equal [ "failed", "cache_full" ], [ second.reload.status, second.error ]
+      assert_operator KoboAccountBookFile.where(status: "ready").sum(:size_bytes), :<=, cap
+      assert_empty Dir.children(File.join(@kobo_cache, ".incoming"))
+    end
+  end
+
+  test "disconnecting while bytes arrive leaves no private EPUB without an owner" do
+    stub_book_metadata
+    stub_book_download
+    row = Kobo::BookCache.request!(@shared_book, @owner)
+    downloader = Kobo::BookDownload.new
+    account = @account
+    disconnect = Object.new
+    disconnect.define_singleton_method(:call) do |url, **options|
+      downloader.call(url, **options).tap { account.destroy! }
+    end
+    Kobo::BookCache.new(row, downloader: disconnect).call
+    assert_equal 0, KoboAccountBookFile.count
+    assert_empty Dir.glob(File.join(@kobo_cache, "**/*.epub"))
+    assert_empty Dir.children(File.join(@kobo_cache, ".incoming"))
+  end
+
+  test "another fetch cannot evict a valid edition while its replacement is in flight" do
+    previous = prepare_copy
+    path = File.join(@kobo_cache, previous.storage_key)
+    other = @account.kobo_account_books.create!(entitlement_id: "22222222-2222-3333-4444-555555555555", title: "Second",
+      ownership_type: "purchased", rights: "drm_free", rights_checked_at: Time.current)
+    stub_book_metadata
+    stub_book_metadata(other)
+    stub_book_download("truncated", length: synthetic_epub.bytesize)
+    first = Kobo::BookCache.request!(@shared_book, @owner)
+    second = Kobo::BookCache.request!(other, @owner)
+    downloader = Kobo::BookDownload.new
+    overlap = Object.new
+    overlap.define_singleton_method(:call) do |url, **options|
+      Kobo::BookCache.new(second).call
+      downloader.call(url, **options)
+    end
+    with_env("KOBO_ACCOUNT_CACHE_MAX_BYTES" => (synthetic_epub.bytesize * 2.5).to_i.to_s) do
+      Kobo::BookCache.new(first, downloader: overlap).call
+      assert_equal [ "failed", "incomplete" ], [ first.reload.status, first.error ]
+      assert_equal [ "failed", "cache_full" ], [ second.reload.status, second.error ]
+      assert previous.reload.ready?
+      assert_equal synthetic_epub, File.binread(path)
+    end
+  end
+
   test "a revoked share during the transfer leaves nothing saved" do
     share = share_with
     stub_book_metadata

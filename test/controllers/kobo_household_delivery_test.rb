@@ -126,6 +126,31 @@ class KoboHouseholdDeliveryTest < ActionDispatch::IntegrationTest
     assert_not_requested :get, /storeapi\.kobo\.com/, headers: { "Authorization" => "Bearer reader-own" }
   end
 
+  test "revoked private entitlements never become Store requests or cover redirects" do
+    @device.update!(store_coexistence: true)
+    @share.destroy!
+    assert_private_entitlement_stays_local
+  end
+
+  test "disconnected private entitlements remain local after their catalogue is gone" do
+    @device.update!(store_coexistence: true)
+    @account.destroy!
+    assert_private_entitlement_stays_local
+  end
+
+  test "mixed metadata excludes a revoked private id while genuine Store books still work" do
+    @device.update!(store_coexistence: true)
+    @share.destroy!
+    store_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    target = "https://storeapi.kobo.com/v1/library/#{store_id}/metadata"
+    stub_request(:get, target).to_return(body: [ { "EntitlementId" => store_id } ].to_json,
+      headers: { "Content-Type" => "application/json" })
+    get "#{@base}/v1/library/#{@delivery.entitlement_id},#{store_id}/metadata", headers: { "Authorization" => "Bearer reader-own" }
+    assert_response :success
+    assert_equal [ { "EntitlementId" => store_id } ], response.parsed_body
+    assert_requested :get, target
+  end
+
   test "sending a newer copy keeps entitlement and marks generations like library books" do
     @delivery.update_columns(last_download_at: Time.current)
     newer = prepare_copy(viewer: @recipient, bytes: synthetic_epub(version: "2.0"))
@@ -135,5 +160,31 @@ class KoboHouseholdDeliveryTest < ActionDispatch::IntegrationTest
     assert again.progress_generation_ambiguous?
     assert_nil again.last_download_at
     assert KoboAccountBookFile.exists?(@copy.id), "a copy pinned by a delivery is never pruned"
+  end
+
+  private
+
+  def assert_private_entitlement_stays_local
+    target = "https://storeapi.kobo.com/v1/library/#{@delivery.entitlement_id}"
+    stub_request(:any, /#{Regexp.escape(target)}/).to_return(status: 404, body: "{}")
+    headers = { "Authorization" => "Bearer reader-own" }
+    get "#{@base}/v1/library/#{@delivery.entitlement_id}/metadata", headers: headers
+    assert_response :not_found
+    put "#{@base}/v1/library/#{@delivery.entitlement_id}/state", params: { ReadingStates: [ {
+      EntitlementId: @delivery.entitlement_id,
+      CurrentBookmark: { ProgressPercent: 40, Location: { Source: "OEBPS/ch1.xhtml", Type: "KoboSpan" } }
+    } ] }, headers: headers, as: :json
+    assert_response :not_found
+    put "#{@base}/v1/library/#{@delivery.entitlement_id},aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/state",
+      params: { ReadingStates: [] }, headers: headers, as: :json
+    assert_response :not_found
+    delete "#{@base}/v1/library/#{@delivery.entitlement_id}", headers: headers
+    assert_response :not_found
+    get "#{@base}/#{@delivery.entitlement_id}/100/150/false/image.jpg"
+    assert_response :not_found
+    assert_not_requested :any, /#{Regexp.escape(target)}/
+    assert_equal [ @delivery.entitlement_id ], @device.kobo_local_entitlements.pluck(:entitlement_id)
+    @device.destroy!
+    assert_not KoboLocalEntitlement.exists?(kobo_device_id: @device.id)
   end
 end

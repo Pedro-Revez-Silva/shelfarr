@@ -21,7 +21,7 @@ class KoboAccountBookFile < ApplicationRecord
     "incomplete" => "The download was incomplete. Any earlier copy has been kept; try again.",
     "invalid_file" => "Kobo's file is not a valid EPUB, so it was not saved.",
     "protected_file" => "This file declares encryption, so Shelfarr cannot send it to another Kobo.",
-    "cache_full" => "Shelfarr's private Kobo copy space is full of books still waiting on readers. Try again after they download.",
+    "cache_full" => "Shelfarr's private Kobo copy space is full. Try again when space is available.",
     "storage_full" => "The server ran out of disk space. Any earlier copy has been kept.",
     "queue_unavailable" => "The copy could not be queued. Try again.",
     "rate_limited" => "Too many copies were requested in the last hour. Try again later.",

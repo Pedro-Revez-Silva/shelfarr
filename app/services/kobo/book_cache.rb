@@ -110,7 +110,7 @@ module Kobo
       located = @locator.call(@book)
       raise Failure, "not_eligible" unless located&.purchased && located.choice.rights == "drm_free"
 
-      ensure_capacity!(located.choice.size || BookDownload::MAX_BYTES)
+      reserve_capacity!(located.choice.size || BookDownload::MAX_BYTES)
       temporary = download(located.choice)
       promote(temporary, located)
     rescue Failure, BookDownload::Error => error
@@ -148,6 +148,7 @@ module Kobo
       incoming = private_directory(root.join(INCOMING))
       sweep(incoming)
       path = incoming.join("#{SecureRandom.hex(16)}.part")
+      @temporary_path = path
       flags = File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW
       @result = File.open(path, flags, 0o600, binmode: true) do |io|
         @downloader.call(choice.url, io: io, expected_size: choice.size).tap do
@@ -194,7 +195,7 @@ module Kobo
       end
       prune
       @row
-    rescue Failure, ActiveRecord::StaleObjectError
+    rescue StandardError
       self.class.remove(key) unless KoboAccountBookFile.where(storage_key: key, status: "ready").exists?
       raise
     end
@@ -207,20 +208,50 @@ module Kobo
         .find_each(&:destroy!)
     end
 
+    # Reserve before writing bytes. The short filesystem lock spans processes,
+    # but never network I/O: every increase in ready + in-flight bytes passes
+    # here. Promotion can only shrink a reservation into its actual ready size.
+    def reserve_capacity!(needed)
+      private_directory(root)
+      File.open(root.join(".capacity.lock"), File::RDWR | File::CREAT | File::NOFOLLOW, 0o600) do |lock|
+        raise Failure, "storage_full" unless lock.stat.file? && lock.flock(File::LOCK_EX)
+
+        @row.reload
+        raise ActiveRecord::StaleObjectError unless @row.status == "fetching"
+
+        ensure_capacity!(needed)
+        @row.update!(expected_size: needed)
+      end
+    end
+
     def ensure_capacity!(needed)
       maximum = self.class.max_total_bytes
       raise Failure, "too_large" if needed > maximum
 
-      used = -> { KoboAccountBookFile.where(status: "ready").distinct.pluck(:storage_key, :size_bytes).sum(&:last) }
-      return if used.call + needed <= maximum
+      return if used_bytes + needed <= maximum
 
       pinned = KoboDelivery.where.not(kobo_account_book_file_id: nil).select(:kobo_account_book_file_id)
-      KoboAccountBookFile.where(status: "ready").where.not(id: pinned)
+      # Every in-progress replacement keeps its previous valid copy, including
+      # against another title's concurrent eviction and before it is delivered.
+      replacing = KoboAccountBookFile.where(status: "fetching").select(:kobo_account_book_id)
+      KoboAccountBookFile.where(status: "ready").where.not(id: pinned).where.not(kobo_account_book_id: replacing)
         .order(Arel.sql("COALESCE(last_used_at, fetched_at) ASC"), :id).each do |candidate|
         candidate.destroy!
-        return if used.call + needed <= maximum
+        return if used_bytes + needed <= maximum
       end
       raise Failure, "cache_full"
+    end
+
+    def used_bytes
+      # One snapshot avoids missing a row that changes from fetching to ready
+      # between separate queries. Identical ready copies share one on-disk file.
+      ready = {}
+      reserved = 0
+      KoboAccountBookFile.where(status: %w[ready fetching]).where.not(id: @row.id)
+        .pluck(:status, :storage_key, :size_bytes, :expected_size).each do |status, key, size, expected|
+        status == "ready" ? ready[key] = size.to_i : reserved += expected.to_i
+      end
+      ready.values.sum + reserved
     end
 
     def private_directory(path)
@@ -249,6 +280,8 @@ module Kobo
     end
 
     def fail!(code)
+      # Release an in-flight reservation only after its partial bytes are gone.
+      File.unlink(@temporary_path) if @temporary_path && File.exist?(@temporary_path)
       code = "protocol_changed" unless KoboAccountBookFile::ERROR_MESSAGES.key?(code)
       @row.reload
       @row.update!(status: "failed", error: code) if @row.status == "fetching"
