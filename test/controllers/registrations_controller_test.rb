@@ -26,6 +26,17 @@ class RegistrationsControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{sign_up_path}']"
   end
 
+  test "anonymous and regular users cannot create another administrator" do
+    [ nil, @user ].each do |account|
+      sign_in_as(account) if account
+      assert_no_difference -> { User.count } do
+        post sign_up_path, params: { user: { name: "Injected", username: "injected", role: "admin",
+          password: "Password123!", password_confirmation: "Password123!" } }
+      end
+      assert_redirected_to root_path
+    end
+  end
+
   test "create first user starts a session and redirects to settings" do
     User.find_each(&:destroy!)
 
@@ -84,5 +95,4 @@ class RegistrationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_select "form[action='#{sign_up_path}']"
   end
-
 end

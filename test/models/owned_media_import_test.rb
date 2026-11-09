@@ -21,6 +21,17 @@ class OwnedMediaImportTest < ActiveJob::TestCase
     assert_includes duplicate.errors[:base], "A backup is already active for this library item"
   end
 
+  test "latest imports only accept integer identifiers" do
+    older = @item.owned_media_imports.create!(status: "failed", created_at: 2.hours.ago)
+    newer = @item.owned_media_imports.create!(status: "failed", created_at: 1.hour.ago)
+
+    assert_empty OwnedMediaImport.latest_by_owned_library_item_id([ "#{@item.id}) OR 1=1 --", nil, "bad" ])
+    result = OwnedMediaImport.latest_by_owned_library_item_id([ @item.id.to_s, "1); DROP TABLE users; --" ])
+    assert_equal [ @item.id ], result.keys
+    assert_equal newer, result.fetch(@item.id)
+    assert OwnedMediaImport.exists?(older.id)
+  end
+
   test "pending backlog work is passive until dispatched" do
     media_import = @item.owned_media_imports.create!(status: "pending", automatic: true)
 

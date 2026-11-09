@@ -19,6 +19,22 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_response :redirect
   end
 
+  test "request result info links reject executable provider URLs" do
+    sign_out
+    sign_in_as(@admin)
+    result = search_results(:pending_result)
+    result.update!(info_url: "https://provider.example/details")
+
+    get request_path(@pending_request)
+    assert_response :success
+    assert_select "a[href=?][rel='noopener']", result.info_url, text: "Info"
+
+    result.update!(info_url: "javascript:alert(document.domain)")
+    get request_path(@pending_request)
+    assert_response :success
+    assert_select "a", text: "Info", count: 0
+  end
+
   test "index shows user's requests" do
     get requests_path
     assert_response :success

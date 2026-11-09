@@ -19,6 +19,21 @@ class Admin::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_equal "You must be an admin to access this area.", flash[:alert]
   end
 
+  test "regular users cannot assign roles through create or update" do
+    sign_out
+    sign_in_as(@user)
+
+    assert_no_difference -> { User.count } do
+      post admin_users_path, params: { user: { name: "Injected", username: "injected", role: "admin",
+        password: "Password123!", password_confirmation: "Password123!" } }
+    end
+    assert_redirected_to root_path
+
+    patch admin_user_path(@user), params: { user: { role: "admin" } }
+    assert_redirected_to root_path
+    assert @user.reload.user?
+  end
+
   test "index lists active users" do
     get admin_users_url
 

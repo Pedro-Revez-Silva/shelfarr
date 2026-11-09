@@ -16,6 +16,28 @@ class SearchResultTest < ActiveSupport::TestCase
     assert_includes result.errors[:guid], "can't be blank"
   end
 
+  test "provider info links permit only absolute HTTP and HTTPS without credentials" do
+    [ "https://provider.example/books/123?q=a%20b#details", "http://provider.example:8080/info" ].each do |url|
+      assert_equal url, SearchResult.new(info_url: url).safe_info_url
+    end
+
+    [ nil, "", "/info", "//provider.example/info", "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>", "file:///etc/passwd", "https:///info",
+      "https://user:password@provider.example/info", " https://provider.example/info",
+      "https://provider.example/\ninfo", "https://provider.example/\u0000info" ].each do |url|
+      assert_nil SearchResult.new(info_url: url).safe_info_url, url.inspect
+    end
+  end
+
+  test "download preference ordering cannot interpolate arbitrary stored values" do
+    Setting.create!(key: "preferred_download_types", value_type: "json", category: "download",
+      value: [ "direct", "torrent' THEN 0 END; DROP TABLE search_results; --", "usenet" ].to_json)
+
+    assert_equal %w[direct usenet torrent], SettingsService.preferred_download_types
+    assert_equal SearchResult.count, SearchResult.preferred_first.to_a.length
+    assert_not_includes SearchResult.preferred_first.to_sql, "DROP TABLE"
+  end
+
   test "requires title" do
     result = SearchResult.new(request: requests(:pending_request), guid: "test-guid")
     assert_not result.valid?

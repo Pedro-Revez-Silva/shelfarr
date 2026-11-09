@@ -109,8 +109,8 @@
               </div>
 
               <div class="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto sm:flex-nowrap">
-                <% if result.info_url.present? %>
-                  <%= link_to "Info", result.info_url, target: "_blank", rel: "noopener",
+                <% if (info_url = result.safe_info_url) %>
+                  <%= link_to "Info", info_url, target: "_blank", rel: "noopener",
                       class: "px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
                 <% end %>
                 <% if result.selected? %>
