@@ -15,6 +15,8 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
 
   BASE = "/shelf"
   APP = Rack::URLMap.new(BASE => ConsumerReachability.new(Rails.application))
+  # Seconds of audio a highlight read in the same frame may trail its clock.
+  HIGHLIGHT_LAG = 0.05
 
   setup do
     ConsumerReachability.reset!
@@ -171,10 +173,25 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
     within_frame(find(".consumer-ebook iframe")) { assert_text "Cue 1 sounds the quiet tone." }
     reveal_reading_controls
     play_pause("Play")
-    wait_until("offline narration plays past six seconds", timeout: 20) { audio_time > 6 }
-    assert_equal "c3", active_cue
+    # Each frame sampled on the way highlights only the cue its audio clock is
+    # sounding, and nothing between cues.
+    wait_until("offline narration highlights the fourth cue as it sounds", timeout: 20) do
+      time, paused, cue = narration_frame
+      assert_highlight_heard time, cue unless paused
+      !paused && cue == "c3"
+    end
+    paused_from = Time.current
     play_pause("Pause")
+    heard = paused_time
     heard_at = Time.current
+    # The place is wherever the narration actually stopped (in or after cue 3).
+    reached = "c#{(heard / 2).floor}"
+    assert_operator heard, :>=, 6
+    wait_until("the stopped narration's highlight and page settle") do
+      time, paused, cue = narration_frame
+      # Stopped between cues, the reader may mark the cue it last reached.
+      paused && time == heard && (cue == reached || (cue.nil? && heard % 2 >= 1.8)) && cue_visible?(reached)
+    end
     assert_text "Saved on this device. It will sync when you're back online.", wait: 12
     assert_empty users(:one).consumer_progresses
     capture("read-along-offline-mobile.png")
@@ -182,10 +199,13 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
     sleep 1.2
     ConsumerReachability.offline = false
     page.execute_script("window.dispatchEvent(new Event('online'))")
-    progress = wait_for_progress(@ebook)
+    # An earlier checkpoint whose upload was interrupted is retried unchanged
+    # first; the stopped place follows it.
+    progress = wait_for_heard(@ebook, heard)
+    assert_equal reached, progress.locator.dig("locations", "fragments", 0)
+    assert_operator progress.observed_at, :>=, paused_from - 0.5
     assert_operator progress.observed_at, :<=, heard_at + 0.5
     assert_operator progress.observed_at, :<, progress.updated_at - 0.5, "the activity time, not the sync time, is stored"
-    assert_equal "c3", progress.locator.dig("locations", "fragments", 0)
   end
 
   test "a partly evicted read-along download is never ready, and a new alignment is an update" do
@@ -361,6 +381,33 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
 
   def active_cue
     page.evaluate_script("(document.querySelector('.consumer-ebook iframe')?.contentDocument?.querySelector('.shelfarr-read-along-active')?.id || '').replace('user-content-', '') || null")
+  end
+
+  # The audio clock, whether it is paused, and the highlighted cue, as one
+  # animation frame shows them. The reader moves the highlight in its own
+  # frame callback, which runs before this one; separate reads could instead
+  # see a clock that passed a cue boundary before the frame showing it.
+  def narration_frame
+    page.evaluate_async_script(<<~JS)
+      const done = arguments[arguments.length - 1]
+      requestAnimationFrame(() => {
+        const audio = document.querySelector('[data-consumer-reader-target=readAlongAudio]')
+        const active = document.querySelector('.consumer-ebook iframe')?.contentDocument?.querySelector('.shelfarr-read-along-active')
+        done([ audio.currentTime, audio.paused, (active?.id || '').replace('user-content-', '') || null ])
+      })
+    JS
+  end
+
+  # Cue N sounds from 2N to 2N + 1.8 seconds. The clock read in a frame may
+  # be a moment newer than the one the reader read in that frame, so only just
+  # after a boundary may the previous state still show.
+  def assert_highlight_heard(time, cue)
+    phase = time % 2
+    sounding = phase < 1.8
+    expected = sounding ? "c#{(time / 2).floor}" : nil
+    previous = sounding ? nil : "c#{(time / 2).floor}"
+    lagging = (sounding ? phase : phase - 1.8) < HIGHLIGHT_LAG
+    assert(cue == expected || (lagging && cue == previous), "at #{time}s the highlight was #{cue.inspect}, not #{expected.inspect}")
   end
 
   def cue_visible?(cue)
