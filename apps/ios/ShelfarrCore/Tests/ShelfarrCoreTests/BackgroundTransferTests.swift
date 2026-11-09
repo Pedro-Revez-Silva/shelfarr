@@ -238,6 +238,86 @@ final class BackgroundTransferTests: DownloadTestCase {
         XCTAssertFalse(binding.isLive)
     }
 
+    /// A foreground transfer refused while a replacement token is being confirmed (the
+    /// server retired the old token when the replacement was first used) waits for the
+    /// answer and is planned again with the replacement; it is never failed as signed out.
+    func testATransferRefusedBeforeTheReplacementIsConfirmedContinuesWithIt() async throws {
+        for confirmed in [true, false] {
+            let sessions = SessionManager(store: HandoverSecrets())
+            let before = Session(server: server, user: Me(id: "u1"), accessToken: "old-token")
+            sessions.signIn(before)
+            let downloads = boundManager(sessions, before, folder: confirmed ? "confirmed" : "unanswered")
+            await downloads.enqueue(book)
+            try await until("a foreground transfer") { app.live.count == 1 }
+            let first = app.live[0]
+            XCTAssertEqual(first.request.value(forHTTPHeaderField: "Authorization"), "Bearer old-token")
+
+            let gate = Gate()
+            let grant = DeviceGrant(deviceCode: "d", userCode: "ABCD-EFGH", verificationUri: "/c", verificationUriComplete: "/c?u=1", expiresIn: 600)
+            let scopes = RequestScopes.base + RequestScopes.requesting
+            XCTAssertTrue(sessions.beginHandover(
+                expected: before, pending: PendingUpgrade(accountKey: before.accountKey, grant: grant, expiresAt: Date().addingTimeInterval(600)),
+                accessToken: "new-token", grantedScopes: scopes,
+                check: { _ in
+                    await gate.pass()
+                    if !confirmed { throw APIError.offline(certificate: false) }
+                    return Me(id: "u1", scopes: scopes)
+                }
+            ))
+            let requesting = Task { await sessions.confirmHandover() }
+            try await until("the replacement's first request") { gate.arrivals == 1 }
+            app.respond(first, status: 401, body: nil)
+            await idle(router)
+            let waiting = await downloads.record("book")
+            XCTAssertEqual(waiting?.state, .downloading, "the download waits for the answer")
+            XCTAssertEqual(sessions.signedIn, before)
+
+            gate.release()
+            let outcome = await requesting.value
+            if confirmed {
+                guard case .adopted = outcome else { return XCTFail("\(outcome)") }
+                try await until("planned again with the replacement") {
+                    app.live.first?.request.value(forHTTPHeaderField: "Authorization") == "Bearer new-token"
+                }
+                app.serve(app.live[0], epub, etag: "\"e1\"")
+                await idle(router)
+                _ = try await wait(downloads, "book", [.ready])
+                XCTAssertEqual(sessions.signedIn?.accessToken, "new-token")
+            } else {
+                XCTAssertEqual(outcome, .unconfirmed)
+                let failed = try await wait(downloads, "book", [.failed])
+                XCTAssertEqual(failed.problem, .offline, "retried like a dropped connection, not signed out")
+                XCTAssertEqual(sessions.signedIn, before)
+                XCTAssertTrue(sessions.hasPendingHandover(for: before), "the replacement is kept for the next check")
+            }
+            await downloads.close()
+        }
+    }
+
+    private func boundManager(_ sessions: SessionManager, _ session: Session, folder: String) -> DownloadManager {
+        let binding = SignInBinding(session: session, sessions: sessions)
+        let api = binding.api(transport: transport)
+        let known = publications
+        let downloads = DownloadManager(
+            root: downloadsRoot(folder),
+            account: session.accountKey,
+            currentCredential: { binding.credentialTag },
+            transport: transport,
+            executors: DownloadExecutors(foreground: app),
+            router: router,
+            server: server,
+            authorize: { api.authorized($0) },
+            fetchPublication: { id in
+                guard let found = known[id] else { throw APIError.notFound }
+                return found
+            },
+            onUnauthorized: { binding.refused($0) },
+            resolveRefusal: { await binding.resolveRefusal($0) }
+        )
+        downloads.connect()
+        return downloads
+    }
+
     func testARefusedGrantIsReplacedAndNeverSignsTheAccountOut() async throws {
         let rejected = Counter()
         let downloads = manager(onUnauthorized: { rejected.note() })

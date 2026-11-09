@@ -79,8 +79,10 @@ public final class RequestingAccess {
         }
     }
 
-    /// Continues an approval the app was killed during.
+    /// Continues an approval the app was killed during. One whose replacement token was
+    /// already issued is confirmed with the server; nothing is asked of the person again.
     public func resume(_ session: Session) {
+        if backend.sessions.hasPendingHandover(for: session) { return confirm(session) }
         guard let pending = backend.sessions.pendingUpgrade(accountKey: session.accountKey) else { return }
         poll(session, pending)
     }
@@ -90,6 +92,11 @@ public final class RequestingAccess {
     public func start(_ session: Session) async -> URL? {
         if case let .approving(_, _, browser, _) = state { return browser }
         guard !starting else { return nil }
+        if backend.sessions.hasPendingHandover(for: session) {
+            // Approved already: what's left is the server confirming the new token.
+            if polling == nil { confirm(session) }
+            return nil
+        }
         starting = true
         defer { starting = false }
         do {
@@ -157,7 +164,7 @@ public final class RequestingAccess {
             let ended: RequestAccess
             do {
                 switch try await authorizer.await(PendingAuthorization(server: server, grant: pending.grant, expiresAt: pending.expiresAt)) {
-                case let .approved(token): ended = await self?.adopt(session, token) ?? .checking
+                case let .approved(token): ended = await self?.adopt(session, pending, token) ?? .checking
                 case .denied: ended = .notAllowed(notice: "Requesting wasn't allowed. The app still reads and plays everything as before.")
                 case .expired: ended = .notAllowed(notice: "The approval code expired. Try again when you're ready.")
                 }
@@ -174,26 +181,53 @@ public final class RequestingAccess {
         }
     }
 
-    private func adopt(_ session: Session, _ token: TokenResponse) async -> RequestAccess {
-        let fresh = backend.apiFor(Credential(server: session.server, accessToken: token.accessToken))
-        guard let user = try? await fresh.me(server: session.server) else {
-            return .notAllowed(notice: "Approval finished, but \(session.server.host) couldn't confirm it. Try again.")
+    /// Confirms a replacement issued before, without asking the person again.
+    private func confirm(_ session: Session) {
+        polling?.cancel()
+        state = .checking
+        polling = Task { [weak self] in
+            guard let ended = await self?.settleHandover(session), let self, !Task.isCancelled else { return }
+            self.backend.sessions.clearPendingUpgrade()
+            self.state = ended
         }
-        guard user.id == session.user.id else {
-            // Never switch accounts from here; the server already refuses this, so a stray token is dropped.
-            try? await fresh.revoke(server: session.server)
-            return .notAllowed(notice: "That approval was for a different account, so nothing changed.")
-        }
+    }
+
+    private func adopt(_ session: Session, _ pending: PendingUpgrade, _ token: TokenResponse) async -> RequestAccess {
         let granted = (token.scope ?? "").split(separator: " ").map(String.init)
-        let upgraded = Session(server: session.server, user: user, accessToken: token.accessToken, grantedScopes: granted)
-        guard backend.sessions.replaceToken(expected: session, upgraded: upgraded) else {
-            try? await fresh.revoke(server: session.server)
+        // Recorded before the new token is first sent: the server retires the old one as it
+        // authenticates that first request, so from then on the old token's refusals wait
+        // for this answer instead of signing out, and the new token survives a relaunch.
+        guard backend.sessions.beginHandover(expected: session, pending: pending, accessToken: token.accessToken,
+                                             grantedScopes: granted, check: candidateCheck(session.server))
+        else {
+            // The sign-in changed meanwhile; this token never becomes anyone's credential.
+            try? await backend.apiFor(Credential(server: session.server, accessToken: token.accessToken)).revoke(server: session.server)
             return .notAllowed(notice: nil)
         }
-        // The server retires the old credential once the new one is used; this also covers older servers.
-        try? await backend.apiFor(Credential(server: session.server, accessToken: session.accessToken)).revoke(server: session.server)
-        if upgraded.canRequest { return .allowed }
-        facts[session.server.display] = false
-        return .serverTooOld
+        return await settleHandover(session)
+    }
+
+    private func candidateCheck(_ server: ServerAddress) -> SessionManager.CandidateCheck {
+        let apiFor = backend.apiFor
+        return { credential in try await apiFor(credential).me(server: server) }
+    }
+
+    private func settleHandover(_ session: Session) async -> RequestAccess {
+        switch await backend.sessions.confirmHandover() {
+        case let .adopted(upgraded):
+            // The server retires the old credential once the new one is used; this also covers older servers.
+            try? await backend.apiFor(Credential(server: session.server, accessToken: session.accessToken)).revoke(server: session.server)
+            if upgraded.canRequest { return .allowed }
+            facts[session.server.display] = false
+            return .serverTooOld
+        case let .otherAccount(stray):
+            // Never switch accounts from here; the server already refuses this, so a stray token is dropped.
+            try? await backend.apiFor(stray).revoke(server: session.server)
+            return .notAllowed(notice: "That approval was for a different account, so nothing changed.")
+        case .refused, .unconfirmed:
+            return .notAllowed(notice: "Approval finished, but \(session.server.host) couldn't confirm it. Try again.")
+        case .ended:
+            return .notAllowed(notice: nil)
+        }
     }
 }

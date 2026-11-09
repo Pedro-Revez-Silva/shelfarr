@@ -200,6 +200,8 @@ public actor DownloadManager: TransferSink {
     private let usableSpace: @Sendable () -> Int64?
     /// Told the tag of the credential the server refused, only when it was the current one.
     private let onUnauthorized: @Sendable (_ refusedCredential: String) -> Void
+    /// Decides a refusal of the current token: it may be waiting for a replacement.
+    private let resolveRefusal: @Sendable (_ refusedCredential: String) async -> RefusalResolution
     private let files = FileManager.default
 
     private var records: [String: DownloadRecord] = [:] {
@@ -255,6 +257,11 @@ public actor DownloadManager: TransferSink {
     /// earlier token keep running, and if that token is refused they are planned again
     /// with the new one rather than signing the account out. `onUnauthorized` gets the
     /// tag that was refused, so the caller can tell it from a token handed over since.
+    ///
+    /// `resolveRefusal`, when given, decides a refusal of the current token instead
+    /// (`SignInBinding.resolveRefusal`): while a replacement is being confirmed the
+    /// download waits for it and is planned again with it, and only `.ended` fails it as
+    /// signed out. It reports `.ended` refusals itself; `onUnauthorized` is then unused.
     public init(
         root: URL,
         account: String,
@@ -269,7 +276,8 @@ public actor DownloadManager: TransferSink {
         chunkSize: Int64 = 32 << 20,
         maxTicketsPerLane: Int = 64,
         usableSpace: @escaping @Sendable () -> Int64? = { nil },
-        onUnauthorized: @escaping @Sendable (_ refusedCredential: String) -> Void = { _ in }
+        onUnauthorized: @escaping @Sendable (_ refusedCredential: String) -> Void = { _ in },
+        resolveRefusal: (@Sendable (_ refusedCredential: String) async -> RefusalResolution)? = nil
     ) {
         self.root = root
         self.account = account
@@ -285,6 +293,10 @@ public actor DownloadManager: TransferSink {
         self.maxTicketsPerLane = max(1, maxTicketsPerLane)
         self.usableSpace = usableSpace
         self.onUnauthorized = onUnauthorized
+        self.resolveRefusal = resolveRefusal ?? { tag in
+            onUnauthorized(tag)
+            return .ended
+        }
     }
 
     /// A stable fingerprint of a token, so a ticket can name the credential it used.
@@ -738,6 +750,7 @@ public actor DownloadManager: TransferSink {
             grantsUnsupported = true
             return (contentURL, false)
         } catch APIError.unauthorized {
+            // The bound client has already waited for any replacement of `minting`.
             onUnauthorized(minting)
             throw APIError.unauthorized
         }
@@ -751,7 +764,7 @@ public actor DownloadManager: TransferSink {
         let length: Int64?
     }
 
-    private func preflight(_ url: URL) async throws -> Preflight? {
+    private func preflight(_ url: URL, replayed: Bool = false) async throws -> Preflight? {
         // Read before `authorize`, so the tag is never newer than the token sent.
         let sent = credential
         var request = authorize(url)
@@ -767,8 +780,17 @@ public actor DownloadManager: TransferSink {
         case 405, 501:
             return nil
         case 401:
-            onUnauthorized(sent)
-            throw APIError.unauthorized
+            if sent != credential, !replayed { return try await preflight(url, replayed: true) }
+            switch await resolveRefusal(sent) {
+            case .replay where !replayed && credential != sent:
+                // Handed over to a replacement meanwhile: once more with it, never a loop.
+                return try await preflight(url, replayed: true)
+            case .unconfirmed:
+                try Task.checkCancellation()
+                throw APIError.offline(certificate: false)
+            case .replay, .ended:
+                throw APIError.unauthorized
+            }
         default:
             throw Self.failure(response.statusCode)
         }
@@ -884,11 +906,13 @@ public actor DownloadManager: TransferSink {
                 if grantRejections[ticket.publicationId, default: 0] > 2 { throw GrantRejected() }
                 return replan(ticket.publicationId)
             }
-            if ticket.credential == credential {
-                onUnauthorized(ticket.credential)
-                throw APIError.unauthorized
-            }
             persist()
+            if ticket.credential == credential {
+                // The token in use was refused. It may be waiting for its replacement; the
+                // download stays as it is until that is answered.
+                settleRefusal(ticket.publicationId, refused: ticket.credential)
+                return
+            }
             replan(ticket.publicationId)
         case 410, 412, 416:
             throw EditionChanged()
@@ -972,6 +996,26 @@ public actor DownloadManager: TransferSink {
             release(publicationId)
         } else if ticketsFor(publicationId).allSatisfy({ $0.staged != nil }) {
             replan(publicationId)
+        }
+    }
+
+    /// Waits, off the actor's queue, for the answer to a refusal of the current token, then
+    /// plans again with its replacement or fails the download as the answer says.
+    private func settleRefusal(_ publicationId: String, refused tag: String) {
+        let epoch = epochs[publicationId, default: 0]
+        let resolve = resolveRefusal
+        Task { [weak self] in
+            let resolution = await resolve(tag)
+            await self?.refusalSettled(publicationId, epoch: epoch, refused: tag, resolution)
+        }
+    }
+
+    private func refusalSettled(_ publicationId: String, epoch: Int, refused tag: String, _ resolution: RefusalResolution) {
+        guard !closed, epochs[publicationId, default: 0] == epoch, records[publicationId]?.isActive == true else { return }
+        switch resolution {
+        case .replay where credential != tag: replan(publicationId)
+        case .unconfirmed: fail(publicationId, .offline)
+        case .replay, .ended: fail(publicationId, .signIn)
         }
     }
 

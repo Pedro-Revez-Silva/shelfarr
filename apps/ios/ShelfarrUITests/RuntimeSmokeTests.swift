@@ -456,9 +456,19 @@ final class RuntimeSmokeTests: XCTestCase {
         close.tap()
     }
 
+    /// Types into the library search field, revealing it first.
+    ///
+    /// iPhone hides the field above the list until it is pulled down. iPadOS 18 puts it in
+    /// the navigation bar, and since the Find tab joined the top tab bar it is collapsed
+    /// there into a "Search" bar button that opens the field (CI accessibility snapshot,
+    /// iPad, iOS 18.5: NavigationBar "Library" holds Button "Search" and no SearchField,
+    /// where the three-tab app showed the field itself). Swiping does not reveal it.
     private func search(_ app: XCUIApplication, _ text: String) {
         let field = app.searchFields.firstMatch
-        if !field.waitForExistence(timeout: 5) { app.swipeDown() }
+        if !field.waitForExistence(timeout: 5) {
+            let collapsed = app.navigationBars.buttons["Search"]
+            if collapsed.exists, collapsed.isHittable { collapsed.tap() } else { app.swipeDown() }
+        }
         XCTAssertTrue(field.waitForExistence(timeout: wait), "the library search field")
         field.tap()
         field.typeText(text)

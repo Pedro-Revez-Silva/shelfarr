@@ -159,8 +159,20 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    val sessions = SessionManager(KeystoreSecureStore(appContext))
-    val httpClient: OkHttpClient = buildHttpClient(sessions) { rejected -> sessions.markExpired(rejected) }
+    val sessions = SessionManager(KeystoreSecureStore(appContext)).apply {
+        // A replacement token left unconfirmed by an earlier process is checked with exactly
+        // that token, before the old one's first refusal can end the sign-in.
+        useCandidateCheck { candidate -> ConsumerApi(buildHttpClient({ candidate })).me(candidate.server) }
+    }
+
+    /**
+     * Follows whoever is signed in. A refusal is replayed only for the sign-in that held the
+     * refused token, with the replacement it was handed over to.
+     */
+    val httpClient: OkHttpClient = buildHttpClient(
+        sessions,
+        { rejected, canceled -> sessions.resolveRefusalBlocking(rejected, canceled = canceled) },
+    ) { rejected -> sessions.markExpired(rejected) }
     val api = ConsumerApi(httpClient)
     val authorizer = DeviceAuthorizer(api)
 
@@ -297,14 +309,20 @@ class AppContainer(context: Context) {
         val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val directory = StorageLayout.accountDirectory(appContext, session.accountKey)
         val store = FileProgressStore(File(directory, StorageLayout.PROGRESS_FILE))
-        // Bound to this account's credential, so its retries and downloads can't borrow another token.
+        // Bound to this sign-in, so its retries and downloads can't borrow another token. It
+        // follows a replacement token the moment the sign-in is handed over to it, not when
+        // these services are next told; a refusal while that replacement is being confirmed
+        // waits for it and is sent once more with it.
         val live = AtomicReference(session)
-        val accountClient = buildHttpClient({ live.get().let { Credential(it.server, it.accessToken) } }) { sessions.markExpired(it) }
+        val accountClient = buildHttpClient(
+            { sessions.continuing(session)?.let { Credential(it.server, it.accessToken) } },
+            { rejected, canceled -> sessions.resolveRefusalBlocking(rejected, session, canceled) },
+        ) { sessions.markExpired(it) }
         val accountApi = ConsumerApi(accountClient)
         val registry = ProgressRegistry(
             store = store,
             remote = { id, update ->
-                if (!live.get().hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
+                if (sessions.continuing(session) == null) throw ApiException.Unauthorized()
                 accountApi.saveProgress(session.server, id, update)
             },
             scope = accountScope,
@@ -315,7 +333,7 @@ class AppContainer(context: Context) {
             client = accountClient,
             server = session.server,
             fetchPublication = { id ->
-                if (!live.get().hasSameAccountAndToken(sessions.signedIn)) throw ApiException.Unauthorized()
+                if (sessions.continuing(session) == null) throw ApiException.Unauthorized()
                 accountApi.publication(session.server, id)
             },
             scope = accountScope,

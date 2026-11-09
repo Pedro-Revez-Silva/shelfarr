@@ -221,7 +221,14 @@ user id; normalizing (lowercase scheme and host, no trailing slash) is unchanged
   `firstInstallTime`, later `lastUpdateTime`, higher version code) and that the session,
   account key, preferences, the book's bytes and manifest, and the queued place are all
   intact. It exercises Android's update path, not Shelfarr's own confirmation screen;
-  that screen is Android's and needs a person.
+  that screen is Android's and needs a person. The seed
+  (`apps/android/tools/upgrade-seed/UpgradeSeedTest.kt`) is compiled into a test APK
+  built from the baseline's own sources, because it runs inside the old app: test code
+  compiled against the current sources calls constructors the old app lacks as soon as a
+  model gains an optional field (CI saw `NoSuchMethodError` for `Me`). It hands the
+  verify stage a plain JSON record. The script requires both stages to pass rather than
+  skip, checks `adb install -r` reports `Success`, and refuses a changed
+  `firstInstallTime`; the app is never uninstalled between versions.
 - The updater's own steps up to `PackageInstaller` have unit and rendering coverage,
   including state saved by v3.
 
