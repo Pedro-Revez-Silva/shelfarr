@@ -93,12 +93,26 @@ public final class SessionManager: @unchecked Sendable {
     private let lock = NSLock()
     private var current: SessionState
     private var provisional: Credential?
+    /// Fingerprints of every token the live sign-in has held: the one it began with and
+    /// each replacement approved in place. Memory only; any other change starts afresh.
+    private var lineage: Set<String>
 
     public var onChange: (@Sendable (SessionState) -> Void)?
 
     public init(store: SecretStore) {
         self.store = store
-        current = Self.load(store)
+        let loaded = Self.load(store)
+        current = loaded
+        lineage = Self.lineage(starting: loaded)
+    }
+
+    private static func fingerprint(_ token: String) -> String {
+        SHA256.hexDigest(Data("shelfarr-sign-in\n\(token)".utf8))
+    }
+
+    private static func lineage(starting state: SessionState) -> Set<String> {
+        if case let .signedIn(session) = state { return [fingerprint(session.accessToken)] }
+        return []
     }
 
     private static func load(_ store: SecretStore) -> SessionState {
@@ -114,6 +128,19 @@ public final class SessionManager: @unchecked Sendable {
     public var signedIn: Session? {
         if case let .signedIn(session) = state { return session }
         return nil
+    }
+
+    /// The live session when it continues `earlier`'s sign-in: the same session, one
+    /// with fresher details, or a replacement token for the same account approved in place
+    /// (`replaceToken`). Nil after any other sign-in, an expiry or a sign-out, so work
+    /// bound to `earlier` follows a handover but can never borrow another sign-in's token.
+    public func continuing(_ earlier: Session) -> Session? {
+        lock.withLock {
+            guard case let .signedIn(live) = current, live.accountKey == earlier.accountKey,
+                  lineage.contains(Self.fingerprint(earlier.accessToken))
+            else { return nil }
+            return live
+        }
     }
 
     public func credential() -> Credential? {
@@ -140,7 +167,9 @@ public final class SessionManager: @unchecked Sendable {
     /// Keeps fresher display details and scopes for the same account and token.
     public func refreshUser(_ user: Me, expected: Session) {
         guard let current = signedIn, current.hasSameAccountAndToken(expected), current.user.id == user.id, current.user != user else { return }
-        signIn(Session(server: current.server, user: user, accessToken: current.accessToken, grantedScopes: current.grantedScopes))
+        let refreshed = Session(server: current.server, user: user, accessToken: current.accessToken, grantedScopes: current.grantedScopes)
+        persist(Stored(server: refreshed.server, accessToken: refreshed.accessToken, user: refreshed.user, scopes: refreshed.grantedScopes))
+        update(.signedIn(refreshed), continuingSignIn: true)
     }
 
     /// Swaps in a newly approved credential for the same account, keeping everything
@@ -151,7 +180,8 @@ public final class SessionManager: @unchecked Sendable {
         guard let current = signedIn, current.hasSameAccountAndToken(expected), upgraded.accountKey == current.accountKey else { return false }
         persist(Stored(server: upgraded.server, accessToken: upgraded.accessToken, user: upgraded.user, scopes: upgraded.grantedScopes))
         store.delete(Keys.upgrade)
-        update(.signedIn(upgraded))
+        // The same sign-in continues: work bound to `expected` now uses this token.
+        update(.signedIn(upgraded), continuingSignIn: true)
         return true
     }
 
@@ -190,8 +220,13 @@ public final class SessionManager: @unchecked Sendable {
         if let data = try? JSONEncoder().encode(stored) { store.write(Keys.session, data) }
     }
 
-    private func update(_ state: SessionState) {
+    private func update(_ state: SessionState, continuingSignIn: Bool = false) {
         lock.withLock {
+            if continuingSignIn, case let .signedIn(session) = state {
+                lineage.insert(Self.fingerprint(session.accessToken))
+            } else {
+                lineage = Self.lineage(starting: state)
+            }
             current = state
             provisional = nil
         }

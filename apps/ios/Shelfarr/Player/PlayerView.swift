@@ -28,7 +28,7 @@ final class PlayerModel: ObservableObject {
     }
 
     func start() async {
-        guard let sync, let session = owner, app.session == session else {
+        guard let sync, let session = owner, app.isCurrent(session) else {
             state = .failed(APIError.unauthorized)
             return
         }
@@ -49,7 +49,7 @@ final class PlayerModel: ObservableObject {
                 // Only a lost connection may fall back to the download. Certificates are surfaced.
                 offline = true
             }
-            guard app.session == session else { throw CancellationError() }
+            guard app.isCurrent(session) else { throw CancellationError() }
             let downloads = app.downloadsForSession()
             var download = await downloads?.ready(publicationId)
             if let current = online, let found = download, !found.matches(current) { download = nil }
@@ -93,7 +93,7 @@ final class PlayerModel: ObservableObject {
     }
 
     private func play(_ publication: ShelfarrCore.Publication, _ start: SavedPosition?, baseVersion: Int, observedAt: Int64? = nil, notice: String? = nil) async {
-        guard let session = owner, app.session == session, let sync else { return }
+        guard let session = owner, app.isCurrent(session), let sync else { return }
         // Restoring the saved place is not listening: it keeps the time it was reached.
         await sync.begin(position: start, baseVersion: baseVersion, observedAt: observedAt, assets: publication.audioAssets.map(\.id))
         app.playback.load(publication, server: session.server, api: app.api(for: session), sync: sync, start: start, localFiles: localFiles)

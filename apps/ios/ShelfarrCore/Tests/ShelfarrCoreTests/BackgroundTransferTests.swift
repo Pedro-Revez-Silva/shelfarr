@@ -5,6 +5,14 @@ import FoundationNetworking
 @testable import ShelfarrCore
 import XCTest
 
+private final class HandoverSecrets: SecretStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    func read(_ name: String) -> Data? { lock.withLock { values[name] } }
+    func write(_ name: String, _ value: Data) { lock.withLock { values[name] = value } }
+    func delete(_ name: String) { _ = lock.withLock { values.removeValue(forKey: name) } }
+}
+
 /// The manager against a transfer daemon that outlives it, as iOS's background
 /// session does: relaunch, reconciliation, ordering and the account boundary.
 final class BackgroundTransferTests: DownloadTestCase {
@@ -173,6 +181,61 @@ final class BackgroundTransferTests: DownloadTestCase {
         let failed = try await wait(second, "book", [.failed])
         XCTAssertEqual(failed.problem, .signIn)
         XCTAssertEqual(rejected.value, 1, "only a rejection of this session's own token signs it out")
+    }
+
+    /// Requesting added in place: the same account's token is replaced while transfers run.
+    /// They are kept; one refused because its grant came from the old token is planned
+    /// again with the new one; only a refusal of the token in use signs out.
+    func testATokenHandedOverInPlaceKeepsTransfersAndOnlyItsOwnRefusalSignsOut() async throws {
+        let sessions = SessionManager(store: HandoverSecrets())
+        let before = Session(server: server, user: Me(id: "u1"), accessToken: "old-token")
+        sessions.signIn(before)
+        let binding = SignInBinding(session: before, sessions: sessions)
+        let api = binding.api(transport: transport)
+        let grants = self.grants, known = publications
+        let downloads = DownloadManager(
+            root: downloadsRoot("acct"),
+            account: before.accountKey,
+            currentCredential: { binding.credentialTag },
+            transport: transport,
+            executors: DownloadExecutors(foreground: app, background: system, mintGrant: { publicationId, assetId in
+                guard binding.isLive else { throw CancellationError() }
+                return try grants.mint(publicationId, assetId)
+            }),
+            router: router,
+            server: server,
+            authorize: { api.authorized($0) },
+            fetchPublication: { id in
+                guard let found = known[id] else { throw APIError.notFound }
+                return found
+            },
+            chunkSize: 2_100,
+            onUnauthorized: { binding.refused($0) }
+        )
+        downloads.connect()
+        await downloads.enqueue(book)
+        try await submissions(2)
+        let old = system.live
+        XCTAssertEqual(grants.count, 1)
+
+        let after = Session(server: server, user: Me(id: "u1"), accessToken: "new-token", grantedScopes: RequestScopes.base + RequestScopes.requesting)
+        XCTAssertTrue(sessions.replaceToken(expected: before, upgraded: after))
+        XCTAssertTrue(system.cancelled.isEmpty, "running transfers are kept")
+        await serve(old[0])
+        system.respond(old[1], status: 401, body: nil)
+        await idle(router)
+        try await until("a replacement with a grant minted by the new token") { grants.count == 2 && system.live.count == 1 }
+        XCTAssertEqual(sessions.signedIn, after, "a refusal of the replaced token doesn't sign out")
+        await serve(system.live[0])
+        let ready = try await wait(downloads, "book", [.ready])
+        XCTAssertEqual(ready.files.first?.complete, true)
+
+        grants.mode = .signedOut
+        await downloads.enqueue(audiobook)
+        let failed = try await wait(downloads, "audio", [.failed])
+        XCTAssertEqual(failed.problem, .signIn)
+        XCTAssertNil(sessions.signedIn, "a refusal of the token in use still signs out")
+        XCTAssertFalse(binding.isLive)
     }
 
     func testARefusedGrantIsReplacedAndNeverSignsTheAccountOut() async throws {

@@ -27,6 +27,8 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
     private(set) var revoked: [String] = []
     private(set) var deviceBearers: [String?] = []
     private(set) var creates = 0
+    /// The bearer of every progress write that reached the server.
+    private(set) var progressBearers: [String] = []
     private var devices: [String: (scopes: [String], polls: Int)] = [:]
     private var requests: [(id: String, work: String, type: String, title: String, step: Int, stage: String, percent: Int?)] = []
     private var counter = 0
@@ -130,6 +132,13 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
             }
             requests[index].stage = "failed"
             return (200, #"{"request":\#(view(index))}"#)
+        case ("PUT", _) where path.hasPrefix("library/") && path.hasSuffix("/progress"):
+            progressBearers.append(bearer)
+            let asset = body["asset_id"] as? String ?? ""
+            let seconds = body["position_seconds"] as? Double ?? 0
+            let version = (body["expected_version"] as? Int ?? 0) + 1
+            let mutation = body["client_mutation_id"] as? String ?? ""
+            return (200, #"{"progress":{"asset_id":"\#(asset)","position_seconds":\#(seconds),"version":\#(version),"client_mutation_id":"\#(mutation)"}}"#)
         case ("GET", _) where path.hasPrefix("requests/"):
             if let denied = need("requests:read") { return denied }
             guard let index = requests.firstIndex(where: { $0.id == String(path.dropFirst(9)) }) else { return (404, "{}") }
@@ -254,6 +263,43 @@ final class RequestingTests: XCTestCase {
         XCTAssertTrue(after.canRequest)
         XCTAssertTrue(harness.fixture.revoked.contains(before.accessToken))
         XCTAssertNil(harness.sessions.pendingUpgrade(accountKey: before.accountKey))
+    }
+
+    /// An open book's place, saved offline before requesting was added, reaches the server
+    /// with the new token afterwards: the old token is revoked, nothing signs out, and the
+    /// sync built before the upgrade is the one that delivers it.
+    func testAnUnsentPlaceFromBeforeTheUpgradeIsDeliveredWithTheNewToken() async throws {
+        let harness = Harness()
+        let before = harness.signIn()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let registry = ProgressRegistry(
+            store: FileProgressStore(file: folder.appendingPathComponent("progress.json")),
+            remote: SessionProgressRemote.bind(session: before, sessions: harness.sessions, transport: harness.fixture)
+        )
+        let sync = registry.sync(for: "pub-1")
+        await sync.begin(position: nil, baseVersion: 0)
+        harness.fixture.offline = true
+        await sync.update(SavedPosition(assetId: "a1", positionSeconds: 42), observedAt: 1_000)
+        await sync.flush()
+        let waiting = await sync.snapshot()
+        XCTAssertTrue(waiting.hasUnsyncedChanges, "the place waits on this device")
+        harness.fixture.offline = false
+
+        _ = await harness.requesting.start(before)
+        await harness.requesting.settle()
+        XCTAssertEqual(harness.requesting.state, .allowed)
+        let after = try XCTUnwrap(harness.sessions.signedIn)
+        XCTAssertTrue(harness.fixture.revoked.contains(before.accessToken))
+        XCTAssertEqual(harness.sessions.continuing(before), after, "the same sign-in goes on with the new token")
+
+        await sync.flush()
+        let delivered = await sync.snapshot()
+        XCTAssertFalse(delivered.hasUnsyncedChanges, "the place reached the server")
+        XCTAssertEqual(delivered.position?.positionSeconds, 42)
+        XCTAssertEqual(harness.fixture.progressBearers, [after.accessToken])
+        XCTAssertEqual(harness.sessions.signedIn, after, "nothing signed out")
+        await registry.stopAll()
     }
 
     func testDenialAndOtherAccountsLeaveTheConnectionAlone() async {

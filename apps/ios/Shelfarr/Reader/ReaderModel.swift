@@ -48,7 +48,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func open() async {
-        guard let session = owner, app.session == session, let sync else {
+        guard let session = owner, app.isCurrent(session), let sync else {
             state = .failed(APIError.unauthorized)
             return
         }
@@ -67,7 +67,7 @@ final class ReaderModel: ObservableObject {
             } catch let error as APIError where error.isPlainOffline {
                 offline = true
             }
-            guard app.session == session else { throw CancellationError() }
+            guard app.isCurrent(session) else { throw CancellationError() }
             let download = await downloads?.ready(publicationId)
             // A download pins one edition. Online, it is used only while it is still the server's edition.
             var useDownload = false
@@ -93,7 +93,7 @@ final class ReaderModel: ObservableObject {
                 let cached = try await app.epubCache.obtain(accountKey: session.accountKey, server: session.server, asset: epub, authorize: { api.authorized($0) }) { [weak self] fraction in
                     Task { @MainActor in self?.state = .preparing(fraction) }
                 }
-                guard app.session == session else { throw CancellationError() }
+                guard app.isCurrent(session) else { throw CancellationError() }
                 if cached.unverified || offline {
                     notice = "Reading the copy on this device. Your place will sync when you're back online."
                 }
@@ -133,7 +133,7 @@ final class ReaderModel: ObservableObject {
     }
 
     private func start(_ position: SavedPosition?, baseVersion: Int, observedAt: Int64? = nil) async {
-        guard let book, app.session == owner else { return }
+        guard let book, app.isCurrent(owner) else { return }
         // Opening at the saved place is not reading: it keeps the time it was reached.
         await sync?.begin(position: position, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
         correctionTimer?.cancel()

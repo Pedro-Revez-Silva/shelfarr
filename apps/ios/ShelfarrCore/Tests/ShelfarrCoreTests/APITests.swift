@@ -188,6 +188,48 @@ final class APITests: XCTestCase {
         XCTAssertEqual(box.rejected, 0)
     }
 
+    func testARequestRefusedAfterAHandoverIsSentOnceMoreWithTheReplacement() async throws {
+        final class Box: @unchecked Sendable { var token = "old"; var rejected: [String] = [] }
+        let box = Box(), server = self.server
+        let client = ConsumerAPI(
+            transport: transport,
+            credential: { Credential(server: server, accessToken: box.token) },
+            onRejected: { box.rejected.append($0.accessToken) },
+            replaysAfterHandover: true
+        )
+        transport.beforeResponse = { box.token = "new" }
+        transport.enqueue(401)
+        transport.enqueue(200, #"{"id":"u1","name":"Ada"}"#)
+        let me = try await client.me(server: server)
+        XCTAssertEqual(me.id, "u1")
+        XCTAssertEqual(transport.requests.map { $0.value(forHTTPHeaderField: "Authorization") }, ["Bearer old", "Bearer new"])
+        XCTAssertEqual(box.rejected, [], "the replaced token's refusal reports nothing")
+    }
+
+    func testAReplayIsTriedOnceAndARefusalOfTheTokenInUseIsReported() async {
+        final class Box: @unchecked Sendable { var token = "old"; var rejected: [String] = [] }
+        let box = Box(), server = self.server
+        let client = ConsumerAPI(
+            transport: transport,
+            credential: { Credential(server: server, accessToken: box.token) },
+            onRejected: { box.rejected.append($0.accessToken) },
+            replaysAfterHandover: true
+        )
+        transport.beforeResponse = { box.token = "new" }
+        transport.enqueue(401)
+        transport.enqueue(401)
+        _ = try? await client.me(server: server)
+        XCTAssertEqual(transport.requests.count, 2)
+        XCTAssertEqual(box.rejected, ["new"])
+
+        // No handover: a refusal is reported at once and never replayed.
+        transport.beforeResponse = nil
+        transport.enqueue(401)
+        _ = try? await client.me(server: server)
+        XCTAssertEqual(transport.requests.count, 3)
+        XCTAssertEqual(box.rejected, ["new", "new"])
+    }
+
     func testConflictCarriesCurrentProgress() async {
         transport.enqueue(409, #"{"error":"progress_conflict","progress":{"asset_id":"a","position_seconds":9,"version":7,"client_mutation_id":"x"}}"#)
         do {
