@@ -95,6 +95,11 @@ handler on the main queue.
   it never reaches another account.
 - **Cancel, remove, sign-out.** Tickets are revoked in the router first, so no later
   body is written. Then the tasks are cancelled, and only then are files deleted.
+  The entry is marked cancelled (or removed) before the tasks are, so asking for the
+  download again while they stop starts it afresh, and its files are then left to the
+  new download. A cancel cut short by the app ending is finished at the next launch:
+  a cancelled entry's tickets are dropped, so their tasks are cancelled, and its
+  folder is deleted.
   `close()` unregisters the account and cancels its tasks in both executors before
   disconnecting deletes the account folder.
 - **Token expiry.** Only a 401 to this session's own bearer marks it expired: from

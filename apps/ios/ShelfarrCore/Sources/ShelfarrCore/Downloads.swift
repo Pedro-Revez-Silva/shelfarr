@@ -233,6 +233,9 @@ public actor DownloadManager: TransferSink {
     private var preparing: [String: Task<Void, Never>] = [:]
     /// Bumped whenever a lane is stopped, so planning that was in flight gives up.
     private var epochs: [String: Int] = [:]
+    /// Bumped by every request, cancel and removal, so a cancel or removal still stopping
+    /// transfers knows when a newer request owns the download's folder.
+    private var revisions: [String: Int] = [:]
     /// Set once the server answered that it has no asset grants.
     private var grantsUnsupported = false
     /// Grant rejections per publication since it last made progress.
@@ -411,6 +414,7 @@ public actor DownloadManager: TransferSink {
         load()
         let existing = records[publication.id]
         if let existing, existing.isActive { return }
+        revisions[publication.id, default: 0] += 1
         grantRejections[publication.id] = nil
         let suggested = FormatDecision.suggestedOrder(publication).first(where: publication.readerFormats.contains)
         let chosen: ReaderFormat? = publication.bookType == .ebook
@@ -453,16 +457,23 @@ public actor DownloadManager: TransferSink {
     }
 
     /// Stops the transfers and deletes what they wrote. The entry stays, marked cancelled.
+    ///
+    /// The entry is marked first, so a request for the download that arrives while the
+    /// transfers are being stopped starts it again instead of being lost; the files are
+    /// then left to that request.
     public func cancel(_ publicationId: String) async {
         load()
+        revisions[publicationId, default: 0] += 1
+        let revision = revisions[publicationId]
+        if var record = records[publicationId] {
+            record.state = .cancelled
+            record.problem = nil
+            record.files = record.files.map { $0.reset() }
+            record.updatedAt = Date()
+            save(record)
+        }
         await stop(publicationId)
-        try? files.removeItem(at: folder(publicationId))
-        guard var record = records[publicationId] else { return }
-        record.state = .cancelled
-        record.problem = nil
-        record.files = record.files.map { $0.reset() }
-        record.updatedAt = Date()
-        save(record)
+        if revisions[publicationId] == revision { try? files.removeItem(at: folder(publicationId)) }
         pump()
     }
 
@@ -477,11 +488,12 @@ public actor DownloadManager: TransferSink {
         return true
     }
 
-    /// Stops any transfer and deletes the download and its entry.
+    /// Stops any transfer and deletes the download and its entry. As with `cancel`, the
+    /// entry goes first, so a request arriving meanwhile starts a new download.
     public func remove(_ publicationId: String) async {
         load()
-        await stop(publicationId)
-        try? files.removeItem(at: folder(publicationId))
+        revisions[publicationId, default: 0] += 1
+        let revision = revisions[publicationId]
         let removed = records.removeValue(forKey: publicationId)
         if !persist(), var record = removed {
             record.state = .failed
@@ -489,6 +501,8 @@ public actor DownloadManager: TransferSink {
             record.files = record.files.map { $0.reset() }
             records[publicationId] = record
         }
+        await stop(publicationId)
+        if revisions[publicationId] == revision { try? files.removeItem(at: folder(publicationId)) }
         pump()
     }
 
@@ -1267,8 +1281,10 @@ public actor DownloadManager: TransferSink {
         let stored: [String: DownloadRecord]
         if let current = try? JSONDecoder().decode(Manifest.self, from: data) {
             stored = current.records
+            // A cancelled entry's tickets are from a cancel cut short: dropped, so their transfers are cancelled.
             tickets = current.tickets.filter { entry in
-                current.records[entry.value.publicationId]?.files.contains { $0.assetId == entry.value.assetId } == true
+                guard let record = current.records[entry.value.publicationId], record.state != .cancelled else { return false }
+                return record.files.contains { $0.assetId == entry.value.assetId }
             }
         } else if let first = try? JSONDecoder().decode([String: DownloadRecord].self, from: data) {
             // The first manifest held only records, and transfers ran in-process.
@@ -1278,6 +1294,10 @@ public actor DownloadManager: TransferSink {
         }
         for (id, ticket) in tickets where ticket.staged != nil && !files.fileExists(atPath: stagedBody(id).path) {
             tickets[id] = nil
+        }
+        // A cancelled entry holds no files: anything in its folder was left by a cancel the app didn't finish.
+        for record in stored.values where record.state == .cancelled {
+            try? files.removeItem(at: folder(record.publicationId))
         }
         let checked = stored.mapValues(reconcile)
         records = checked

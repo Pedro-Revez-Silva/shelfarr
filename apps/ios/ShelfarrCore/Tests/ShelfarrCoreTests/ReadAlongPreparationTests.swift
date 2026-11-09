@@ -5,35 +5,6 @@ import FoundationNetworking
 @testable import ShelfarrCore
 import XCTest
 
-/// Holds an async step until the test opens it, and counts who reached it.
-private actor HoldPoint {
-    private var open = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    private(set) var arrived = 0
-
-    func wait() async {
-        arrived += 1
-        guard !open else { return }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func release() {
-        open = true
-        waiters.forEach { $0.resume() }
-        waiters = []
-    }
-}
-
-private final class Shared<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Value
-    init(_ value: Value) { stored = value }
-    var value: Value {
-        get { lock.withLock { stored } }
-        set { lock.withLock { stored = newValue } }
-    }
-}
-
 /// The real account downloads, with an optional hold just before a companion is queued
 /// (the suspension between a preparation's last check and the manager's enqueue).
 private final class HeldDownloads: ReadAlongDownloads, @unchecked Sendable {
