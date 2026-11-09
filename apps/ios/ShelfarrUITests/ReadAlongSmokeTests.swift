@@ -66,15 +66,19 @@ final class ReadAlongSmokeTests: XCTestCase {
         try startNarration(app)
 
         try step("The heard cue is highlighted, gaps show nothing, and pages follow only out-of-view cues") {
-            showChrome(app, false)
-            XCTAssertTrue(app.buttons["read-along-pill"].waitForExistence(timeout: wait), "the pill appears once narration plays")
             // A cue lasts two seconds, about as long as reaching this point takes on a
             // hosted simulator, so the order comes from the controller's record of every
             // highlight change since Play (Debug UI tests only), not from sampling.
+            // The page is left alone until p3: a highlight changes on the main thread,
+            // and on the hosted iPhone (iOS 18.5) the app's main thread stayed busy for
+            // 2.1 s right after the tap that hid the controls, across p1's 600 ms silence,
+            // so that silence never reached the screen.
             XCTAssertTrue(waitFor(timeout: 15) { self.shown(app).count >= 5 }, "p1, its silence, p2, its silence, p3: \(traceLine(app))")
             let heard = Array(shown(app).prefix(5))
             XCTAssertEqual(heard.map { $0.cue }, ["p1", "-", "p2", "-", "p3"], "p1 is heard first, and each silence highlights nothing: \(traceLine(app))")
             XCTAssertEqual(heard.map { $0.follows }, [0, 0, 0, 0, 0], "p1, p2 and p3 were already on screen: no page moved")
+            showChrome(app, false)
+            XCTAssertTrue(app.buttons["read-along-pill"].waitForExistence(timeout: wait), "the pill appears once narration plays")
             screenshot(app, "ra-03-heard")
             XCTAssertTrue(waitFor(timeout: 20) { self.shown(app).contains { $0.cue == "p4" } }, traceLine(app))
             XCTAssertTrue(waitFor(timeout: 10) { Int(self.trace(app)["follows"] ?? "0") ?? 0 >= 1 }, "p4 starts on a later page, so the page followed")
@@ -270,7 +274,9 @@ final class ReadAlongSmokeTests: XCTestCase {
             showChrome(offline, true)
             offline.buttons["read-along-play"].tap()
             if waitFor(timeout: 15, { self.trace(offline)["playing"] == "1" }) {
-                XCTAssertTrue(waitFor(timeout: 15) { self.trace(offline)["cue"] == "p1" }, traceLine(offline))
+                // The first highlight since Play, from the controller's record: by the time
+                // playing is seen, the live cue can already be past p1 (hosted iPhone).
+                XCTAssertTrue(waitFor(timeout: 15) { self.shown(offline).first?.cue == "p1" }, "the local narration's first cue is highlighted: \(traceLine(offline))")
                 offline.buttons["read-along-play"].tap()
             } else {
                 screenshot(offline, "ra-21-not-playing")
