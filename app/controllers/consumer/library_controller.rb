@@ -2,6 +2,7 @@
 
 class Consumer::LibraryController < ApplicationController
   include ConsumerMediaResponse
+  include ConsumerWebPublication
   layout "consumer"
   before_action :private_response
   before_action :verify_progress_account, only: :progress
@@ -23,11 +24,8 @@ class Consumer::LibraryController < ApplicationController
 
   def show
     @book = find_book
-    @publication = Consumer::Publication.new(@book, user: Current.user, routes: self).representation
-    @publication[:assets].each { |asset| asset[:content_url] = consumer_asset_path(@book, asset[:id]) }
-    @publication[:progress_url] = consumer_progress_path(@book)
-    # Bind this browser's progress outbox to the account and deployment subpath.
-    @publication[:progress_scope] = { account: Current.user.id.to_s, base: request.script_name.to_s }
+    # Binds this browser's progress outbox and downloads to the account and deployment subpath.
+    @publication = web_publication(@book, Consumer::Publication.new(@book, user: Current.user, routes: self).representation)
   end
 
   def asset

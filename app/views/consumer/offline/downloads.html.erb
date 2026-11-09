@@ -1,0 +1,8 @@
+<% content_for :title, "Downloads · Shelfarr" %>
+<%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
+<section class="consumer-heading consumer-heading--compact">
+  <p class="consumer-eyebrow">On this device</p>
+  <h1>Downloads.</h1>
+  <p>Books and audiobooks this browser keeps for reading and listening without a connection. Your places sync when you're back online.</p>
+</section>
+<%= render "downloads", account: Current.user.id.to_s, mode: "online" %>

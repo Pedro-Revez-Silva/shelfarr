@@ -11,7 +11,7 @@
     <%= javascript_importmap_tags %>
     <%= yield :head %>
   </head>
-  <body class="consumer-app<%= " consumer-app--reading" if content_for?(:reading_mode) %>">
+  <body class="consumer-app<%= " consumer-app--reading" if content_for?(:reading_mode) %>" data-controller="consumer-offline-presence" data-consumer-offline-presence-account-value="<%= Current.user.id %>" data-consumer-offline-presence-base-value="<%= request.script_name %>" data-consumer-offline-presence-max-age-days-value="<%= SettingsService.get(:session_max_age_days, default: 30).to_i %>">
     <% unless content_for?(:reading_mode) %>
     <a class="consumer-skip" href="#consumer-main">Skip to content</a>
     <header class="consumer-header">

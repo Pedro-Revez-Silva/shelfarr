@@ -36,7 +36,8 @@ export default class extends Controller {
       version: server?.version, assets: this.publication.assets.map(asset => asset.id),
       onStatus: (kind, detail) => this.showSyncStatus(kind, detail),
       onConflict: remote => this.showConflict(remote),
-      onRemote: remote => this.remoteArrived(remote)
+      onRemote: remote => this.remoteArrived(remote),
+      onServerProgress: progress => this.element.dispatchEvent(new CustomEvent("consumer-reader:server-progress", { detail: progress }))
     })
     this.checkpoints = new ListeningCheckpoints({ record: place => this.recordPlace(place) })
     this.visibilityHandler = () => { if (document.hidden) this.leave(); else if (this.sync.waiting) this.sync.flush() }
@@ -108,6 +109,10 @@ export default class extends Controller {
 
   showSyncStatus(kind, detail) {
     if (!this.active) return
+    // The offline shell has no form token until it confirms the account back
+    // online, and then syncs by itself; a refused write meanwhile is not a
+    // reason to reload.
+    if (kind === "reload" && this.publication.offline?.opened && !document.querySelector('meta[name="csrf-token"]')?.content) kind = "offline"
     const [message, retry, notice] = kind === "message" ? [detail, false, true] : STATUS[kind] || STATUS.offline
     const text = kind === "rejected" && detail ? `${message} ${detail}` : message
     if (this.hasSyncStatusTarget) this.syncStatusTarget.textContent = text
@@ -170,6 +175,19 @@ export default class extends Controller {
       this.checkpoints.restored(this.audioTarget.currentTime, this.currentAsset.id)
       this.renderAudioPosition()
     } else this.initialProgress = progress
+  }
+
+  // The offline shell reconnected and fetched the account's saved place. Treat
+  // it like a later place from another device, unless this browser already
+  // holds that version or a newer local place.
+  serverProgressRefreshed(progress) {
+    if (!this.active || !this.sync || !progress || !Number.isInteger(progress.version)) return
+    const known = Math.max(this.publication.progress?.version || 0, this.sync.serverVersion || 0)
+    if (progress.version > known && this.sync.restorePlace(progress)?.source === "server") {
+      this.publication.progress = progress
+      this.remoteArrived(progress)
+    }
+    if (this.sync.waiting) this.sync.flush()
   }
 
   retrySync() { this.sync?.retry() }

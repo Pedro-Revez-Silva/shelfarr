@@ -1,0 +1,19 @@
+<%# Served by the offline worker when the server can't be reached. Static: no account, session or book data. %>
+<div data-controller="consumer-offline-shell" data-consumer-offline-shell-base-value="<%= request.script_name %>" data-consumer-offline-shell-account-url-value="<%= consumer_offline_account_path %>" data-consumer-offline-shell-publications-url-value="<%= consumer_offline_publications_path %>" data-consumer-offline-shell-sign-in-url-value="<%= new_session_path %>">
+  <section class="consumer-heading consumer-heading--compact" data-consumer-offline-shell-target="intro">
+    <p class="consumer-eyebrow">Offline</p>
+    <h1 data-consumer-offline-shell-target="heading">On this device.</h1>
+    <p data-consumer-offline-shell-target="message" role="status">Opening your downloads…</p>
+  </section>
+  <p class="consumer-offline-banner" data-consumer-offline-shell-target="online" role="status" hidden><span data-consumer-offline-shell-target="onlineMessage">You're back online.</span> <%= link_to "Open your full library", consumer_library_path %></p>
+  <div data-consumer-offline-shell-target="library" hidden><%= render "downloads", account: "", mode: "offline" %></div>
+  <div data-consumer-offline-shell-target="reader"></div>
+  <template data-consumer-offline-shell-target="ebook">
+    <%= render "consumer/library/ebook_reader", title: "", author: "", publication: nil, status_form: nil, offline: true %>
+  </template>
+  <template data-consumer-offline-shell-target="audio">
+    <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
+    <%= render "consumer/library/audio_session", title: "", author: "", description: "", ebook: false, publication: nil, status_form: nil, offline: true, recovery_path: consumer_library_path, tracks: [ "" ],
+      cover: tag.div(class: "consumer-cover", aria: { hidden: true }, data: { offline_fill: "cover" }) { safe_join([ tag.span("", class: "consumer-cover-title"), tag.span("", class: "consumer-cover-author"), tag.span("S", class: "consumer-cover-mark") ]) } %>
+  </template>
+</div>

@@ -185,7 +185,7 @@ class Outbox {
 
 export default class ConsumerProgressSync {
   constructor({ url, account, base = "", publication, version = 0, assets = [], storage, now = () => Date.now(),
-    onStatus = () => {}, onConflict = () => {}, onRemote = () => {}, syncDelay = 5000, retryDelays = RETRY_DELAYS }) {
+    onStatus = () => {}, onConflict = () => {}, onRemote = () => {}, onServerProgress = () => {}, syncDelay = 5000, retryDelays = RETRY_DELAYS }) {
     const endpoint = new URL(url, window.location.href)
     if (endpoint.origin !== window.location.origin) throw new Error("Invalid progress endpoint")
     if (!account || !publication) throw new Error("Progress needs an account and publication")
@@ -200,6 +200,8 @@ export default class ConsumerProgressSync {
     this.onStatus = onStatus
     this.onConflict = onConflict
     this.onRemote = onRemote
+    // Every saved place the server confirms, for copies kept outside the outbox.
+    this.onServerProgress = onServerProgress
     this.syncDelay = syncDelay
     this.retryDelays = retryDelays
     this.failures = 0
@@ -379,6 +381,11 @@ export default class ConsumerProgressSync {
     this.write("f", { version: progress.version, mutation: request.body.client_mutation_id, observedAt: request.body.observed_at ?? null,
       place: placeOf(request.body), own: true, drops: [request.id, ...request.from] })
     this.settled()
+    this.reportServer(progress)
+  }
+
+  reportServer(progress) {
+    try { if (progress) this.onServerProgress(progress) } catch (_) { /* observers never affect sync */ }
   }
 
   uncertain(kind) {
@@ -424,6 +431,7 @@ export default class ConsumerProgressSync {
     const version = remote?.version || 0
     this.serverVersion = Math.max(this.serverVersion, version)
     this.write("f", { version, mutation: remote?.client_mutation_id ?? null, observedAt, place: placeOf(remote), own, drops: box.placeIds })
+    this.reportServer(remote)
   }
 
   settled() {

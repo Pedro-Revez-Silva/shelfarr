@@ -1,0 +1,26 @@
+<%# The audiobook page and player. The offline shell renders it as a template and fills the publication details and tracks. %>
+<div data-controller="consumer-reader" class="consumer-reading-session">
+  <script type="application/json" data-consumer-reader-target="publication" data-offline-fill="publication"><%= raw json_escape(publication.to_json) if publication %></script>
+  <section class="consumer-publication-heading">
+    <%= cover %>
+    <div><p class="consumer-eyebrow"><%= ebook ? "Make room for a chapter" : "A story for your day" %></p><span class="consumer-format"><%= ebook ? "Ebook" : "Audiobook" %></span><h1 data-offline-fill="title"><%= title %></h1><p class="consumer-author" data-offline-fill="author"><%= author %></p><p class="consumer-description" data-offline-fill="description"><%= description %></p></div>
+  </section>
+  <% if tracks.empty? %>
+    <div class="consumer-empty"><h2>No readable files are available</h2><p>The file may be missing or use an unsupported format. Ask a server administrator to check the library file or import it again. Your saved place is kept.</p><div class="consumer-recovery"><%= link_to "Check again", recovery_path, class: "consumer-button" %><%= link_to "Back to your library", consumer_library_path, class: "consumer-button consumer-button--subtle" %></div></div>
+  <% else %>
+    <div class="consumer-sync"><span data-consumer-reader-target="syncStatus" role="status">Your place is kept on this device and saved to your account</span><button type="button" data-action="consumer-reader#retrySync" data-consumer-reader-target="retry" hidden>Retry</button></div>
+    <%= render "consumer/library/conflict" %>
+    <div class="consumer-reader-notice consumer-reader-notice--remote" data-consumer-reader-target="remote" hidden role="status"><span>Another device has a more recent place.</span><button type="button" data-action="consumer-reader#goToRemote">Go there</button></div>
+    <p class="consumer-reader-error" data-consumer-reader-target="error" hidden role="alert"></p>
+    <section class="consumer-audio-panel" aria-label="Audiobook player">
+      <div class="consumer-audio-identity"><span class="consumer-now-playing">Now playing</span><h2 data-consumer-reader-target="trackTitle"><%= tracks.first %></h2></div>
+      <audio data-consumer-reader-target="audio" preload="metadata" data-action="loadedmetadata->consumer-reader#audioLoaded timeupdate->consumer-reader#audioPosition pause->consumer-reader#audioPaused ended->consumer-reader#nextTrack error->consumer-reader#audioError"></audio>
+      <div class="consumer-audio-timeline"><label for="consumer-seek" class="consumer-sr-only">Listening position</label><input id="consumer-seek" type="range" min="0" max="100" value="0" step="0.1" data-consumer-reader-target="seek" data-action="input->consumer-reader#seekAudio change->consumer-reader#seekCommitted"><div><span data-consumer-reader-target="elapsed">0:00</span><span data-consumer-reader-target="duration">—</span></div></div>
+      <div class="consumer-audio-controls"><button type="button" data-action="consumer-reader#backwardAudio" aria-label="Rewind 15 seconds">↶<small>15</small></button><button type="button" class="consumer-play" data-action="consumer-reader#toggleAudio" data-consumer-reader-target="play" aria-label="Play audiobook">▶</button><button type="button" data-action="consumer-reader#forwardAudio" aria-label="Forward 30 seconds">↷<small>30</small></button></div>
+      <div class="consumer-audio-options"><label>Speed<select data-consumer-reader-target="speed" data-action="change->consumer-reader#changeSpeed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label><label>Track<select data-consumer-reader-target="tracks" data-action="change->consumer-reader#chooseTrack" data-offline-fill="tracks"><% tracks.each_with_index do |track, index| %><option value="<%= index %>"><%= track %></option><% end %></select></label></div>
+      <%= render "consumer/offline/panel", offline: offline %>
+      <p class="consumer-player-note">Your browser controls background playback. Your place is kept on this device until it reaches your account.</p>
+    </section>
+  <% end %>
+  <%= status_form %>
+</div>

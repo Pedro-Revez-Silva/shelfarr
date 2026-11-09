@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>Offline · Shelfarr</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="turbo-visit-control" content="reload">
+    <meta name="turbo-cache-control" content="no-cache">
+    <%# No session token is cached: the shell asks for one once it is back online. %>
+    <meta name="csrf-param" content="authenticity_token">
+    <meta name="csrf-token" content="">
+    <%= stylesheet_link_tag "consumer" %>
+    <%= javascript_importmap_tags %>
+  </head>
+  <body class="consumer-app consumer-app--offline" data-turbo="false">
+    <a class="consumer-skip" href="#consumer-main">Skip to content</a>
+    <header class="consumer-header" data-offline-chrome>
+      <%= link_to consumer_library_path, class: "consumer-wordmark", aria: { label: "Shelfarr library" } do %>
+        <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 4h5v16H4zM10 7h4v13h-4zM16 4l4-1 3 16-4 1z"/></svg>
+        shelfarr<span class="consumer-preview">Offline</span>
+      <% end %>
+    </header>
+    <main id="consumer-main" class="consumer-main"><%= yield %></main>
+  </body>
+</html>
