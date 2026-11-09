@@ -3,7 +3,10 @@
 class KoboDevicesController < ApplicationController
   def index
     @devices = Current.user.kobo_devices.order(:name)
-    @device = Current.user.kobo_devices.new(base_url: request.base_url + request.script_name)
+    base_url = request.base_url + request.script_name
+    # New readers keep their Kobo Store by default where that is possible.
+    @device = Current.user.kobo_devices.new(base_url: base_url, share_progress: true,
+      store_coexistence: URI.parse(base_url).scheme == "https")
   end
 
   def create
@@ -18,7 +21,32 @@ class KoboDevicesController < ApplicationController
 
   def show
     @device = Current.user.kobo_devices.find(params[:id])
-    @deliveries = @device.kobo_deliveries.includes(:book).order(updated_at: :desc)
+    load_deliveries
+  end
+
+  def update
+    @device = Current.user.kobo_devices.find(params[:id])
+    was_coexisting = @device.store_coexistence?
+    if @device.update(params.require(:kobo_device).permit(:store_coexistence, :share_progress))
+      redirect_to kobo_device_path(@device), notice: update_notice(was_coexisting)
+    else
+      load_deliveries
+      render :show, status: :unprocessable_entity
+    end
+  end
+
+  # An explicit choice of the Kobo place over the saved Shelfarr place.
+  def use_kobo_place
+    device = Current.user.kobo_devices.find(params[:id])
+    delivery = device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id].to_s)
+    Kobo::ProgressBridge.new(delivery).choose!
+    redirect_to kobo_device_path(device), notice: "Shelfarr now resumes #{delivery.publication['title']} at the Kobo place."
+  rescue Kobo::ProgressBridge::NothingToChoose
+    redirect_to kobo_device_path(device), alert: "There is no unapplied Kobo place for this book."
+  rescue Consumer::ProgressWriter::Conflict
+    redirect_to kobo_device_path(device), alert: "Another device saved a place just now. Review the places and choose again."
+  rescue Consumer::ProgressWriter::Invalid
+    redirect_to kobo_device_path(device), alert: "That Kobo place belongs to an edition that is no longer in the library."
   end
 
   def rotate
@@ -43,7 +71,22 @@ class KoboDevicesController < ApplicationController
   private
 
   def device_params
-    params.require(:kobo_device).permit(:name, :base_url)
+    params.require(:kobo_device).permit(:name, :base_url, :store_coexistence, :share_progress)
+  end
+
+  def load_deliveries
+    @deliveries = @device.kobo_deliveries.includes(:book).order(updated_at: :desc)
+    @progresses = Current.user.consumer_progresses.where(book_id: @deliveries.map(&:book_id).compact).index_by(&:book_id)
+  end
+
+  def update_notice(was_coexisting)
+    if @device.store_coexistence? && !was_coexisting
+      "Kobo Store kept on #{@device.name}. Sync the reader over Wi-Fi: your Store library and Shelfarr books both arrive."
+    elsif !@device.store_coexistence? && was_coexisting
+      "#{@device.name} now syncs Shelfarr books only. Books already on the reader are kept; new Store purchases wait until you restore the original endpoint."
+    else
+      "Reader settings saved."
+    end
   end
 
   def show_setup(token)

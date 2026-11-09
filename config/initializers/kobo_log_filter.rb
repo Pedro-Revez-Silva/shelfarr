@@ -6,6 +6,15 @@ module KoboLogFilter
   def filtered_path
     super.gsub(%r{(/kobo/)[^/?]+}, '\1[FILTERED]')
   end
+
+  # Reader requests, including Store requests relayed for coexistence, carry
+  # account and device identifiers under names no filter list anticipates.
+  # Log only routing information for them.
+  def filtered_parameters
+    return super unless path_info.to_s.match?(%r{(?:\A|/)kobo/[^/]+(?:/|\z)})
+
+    super.slice("controller", "action", "format")
+  end
 end
 
 ActionDispatch::Request.prepend(KoboLogFilter)

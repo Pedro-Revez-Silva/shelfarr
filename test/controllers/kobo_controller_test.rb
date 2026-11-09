@@ -205,4 +205,179 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
   ensure
     Rails.logger = previous_logger
   end
+
+  STORE = "https://storeapi.kobo.com"
+
+  def coexist!
+    @device.update!(store_coexistence: true)
+  end
+
+  def kobo_headers
+    { "Authorization" => "Bearer reader-own-kobo", "X-Kobo-Deviceid" => "reader-device" }
+  end
+
+  test "coexistence keeps Kobo's resources and sign-in while Shelfarr answers library sync under its subpath" do
+    @device.update!(store_coexistence: true, base_url: "https://shelfarr.example/books")
+    stub_request(:get, "#{STORE}/v1/initialization").with(headers: { "Authorization" => "Bearer reader-own-kobo" })
+      .to_return(headers: { "Content-Type" => "application/json", "X-Kobo-Apitoken" => "store-api" }, body: { Resources: {
+        "library_sync" => "#{STORE}/v1/library/sync", "device_auth" => "#{STORE}/v1/auth/device",
+        "user_profile" => "#{STORE}/v1/user/profile", "image_url_template" => "https://cdn.kobo.com/book-images/{ImageId}/{Width}/{Height}/false/image.jpg" } }.to_json)
+    get "#{@base}/v1/initialization", headers: kobo_headers, env: { "SCRIPT_NAME" => "/books" }
+    assert_response :success
+    resources = response.parsed_body.fetch("Resources")
+    assert_equal "https://shelfarr.example/books#{@base}/v1/library/sync", resources.fetch("library_sync")
+    assert_equal "https://shelfarr.example/books#{@base}/v1/library/{Ids}/state", resources.fetch("reading_state")
+    assert_equal "https://shelfarr.example/books#{@base}/{ImageId}/{Width}/{Height}/false/image.jpg", resources.fetch("image_url_template")
+    assert_equal "#{STORE}/v1/auth/device", resources.fetch("device_auth"), "the reader signs in with Kobo directly"
+    assert_equal "#{STORE}/v1/user/profile", resources.fetch("user_profile")
+    assert_equal "store-api", response.headers["x-kobo-apitoken"]
+  end
+
+  test "coexistence initialization falls back to Shelfarr's relay without placeholder sign-in when the Store is down" do
+    coexist!
+    [ { status: 503 }, { body: "{}" }, { body: "[]" }, { body: "not json" } ].each do |answer|
+      stub_request(:get, "#{STORE}/v1/initialization").to_return(**answer)
+      get "#{@base}/v1/initialization", headers: kobo_headers
+      assert_response :success
+      assert_equal "https://shelfarr.example#{@base}/v1/auth/device", response.parsed_body.dig("Resources", "device_auth")
+      assert_equal "unavailable", @device.reload.store_status
+    end
+    stub_request(:post, "#{STORE}/v1/auth/device").to_timeout
+    post "#{@base}/v1/auth/device", params: { UserKey: "account" }, as: :json, headers: kobo_headers
+    assert_response :service_unavailable
+    assert_not response.body.include?("AccessToken")
+    assert_nil @device.reload.placeholder_auth_at
+
+    stub_request(:get, "#{STORE}/v1/initialization").to_return(status: 401, headers: { "WWW-Authenticate" => "Bearer" })
+    get "#{@base}/v1/initialization", headers: kobo_headers
+    assert_response :unauthorized
+    stub_request(:get, "#{STORE}/v1/initialization").to_return(status: 400, body: { ResponseStatus: {} }.to_json, headers: { "Content-Type" => "application/json" })
+    get "#{@base}/v1/initialization", headers: kobo_headers
+    assert_response :bad_request
+    assert_equal({ "ResponseStatus" => {} }, response.parsed_body)
+  end
+
+  test "coexistence relays the reader's own sign-in, and only Shelfarr-only mode issues placeholders" do
+    coexist!
+    stub_request(:post, "#{STORE}/v1/auth/refresh").with(body: { RefreshToken: "reader-refresh" }.to_json)
+      .to_return(headers: { "Content-Type" => "application/json" }, body: { AccessToken: "kobo-issued", TokenType: "Bearer" }.to_json)
+    post "#{@base}/v1/auth/refresh", params: { RefreshToken: "reader-refresh" }.to_json, headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_response :success
+    assert_equal "kobo-issued", response.parsed_body.fetch("AccessToken")
+    assert_nil @device.reload.placeholder_auth_at
+
+    @device.update!(store_coexistence: false)
+    post "#{@base}/v1/auth/device", params: { UserKey: "account" }, as: :json
+    assert_response :success
+    assert_not_nil @device.reload.placeholder_auth_at
+  end
+
+  test "coexistence sync merges Shelfarr books with the reader's Store library and keeps Kobo's cursor private" do
+    coexist!
+    stub_request(:get, "#{STORE}/v1/library/sync").with { |request|
+      request.headers["Authorization"] == "Bearer reader-own-kobo" && request.headers["X-Kobo-Synctoken"] == "reader-store-cursor"
+    }.to_return(headers: { "Content-Type" => "application/json", "X-Kobo-Synctoken" => "store-next" },
+      body: [ { "NewEntitlement" => { "BookEntitlement" => { "Id" => "store-book" } } } ].to_json)
+    get "#{@base}/v1/library/sync", headers: kobo_headers.merge("X-Kobo-Synctoken" => "reader-store-cursor")
+    assert_response :success
+    assert_equal [ @delivery.entitlement_id, "store-book" ], response.parsed_body.map { |item| item.values.first.dig("BookEntitlement", "Id") }
+    combined = response.headers.fetch("x-kobo-synctoken")
+    assert combined.start_with?("sf2.")
+    assert_not_includes combined, "store-next"
+
+    stub_request(:get, "#{STORE}/v1/library/sync").with(headers: { "X-Kobo-Synctoken" => "store-next" }).to_return(status: 500)
+    get "#{@base}/v1/library/sync", headers: kobo_headers.merge("X-Kobo-Synctoken" => combined)
+    assert_response :success
+    assert_equal [], response.parsed_body
+    assert_equal "store-next", Kobo::SyncCursor.new(@device).read(response.headers["x-kobo-synctoken"]).store
+
+    # Switching back to Shelfarr-only keeps the local position: no replay.
+    @device.update!(store_coexistence: false)
+    get "#{@base}/v1/library/sync", headers: { "X-Kobo-Synctoken" => combined }
+    assert_equal [], response.parsed_body
+    assert_not_requested :get, "#{STORE}/v1/library/sync", headers: { "X-Kobo-Synctoken" => combined }
+  end
+
+  test "Store book metadata, state, covers and other requests go to Kobo while Shelfarr books stay local" do
+    coexist!
+    stub_request(:get, "#{STORE}/v1/library/store-book/metadata").to_return(headers: { "Content-Type" => "application/json" }, body: [ { Title: "Store" } ].to_json)
+    get "#{@base}/v1/library/store-book/metadata", headers: kobo_headers
+    assert_equal [ "Store" ], response.parsed_body.map { |item| item["Title"] }
+    get "#{@base}/v1/library/#{@delivery.entitlement_id}/metadata", headers: kobo_headers
+    assert_equal @book.title, response.parsed_body.sole.fetch("Title")
+    get "#{@base}/v1/library/store-book,#{@delivery.entitlement_id}/metadata", headers: kobo_headers
+    assert_equal [ "Store", @book.title ], response.parsed_body.map { |item| item["Title"] }
+
+    state = { ReadingStates: [ { EntitlementId: "store-book", CurrentBookmark: { ProgressPercent: 5 } } ] }.to_json
+    stub = stub_request(:put, "#{STORE}/v1/library/store-book/state").with(body: state)
+      .to_return(headers: { "Content-Type" => "application/json" }, body: { RequestResult: "Success" }.to_json)
+    put "#{@base}/v1/library/store-book/state", params: state, headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_requested stub
+    assert_equal "Success", response.parsed_body.fetch("RequestResult")
+    put "#{@base}/v1/library/#{@delivery.entitlement_id}/state", params: { ReadingStates: [ { CurrentBookmark: { ProgressPercent: 9 } } ] }.to_json,
+      headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_equal 9, @delivery.reload.reading_state.dig("CurrentBookmark", "ProgressPercent")
+    assert_not_requested :put, "#{STORE}/v1/library/#{@delivery.entitlement_id}/state"
+
+    get "#{@base}/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/false/image.jpg"
+    assert_redirected_to "https://cdn.kobo.com/book-images/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/false/image.jpg"
+    get "#{@base}/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/60/true/image.jpg"
+    assert_redirected_to "https://cdn.kobo.com/book-images/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/60/true/image.jpg"
+    get "#{@base}/#{@delivery.entitlement_id}/600/800/false/image.jpg"
+    assert_response :success
+
+    stub = stub_request(:post, "#{STORE}/v1/analytics/event?x=1").to_return(status: 204)
+    post "#{@base}/v1/analytics/event?x=1", params: "{}", headers: kobo_headers.merge("Content-Type" => "application/json"), env: { "SCRIPT_NAME" => "/books" }
+    assert_response :no_content
+    assert_requested stub
+    assert_equal "default-src 'none'; sandbox", response.headers["Content-Security-Policy"]
+    get "#{@base}/v1/library/%2e%2e%2fadmin/x"
+    assert_response :not_found
+  end
+
+  test "Shelfarr-only readers never contact the Store" do
+    get "#{@base}/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/false/image.jpg"
+    assert_response :not_found
+    get "#{@base}/v1/user/profile", headers: kobo_headers
+    assert_response :not_found
+    get "#{@base}/v1/library/store-book/metadata"
+    assert_response :not_found
+    assert_not_requested :any, /kobo\.com/
+  end
+
+  test "relayed Store requests log neither the reader's Kobo sign-in nor its identifiers" do
+    coexist!
+    output = StringIO.new
+    previous_logger = Rails.logger
+    previous_controller_logger = ActionController::Base.logger
+    Rails.logger = ActionController::Base.logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(output))
+    stub_request(:post, "#{STORE}/v1/analytics/event").to_return(status: 500, body: "provider-private-detail")
+    post "#{@base}/v1/analytics/event", params: { DeviceId: "private-device-id", SerialNumber: "private-serial" }.to_json,
+      headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_response :internal_server_error
+    assert_includes output.string, "Processing by KoboController#unsupported", "the controller log is captured"
+    [ @token, "reader-own-kobo", "private-device-id", "private-serial", "provider-private-detail" ].each do |secret|
+      assert_not_includes output.string, secret
+    end
+  ensure
+    Rails.logger = previous_logger
+    ActionController::Base.logger = previous_controller_logger
+  end
+
+  test "a supported Kobo place is shared with Shelfarr progress while the Kobo response stays the same" do
+    @device.update!(share_progress: true)
+    write_epub(@path, package: '<package version="3.0"><manifest><item id="c" href="c.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c"/></spine></package>',
+      extra: { "OEBPS/c.xhtml" => "<html/>" })
+    delivery = @device.send_book!(@book)
+    read_at = 2.hours.ago.utc
+    body = { ReadingStates: [ { EntitlementId: delivery.entitlement_id, CurrentBookmark: { LastModified: read_at.iso8601(7),
+      ProgressPercent: 30, ContentSourceProgressPercent: 60, Location: { Type: "KoboSpan", Value: "kobo.4.2", Source: "OEBPS/c.xhtml" } } } ] }
+    put "#{@base}/v1/library/#{delivery.entitlement_id}/state", params: body, as: :json
+    assert_response :success
+    assert_equal "Success", response.parsed_body.fetch("RequestResult")
+    saved = users(:one).consumer_progresses.find_by!(book: @book)
+    assert_equal({ "href" => "OEBPS/c.xhtml", "type" => "application/xhtml+xml", "locations" => { "progression" => 0.6, "totalProgression" => 0.3 } }, saved.locator)
+    assert_equal read_at.floor(3), saved.observed_at
+    assert_equal "kobo.4.2", delivery.reload.reading_state.dig("CurrentBookmark", "Location", "Value")
+  end
 end
