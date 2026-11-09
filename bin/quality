@@ -78,19 +78,16 @@ module Quality
   end
 
   def run_commit(argv)
-    success = run_fast(argv)
-    success &&= run_coverage
-    success ? 0 : 1
+    return 1 unless run_fast(argv).zero?
+
+    run_coverage ? 0 : 1
   end
 
   def run_deep
-    success = true
-    success &&= run_push
+    return false unless run_push.zero?
 
     expressions = all_mutant_expressions
-    success &&= run_mutant_command(expressions) unless expressions.empty?
-
-    success
+    expressions.empty? || run_mutant_command(expressions)
   end
 
   def run_push
@@ -161,11 +158,8 @@ module Quality
     )
     return true if status.success?
 
-    filtered_output = strip_brakeman_version_notice(output)
-    return true if filtered_output.empty?
-
-    warn "Brakeman failed"
-    warn filtered_output
+    warn "Brakeman failed (exit #{status.exitstatus})"
+    warn output unless output.empty?
     false
   rescue Errno::ENOENT => e
     warn "Brakeman failed"
@@ -271,10 +265,6 @@ module Quality
       .join("::")
   end
 
-  def strip_brakeman_version_notice(output)
-    strip_noise(output, [/\ABrakeman \S+ is not the latest version \S+\s*\z/])
-  end
-
   def strip_noise(output, patterns)
     output
       .lines
@@ -302,4 +292,4 @@ module Quality
   end
 end
 
-exit Quality.main(ARGV)
+exit Quality.main(ARGV) if $PROGRAM_NAME == __FILE__
