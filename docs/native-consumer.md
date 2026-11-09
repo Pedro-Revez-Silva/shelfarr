@@ -63,6 +63,9 @@ are described in [Android in-app updates](native-updates-android.md).
 
 ### iOS
 
+For physical iPad setup, free Personal Team testing, signed IPA export and
+TestFlight publication, see [iOS distribution](ios-distribution.md).
+
 Needs macOS, Xcode 16.4 or later and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
@@ -251,4 +254,6 @@ the cache directory, which the OS may still clear.
   each file loads; otherwise navigation is by file.
 - Readium does not handle a WebView renderer crash, so on Android such a crash ends the
   app process. The last saved position survives.
-- No release signing, store metadata or crash reporting yet.
+- Signed distribution tooling is available; actual production publication and
+  physical iPad installation remain acceptance gates. Store metadata and crash
+  reporting are not configured.

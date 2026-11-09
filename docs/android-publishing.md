@@ -73,7 +73,10 @@ without discovery) is unchanged: `apps/scripts/android-update-manifest.py` witho
 
 ## One-time setup
 
-Nothing below has been configured yet; no keys or secrets are in the repository.
+Configure the environments below before publishing. Signing keys and secret
+values belong in the owner's secret manager and GitHub environments, never in
+the repository. Verify the development signer against the installed APK before
+configuring it.
 
 ### Signing keys
 
