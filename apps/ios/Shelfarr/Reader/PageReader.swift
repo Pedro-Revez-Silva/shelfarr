@@ -42,6 +42,8 @@ protocol PageReaderDelegate: AnyObject {
 @MainActor
 class PageReaderController: UIViewController {
     weak var delegate: PageReaderDelegate?
+    /// Diagnostic lines for the UI-test restore trace (Debug UI tests only; nil otherwise).
+    var trace: ((String) -> Void)?
     let pageCount: Int
     var layout: PageLayout {
         didSet { if layout != oldValue { layoutChanged() } }
@@ -561,7 +563,7 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
         let index = PageSpreads.index(of: anchor, in: spreads)
         guard spreads.indices.contains(index) else { return }
         pager.setViewControllers([spread(index)], direction: .forward, animated: false)
-        setZoomed(false)
+        setZoomed(false, reset: true)
         DispatchQueue.main.async { [weak self] in self?.report() }
     }
 
@@ -580,7 +582,12 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
             self.delegate?.pageReader(self, couldNotShow: page)
             self.report()
         }
-        controller.onZoom = { [weak self] zoomed in self?.setZoomed(zoomed) }
+        // Only the spread on screen decides whether a drag turns: one being replaced by a
+        // rotation or layout can still report its scroll view's zoom.
+        controller.onZoom = { [weak self, weak controller] zoomed in
+            guard let self, let controller, controller === self.current else { return }
+            self.setZoomed(zoomed)
+        }
         controller.onAccessibilityScroll = { [weak self] direction in
             guard let self else { return false }
             switch direction {
@@ -597,10 +604,17 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
         return controller
     }
 
-    /// While zoomed, a drag pans the page and never turns it.
-    private func setZoomed(_ zoomed: Bool) {
+    /// While zoomed, a drag pans the page and never turns it. A zoom report that changes
+    /// nothing leaves the pager alone (every layout of a spread reports its zoom);
+    /// `reset` is for new spreads, where setting the data source again also drops the
+    /// neighbours UIPageViewController built for the old layout.
+    private func setZoomed(_ zoomed: Bool, reset: Bool = false) {
+        let paging = !zoomed
+        guard reset || self.zoomed != zoomed || (pager.dataSource != nil) != paging else { return }
+        let changed = (pager.dataSource != nil) != paging
         self.zoomed = zoomed
-        pager.dataSource = zoomed ? nil : self
+        pager.dataSource = paging ? self : nil
+        if changed { trace?("comic paging \(paging ? "on" : "off (zoomed)") at \(visiblePages.lowerBound)-\(visiblePages.upperBound)") }
     }
 
     /// In right-to-left books the next spread is on the left.
@@ -643,7 +657,7 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
         let forward = index >= from
         let direction: UIPageViewController.NavigationDirection = forward != layout.rightToLeft ? .forward : .reverse
         let pageView = spread(index)
-        setZoomed(false)
+        setZoomed(false, reset: true)
         pager.setViewControllers([pageView], direction: direction, animated: animated && index != from) { [weak self] _ in
             guard let self else { return }
             // UIPageViewController can keep stale neighbours after an animated jump.

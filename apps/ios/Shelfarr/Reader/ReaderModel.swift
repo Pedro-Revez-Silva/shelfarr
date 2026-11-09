@@ -521,6 +521,7 @@ final class ReaderModel: ObservableObject {
         pages = format == .pdf ? PageCursor.Pages.pdf(count: count) : order.map(PageCursor.Pages.comic)
         pageCount = count
         reader.delegate = self
+        if trace != nil { reader.trace = { [weak self] in self?.note($0) } }
         // The session keeps the saved place, whichever page this file then shows.
         await sync?.begin(position: place, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
         guard let target else {

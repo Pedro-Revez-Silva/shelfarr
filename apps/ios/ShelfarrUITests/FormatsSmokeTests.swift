@@ -243,13 +243,20 @@ final class FormatsSmokeTests: XCTestCase {
                 screenshot(app, "43-comic-spread")
                 XCUIDevice.shared.orientation = .portrait
                 XCTAssertTrue(waitForPage(app, 2, of: 10))
+                // The page label read "Page 2 of 10" in landscape too: wait for the portrait
+                // layout's single page before turning from it.
+                let single = app.descendants(matching: .any)
+                    .matching(NSPredicate(format: "identifier == %@ AND label == %@", "comic-page-2", "Page 2 of 10")).firstMatch
+                XCTAssertTrue(single.waitForExistence(timeout: wait), "page 2 alone again in portrait")
             }
         }
 
         var written = 0
         try step("Right to left: a swipe to the right is the next page") {
             reader(app).swipeRight()
-            XCTAssertTrue(waitForPage(app, 3, of: 10))
+            let turned = waitForPage(app, 3, of: 10)
+            if !turned { attachTrace(app, "45-comic-rtl-turn-trace") }
+            XCTAssertTrue(turned, "the swipe turned to page 3: \(pageLabel(app) ?? "-")")
             XCTAssertTrue(waitFor { self.shownColour(app) == 2 })
             closeReader(app)
             XCTAssertTrue(waitFor(timeout: 40) { (try? self.progressWrites(book))?.lastPage == 3 })
