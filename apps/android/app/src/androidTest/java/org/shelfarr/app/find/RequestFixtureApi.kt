@@ -1,9 +1,19 @@
 package org.shelfarr.app.find
 
+import org.shelfarr.app.core.ApiJson
+import org.shelfarr.app.core.Asset
+import org.shelfarr.app.core.BookType
+import org.shelfarr.app.core.Progress
+import org.shelfarr.app.core.ProgressEnvelope
+import org.shelfarr.app.core.ProgressUpdate
+import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingStatus
+import org.shelfarr.app.core.ReadingStatusUpdate
 import org.shelfarr.app.core.RequestScopes
 import org.shelfarr.app.core.ServerAddress
 
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -13,13 +23,16 @@ import mockwebserver3.Dispatcher
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import mockwebserver3.RecordedRequest
+import okhttp3.Headers
+import okio.Buffer
 
 /**
-
- * (A copy of the JVM test fixture, for instrumentation.)
+ * (A copy of the JVM test fixture, for instrumentation, that also serves the acquired file.)
  * An in-process stand-in for the consumer API's requesting endpoints, following
  * docs/consumer-api.md. Synthetic data only: nothing is searched, bought or acquired.
  * A request moves one stage each time it is read, until a fixture publication appears.
+ * That publication carries one generated file from [FixtureMedia]: a WAV for an
+ * audiobook request, an EPUB for an ebook request. Only acquisition is pretended.
  */
 class RequestFixtureApi(
     /** Behave like a server that predates requesting. */
@@ -37,6 +50,18 @@ class RequestFixtureApi(
     val revoked = java.util.concurrent.CopyOnWriteArrayList<String>()
     val deviceRequests = java.util.concurrent.CopyOnWriteArrayList<RecordedRequest>()
     val createRequests = AtomicInteger()
+    /** Every saved place the app sent, by publication, in order. */
+    val progressWrites = java.util.concurrent.CopyOnWriteArrayList<Pair<String, ProgressUpdate>>()
+    /** Every time the app read a publication's file: whole or ranged, and how many bytes. */
+    val assetReads = java.util.concurrent.CopyOnWriteArrayList<AssetRead>()
+    private val progress = java.util.concurrent.ConcurrentHashMap<String, Progress>()
+    private val readingStatus = java.util.concurrent.ConcurrentHashMap<String, ReadingStatus>()
+
+    /** The publication an available request became, once one has. */
+    val acquired: String?
+        get() = synchronized(this) { requests.values.firstNotNullOfOrNull { it["publication"] as String? } }
+
+    data class AssetRead(val publication: String, val asset: String, val method: String, val range: String?, val bytes: Int)
     private val counter = AtomicInteger()
     private val devices = java.util.concurrent.ConcurrentHashMap<String, Device>()
     private val requests = java.util.LinkedHashMap<String, MutableMap<String, Any?>>()
@@ -122,12 +147,96 @@ class RequestFixtureApi(
                 val id = path.removePrefix("requests/")
                 if (id !in requests) json(404, "{}") else json(200, """{"request":${view(advance(id))}}""")
             }
-            path.startsWith("library/") -> {
-                val id = path.removePrefix("library/")
-                val r = requests.values.firstOrNull { it["publication"] == id } ?: return json(404, "{}")
-                json(200, """{"id":"$id","title":"${r["title"]}","book_type":"${r["type"]}","assets":[]}""")
-            }
+            path.startsWith("library/") -> need("library:read") ?: library(request, path.removePrefix("library/").split("/"), scopes)
             else -> json(404, """{"error":"not_found"}""")
+        }
+    }
+
+    /**
+     * An acquired request's publication, its one generated file and its saved place, as
+     * docs/consumer-api.md describes them: details, reading status, compare-and-set
+     * progress, and the asset bytes with a strong ETag, If-None-Match and one byte range.
+     */
+    private fun library(request: RecordedRequest, segments: List<String>, scopes: List<String>): MockResponse {
+        val id = segments.first()
+        val r = requests.values.firstOrNull { it["publication"] == id } ?: return json(404, """{"error":"not_found"}""")
+        val asset = assetFor(id, r)
+        fun details() = ApiJson.encodeToString(
+            Publication(
+                id = id, title = r["title"] as String, author = "Fixture Author",
+                bookType = if (r["type"] == "ebook") BookType.EBOOK else BookType.AUDIOBOOK,
+                assets = listOf(asset), progress = progress[id], readingStatus = readingStatus[id] ?: ReadingStatus.UNREAD,
+            ),
+        )
+        fun write() = if ("progress:write" in scopes) null else json(403, """{"error":"insufficient_scope","required_scope":"progress:write"}""")
+        return when {
+            segments.size == 1 && request.method == "GET" -> json(200, details())
+            segments == listOf(id, "reading_status") && request.method == "PUT" -> write() ?: run {
+                readingStatus[id] = ApiJson.decodeFromString<ReadingStatusUpdate>(request.body!!.utf8()).status
+                json(200, details())
+            }
+            segments == listOf(id, "progress") && request.method == "GET" ->
+                json(200, ApiJson.encodeToString(ProgressEnvelope(progress[id])))
+            segments == listOf(id, "progress") && request.method == "PUT" -> write() ?: run {
+                val update = ApiJson.decodeFromString<ProgressUpdate>(request.body!!.utf8())
+                val current = progress[id]
+                if (update.assetId != asset.id) return json(422, """{"error":"invalid_progress"}""")
+                if (update.expectedVersion != (current?.version ?: 0) && current?.clientMutationId != update.clientMutationId) {
+                    return json(409, """{"error":"conflict","progress":${ApiJson.encodeToString(current)}}""")
+                }
+                val saved = if (current?.clientMutationId == update.clientMutationId) current else Progress(
+                    update.assetId, update.locator, update.positionSeconds, (current?.version ?: 0) + 1,
+                    clientMutationId = update.clientMutationId, observedAt = update.observedAt,
+                )
+                progress[id] = saved
+                progressWrites += id to update
+                json(200, ApiJson.encodeToString(ProgressEnvelope(saved)))
+            }
+            segments == listOf(id, "assets", asset.id) && request.method in setOf("GET", "HEAD") -> bytes(request, id, asset)
+            else -> json(404, """{"error":"not_found"}""")
+        }
+    }
+
+    private fun assetFor(publication: String, r: Map<String, Any?>): Asset {
+        val ebook = r["type"] == "ebook"
+        val id = (if (ebook) "epub-" else "wav-") + publication
+        val bytes = if (ebook) FixtureMedia.epub else FixtureMedia.wav
+        return Asset(
+            id = id,
+            filename = if (ebook) "The Lighthouse Keeper.epub" else "The Lighthouse Keeper.wav",
+            mediaType = if (ebook) "application/epub+zip" else "audio/wav",
+            format = if (ebook) "epub" else "wav",
+            sizeBytes = bytes.size.toLong(),
+            contentUrl = "/shelfarr/api/consumer/v1/library/$publication/assets/$id",
+        )
+    }
+
+    private fun bytes(request: RecordedRequest, publication: String, asset: Asset): MockResponse {
+        val bytes = if (asset.isEpub) FixtureMedia.epub else FixtureMedia.wav
+        val etag = "\"${asset.id}-${bytes.size}\""
+        val headers = Headers.headersOf("ETag", etag, "Accept-Ranges", "bytes", "Content-Type", asset.mediaType)
+        if (request.headers["If-None-Match"] == etag) return MockResponse.Builder().code(304).headers(headers).build()
+        val range = request.headers["Range"]?.takeIf { request.headers["If-Range"].let { it == null || it == etag } }
+        val (start, end) = if (range == null) 0 to bytes.size - 1 else parseRange(range, bytes.size)
+            ?: return MockResponse.Builder().code(416).headers(headers.newBuilder().add("Content-Range", "bytes */${bytes.size}").build()).build()
+        assetReads += AssetRead(publication, asset.id, request.method, range, end - start + 1)
+        val builder = MockResponse.Builder().code(if (range == null) 200 else 206).headers(headers)
+        if (range != null) builder.addHeader("Content-Range", "bytes $start-$end/${bytes.size}")
+        return if (request.method == "HEAD") builder.build() else builder.body(Buffer().write(bytes, start, end - start + 1)).build()
+    }
+
+    /** One `bytes=` range: start-end, open-ended or suffix. Null when invalid or unsatisfiable. */
+    private fun parseRange(value: String, size: Int): Pair<Int, Int>? {
+        val spec = value.removePrefix("bytes=").takeIf { it != value && ',' !in it } ?: return null
+        val first = spec.substringBefore('-')
+        val last = spec.substringAfter('-', "")
+        return when {
+            first.isEmpty() -> last.toIntOrNull()?.takeIf { it > 0 }?.let { maxOf(0, size - it) to size - 1 }
+            else -> {
+                val start = first.toIntOrNull() ?: return null
+                val end = if (last.isEmpty()) size - 1 else minOf(last.toIntOrNull() ?: return null, size - 1)
+                (start to end).takeIf { start < size && start <= end }
+            }
         }
     }
 

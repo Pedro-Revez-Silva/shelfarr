@@ -49,6 +49,14 @@ its download in the real reader (`offline-download.png`) and checks that the pla
 selected and prepared both downloaded tracks. CI's emulator runs without audio
 output, so audible playback is not asserted. Screenshots and logcat are uploaded
 alongside the APK; a renderer crash fails the check.
+The requesting tests drive Find → title → *Request* (a second tap still sends one
+request) → *Listen now* or *Read now* against an in-process fixture whose acquired
+publication carries a generated WAV or EPUB. Only acquisition is pretended. The
+audiobook must stream, decode and advance in the production player, pause and resume
+from the visible buttons, and have its paused place acknowledged by the fixture. The
+ebook must show its generated text, turn a page from a tap on its right edge, save
+that page to the fixture and reopen there (`request-*.png`). The emulator's guest
+audio still decodes with `-noaudio`; only audibility is unchecked.
 The background-transfer test also drives Library → details → Download, notification
 Cancel and Downloads navigation, system interruption/resume, and offline Library
 search. It exercises the real app on the emulator; process death and denied
