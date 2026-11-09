@@ -192,7 +192,7 @@ class KoboAccountsControllerTest < ActionDispatch::IntegrationTest
     end
     post kobo_accounts_path, params: { name: "My account" }, headers: { "Origin" => origin }
     assert_response :unprocessable_entity
-    assert_not_requested :get, %r{\A#{AUTH}/ActivateOnWeb\?}
+    assert_not_requested :get, %r{\A#{Regexp.escape(AUTH)}/ActivateOnWeb\?}
     get kobo_accounts_path
     token = Nokogiri::HTML(response.body).at_css("form[action='#{kobo_accounts_path}'] input[name=authenticity_token]")["value"]
     stub_kobo_activation

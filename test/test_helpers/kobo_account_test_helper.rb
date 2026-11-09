@@ -18,7 +18,7 @@ module KoboAccountTestHelper
   end
 
   def stub_kobo_activation(poll: POLL_PATH, code: "123456")
-    stub_request(:get, %r{\A#{AUTH}/ActivateOnWeb\?}).to_return(body:
+    stub_request(:get, %r{\A#{Regexp.escape(AUTH)}/ActivateOnWeb\?}).to_return(body:
       %(<div data-poll-endpoint="#{poll.gsub('&', '&amp;')}"></div><img src="/qrcodegenerator/generate?url=activate%26code%3D#{code}">))
   end
 

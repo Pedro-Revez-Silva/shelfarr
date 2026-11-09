@@ -20,7 +20,7 @@ class Kobo::ConnectionManagerTest < ActiveSupport::TestCase
   end
 
   test "provider start failure is retained as a safe error and attempts are bounded per user" do
-    stub_request(:get, %r{\A#{AUTH}/ActivateOnWeb\?}).to_timeout
+    stub_request(:get, %r{\A#{Regexp.escape(AUTH)}/ActivateOnWeb\?}).to_timeout
     3.times do
       account = Kobo::ConnectionManager.start(user: users(:one), name: "Attempt")
       assert_equal "failed", account.status

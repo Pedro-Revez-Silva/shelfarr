@@ -17,7 +17,7 @@ class Kobo::AccountClientTest < ActiveSupport::TestCase
     assert_equal POLL_PATH, result.poll_url
     assert_equal "123456", result.code
     assert_in_delta 10.minutes.from_now.to_i, result.expires_at.to_i, 1
-    assert_requested :get, %r{\A#{AUTH}/ActivateOnWeb\?} do |request|
+    assert_requested :get, %r{\A#{Regexp.escape(AUTH)}/ActivateOnWeb\?} do |request|
       request.headers["Authorization"].nil? && request.headers["Cookie"].nil?
     end
   end
@@ -34,7 +34,7 @@ class Kobo::AccountClientTest < ActiveSupport::TestCase
   end
 
   test "malformed activation HTML fails without rendering its contents" do
-    stub_request(:get, %r{\A#{AUTH}/ActivateOnWeb\?}).to_return(body: "<script>provider-error</script>")
+    stub_request(:get, %r{\A#{Regexp.escape(AUTH)}/ActivateOnWeb\?}).to_return(body: "<script>provider-error</script>")
     assert_raises(Kobo::HttpClient::Error) { @client.start_activation }
   end
 
