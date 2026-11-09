@@ -30,7 +30,7 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
     /// The bearer of every progress write that reached the server.
     private(set) var progressBearers: [String] = []
     private var devices: [String: (scopes: [String], polls: Int)] = [:]
-    private var requests: [(id: String, work: String, type: String, title: String, step: Int, stage: String, percent: Int?)] = []
+    private var requests: [(id: String, work: String, type: String, title: String, step: Int, stage: String, percent: Int?, attention: Bool)] = []
     private var counter = 0
 
     static let catalogue = [("fx:lighthouse", "The Lighthouse Keeper"), ("fx:in-library", "A Book Already Here"), ("fx:elsewhere", "Rivers Remember")]
@@ -119,7 +119,7 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
                 return (200, #"{"request":\#(view(mine)),"existing":true}"#)
             }
             counter += 1
-            requests.append(("r\(counter)", work, type, entry.1, 0, "queued", nil))
+            requests.append(("r\(counter)", work, type, entry.1, 0, "queued", nil, false))
             return (201, #"{"request":\#(view(requests.count - 1))}"#)
         case ("GET", "requests"):
             if let denied = need("requests:read") { return denied }
@@ -151,6 +151,12 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
     private func advance(_ index: Int) -> Int {
         let stage = requests[index].stage
         if ["available", "failed", "not_found"].contains(stage) { return index }
+        if stage == "searching", outcome == "attention" {
+            // The server can't progress it alone (no source configured, or a choice to make):
+            // it stays searching and is flagged, without saying why.
+            requests[index].attention = true
+            return index
+        }
         if stage == "searching", outcome != "available" {
             requests[index].stage = outcome
             return index
@@ -167,7 +173,7 @@ final class RequestFixture: HTTPTransport, @unchecked Sendable {
         let publication = r.stage == "available" ? "\"pub-\(r.id)\"" : "null"
         let percent = r.stage == "downloading" ? "\(r.percent ?? 0)" : "null"
         let cancellable = !["available", "failed"].contains(r.stage)
-        return #"{"id":"\#(r.id)","stage":"\#(r.stage)","title":"\#(r.title)","book_type":"\#(r.type)","download_percent":\#(percent),"can_cancel":\#(cancellable),"publication_id":\#(publication)}"#
+        return #"{"id":"\#(r.id)","stage":"\#(r.stage)","title":"\#(r.title)","book_type":"\#(r.type)","download_percent":\#(percent),"can_cancel":\#(cancellable),"attention_needed":\#(r.attention),"publication_id":\#(publication)}"#
     }
 
     private func fixedState(_ work: String, _ type: String) -> String {
@@ -382,6 +388,39 @@ final class RequestingTests: XCTestCase {
         XCTAssertEqual(flow.track.request?.stage, .available)
         XCTAssertEqual(flow.track.request?.publicationId, "pub-\(shown[0])")
         XCTAssertTrue(flow.track.request?.isReady == true)
+    }
+
+    func testARequestTheServerCannotProgressAloneWaitsForTheAdminWithoutClaimingCopies() async {
+        let harness = Harness()
+        harness.signIn(RequestScopes.base + RequestScopes.requesting)
+        harness.fixture.outcome = "attention"
+        let flow = FindFlow(backend: harness, pollIntervalNanoseconds: 1_000_000)
+        var shown: [String] = []
+        flow.onShowRequest = { shown.append($0) }
+        flow.setQuery("light")
+        flow.search()
+        await flow.searchSettled()
+        flow.choose(flow.find.results[0])
+        flow.submit()
+        await flow.submitSettled()
+        XCTAssertEqual(harness.fixture.creates, 1)
+        flow.startTracking(shown[0])
+        for _ in 0 ..< 200 where flow.track.request?.attentionNeeded != true {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        flow.stopTracking()
+        let request = flow.track.request
+        // Still open (tracking keeps following it), nothing is ready, and it can be cancelled.
+        XCTAssertEqual(request?.stage, .searching)
+        XCTAssertEqual(request?.stage.isOpen, true)
+        XCTAssertEqual(request?.attentionNeeded, true)
+        XCTAssertEqual(request?.isReady, false)
+        XCTAssertEqual(request?.canCancel, true)
+        XCTAssertEqual(request?.stageCopy.headline, "Waiting for the server's admin")
+        // The API doesn't say why (a real server with no source looked the same), so the copy
+        // must not claim that copies were found.
+        XCTAssertFalse(request?.stageCopy.detail.contains("found") ?? true)
+        XCTAssertEqual(harness.fixture.creates, 1, "following the request never sends another")
     }
 
     func testDuplicatesElsewhereInLibraryOfflineAndCancel() async {

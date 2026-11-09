@@ -260,7 +260,7 @@ public extension RequestItem {
         case .queued: return StageCopy(headline: "Requested", detail: "Waiting for Shelfarr to start looking.")
         case .searching:
             return attentionNeeded
-                ? StageCopy(headline: "Waiting for the server's admin", detail: "Copies were found, but someone needs to choose one.")
+                ? StageCopy(headline: "Waiting for the server's admin", detail: "Shelfarr needs someone to look at this request.")
                 : StageCopy(headline: "Looking for a copy", detail: "This can take a few minutes.")
         case .notFound: return StageCopy(headline: "No copy found yet", detail: "Shelfarr will keep looking and try again later.")
         case .awaitingPurchase: return StageCopy(headline: "Available to buy", detail: "A store has it. Ask the server's admin to buy it and add it.")
