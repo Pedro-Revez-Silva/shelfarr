@@ -154,6 +154,104 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
     find("[data-consumer-reader-target=readAlongPillPlay]").click
   end
 
+  # On a 390×844 phone the first two cues share the chapter's first page, so
+  # following narration never turns a page for the second. Turned to 844×390,
+  # that page holds only the first cue.
+  test "a cue already in view stays in view while it sounds through an orientation turn" do
+    set_viewport(390, 844)
+    open_reader
+    start_slow_narration
+    wait_until("the second cue sounds in view") { (frame = cue_frame("c1"))["active"] == "c1" && frame["visible"] }
+    writes = {}
+    set_viewport(844, 390, wait: false)
+    frames = assert_cue_kept_in_view("c1", viewport: [ 844, 390 ], writes: writes)
+    capture("read-along-cue-kept-turned.png")
+    record_frames("orientation-turn.json", frames, writes)
+    assert writes.values.all?, "a layout change wrote a reading place: #{writes.inspect}"
+    find("[data-consumer-reader-target=readAlongPillPlay]").click
+  end
+
+  # At 155% the second cue no longer starts on the chapter's first page.
+  test "a cue already in view stays in view while it sounds through a text size change" do
+    set_viewport(390, 844)
+    open_reader
+    start_slow_narration
+    wait_until("the second cue sounds in view") { (frame = cue_frame("c1"))["active"] == "c1" && frame["visible"] }
+    writes = {}
+    larger = cue_font_size("c1") * 155 / 105
+    reveal_reading_controls
+    5.times { find("button[aria-label='Larger text']").click }
+    frames = assert_cue_kept_in_view("c1", viewport: [ 390, 844 ], font: larger, writes: writes)
+    hide_reading_controls
+    assert_in_delta larger, cue_font_size("c1"), 0.5
+    capture("read-along-cue-kept-larger-text.png")
+    record_frames("text-size.json", frames, writes)
+    assert writes.values.all?, "a text size change wrote a reading place: #{writes.inspect}"
+    find("[data-consumer-reader-target=readAlongPillPlay]").click
+  end
+
+  test "layout changes leave Follow off, browsing and a paused reader where they are, and write no reading place" do
+    set_viewport(390, 844)
+    open_reader
+    writes = {}
+    # Follow off: the turned layout keeps the chapter opening; the page never
+    # jumps to the cue being heard.
+    start_slow_narration(follow: false)
+    wait_until("the second cue sounds") { cue_frame("c1")["active"] == "c1" }
+    set_viewport(844, 390, wait: false)
+    wait_until("the turned layout shows the chapter opening") { (frame = cue_frame("c0"))["visible"] && frame["viewport"] == [ 844, 390 ] }
+    frames = sample_while_sounding("c1", watch: "c0", writes: writes)
+    assert_operator frames.size, :>, 0, "the second cue stopped sounding before the Follow off check"
+    assert frames.all? { |frame| frame["visible"] }, "Follow off still turned away from the chapter opening"
+    assert_not find("[data-consumer-reader-target=readAlongFollow]", visible: :all).checked?
+
+    # Browsing away while following: a layout change keeps the browsed page
+    # and does not silently return to the narration.
+    reveal_reading_controls
+    check "Follow the text"
+    find("[data-consumer-reader-target=chapters]").find("option[value='chapter2.xhtml']").select_option
+    hide_reading_controls
+    assert_button "Back to the narration", wait: 5
+    assert_operator audio_time, :<, 8, "the browsing check must turn while chapter one still sounds"
+    set_viewport(390, 844, wait: false)
+    wait_until("the turned layout settles on the browsed chapter") do
+      cue_frame("c5").then { |frame| frame["visible"] && frame["viewport"] == [ 390, 844 ] }
+    end
+    # Chapter one (cues to 9.8 seconds) keeps sounding, its highlight in the
+    # section not shown; the browsed chapter stays on the page.
+    browsing = []
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    until (frame = cue_frame("c5"))["time"] >= 9.8
+      browsing << frame
+      record_writes(writes)
+      flunk "chapter one kept sounding past the test's window" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    end
+    assert_operator browsing.size, :>, 0, "chapter one stopped sounding before the browsing check"
+    assert browsing.all? { |frame| frame["visible"] }, "a layout change silently resumed following"
+    assert_match(/chapter 2/, find("[data-consumer-reader-target=location]", visible: :all).text(:all))
+    assert_button "Back to the narration"
+
+    # Paused: the layout change keeps the place the reader returned to and
+    # writes nothing.
+    click_button "Back to the narration"
+    wait_until("the heard cue shows again") { cue_visible?(active_cue) }
+    find("[data-consumer-reader-target=readAlongPillPlay]").click
+    paused = paused_time
+    cue = nil
+    wait_until("the paused cue is highlighted") { cue = active_cue }
+    assert_equal "c5", cue, "the paused check starts on the browsed chapter's first cue"
+    saved = wait_for_heard(@ebook, paused)
+    set_viewport(844, 390)
+    wait_until("the paused cue shows in the turned layout") { cue_visible?(cue) }
+    sleep 1
+    assert page.evaluate_script("document.querySelector('[data-consumer-reader-target=readAlongAudio]').paused")
+    assert_equal paused, audio_time
+    assert_equal saved.version, users(:one).consumer_progresses.find_by!(book: @ebook).version
+    record_writes(writes)
+    record_frames("controls.json", frames + browsing, writes)
+    assert writes.values.all?, "a layout change wrote a reading place: #{writes.inspect}"
+  end
+
   test "a downloaded read-along book reads and narrates offline and syncs the heard place with its listening time" do
     open_reader
     reveal_reading_controls
@@ -423,6 +521,102 @@ class ConsumerReadAlongTest < ApplicationSystemTestCase
         return x >= bounds.left - 2 && x < bounds.right - 2
       })()
     JS
+  end
+
+  # Exactly this CSS viewport with one window resize (headless Chromium's
+  # window includes its own chrome, measured once).
+  def set_viewport(width, height, wait: true)
+    @window_chrome ||= begin
+      page.current_window.resize_to(width, height)
+      inner = page.evaluate_script("[innerWidth, innerHeight]")
+      [ width - inner[0], height - inner[1] ]
+    end
+    page.current_window.resize_to(width + @window_chrome[0], height + @window_chrome[1])
+    wait_until("the viewport is #{width}×#{height}") { page.evaluate_script("[innerWidth, innerHeight]") == [ width, height ] } if wait
+  end
+
+  # Speed 0.75 gives each cue 2.4 seconds, room for a layout change inside it.
+  def start_slow_narration(follow: true)
+    reveal_reading_controls
+    find("[data-consumer-reader-target=readAlongSpeed]").find("option[value='0.75']").select_option
+    uncheck "Follow the text" unless follow
+    play_pause("Play")
+    hide_reading_controls
+  end
+
+  # One animation frame: the audio clock, the highlighted cue, and where
+  # `cue` starts relative to the reader's viewport (the controller's own test).
+  def cue_frame(cue)
+    page.evaluate_async_script(<<~JS, cue)
+      const [cue, done] = arguments
+      requestAnimationFrame(() => {
+        const audio = document.querySelector('[data-consumer-reader-target=readAlongAudio]')
+        const frame = document.querySelector('.consumer-ebook iframe')
+        const active = frame?.contentDocument?.querySelector('.shelfarr-read-along-active')
+        const element = frame?.contentDocument?.getElementById('user-content-' + cue)
+        const rect = element?.getClientRects()[0], bounds = document.querySelector('[data-consumer-reader-target=viewport]').getBoundingClientRect()
+        const x = rect ? frame.getBoundingClientRect().left + rect.left : null, y = rect ? frame.getBoundingClientRect().top + rect.top : null
+        done({ time: audio.currentTime, paused: audio.paused, active: (active?.id || '').replace('user-content-', '') || null, cue,
+          font: element ? parseFloat(frame.contentWindow.getComputedStyle(element).fontSize) : null,
+          visible: rect ? x >= bounds.left - 2 && x < bounds.right - 2 && y >= bounds.top - 2 && y < bounds.bottom - 2 : false,
+          x, left: bounds.left, right: bounds.right, viewport: [ innerWidth, innerHeight ] })
+      })
+    JS
+  end
+
+  def cue_font_size(cue)
+    page.evaluate_script("parseFloat(getComputedStyle(document.querySelector('.consumer-ebook iframe').contentDocument.getElementById('user-content-#{cue}')).fontSize)")
+  end
+
+  # Every saved version seen, and whether it is a heard (read-along) place.
+  def record_writes(writes)
+    progress = users(:one).consumer_progresses.find_by(book: @ebook)
+    writes[progress.version] = progress.locator.dig("locations", "readAlong").present? if progress
+  end
+
+  # After a layout change, while `cue` keeps sounding: it must show in the new
+  # layout (viewport and text size) before it stops, and stay shown from then on.
+  def assert_cue_kept_in_view(cue, viewport:, writes:, font: nil)
+    frames = []
+    shown = false
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    loop do
+      frame = cue_frame(cue)
+      frames << frame
+      record_writes(writes)
+      if frame["active"] != cue
+        break if shown
+
+        flunk "#{cue} stopped sounding at #{frame["time"]}s and never showed in the #{viewport.join("×")} layout " \
+          "(x #{frame["x"].inspect}, viewport #{frame["left"]}..#{frame["right"]})"
+      end
+      if frame["visible"] && frame["viewport"] == viewport && (font.nil? || (frame["font"] - font).abs < 0.5)
+        shown = true
+      elsif shown
+        flunk "#{cue} left the page at #{frame["time"]}s while it still sounded (x #{frame["x"].inspect})"
+      end
+      flunk "#{cue} kept sounding past the test's window" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    end
+    frames
+  end
+
+  # Frames of `watch` while `cue` sounds.
+  def sample_while_sounding(cue, watch:, writes:)
+    frames = []
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    while (frame = cue_frame(watch))["active"] == cue
+      frames << frame
+      record_writes(writes)
+      flunk "#{cue} kept sounding past the test's window" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    end
+    frames
+  end
+
+  def record_frames(filename, frames, writes)
+    return unless ENV["CONSUMER_SCREENSHOT_DIR"].present?
+
+    FileUtils.mkdir_p(ENV.fetch("CONSUMER_SCREENSHOT_DIR"))
+    File.write(File.join(ENV.fetch("CONSUMER_SCREENSHOT_DIR"), filename), JSON.pretty_generate({ writes: writes, frames: frames }))
   end
 
   def media_entries
