@@ -253,7 +253,8 @@ ordinary UI interactions:
   follows it to *Listen now*. Only acquisition is pretended: the fixture's acquired
   publication carries real WAV tracks, which must load (0:45), play and advance two
   seconds in the production player; pausing must reach the fixture within 1.5 s of the
-  shown place. The same title's ebook is then requested and opened with *Read now*:
+  shown place. Allowing requesting retires the token the app started with, so the test
+  reads saved places with its own observer token. The same title's ebook is then requested and opened with *Read now*:
   Readium must render its text, turns must move it from 0%, closing must send the
   place, and reading it again must restore that page with nothing written.
 
