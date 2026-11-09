@@ -20,14 +20,18 @@ struct PageLayout: Codable, Equatable {
 
 @MainActor
 protocol PageReaderDelegate: AnyObject {
-    /// The pages actually displayed after a turn, a jump or a new layout. Only the model
-    /// decides whether that is reading. A page still loading, or one that failed, is
-    /// never reported here.
-    func pageReader(_ reader: PageReaderController, shows displayed: ClosedRange<Int>)
+    /// What is on screen after a turn, a jump, a new layout or a page finishing decoding:
+    /// the pages shown (one, or a spread), and those of them that are drawn (nil while
+    /// none is). A page still loading, or one that failed, is never in `displayed`. Only
+    /// the model decides whether that is reading.
+    func pageReader(_ reader: PageReaderController, shows visible: ClosedRange<Int>, drawn displayed: ClosedRange<Int>?)
     /// A page the reader navigated to couldn't be drawn. It must never become the saved place.
     func pageReader(_ reader: PageReaderController, couldNotShow page: Int)
     /// Where the reader is now, displayed or not: for the page number and slider.
     func pageReader(_ reader: PageReaderController, navigatedTo page: Int)
+    /// The reader asked for another page: a tap, swipe, key, VoiceOver or the controls.
+    /// Restoring, corrections and layouts never send this.
+    func pageReaderNavigates(_ reader: PageReaderController)
     func pageReaderToggleControls(_ reader: PageReaderController)
 }
 
@@ -92,17 +96,30 @@ class PageReaderController: UIViewController {
         if isViewLoaded { view.isUserInteractionEnabled = enabled }
     }
 
-    /// The screen's left or right edge, mapped to the reading direction.
-    func turn(towardsRight: Bool) {
-        turn(forward: towardsRight != layout.rightToLeft)
+    /// A turn the reader asked for, in the reading direction.
+    func readerTurn(forward: Bool) {
+        delegate?.pageReaderNavigates(self)
+        turn(forward: forward)
     }
 
-    /// Moves the navigation target with what is on screen, then reports what is drawn.
+    /// A page the reader asked for (Go to page, the slider).
+    func readerGo(to page: Int) {
+        delegate?.pageReaderNavigates(self)
+        go(to: page, animated: true)
+    }
+
+    /// The screen's left or right edge, mapped to the reading direction.
+    func turn(towardsRight: Bool) {
+        readerTurn(forward: towardsRight != layout.rightToLeft)
+    }
+
+    /// Moves the navigation target with what is on screen, then reports what is shown and
+    /// what of it is drawn.
     func report() {
         let visible = visiblePages
         if !visible.contains(anchor) { anchor = visible.lowerBound }
         delegate?.pageReader(self, navigatedTo: anchor)
-        if let displayed = displayedPages { delegate?.pageReader(self, shows: displayed) }
+        delegate?.pageReader(self, shows: visible, drawn: displayedPages)
     }
 
     /// Edge taps turn; a tap in the middle toggles the controls.
@@ -137,8 +154,8 @@ class PageReaderController: UIViewController {
 
     @objc private func keyRight() { if inputEnabled { turn(towardsRight: true) } }
     @objc private func keyLeft() { if inputEnabled { turn(towardsRight: false) } }
-    @objc private func keyNext() { if inputEnabled { turn(forward: true) } }
-    @objc private func keyPrevious() { if inputEnabled { turn(forward: false) } }
+    @objc private func keyNext() { if inputEnabled { readerTurn(forward: true) } }
+    @objc private func keyPrevious() { if inputEnabled { readerTurn(forward: false) } }
 
     // MARK: Accessibility
 
@@ -147,11 +164,11 @@ class PageReaderController: UIViewController {
     func accessibilityActions() -> [UIAccessibilityCustomAction] {
         [
             UIAccessibilityCustomAction(name: "Next page") { [weak self] _ in
-                self?.turn(forward: true)
+                self?.readerTurn(forward: true)
                 return true
             },
             UIAccessibilityCustomAction(name: "Previous page") { [weak self] _ in
-                self?.turn(forward: false)
+                self?.readerTurn(forward: false)
                 return true
             },
             UIAccessibilityCustomAction(name: "Show reading controls") { [weak self] _ in
@@ -373,6 +390,8 @@ final class PDFPageReader: PageReaderController, PDFViewDelegate, UIGestureRecog
         if let page = pdfView.page(for: point, nearest: false),
            let link = page.annotation(at: pdfView.convert(point, to: page)),
            link.action != nil || link.destination != nil {
+            // PDFKit follows a link to another page of the document: the reader's choice.
+            if inputEnabled { delegate?.pageReaderNavigates(self) }
             return
         }
         handleTap(at: point.x, width: pdfView.bounds.width)
@@ -419,9 +438,13 @@ final class ComicPageLoader: @unchecked Sendable {
     private let archive: ComicArchive
     private let cache = NSCache<NSString, UIImage>()
     private let queue = DispatchQueue(label: "org.shelfarr.comic-pages", qos: .userInitiated)
+    /// Seconds before a page is decoded. Empty except in the simulator smoke, which slows
+    /// chosen pages to order decodes against layouts and the restore timeout.
+    private let delays: [Int: TimeInterval]
 
-    init(archive: ComicArchive) {
+    init(archive: ComicArchive, delays: [Int: TimeInterval] = [:]) {
         self.archive = archive
+        self.delays = delays
         let memory = ProcessInfo.processInfo.physicalMemory
         cache.totalCostLimit = Int(min(max(memory / 48, 32 << 20), 128 << 20))
     }
@@ -432,6 +455,7 @@ final class ComicPageLoader: @unchecked Sendable {
     }
 
     func image(page: Int, maxPixel: Int) async throws -> UIImage {
+        if let delay = delays[page] { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
         let key = "\(page)@\(maxPixel)" as NSString
         if let cached = cache.object(forKey: key) { return cached }
         return try await withCheckedThrowingContinuation { continuation in
@@ -563,8 +587,8 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
             // Swiping left brings in the page on the right.
             case .left: self.turn(towardsRight: true)
             case .right: self.turn(towardsRight: false)
-            case .next: self.turn(forward: true)
-            case .previous: self.turn(forward: false)
+            case .next: self.readerTurn(forward: true)
+            case .previous: self.readerTurn(forward: false)
             default: return false
             }
             return true
@@ -592,6 +616,11 @@ final class ComicPageReader: PageReaderController, UIPageViewControllerDataSourc
 
     func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
         neighbour(of: viewController, towardsRight: true)
+    }
+
+    /// Only a swipe starts a transition here; jumps and layouts set pages directly.
+    func pageViewController(_ pageViewController: UIPageViewController, willTransitionTo pendingViewControllers: [UIViewController]) {
+        delegate?.pageReaderNavigates(self)
     }
 
     func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {

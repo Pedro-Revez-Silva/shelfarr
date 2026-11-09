@@ -92,15 +92,31 @@ Dynamic Type, and the bottom bar puts the page number on its own line when text 
 A page the reader actually reaches and that is actually drawn is written at once to the
 durable local outbox with its `observed_at` (captured when it was drawn), then sent with
 the existing debounce, retry, UUID and compare-and-set rules. The views report what they
-show after every turn, jump or layout; a gate (`PageRestoration`) keeps the page being
-read as the anchor while it stays on screen. Opening, restoring, rotating, zooming,
-switching between one and two pages, choosing a format, changing direction or fit, and
-acknowledgements write nothing.
+show after every turn, jump, layout and finished decode: the pages on screen (one, or a
+spread) and which of them are drawn. A gate (`PageRestoration`, with `PageCursor` naming
+the place and its time, both in ShelfarrCore) keeps the page being read as the anchor
+while it is on screen, drawn yet or not: comic pages decode one at a time, so rotating
+into spread 4–5 at page 5 may draw page 4 first, and that is still page 5. Only a report
+whose pages leave the anchor is a turn, and the first drawn page of it is saved; a page
+still loading or broken never is. Opening, restoring, rotating, zooming, switching between
+one and two pages, choosing a format, changing direction or fit, and acknowledgements
+write nothing.
+
+Restoring holds input until the page being restored is drawn, for at most five seconds.
+Then the reader says *Couldn't show your saved page* and hands input back, but the restore
+stays pending: if that page arrives late it settles silently, and the view moving on its
+own records nothing. Only the reader asking for a page (a tap, swipe, key, VoiceOver
+action, the controls or an internal PDF link) ends it, and the saved place moves when a
+page they reach is drawn. This covers opening another format at its beginning (the place
+stays in the other format), the invalid-place choices and a chosen place from another
+device.
 
 A comic page that fails to decode or verify is never saved. The pager keeps its own
-navigation target, so the reader can turn past a broken page; the saved place moves only
-when a page that does display is reached. If the page being restored is broken, the
-reader stops waiting for it, says so, and keeps the saved place.
+navigation target, so the reader can turn past a broken page, or go to it again; the
+saved place moves only when a page that does display is reached. A spread the reader
+turns to saves its half that draws when the other half fails. If the page being restored
+is broken, the reader stops waiting for it, says so, and keeps the saved place, even
+while the other half of its spread draws.
 
 A saved place this file can't show (a PDF page past the end, a fraction, another file's
 href, a CBZ page whose href or type isn't item N) is never replaced with page one. The
@@ -176,7 +192,11 @@ bridge or Apple-only API is used for this, so the same code runs in the Linux te
   Unicode-equivalent names, disagreeing local headers and descriptors, overlaps, trailing
   data, prefixes, two directory records, oversized and mislabelled pages, compressed-size
   cap, hidden metadata), `FormatModelTests`, `PageLocatorTests`, `PageRestorationTests`,
-  `PageSpreadsTests`, `FormatDecisionTests`, `ReaderFormatsAPITests`, `FormatDownloadsTests`
+  `PageSpreadsTests`, `PageRestorationLifecycleTests` and `PageCursorPersistenceTests`
+  (half-drawn spreads in either order, layouts and rotations at an odd page, broken
+  halves, late opening pages after the timeout across formats, late invalid-place
+  fallbacks, the reader turning after a give-up and silent reopening, through the real
+  `ProgressSync` and `FileProgressStore`), `FormatDecisionTests`, `ReaderFormatsAPITests`, `FormatDownloadsTests`
   (a pre-format EPUB download kept without refetching, explicit PDF downloads, CBZ order
   storage, restart, loss and recovery, mismatched, replaced, oversized and foreign orders,
   edition updates) and `FormatCacheTests`.
@@ -193,7 +213,11 @@ bridge or Apple-only API is used for this, so the same code runs in the Linux te
   page restored, an impossible saved page kept until a real turn, a comic downloaded,
   zoomed, turned right to left and (on iPad) shown as a spread, then reopened and turned
   offline with its original `observed_at` sent on reconnecting, the format choice, the
-  download format choice, and the offline alternative format.
+  download format choice, and the offline alternative format. Debug UI test builds can
+  slow chosen comic pages (`SHELFARR_UITEST_COMIC_PAGE_DELAYS`), so the smoke also checks
+  that a fallback page arriving after the restore timeout writes nothing until a real turn,
+  and (on iPad) that rotating into a spread at an odd page whose left half draws first
+  writes nothing, while a turn in the spread still does.
 
 ## Limits
 
@@ -207,6 +231,8 @@ bridge or Apple-only API is used for this, so the same code runs in the Linux te
   PDFKit displays it.
 - Spreads pair pages by position (cover alone, then 2–3, 4–5, …); a single image that is
   already a double-page spread is paired like any other page.
+- A spread the reader turns to is saved at its first page to draw: normally its left
+  (first) page, but its second page when that one draws first or the first is broken.
 - One format of a book is downloaded at a time; downloading another replaces it.
 - Edition replacement follows the existing download engine: updating replaces the old
   files rather than keeping both until the new ones are complete.

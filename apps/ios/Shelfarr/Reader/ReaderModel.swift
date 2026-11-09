@@ -85,8 +85,9 @@ final class ReaderModel: ObservableObject {
     // Pages.
     private var pageReader: PageReaderController?
     private var pendingReader: PageReaderController?
-    private var comicOrder: ReadingOrder?
-    private var pageRestoration: PageRestoration?
+    /// The open file's pages, and the saved place decided from what its view reports.
+    private var pages: PageCursor.Pages?
+    private var cursor: PageCursor?
 
     init(app: AppModel, publicationId: String) {
         self.app = app
@@ -427,9 +428,14 @@ final class ReaderModel: ObservableObject {
             }
             count = order.items.count
             if let position { target = PageLocator.comicPage(position.locator, order: order) }
-            reader = ComicPageReader(loader: ComicPageLoader(archive: archive), pageCount: count, opening: target ?? 1, layout: layout, theme: app.readerSettings.settings.theme)
+            #if DEBUG
+            let delays = UITestFixture.comicPageDelays()
+            #else
+            let delays: [Int: TimeInterval] = [:]
+            #endif
+            reader = ComicPageReader(loader: ComicPageLoader(archive: archive, delays: delays), pageCount: count, opening: target ?? 1, layout: layout, theme: app.readerSettings.settings.theme)
         }
-        comicOrder = order
+        pages = format == .pdf ? PageCursor.Pages.pdf(count: count) : order.map(PageCursor.Pages.comic)
         pageCount = count
         reader.delegate = self
         // The session keeps the saved place, whichever page this file then shows.
@@ -454,22 +460,28 @@ final class ReaderModel: ObservableObject {
     }
 
     private func show(_ reader: PageReaderController, at target: Int) {
-        pageRestoration = PageRestoration(opening: target)
+        guard let asset, let pages else { return }
+        cursor = PageCursor(assetId: asset.id, pages: pages, opening: target)
         page = target
         fraction = pageFraction(target)
         note("open page \(target) of \(pageCount)")
         reader.setInputEnabled(false)
         pageReader = reader
         state = .pages(title: title, reader: reader)
-        // Bounds the wait for the opening page; giving up records nothing.
+        waitForRestoredPage(reader)
+    }
+
+    /// Bounds how long input waits for the page being restored. Giving up hands input back
+    /// and records nothing; the page stays pending, so if it shows late that is still not
+    /// reading, and only the reader turning moves the place.
+    private func waitForRestoredPage(_ reader: PageReaderController) {
         correctionTimer?.cancel()
         correctionTimer = Task { [weak self, weak reader] in
             try? await Task.sleep(nanoseconds: UInt64(ReadingRestoration.attemptTimeout * 1_000_000_000))
-            guard !Task.isCancelled, let self, let reader, reader === self.pageReader,
-                  var restoration = self.pageRestoration, restoration.isRestoring
-            else { return }
-            restoration.abandonTarget()
-            self.pageRestoration = restoration
+            guard !Task.isCancelled, let self, let reader, reader === self.pageReader, var cursor = self.cursor else { return }
+            let action = cursor.timedOut()
+            self.cursor = cursor
+            guard action == .gaveUp else { return }
             reader.setInputEnabled(true)
             self.notice = Self.pageRestoreFailed
             self.note("open timeout -> gave-up")
@@ -482,24 +494,17 @@ final class ReaderModel: ObservableObject {
 
     func goToPage(_ target: Int) {
         guard let pageReader, (1 ... max(pageCount, 1)).contains(target) else { return }
-        pageReader.go(to: target, animated: true)
+        pageReader.readerGo(to: target)
     }
 
     func turnPage(forward: Bool) {
-        pageReader?.turn(forward: forward)
+        pageReader?.readerTurn(forward: forward)
     }
 
-    private func save(page: Int, observedAt: Int64) {
-        guard let asset, let sync else { return }
-        let locator: JSONValue?
-        switch format {
-        case .pdf: locator = PageLocator.pdf(page: page, pageCount: pageCount)
-        case .cbz: locator = comicOrder.flatMap { PageLocator.comic(page: page, order: $0) }
-        default: locator = nil
-        }
-        guard let locator else { return }
-        let saved = SavedPosition(assetId: asset.id, locator: locator)
-        enqueue { await sync.update(saved, observedAt: observedAt) }
+    /// A real turn, written with the time its page was drawn.
+    private func save(_ save: PageCursor.Save) {
+        guard let sync else { return }
+        enqueue { await sync.update(save.position, observedAt: save.observedAt) }
     }
 
     private static let pageRestoreFailed = "Couldn't show your saved page. It stays your saved place until you turn to a page that shows."
@@ -508,8 +513,8 @@ final class ReaderModel: ObservableObject {
         correctionTimer?.cancel()
         pageReader = nil
         pendingReader = nil
-        pageRestoration = nil
-        comicOrder = nil
+        cursor = nil
+        pages = nil
         book = nil
     }
 
@@ -549,14 +554,12 @@ final class ReaderModel: ObservableObject {
                 await open(requested: nil)
                 return
             }
-            if let pageReader, var restoration = pageRestoration {
-                let target = format == .pdf
-                    ? PageLocator.pdfPage(position.locator, pageCount: pageCount)
-                    : comicOrder.flatMap { PageLocator.comicPage(position.locator, order: $0) }
-                guard let target else { return await open(requested: nil) }
-                let action = restoration.reopen(at: target)
-                pageRestoration = restoration
+            if let pageReader, var cursor {
+                guard let target = cursor.pages.page(position.locator) else { return await open(requested: nil) }
+                let action = cursor.reopen(at: target)
+                self.cursor = cursor
                 pageReader.setInputEnabled(false)
+                waitForRestoredPage(pageReader)
                 if case let .correct(page) = action { pageReader.go(to: page, animated: false) }
             } else {
                 apply(restoration.reopen(at: position.locator))
@@ -575,20 +578,21 @@ final class ReaderModel: ObservableObject {
 
 extension ReaderModel: PageReaderDelegate {
     func pageReader(_ reader: PageReaderController, navigatedTo page: Int) {
-        guard reader === pageReader, pageRestoration?.isRestoring == false else { return }
+        guard reader === pageReader, cursor?.isRestoring == false else { return }
         // Where the reader is, drawn or not; the saved place only moves with a drawn page.
         self.page = page
         fraction = pageFraction(page)
     }
 
-    func pageReader(_ reader: PageReaderController, shows displayed: ClosedRange<Int>) {
+    func pageReader(_ reader: PageReaderController, shows visible: ClosedRange<Int>, drawn displayed: ClosedRange<Int>?) {
         // Captured before anything waits: this is when the page was reached.
         let observedAt = ActivityTime.now()
-        guard reader === pageReader, var restoration = pageRestoration else { return }
-        let action = restoration.observe(displayed)
-        pageRestoration = restoration
-        note("pages \(displayed.lowerBound)-\(displayed.upperBound) -> \(RestoreTrace.describe(action))")
-        switch action {
+        guard reader === pageReader, var cursor else { return }
+        let outcome = cursor.shows(visible: visible, displayed: displayed, observedAt: observedAt)
+        self.cursor = cursor
+        let drawn = displayed.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "none"
+        note("pages \(visible.lowerBound)-\(visible.upperBound) drawn \(drawn) -> \(RestoreTrace.describe(outcome.action))")
+        switch outcome.action {
         case .none:
             return
         case let .correct(target):
@@ -596,29 +600,46 @@ extension ReaderModel: PageReaderDelegate {
         case .settled:
             correctionTimer?.cancel()
             reader.setInputEnabled(true)
-            if let anchor = restoration.anchor { page = anchor }
+            if let anchor = cursor.restoration.anchor { page = anchor }
             if notice == Self.pageRestoreFailed { notice = nil }
         case .gaveUp:
+            correctionTimer?.cancel()
             reader.setInputEnabled(true)
             notice = Self.pageRestoreFailed
         case let .record(turned):
             page = turned
-            save(page: turned, observedAt: observedAt)
+            // A layout keeps this page on screen: the view's target follows the saved page.
+            reader.anchor = turned
+            if notice == Self.pageRestoreFailed { notice = nil }
+            if let save = outcome.save { self.save(save) }
         }
         fraction = pageFraction(page)
     }
 
     func pageReader(_ reader: PageReaderController, couldNotShow failed: Int) {
-        guard reader === pageReader else { return }
-        note("page \(failed) failed")
+        guard reader === pageReader, var cursor else { return }
         // A page that can't be drawn is never saved. If it was the one being restored,
-        // stop waiting for it; the saved place stays until a page that shows is turned to.
-        if var restoration = pageRestoration, restoration.target == failed {
-            restoration.abandonTarget()
-            pageRestoration = restoration
-            reader.setInputEnabled(true)
-            notice = Self.pageRestoreFailed
-        }
+        // stop holding input for it; the saved place stays until the reader turns to a
+        // page that shows.
+        let action = cursor.couldNotShow(failed)
+        self.cursor = cursor
+        note("page \(failed) failed -> \(RestoreTrace.describe(action))")
+        guard action == .gaveUp else { return }
+        correctionTimer?.cancel()
+        reader.setInputEnabled(true)
+        notice = Self.pageRestoreFailed
+    }
+
+    func pageReaderNavigates(_ reader: PageReaderController) {
+        guard reader === pageReader, var cursor else { return }
+        let endedRestore = cursor.readerNavigates()
+        self.cursor = cursor
+        guard endedRestore else { return }
+        // The reader chose to move on: the restored page stays saved until a page they
+        // reach is drawn.
+        note("reader navigates while restoring")
+        correctionTimer?.cancel()
+        reader.setInputEnabled(true)
     }
 
     func pageReaderToggleControls(_ reader: PageReaderController) {

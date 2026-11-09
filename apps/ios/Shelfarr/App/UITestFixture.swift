@@ -36,6 +36,23 @@ enum UITestFixture {
         return store
     }
 
+    static let comicPageDelaysKey = "SHELFARR_UITEST_COMIC_PAGE_DELAYS"
+
+    /// Comic pages the smoke test makes slow to decode, as `page:seconds` pairs
+    /// (`5:3,1:8`), so it can order decodes against layouts and the restore timeout the
+    /// way a slow device or a large scan would. Empty unless the UI test launched the app.
+    static func comicPageDelays() -> [Int: TimeInterval] {
+        let process = ProcessInfo.processInfo
+        guard process.arguments.contains(argument), let value = process.environment[comicPageDelaysKey] else { return [:] }
+        var delays: [Int: TimeInterval] = [:]
+        for pair in value.split(separator: ",") {
+            let parts = pair.split(separator: ":")
+            guard parts.count == 2, let page = Int(parts[0]), let seconds = TimeInterval(parts[1]), (0 ... 60).contains(seconds) else { continue }
+            delays[page] = seconds
+        }
+        return delays
+    }
+
     /// A clean device: no downloads, cached books, metadata or saved places.
     private static func reset() {
         let manager = FileManager.default

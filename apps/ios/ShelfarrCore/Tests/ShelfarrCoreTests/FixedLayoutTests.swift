@@ -131,7 +131,10 @@ final class PageRestorationTests: XCTestCase {
         XCTAssertEqual(restoration.observe(1), .correct(9))
         XCTAssertEqual(restoration.observe(1), .gaveUp)
         XCTAssertEqual(restoration.observe(1), .none, "giving up records nothing")
-        XCTAssertEqual(restoration.observe(2), .record(2))
+        XCTAssertEqual(restoration.observe(2), .none, "nor does the view moving on its own")
+        XCTAssertTrue(restoration.readerNavigates())
+        XCTAssertEqual(restoration.anchor, 9, "page 9 stays the saved place")
+        XCTAssertEqual(restoration.observe(3), .record(3), "the reader turning does")
     }
 
     func testASpreadKeepsTheAnchorUntilTheReaderTurnsAway() {
@@ -146,12 +149,15 @@ final class PageRestorationTests: XCTestCase {
         XCTAssertEqual(restoration.observe(4 ... 5), .record(4))
     }
 
-    func testAnOpeningPageThatCantDisplayIsAbandonedWithoutRecording() {
+    func testAnOpeningPageThatCantDisplayIsGivenUpOnWithoutRecording() {
         var restoration = PageRestoration(opening: 4)
-        restoration.abandonTarget()
-        XCTAssertFalse(restoration.isRestoring)
-        XCTAssertNil(restoration.anchor, "nothing was shown, so nothing is anchored or saved")
-        XCTAssertEqual(restoration.observe(5), .record(5), "the next page that displays is a turn")
+        XCTAssertEqual(restoration.couldNotShow(3), .none, "another page")
+        XCTAssertEqual(restoration.couldNotShow(4), .gaveUp)
+        XCTAssertEqual(restoration.couldNotShow(4), .none, "given up once")
+        XCTAssertTrue(restoration.stalled)
+        XCTAssertNil(restoration.anchor, "nothing was shown, so nothing new is anchored or saved")
+        XCTAssertTrue(restoration.readerNavigates(), "the reader turns past it")
+        XCTAssertEqual(restoration.observe(5), .record(5), "the next page they reach that displays is a turn")
     }
 
     func testGoingToAnotherDevicesPlaceIsNotReading() {
