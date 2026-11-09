@@ -76,6 +76,20 @@ final class ReaderModel: ObservableObject {
     private var lastWrite: Task<Void, Never>?
     /// The last place Readium reported, so a layout change can be restored rather than read.
     private var lastLocator: JSONValue?
+    /// A page report waiting for the page's answer (`ReadingRestoration.isVerifying`), with
+    /// when it was reached and what it meant to the narration then. Answers arrive after
+    /// WebKit yields, when playback may have paused or started; they apply this context.
+    private struct PendingPage {
+        let id: Int
+        let observation: ReadingObservation
+        let observedAt: Int64
+        let readAlong: ReadAlongController?
+        let page: ReadAlongController.ReportedPage?
+    }
+    private var pendingPage: PendingPage?
+    private var pendingPages = 0
+    /// Bounds a question the page never answers; no answer is never a turn.
+    private var pendingPageTimer: Task<Void, Never>?
 
     // What this open decided, kept while the reader is asked which format or page.
     private var publication: ShelfarrCore.Publication?
@@ -355,6 +369,7 @@ final class ReaderModel: ObservableObject {
         // Opening at the saved place is not reading: it keeps the time it was reached.
         await sync?.begin(position: place, baseVersion: baseVersion, observedAt: observedAt, assets: assetIds)
         correctionTimer?.cancel()
+        dropPendingPage(cancellingPlay: true)
         restoration = ReadingRestoration(opening: position?.locator)
         restorationTarget = position?.locator
         note("open \(RestoreTrace.describe(position?.locator))")
@@ -385,24 +400,35 @@ final class ReaderModel: ObservableObject {
                 .map { ReadingViewport.Resource(href: $0.href, progression: $0.from ... max($0.from, $0.to)) })
         }
         let observation = ReadingObservation(locator: locator, viewport: viewport)
+        // The same page reported again keeps its question and the time it was reached.
+        if let pending = pendingPage, pending.observation == observation, restoration.isVerifying { return }
         let action = restoration.observe(observation)
         note("report \(RestoreTrace.describe(locator)) viewport \(RestoreTrace.describe(viewport)) -> \(RestoreTrace.describe(action))")
-        guard action == .record else {
-            // Restoring is not reading: the saved place and its time stay as they were.
-            apply(action, for: observation, observedAt: observedAt)
+        // A newer report replaces one still waiting; that one is released once this is
+        // handled, so a Play waiting for it waits for this one instead when it is pending.
+        let superseded = takePendingPage()
+        defer { if let superseded { release(superseded) } }
+        if case .confirm = action, restoration.isVerifying {
+            ask(PendingPage(id: nextPendingPage(), observation: observation, observedAt: observedAt,
+                            readAlong: readAlong, page: readAlong?.pageReported(href: locator["href"]?.stringValue)))
             return
         }
-        save(observation, observedAt: observedAt)
+        guard action == .record else {
+            // Restoring is not reading: the saved place and its time stay as they were.
+            apply(action, for: observation)
+            return
+        }
+        save(observation, observedAt: observedAt, readAlong: readAlong, page: readAlong?.pageReported(href: locator["href"]?.stringValue))
     }
 
-    /// The reader moved to `observation`: save it with the time it was reported.
-    private func save(_ observation: ReadingObservation, observedAt: Int64) {
+    /// The reader moved to `observation`: save it with the time it was reported, as what it
+    /// meant to the narration when reported (`page`).
+    private func save(_ observation: ReadingObservation, observedAt: Int64, readAlong: ReadAlongController?, page: ReadAlongController.ReportedPage?) {
         guard let asset, let sync else { return }
-        let locator = observation.locator
-        // Read-along: a page followed to, or turned while narration plays, is not reading.
-        let saved = SavedPosition(assetId: asset.id, locator: locator)
+        let saved = SavedPosition(assetId: asset.id, locator: observation.locator)
         if let readAlong {
-            guard readAlong.readerMoved(href: locator["href"]?.stringValue) else {
+            // Read-along: a page followed to, or turned while narration played, is not reading.
+            guard readAlong === self.readAlong, let page, readAlong.pageAnswered(page, moved: true) else {
                 note("read-along report not written")
                 return
             }
@@ -412,16 +438,74 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    private func nextPendingPage() -> Int {
+        pendingPages += 1
+        return pendingPages
+    }
+
+    /// Clears the page waiting for its answer, without settling it.
+    private func takePendingPage() -> PendingPage? {
+        pendingPageTimer?.cancel()
+        pendingPageTimer = nil
+        defer { pendingPage = nil }
+        return pendingPage
+    }
+
+    /// The reader reset: a page still waiting means nothing. After a new layout a Play
+    /// waiting for it goes ahead from the narration; opening, closing or going to another
+    /// place is newer than that Play (`cancellingPlay`), so it doesn't.
+    private func dropPendingPage(cancellingPlay: Bool) {
+        if cancellingPlay { readAlong?.cancelQueuedPlay() }
+        if let pending = takePendingPage() { release(pending) }
+    }
+
+    /// A waiting page that turned out not to be a turn, or can't be known to be: nothing
+    /// is written and the saved place stays. A Play waiting for it goes ahead.
+    private func release(_ pending: PendingPage) {
+        guard let page = pending.page, let readAlong = pending.readAlong, readAlong === self.readAlong else { return }
+        readAlong.pageAnswered(page, moved: false)
+    }
+
+    /// Asks the page whether the restored heard element is still on screen for report
+    /// `pending`. Hidden means the reader turned: saved as it was when reported.
+    private func ask(_ pending: PendingPage) {
+        guard let book, let href = pending.observation.locator["href"]?.stringValue,
+              case let .array(fragments)? = restorationTarget?["locations"]?["fragments"], case let .string(fragment)? = fragments.first
+        else { return release(pending) }
+        let target = restorationTarget?["href"]?.stringValue ?? href
+        pendingPage = pending
+        pendingPageTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(ReadingRestoration.attemptTimeout * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.pendingPage?.id == pending.id, let unanswered = self.takePendingPage() else { return }
+            self.note("element \(fragment) unanswered -> not written")
+            self.release(unanswered)
+        }
+        Task { [weak self] in
+            let answer = await book.isElementVisible(href: target, fragment: fragment)
+            // Superseded, released or closed meanwhile: that already settled it.
+            guard let self, self.book === book, self.pendingPage?.id == pending.id, let answered = self.takePendingPage() else { return }
+            guard let visible = answer else {
+                self.note("element \(fragment) unknown -> not written")
+                return self.release(answered)
+            }
+            let next = self.restoration.elementShown(visible, for: answered.observation)
+            self.note("element \(fragment) visible=\(visible) -> \(RestoreTrace.describe(next))")
+            if next == .record {
+                self.save(answered.observation, observedAt: answered.observedAt, readAlong: answered.readAlong, page: answered.page)
+            } else {
+                self.release(answered)
+                self.apply(next, for: answered.observation)
+            }
+        }
+    }
+
     private static let restoreFailed = "Couldn't show your saved page. It stays your saved place until you turn a page."
 
-    private func apply(_ action: ReadingRestoration.Action, for observation: ReadingObservation? = nil, observedAt: Int64? = nil) {
+    private func apply(_ action: ReadingRestoration.Action, for observation: ReadingObservation? = nil) {
         switch action {
-        case .none:
+        case .none, .record:
+            // A report that is reading is saved by `record` or `ask`, never here.
             return
-        case .record:
-            // Only an element answer about a report already classified arrives here.
-            guard let observation, let observedAt else { return }
-            save(observation, observedAt: observedAt)
         case .confirm:
             // A place heard names its element: ask the page whether that element is shown.
             guard let observation, let book, let href = observation.locator["href"]?.stringValue,
@@ -433,7 +517,7 @@ final class ReaderModel: ObservableObject {
                 guard let self, self.book === book else { return }
                 let next = self.restoration.elementShown(visible, for: observation)
                 self.note("element \(fragment) visible=\(visible) -> \(RestoreTrace.describe(next))")
-                self.apply(next, for: observation, observedAt: observedAt)
+                self.apply(next, for: observation)
             }
         case let .correct(target, attempt):
             correct(to: target, attempt: attempt)
@@ -595,6 +679,7 @@ final class ReaderModel: ObservableObject {
 
     private func closeReaders() {
         correctionTimer?.cancel()
+        dropPendingPage(cancellingPlay: true)
         if let readAlong { Task { await readAlong.close() } }
         readAlong = nil
         readAlongNote = nil
@@ -654,6 +739,7 @@ final class ReaderModel: ObservableObject {
                 waitForRestoredPage(pageReader)
                 if case let .correct(page) = action { pageReader.go(to: page, animated: false) }
             } else {
+                dropPendingPage(cancellingPlay: true)
                 restorationTarget = position.locator
                 apply(restoration.reopen(at: position.locator))
                 // The other device's place is where narration starts, as it is.
@@ -666,6 +752,7 @@ final class ReaderModel: ObservableObject {
     /// layout causes anchors the page rather than being saved as reading; turns after it are.
     func layoutChanged() {
         guard readAlong != nil, lastLocator != nil, case .ready = state, !restoration.isCorrecting else { return }
+        dropPendingPage(cancellingPlay: false)
         restoration = ReadingRestoration(opening: nil)
         restorationTarget = nil
         note("layout")
@@ -673,6 +760,7 @@ final class ReaderModel: ObservableObject {
 
     /// The reader is closing: save the place heard and unload the narration.
     func leave() {
+        dropPendingPage(cancellingPlay: true)
         flush()
         guard let readAlong else { return }
         Task { await readAlong.close() }

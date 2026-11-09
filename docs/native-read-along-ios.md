@@ -141,6 +141,18 @@ read-along mode they go to `ReadAlongProgress`:
   another page in that document is asked about too: the element still shown means the
   same restore measured late (nothing written); gone means a real turn, saved with the
   time it was reported. Another document is reading at once.
+- **Turns waiting for that answer** keep what they meant when reported, because Pause
+  and Play can run while WebKit answers. A page reported while narration played stays
+  browsing (nothing written, following paused) even if paused before the answer; one
+  reported while paused stays reading even if Play comes first. Play from the reader
+  or from the lock screen or a headset waits for a page reported while paused
+  (`Plan.awaitingPage`): a real turn is written first and Play starts from that page;
+  a late restore report, a follow's own page, a stale or failed answer, or a new layout
+  write nothing and Play resumes the exact heard place, rewound once. A newer report
+  replaces the waiting one; Play, "Back to the narration", Follow, another place, an
+  accepted offer, closing and leaving drop it, and Pause, closing, leaving or another
+  place cancel a waiting Play. An answer that never comes is bounded by the restore's
+  own five-second attempt and writes nothing. Listening checkpoints never wait for it.
 - **Offers**: for an imported alignment, the paired audiobook's newer place (its local
   record or the server's, whichever was heard later) is offered when it was heard later
   than the ebook's place and lands on another cue ("Your audiobook is further along than
@@ -243,7 +255,8 @@ Core (ShelfarrCore, `swift test`, Linux and macOS):
   readiness needing every audiobook file on disk, other editions, closing; the streaming
   decoder matching the whole decoder on every vector at 1-byte to 64 KiB reads and
   refusing what it refuses; element restores confirmed, corrected, retried and given up,
-  a late report of the restored page versus a real turn forward or back.
+  a late report of the restored page versus a real turn forward or back, and turns
+  waiting for that answer applied as reported (`ReadAlongSessionTests`).
 
 Fixture (`apps/ios/RuntimeSmoke/read_along_fixture.py`, checked by
 `test_read_along_fixture.py` before the simulator smoke): a real EPUB 3 Media Overlay book

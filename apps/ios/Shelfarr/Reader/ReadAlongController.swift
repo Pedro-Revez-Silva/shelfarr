@@ -44,6 +44,9 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
     /// The last listening checkpoint recorded, as "audio:ms" (Debug UI-test trace only).
     private var lastSaved = "-"
     private var followCount = 0
+    /// Play was asked for while a page reported while paused waited for its answer; it
+    /// goes ahead, from that page or the narration, once the report settles.
+    private var queuedPlay = false
     /// Simulator smoke only: every highlight change since narration last began, as
     /// `cue/follows` (`p1/0,-/0,p2/0`). A fixture cue lasts two seconds, about as long as
     /// one trace query takes on a hosted simulator, so the order heard is recorded here
@@ -99,6 +102,8 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
 
     /// The reader opened at `locator`. Narration will start there; nothing plays or is written.
     func restored(_ locator: JSONValue?, arrival: ReadAlongSession.Arrival = .resume) {
+        // A place opened or chosen now is newer than a Play still waiting for a page.
+        queuedPlay = false
         session.restore(locator, arrival: arrival)
         updateTrace("restored")
     }
@@ -120,6 +125,7 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
     /// Shows the audiobook's place and makes it where narration starts. Not activity.
     func acceptOffer() {
         offer = nil
+        queuedPlay = false
         guard let point = session.acceptOffer() else { return }
         Task { await show(point.cue, force: true) }
         updateTrace("offer-accepted")
@@ -137,12 +143,19 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
             engine.pause()
             return
         }
+        if queuedPlay {
+            // Pressed again before the waiting page settled: don't play after all.
+            queuedPlay = false
+            updateTrace("play-cancelled")
+            return
+        }
         problem = nil
         start(session.plan(loaded: loaded))
     }
 
-    /// Media controls use the same pending choice as the reader's Play button.
-    /// Returning false leaves a plain resume (including its rewind) to the engine.
+    /// Media controls use the same pending choice as the reader's Play button, and wait
+    /// for the same page report. Returning false leaves a plain resume (including its
+    /// rewind) to the engine.
     func narrationResumeRequested() -> Bool {
         let plan = session.plan(loaded: loaded)
         guard plan != .resume else { return false }
@@ -151,8 +164,24 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
         return true
     }
 
+    /// Pause from the lock screen or a headset: a Play still waiting doesn't go ahead.
+    func narrationPauseRequested() {
+        cancelQueuedPlay()
+    }
+
+    /// Something newer than a Play still waiting for a page (pause, closing, another
+    /// place): that Play doesn't go ahead.
+    func cancelQueuedPlay() {
+        guard queuedPlay else { return }
+        queuedPlay = false
+        updateTrace("play-cancelled")
+    }
+
     private func start(_ plan: ReadAlongSession.Plan) {
         switch plan {
+        case .awaitingPage:
+            queuedPlay = true
+            updateTrace("play-waiting")
         case .resume:
             engine.play()
         case let .open(point, arrival):
@@ -228,21 +257,45 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
 
     // MARK: The reader's reports
 
-    /// A page report the reader would save, for a page in `href`. False when it must not
-    /// be written: the page this controller moved to, or browsing while narration plays.
-    func readerMoved(href: String?) -> Bool {
-        if followMoving { return false }
+    /// What a page report in `href` means, decided when it is reported.
+    enum ReportedPage: Equatable {
+        /// The page this controller moved to: display only, never written.
+        case display
+        /// A page the reader may have turned to. Browsing while narration played or
+        /// reading while paused is fixed now; it takes effect when the page answers.
+        case turn(Int)
+    }
+
+    /// The reader reported a page it would save. A follow's own move is display only;
+    /// otherwise what the turn would mean is kept with it until `pageAnswered`.
+    func pageReported(href: String?) -> ReportedPage {
+        if followMoving { return .display }
         if let target = followTarget {
             followTarget = nil
             if Date() < target.until, let href, ReadingRestoration.same(href, target.href) {
                 // The report of the follow's own move: display only.
-                return false
+                return .display
             }
         }
-        let turn = session.readerTurned()
-        suspended = session.suspended
-        updateTrace(turn == .browsing ? "browse" : "read")
-        return turn == .reading
+        return .turn(session.turnReported())
+    }
+
+    /// Whether reported `page` moved the reader, now known. True when it was reading
+    /// (paused when reported) and must be written with its own time; browsing pauses
+    /// following. A Play waiting for it then goes ahead, from the page if it was read.
+    @discardableResult
+    func pageAnswered(_ page: ReportedPage, moved: Bool) -> Bool {
+        var reading = false
+        if case let .turn(id) = page, let turn = session.turnAnswered(id, moved: moved) {
+            suspended = session.suspended
+            updateTrace(turn == .browsing ? "browse" : "read")
+            reading = turn == .reading
+        }
+        if queuedPlay, !session.awaitingTurn {
+            queuedPlay = false
+            start(session.plan(loaded: loaded))
+        }
+        return reading
     }
 
     /// While narration plays, reports are never reading, whatever caused them.
@@ -351,6 +404,8 @@ final class ReadAlongController: ObservableObject, ReadAlongListener {
 
     /// Saves the place heard at once and unloads the narration (leaving, sign-out).
     func close() async {
+        queuedPlay = false
+        session.turnAbandoned()
         if loaded { await engine.stopReadAlong() }
         await lastWrite?.value
         await progress.ebook.requestFlush()

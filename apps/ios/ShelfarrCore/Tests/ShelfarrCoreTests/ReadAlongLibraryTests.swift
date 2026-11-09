@@ -257,9 +257,12 @@ final class ReadingRestorationElementTests: XCTestCase {
         let stale = report("OEBPS/c1.xhtml", 0, 0.25)
         XCTAssertEqual(restoring.observe(stale), .confirm(target: target))
         XCTAssertEqual(restoring.elementShown(true, for: stale), .settled, "the element is on screen now")
+        XCTAssertFalse(restoring.isVerifying, "the opening question is not a possible turn")
         let arrived = report("OEBPS/c1.xhtml", 0.75, 1)
         XCTAssertEqual(restoring.observe(arrived), .confirm(target: target), "asked again, about this report")
+        XCTAssertTrue(restoring.isVerifying, "a possible turn: its meaning waits for this answer")
         XCTAssertEqual(restoring.elementShown(true, for: arrived), .none, "the same restore, measured late")
+        XCTAssertFalse(restoring.isVerifying)
         XCTAssertEqual(restoring.observe(arrived), .none, "that page again is not reading")
         // The real backward turn from there is still reading.
         let back = report("OEBPS/c1.xhtml", 0.5, 0.75)

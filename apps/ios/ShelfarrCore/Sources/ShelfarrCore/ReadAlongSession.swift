@@ -11,6 +11,10 @@ import Foundation
 ///   and following pauses until "Back to the narration".
 /// - While paused, a turned page is reading: an ordinary place is written by the reader,
 ///   and the next Play starts from the narration on that page.
+/// - A page report whose meaning waits for the page's answer (after restoring a heard
+///   place, a report may be that restore measured late) keeps what it would mean when it
+///   was reported. A confirmed turn is applied as of then, whatever has played or paused
+///   since; while a paused turn waits, Play waits for it (`Plan.awaitingPage`).
 /// - Restoring a place, following, layout and adopting a remote place are never activity.
 ///   The first Play after restoring a heard place is a genuine resume: five seconds
 ///   earlier, once (the player's `ListeningCheckpoints`).
@@ -35,6 +39,16 @@ public struct ReadAlongSession: Sendable {
         case open(ReadAlongManifest.Point, Arrival)
         /// The player has this session's narration loaded and paused: play on.
         case resume
+        /// A page reported while paused is waiting for the page's answer: whether it was
+        /// a turn decides between the page and the narration. Plan again once it settles.
+        case awaitingPage
+    }
+
+    /// A page report waiting for the page's answer, and whether narration was playing
+    /// when it was reported.
+    private struct PendingTurn: Sendable, Equatable {
+        let id: Int
+        let whilePlaying: Bool
     }
 
     public private(set) var follow: Bool
@@ -57,6 +71,8 @@ public struct ReadAlongSession: Sendable {
     public private(set) var offer: ReadAlongManifest.Point?
     /// The cue the page last followed to, so a cue is followed once.
     private var followed: Int?
+    private var pendingTurn: PendingTurn?
+    private var turnCounter = 0
 
     public init(manifest: ReadAlongManifest, follow: Bool = true) {
         self.manifest = manifest
@@ -67,6 +83,8 @@ public struct ReadAlongSession: Sendable {
     /// Nothing plays and nothing is written; narration will start there.
     public mutating func restore(_ locator: JSONValue?, arrival: Arrival = .resume) {
         let point = manifest.point(from: locator)
+        // A place chosen or reopened since supersedes a report still waiting.
+        pendingTurn = nil
         restored = point
         heard = point ?? heard
         self.arrival = arrival
@@ -91,6 +109,7 @@ public struct ReadAlongSession: Sendable {
     public mutating func acceptOffer() -> ReadAlongManifest.Point? {
         guard let point = offer else { return nil }
         offer = nil
+        pendingTurn = nil
         restored = point
         heard = point
         arrival = .adopted
@@ -107,6 +126,7 @@ public struct ReadAlongSession: Sendable {
 
     /// What pressing Play does. `loaded` is whether the player holds this narration.
     public func plan(loaded: Bool) -> Plan {
+        if let pendingTurn, !pendingTurn.whilePlaying { return .awaitingPage }
         // A choice made while this program was paused supersedes the loaded audio too.
         // It remains pending until playback begins; merely showing its page is silent.
         if let restored, arrival == .adopted, !readSinceHeard { return .open(restored, .adopted) }
@@ -120,6 +140,8 @@ public struct ReadAlongSession: Sendable {
 
     /// Narration starts (or resumes) playing.
     public mutating func began() {
+        // Playing again is newer than any report still waiting: it is not reclassified.
+        pendingTurn = nil
         started = true
         playing = true
         finished = false
@@ -178,7 +200,37 @@ public struct ReadAlongSession: Sendable {
     }
 
     public mutating func readerTurned() -> Turn {
-        if playing {
+        apply(whilePlaying: playing)
+    }
+
+    /// A page was reported that is a turn only if the page's answer says so. What it would
+    /// mean is fixed now; nothing changes until `turnAnswered(_:moved:)`. A newer report
+    /// replaces it. Returns its id.
+    public mutating func turnReported() -> Int {
+        turnCounter += 1
+        pendingTurn = PendingTurn(id: turnCounter, whilePlaying: playing)
+        return turnCounter
+    }
+
+    /// The page answered report `id`: `moved` when it was a real turn. Applies it as of
+    /// when it was reported and returns what it was; nil when it wasn't a turn, or when a
+    /// newer report, Play, a restored place or the reader's own choice superseded it.
+    public mutating func turnAnswered(_ id: Int, moved: Bool) -> Turn? {
+        guard let pending = pendingTurn, pending.id == id else { return nil }
+        pendingTurn = nil
+        return moved ? apply(whilePlaying: pending.whilePlaying) : nil
+    }
+
+    /// A page report is waiting for its answer.
+    public var awaitingTurn: Bool { pendingTurn != nil }
+
+    /// The reader closed or reset: a report still waiting means nothing.
+    public mutating func turnAbandoned() {
+        pendingTurn = nil
+    }
+
+    private mutating func apply(whilePlaying: Bool) -> Turn {
+        if whilePlaying {
             if follow { suspended = true }
             return .browsing
         }
@@ -188,6 +240,8 @@ public struct ReadAlongSession: Sendable {
 
     /// "Back to the narration": the cue to show, and following resumes.
     public mutating func returnToNarration() -> Int? {
+        // The reader's own choice is newer than a browsing report still waiting.
+        if pendingTurn?.whilePlaying == true { pendingTurn = nil }
         suspended = false
         followed = highlighted
         return highlighted ?? heard?.cue
@@ -195,6 +249,7 @@ public struct ReadAlongSession: Sendable {
 
     /// Turns following on or off. Turning it on while playing brings the cue into view.
     public mutating func setFollow(_ on: Bool) -> Int? {
+        if pendingTurn?.whilePlaying == true { pendingTurn = nil }
         follow = on
         guard on else { return nil }
         suspended = false
