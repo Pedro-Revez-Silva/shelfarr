@@ -103,6 +103,16 @@ final class ReadAlongSmokeTests: XCTestCase {
         var paused = 0
         var pausedAudio = 0
         try step("Pausing saves the element heard and its exact offset at once") {
+            // Paused at least 3.5 s into its file, so the replay below (five seconds,
+            // clamped to the start of the file) is long enough to pause inside, and at
+            // least 2.5 s before the file's end, so listening on stays in it. On the hosted
+            // iPad (Xcode 26) this pause landed at q1 927 ms: the replay was then only
+            // 0–927 ms, the second tap paused at 1417 ms, and that listening past the saved
+            // place was rightly saved.
+            XCTAssertTrue(waitFor(timeout: 20) {
+                guard let heard = self.place(self.trace(app)["heard"]), heard.audio < Self.narrationMs.count else { return false }
+                return (3500 ... Self.narrationMs[heard.audio] - 2500).contains(heard.ms)
+            }, "narration reached a place with room to replay and to listen on: \(traceLine(app))")
             app.buttons["read-along-pill"].tap()
             XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "0" })
             // The pause's own checkpoint, not an earlier one already on the server: no more
@@ -154,13 +164,45 @@ final class ReadAlongSmokeTests: XCTestCase {
             }, "resumed five seconds before \(pausedAudio):\(paused): \(traceLine(app))")
             app.buttons["read-along-play"].tap()
             XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "0" })
+            let stopped = try XCTUnwrap(place(trace(app)["heard"]), traceLine(app))
+            XCTAssertTrue(stopped.audio == pausedAudio && stopped.ms <= paused,
+                          "paused inside the replay, before \(pausedAudio):\(paused); a pause past it is new listening: \(traceLine(app))")
             sleep(2)
             let after = try progressWrites(book)
             XCTAssertEqual(after.count, before, "the replayed seconds wrote nothing")
             XCTAssertEqual(after.lastReadAlong?["offset_ms"] as? Int, paused)
+        }
+
+        try step("Listening on past the saved place saves the new place with its own time") {
+            let before = try progressWrites(book)
+            // A pause inside the replay continues it: no second rewind.
+            app.buttons["read-along-play"].tap()
+            XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "1" })
+            XCTAssertTrue(waitFor(timeout: 10) {
+                guard let heard = self.place(self.trace(app)["heard"]) else { return false }
+                return heard.audio == pausedAudio && heard.ms >= paused + 500
+            }, "played on past \(pausedAudio):\(paused): \(traceLine(app))")
+            app.buttons["read-along-play"].tap()
+            XCTAssertTrue(waitFor(timeout: 10) { self.trace(app)["playing"] == "0" })
+            let saved = try XCTUnwrap(place(trace(app)["saved"]), traceLine(app))
+            XCTAssertEqual(saved.audio, pausedAudio, traceLine(app))
+            XCTAssertGreaterThan(saved.ms, paused, "the place heard past the old one is saved: \(traceLine(app))")
+            XCTAssertTrue(waitFor {
+                guard let point = (try? self.progressWrites(book))?.lastReadAlong else { return false }
+                return point["audio"] as? Int == saved.audio && point["offset_ms"] as? Int == saved.ms
+            }, "the new place \(saved) reached the server")
+            let after = try progressWrites(book)
+            XCTAssertGreaterThan(after.count, before.count)
+            XCTAssertEqual(after.withoutObservedAt, 0)
+            XCTAssertNotEqual(after.lastObservedAt, before.lastObservedAt, "observed when heard, not the replayed place's time")
+            XCTAssertEqual(after.resolving, 0)
             closeReader(app)
         }
     }
+
+    /// Each fixture chapter's narration file: its cues of two seconds, each followed by
+    /// 600 ms of silence (read_along_fixture.py). Chapter 1 has six cues, chapter 2 three.
+    private static let narrationMs = [6 * 2600, 3 * 2600]
 
     func testPagesReadAfterPausingSurviveBackgroundingAndClosingNarration() throws {
         let app = launch(reset: true)

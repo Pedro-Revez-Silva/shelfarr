@@ -100,6 +100,20 @@ final class ListeningCheckpointsTests: XCTestCase {
         XCTAssertTrue(rules.isActivity(at(60.5)))
     }
 
+    /// The hosted iPad read-along run: the place saved was 927 ms into a file, so the
+    /// replay was only 0–927 ms. Inside it nothing is activity; 1417 ms is new listening.
+    func testAReplayClampedToTheTrackStartIsOnlyAsLongAsThePlaceSaved() {
+        var rules = ListeningCheckpoints()
+        XCTAssertEqual(rules.open(at(0.927, "c2"), firstTrack: "c1"), 0, "less than five seconds in: replayed from the start")
+        for heard in [0, 0.44, 0.63, 0.831, 0.927] {
+            XCTAssertFalse(rules.isActivity(at(heard, "c2")), "\(heard) s is the replay")
+        }
+        rules.paused()
+        XCTAssertNil(rules.resumed(at: at(0.831, "c2")), "a pause inside the replay continues it")
+        XCTAssertFalse(rules.isActivity(at(0.9, "c2")))
+        XCTAssertTrue(rules.isActivity(at(1.417, "c2")), "past the saved place is listening")
+    }
+
     func testAPausedRestartNearTheTrackStartClampsToIt() {
         var rules = ListeningCheckpoints()
         _ = rules.open(nil, firstTrack: "t1")
