@@ -59,9 +59,10 @@ verified; a build or simulated test alone does not establish device acceptance.
   Server contract and web reader implemented, online and offline
   ([read-along](read-along.md)); native Android and iOS/iPad implementations
   include regression and smoke coverage. Android passes the emulator suite;
-  iOS silent-restoration and narration cases still need fixes, and web narration
-  can leave its current cue off screen after reflow. Device acceptance remains
-  pending; Linux/render checks do not establish hardware behavior.
+  iOS runtime fixes are implemented and await simulator verification. Web
+  narration keeps its current cue visible through reflow in Chromium and Firefox.
+  Device acceptance remains pending; Linux/render checks do not establish
+  hardware behavior.
 
 ## Distribution and acceptance
 
@@ -84,7 +85,9 @@ Android's permission and installer screens. These establish development-channel
 behavior, not the production-publication or physical-device checkboxes above.
 
 The permanent production Android key is outside the repository and backed up in
-the owner's secret manager. Protected publishing is configured; its first real
+the owner's secret manager. Backup recovery, real APK signing, signature and
+alignment checks, and catalogue validation have passed locally. Protected
+publishing is configured; its first real
 production publication remains gated on the default branch. iPad personal
 signing through Xcode is documented for a free Apple Account, but no physical
 iPad installation has been verified. TestFlight remains a separate paid-membership
