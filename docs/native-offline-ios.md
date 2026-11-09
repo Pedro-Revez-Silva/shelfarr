@@ -249,6 +249,13 @@ ordinary UI interactions:
   shows the saved-titles banner, and offline search finds a title from the second page.
   Offline details say status changes need the server. The EPUB reopens and renders at
   the same place (within 1%).
+- Find requests the audiobook of a title (a repeated tap still sends one request) and
+  follows it to *Listen now*. Only acquisition is pretended: the fixture's acquired
+  publication carries real WAV tracks, which must load (0:45), play and advance two
+  seconds in the production player; pausing must reach the fixture within 1.5 s of the
+  shown place. The same title's ebook is then requested and opened with *Read now*:
+  Readium must render its text, turns must move it from 0%, closing must send the
+  place, and reading it again must restore that page with nothing written.
 
 Audio output isn't needed or checked.
 

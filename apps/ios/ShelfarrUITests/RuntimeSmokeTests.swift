@@ -312,8 +312,22 @@ final class RuntimeSmokeTests: XCTestCase {
             XCTAssertEqual(listen.label, "Listen now")
             screenshot(app, "25-request-ready")
             listen.tap()
-            XCTAssertTrue(toggle(app, "Pause").waitForExistence(timeout: wait) || toggle(app, "Play").waitForExistence(timeout: wait), "the acquired audiobook opens in the player")
+            // The acquisition is the fixture's; the files are real WAV tracks, decoded and played.
+            let slider = app.sliders["Position"]
+            XCTAssertTrue(slider.waitForExistence(timeout: wait), "the acquired audiobook opens in the player")
+            XCTAssertTrue(waitFor { (slider.value as? String)?.hasSuffix("of 0:45") == true }, "the acquired track's duration loaded: \(slider.value ?? "")")
+            XCTAssertTrue(toggle(app, "Pause").exists, "the acquired audiobook plays")
+            let started = try XCTUnwrap(elapsed(slider))
+            XCTAssertTrue(waitFor(timeout: 15) { (self.elapsed(slider) ?? 0) >= started + 2 }, "its audio advances: \(slider.value ?? "")")
             screenshot(app, "26-request-opened")
+            toggle(app, "Pause").tap()
+            XCTAssertTrue(toggle(app, "Play").waitForExistence(timeout: wait))
+            let paused = try XCTUnwrap(elapsed(slider))
+            XCTAssertTrue(waitFor {
+                guard let saved = try? self.savedSeconds("req-r1") else { return false }
+                return abs(saved - paused) <= 1.5
+            }, "pausing the requested audiobook saved its place")
+            XCTAssertEqual(try progressWrites("req-r1").withoutObservedAt, 0)
             press(app, "Close player")
         }
 
@@ -321,6 +335,47 @@ final class RuntimeSmokeTests: XCTestCase {
             app.navigationBars.buttons.firstMatch.tap()
             XCTAssertTrue(app.buttons["request:r1"].waitForExistence(timeout: wait))
             XCTAssertFalse(app.buttons["request:r2"].exists, "repeated taps made one request")
+        }
+
+        var place = ""
+        var written = 0
+        try step("The ebook of the same title is requested, read and turned") {
+            let result = app.buttons["result:mock:work-lighthouse"]
+            XCTAssertTrue(result.waitForExistence(timeout: wait), "the search results are still listed")
+            result.tap()
+            let ebook = app.buttons["format:ebook"]
+            XCTAssertTrue(ebook.waitForExistence(timeout: wait))
+            ebook.tap()
+            let submit = app.buttons["request-submit"]
+            XCTAssertTrue(submit.waitForExistence(timeout: wait))
+            submit.tap()
+            let read = app.buttons["request-open"]
+            XCTAssertTrue(read.waitForExistence(timeout: 180), "the ebook request becomes ready")
+            XCTAssertEqual(read.label, "Read now")
+            read.tap()
+            XCTAssertTrue(bookText(app).waitForExistence(timeout: 60), "Readium rendered the requested ebook's text")
+            let page = app.webViews.firstMatch
+            page.swipeLeft()
+            page.swipeLeft()
+            turnPastAChapterStart(app)
+            XCTAssertTrue(waitFor(timeout: 10) { self.progress(app) != "0%" }, "turning pages moved the reading position")
+            place = progress(app)
+            screenshot(app, "27-requested-ebook-turned")
+            closeReader(app)
+            XCTAssertTrue(waitFor { (try? self.progressWrites("req-r2"))?.count ?? 0 > 0 }, "closing the reader sent its place")
+            let log = try progressWrites("req-r2")
+            written = log.count
+            XCTAssertEqual(log.withoutObservedAt, 0)
+        }
+
+        try step("Reading it again restores that page and writes nothing") {
+            let read = app.buttons["request-open"]
+            XCTAssertTrue(read.waitForExistence(timeout: wait), "back on the ready request")
+            read.tap()
+            XCTAssertTrue(bookText(app).waitForExistence(timeout: 60))
+            expectRestored(app, place, "28-requested-ebook-reopened")
+            closeReader(app)
+            XCTAssertFalse(waitFor(timeout: 3) { ((try? self.progressWrites("req-r2"))?.count ?? written) != written }, "restoring is not reading")
         }
     }
 
