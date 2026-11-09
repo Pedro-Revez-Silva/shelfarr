@@ -13,8 +13,10 @@ verified; a build or simulated test alone does not establish device acceptance.
   and works across deployment subpaths.
 - [ ] Store failures cannot discard local selections, reset progress, cross
   account boundaries or expose connection secrets.
-- [ ] The connected real account is used to verify supported account/catalogue
+- [x] The connected real account is used to verify supported account/catalogue
   behavior without changing purchases or resetting devices.
+  Live metadata and one purchased DRM-free EPUB passed the normal private-cache
+  validation. This does not establish physical Kobo delivery or protected-book sharing.
 - [ ] Household catalogue sharing is explicitly granted and revocable by its owner.
 - [ ] Store-book delivery is enabled only for formats and authorization paths
   proven to work. Account connection alone is not proof of cross-account playback.
@@ -46,7 +48,8 @@ verified; a build or simulated test alone does not establish device acceptance.
 - [ ] PDF and comic reading work through bounded, authorized asset handling
   with durable, edition-specific page positions on supported clients.
   API, web and Android readers implemented ([formats](consumer-formats.md));
-  iOS/iPad implementation awaits SDK/runtime checks. Device acceptance pending.
+  iOS/iPad builds with Xcode 16.4 and 26, but simulator runtime failures remain.
+  Device acceptance is pending.
 - [ ] Web users can deliberately download supported books/audio, see storage
   and download state, reopen offline and later synchronize their saved place.
 - [ ] Account changes, updates and cache eviction cannot silently mix accounts
@@ -55,8 +58,10 @@ verified; a build or simulated test alone does not establish device acceptance.
   usable controls and reliable resume. Unaligned editions are identified honestly.
   Server contract and web reader implemented, online and offline
   ([read-along](read-along.md)); native Android and iOS/iPad implementations
-  include regression and smoke coverage. Final SDK/runtime and device acceptance
-  remain pending; Linux/render checks do not establish hardware behavior.
+  include regression and smoke coverage. Android passes the emulator suite;
+  iOS silent-restoration and narration cases still need fixes, and web narration
+  can leave its current cue off screen after reflow. Device acceptance remains
+  pending; Linux/render checks do not establish hardware behavior.
 
 ## Distribution and acceptance
 
@@ -69,6 +74,21 @@ verified; a build or simulated test alone does not establish device acceptance.
   Bluetooth/lock-screen controls, interruptions, restart and progress recovery.
 - [ ] The oldest, middle and newest stock Kobo generations pass the acceptance
   matrix in `kobo.md`, including coexistence and progress behavior.
+
+The development Android build `2026.11.09.1-debug` (code 5, source `e47144f`)
+has been published through the compatibility catalogue and verified server cache.
+The exact APK passes real emulator reading and playback after a request, and an
+actual code 4 to 5 replacement preserves the Keystore sign-in, settings,
+downloaded bytes and queued place. A separate in-app code 3 to 4 update exercised
+Android's permission and installer screens. These establish development-channel
+behavior, not the production-publication or physical-device checkboxes above.
+
+The permanent production Android key is outside the repository and backed up in
+the owner's secret manager. Protected publishing is configured; its first real
+production publication remains gated on the default branch. iPad personal
+signing through Xcode is documented for a free Apple Account, but no physical
+iPad installation has been verified. TestFlight remains a separate paid-membership
+route; see [iOS distribution](ios-distribution.md).
 
 Physical devices, Apple signing/distribution access and any human-only approval
 are recorded as gates rather than marked complete by simulator results. The
