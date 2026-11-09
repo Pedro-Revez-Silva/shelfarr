@@ -115,7 +115,10 @@ class ZLibraryClient
           return recovered unless recovered.nil?
 
           Rails.logger.warn "[ZLibraryClient] eAPI download lookup unavailable; falling back to HTML book page"
-          return get_html_download_url(auth, id: id, hash: hash)
+          recovered = get_html_download_url(auth, id: id, hash: hash)
+          return recovered unless recovered == :bot_wall
+
+          raise_download_bot_wall!(download_wall_domains(auth, html_fallback_auths))
         end
 
         data = parse_response(response, context: "download lookup")
@@ -384,17 +387,21 @@ class ZLibraryClient
     # A same-URL redirect that changes the cookie jar can be a clearance page.
     # Challenge-path targets and untrusted hosts are not replayed.
     def replayable_same_url_challenge?(response, url, cookies)
-      return false unless login_redirect?(response)
+      return false unless same_url_redirect?(response, url)
+
+      updated = cookies.dup
+      store_login_cookies!(updated, response, url)
+      login_cookie_header(updated, url).to_s != login_cookie_header(cookies, url).to_s
+    end
+
+    def same_url_redirect?(response, url)
+      return false unless response && login_redirect?(response)
 
       location = redirect_location(response)
       return false if location.blank? || location.match?(/diamwall/i)
 
       target = safe_login_redirect_target(url, location)
-      return false unless target.is_a?(String) && normalize_login_url(target) == normalize_login_url(url)
-
-      updated = cookies.dup
-      store_login_cookies!(updated, response, url)
-      login_cookie_header(updated, url).to_s != login_cookie_header(cookies, url).to_s
+      target.is_a?(String) && normalize_login_url(target) == normalize_login_url(url)
     end
 
     def login_redirect?(response)
@@ -1110,7 +1117,8 @@ class ZLibraryClient
 
     def download_html_fallbacks(auths, id:, hash:)
       Array(auths).each do |auth|
-        return get_html_download_url(auth, id: id, hash: hash)
+        result = get_html_download_url(auth, id: id, hash: hash)
+        return result unless result == :bot_wall
       rescue JSON::ParserError, Faraday::Error, Error => error
         Rails.logger.debug "[ZLibraryClient] HTML download retry failed on #{auth[:domain]}: #{error.class}"
       end
@@ -1208,14 +1216,21 @@ class ZLibraryClient
     end
 
     # A same-URL 307 whose cookie jar never changes comes back as a redirect loop.
+    # A rotating clearance cookie never repeats a visit key, so that wall hits
+    # the redirect cap instead. Exhausting those same-URL hops is still a wall.
     def search_exchange_walled?(exchange)
       return true if exchange[:bot_wall]
       return true if exchange[:error] == "redirect loop"
+      return true if same_url_redirects_exhausted?(exchange)
 
       response = exchange[:response]
       return false unless response
 
       response.status == BOT_WALL_HTTP_STATUS || bot_wall_response?(response)
+    end
+
+    def same_url_redirects_exhausted?(exchange)
+      exchange[:error] == "too many redirects" && same_url_redirect?(exchange[:response], exchange[:url])
     end
 
     def usable_search_response(exchange)
@@ -1240,10 +1255,23 @@ class ZLibraryClient
     end
 
     def raise_search_bot_wall!(domains)
+      raise_terminal_bot_wall!("search", domains)
+    end
+
+    def raise_download_bot_wall!(domains)
+      raise_terminal_bot_wall!("download lookup", domains)
+    end
+
+    # SearchBotWallError is terminal: with_authenticated_retry will not log in again.
+    def raise_terminal_bot_wall!(context, domains)
       names = Array(domains).map { |domain| domain.to_s }.uniq
-      message = "Z-Library search is bot-walled (#{names.join(', ')}). Configure another domain that serves the eAPI."
+      message = "Z-Library #{context} is bot-walled (#{names.join(', ')}). Configure another domain that serves the eAPI."
       Rails.logger.error "[ZLibraryClient] #{message}"
       raise SearchBotWallError, message
+    end
+
+    def download_wall_domains(auth, html_fallback_auths)
+      [ auth[:domain], *Array(html_fallback_auths).map { |candidate| candidate[:domain] } ]
     end
 
     def observe_search_attempt(after_attempt)
@@ -1306,6 +1334,8 @@ class ZLibraryClient
         method: :get,
         seed_cookies: cookie_header(auth)
       )
+      return :bot_wall if search_exchange_walled?(exchange)
+
       response = usable_search_response(exchange)
 
       unless response&.status == 200
