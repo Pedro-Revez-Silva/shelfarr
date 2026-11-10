@@ -45,6 +45,9 @@ module Kobo
       end
       Result.new(items: local.items + store_items, token: cursor.write(local: local.token, store: store_token),
         more: local.more || store_more, headers: extra)
+    rescue StoreProxy::Unavailable
+      # A continuation which could not be retained must not be acknowledged.
+      StoreProxy::Response.new(status: 503, headers: { "content-type" => "application/json" }, body: "")
     end
 
     private
