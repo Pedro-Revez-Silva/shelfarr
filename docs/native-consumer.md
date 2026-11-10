@@ -76,7 +76,12 @@ default row is Open Library's "Modest Proposal" by Jonathan Swift.
 The background-transfer test also drives Library → details → Download, notification
 Cancel and Downloads navigation, system interruption/resume, and offline Library
 search. It exercises the real app on the emulator; process death and denied
-notification permission still need device validation. To run it locally,
+notification permission still need device validation.
+The details Back test opens a book from Home and goes back by a held Back (the
+predictive gesture's start, progress, then release or abandonment), the Back key and
+the app's Back button. Every captured frame must show either details or Home, never
+details drawn over Home; the JVM test `DetailsBackTransitionTest` checks the same
+frame by frame in both themes. To run it locally,
 start an accelerated emulator or connect a test device, then run
 `apps/scripts/android-reader-smoke.sh`. The smoke test uses an in-process fixture API and a synthetic
 account, so a connected personal library is not needed.

@@ -15,6 +15,7 @@ import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -516,7 +517,9 @@ private fun MainShell(container: AppContainer, session: Session, requestedScreen
 private val TAB_ROUTES = TABS.map { it.route }.toSet()
 
 // Material fade-through: the outgoing screen fades out before the incoming one fades
-// in, so two translucent screens are never drawn over each other.
+// in, so two screens are never drawn over each other. A held Back (an edge swipe, or a
+// held Back button on recent Android) seeks the same transition with the gesture;
+// Navigation's own default for it shrinks the outgoing screen over the incoming one.
 private val FadeThroughIn = fadeIn(tween(durationMillis = 210, delayMillis = 90, easing = LinearOutSlowInEasing))
 private val FadeThroughOut = fadeOut(tween(durationMillis = 90, easing = FastOutLinearInEasing))
 
@@ -566,6 +569,8 @@ internal fun MainShellLayout(
                     startDestination = HOME,
                     enterTransition = { FadeThroughIn },
                     exitTransition = { FadeThroughOut },
+                    predictivePopEnterTransition = { FadeThroughIn },
+                    predictivePopExitTransition = { FadeThroughOut },
                     builder = builder,
                 )
             }
@@ -586,13 +591,21 @@ internal fun MainShellLayout(
     }
 }
 
-/** A shell destination, laid out above the bars that belong to it. */
+/**
+ * A shell destination, laid out above the bars that belong to it. It paints the screen's
+ * background, so a screen is never seen through the gaps of another during a transition.
+ */
 internal fun NavGraphBuilder.screen(
     route: String,
     arguments: List<NamedNavArgument> = emptyList(),
     content: @Composable (NavBackStackEntry) -> Unit,
 ) = composable(route, arguments) { entry ->
-    Box(Modifier.fillMaxSize().padding(bottom = LocalShellBars.current.bottomPadding(route))) { content(entry) }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(bottom = LocalShellBars.current.bottomPadding(route)),
+    ) { content(entry) }
 }
 
 private fun downloadsSummary(records: Collection<DownloadRecord>): String {
