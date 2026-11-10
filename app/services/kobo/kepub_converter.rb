@@ -63,6 +63,46 @@ module Kobo
     # The copy would exceed the output limit the caller allowed.
     class LimitExceeded < StandardError; end
 
+    # Bound actual ZIP bytes, including raw entries and the central directory.
+    # Expanded chapter XML can be much larger than its compressed output.
+    class LimitedOutput
+      extend Forwardable
+      def_delegators :@io, :binmode, :rewind, :seek, :tell, :pos, :pos=, :flush, :close
+      attr_reader :io, :copies
+
+      def initialize(io, limit)
+        @io, @limit = io, limit
+        @copies = []
+      end
+
+      def initialize_copy(other)
+        super
+        @io = other.io.dup
+        @copies = other.copies
+        @copies << @io
+      end
+
+      def reopen(other)
+        @io.reopen(other.io)
+        self
+      end
+
+      def write(data)
+        raise LimitExceeded if @io.pos + data.bytesize > @limit
+
+        @io.write(data)
+      end
+
+      def close_duplicates
+        copies.each { |file| file.close unless file.closed? }
+      end
+
+      def <<(data)
+        write(data)
+        self
+      end
+    end
+
     class << self
       # Proof that a written copy is the conversion of this source: the same
       # entries, a valid unencrypted EPUB, and for every rewritten chapter the
@@ -109,17 +149,17 @@ module Kobo
     # Writes the copy to io (an empty, seekable file) without exceeding limit
     # bytes. Returns the rewritten chapters (decoded ZIP paths) and span count.
     def write(io, limit:)
+      bounded = nil
       order = KoboPublication.new(nil).reading_order(@source).fetch("items")
       self.class.archive(@source) do |zip|
         check_entries(zip)
         chapters = order.filter_map { |path, item| path if item["type"] == XHTML_TYPE && zip.find_entry(path) }.uniq
         raise Unsupported, "no_text" if chapters.empty?
 
-        @budget = limit
         spans = 0
         targets = chapters.to_set
-        Zip::OutputStream.write_buffer(io) do |out|
-          spend(256)
+        bounded = LimitedOutput.new(io, limit)
+        Zip::OutputStream.write_buffer(bounded) do |out|
           # Known sizes keep every local header free of a ZIP64 placeholder;
           # the mimetype entry stays first, stored and without extra fields.
           out.put_next_entry(Zip::Entry.new("", "mimetype", compression_method: Zip::Entry::STORED, size: MIMETYPE.bytesize,
@@ -130,12 +170,10 @@ module Kobo
 
             if targets.include?(entry.name)
               data, count = convert(read(entry))
-              spend(data.bytesize + 512 + 2 * entry.name.bytesize)
               out.put_next_entry(Zip::Entry.new("", entry.name, compression_method: Zip::Entry::DEFLATED, size: data.bytesize, time: entry.time))
               out << data
               spans += count
             else
-              spend(entry.compressed_size + 512 + 2 * (entry.name.bytesize + entry.extra.to_local_bin.bytesize))
               raw = entry.dup
               # Sizes are written into the copied local header, so a source
               # data descriptor (bit 3) would no longer follow the data.
@@ -150,14 +188,11 @@ module Kobo
       raise Unsupported, "unreadable_archive"
     rescue KoboPublication::Unavailable
       raise Unsupported, "unreadable_archive"
+    ensure
+      bounded&.close_duplicates
     end
 
     private
-
-    def spend(bytes)
-      @budget -= bytes
-      raise LimitExceeded if @budget.negative?
-    end
 
     # No entry may be encrypted, a symlink, a duplicate (checked when opened),
     # outside the archive root, or part of an inflation beyond the bound.

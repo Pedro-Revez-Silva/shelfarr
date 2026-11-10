@@ -130,7 +130,9 @@ the Kobo engine names a reading place by chapter and sentence marker, so
   earlier copy; **Send again** prepares the new one.
 - **Cache.** Copies live in `storage/kobo_kepub_cache` (or
   `KOBO_KEPUB_CACHE_PATH`), 0700/0600, up to 2 GiB in total
-  (`KOBO_KEPUB_CACHE_MAX_BYTES`). Copies a delivery uses are never evicted;
+  (`KOBO_KEPUB_CACHE_MAX_BYTES`), including partial output during rebuilding.
+  Distinct source files keep separate rebuild bindings even when their converted
+  bytes match. Copies a delivery uses are never evicted;
   unused ones are removed oldest first. When the cache is full or the disk runs
   out, sending is refused with a message and nothing already delivered changes.
   A copy lost from disk, or changed after it was written, is rebuilt from its

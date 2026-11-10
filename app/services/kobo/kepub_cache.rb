@@ -4,10 +4,10 @@ module Kobo
   # Persistent, bounded cache of Kobo editions (KEPUB) prepared from library
   # EPUB files by KepubConverter. Library files are only ever read.
   #
-  # Layout: <root>/<sha[0,2]>/<sha256>.kepub.epub, plus <root>/.incoming for
+  # Layout: <root>/<binding[0,2]>/<binding>.kepub.epub, plus <root>/.incoming for
   # partial output. Directories are 0700 and files 0600; paths derive only from
-  # the copy's own digest. A copy is bound to the converter version and to the
-  # SHA-256 of the exact source bytes. Its row is created only after the whole
+  # the source/copy digest binding. A copy is bound to the converter version
+  # and to the SHA-256 of the exact source bytes. Its row is created only after the whole
   # copy was written, synced, verified against the source (see
   # KepubConverter.verify) and renamed into place, so a failure, a crash or a
   # full cache never replaces or removes a copy that is already ready.
@@ -110,7 +110,12 @@ module Kobo
       raise KoboPublication::Unavailable, "The Kobo edition changed; send the book again" unless copy && copy.sha256 == sha256
 
       file = pinned(copy)
-      file = with_lock { usable(pinned(copy.reload)) || rebuild(copy, source) } if RemoteResult.failed?(file)
+      if RemoteResult.failed?(file)
+        file = with_lock do
+          reclaim
+          usable(pinned(copy.reload)) || rebuild(copy, source)
+        end
+      end
       touch(copy)
       file
     rescue Failure => error
@@ -139,7 +144,13 @@ module Kobo
     def rebuild(copy, source)
       raise KoboPublication::Unavailable, "The Kobo edition is unavailable; send the book again" unless self.class.sha256(source) == copy.source_sha256
 
-      written = write(source, copy.size_bytes + 1.megabyte)
+      # The old file failed pinning and cannot be served. Remove only that
+      # unsafe copy, after checking every directory, before reserving its
+      # replacement. No usable or delivery-pinned other copy is evicted.
+      final = private_directory(root.join(copy.storage_key).dirname).join(File.basename(copy.storage_key))
+      unlink_regular(final)
+      limit = make_room(copy.size_bytes, excluding: copy)
+      written = write(source, limit)
       unless written[:sha256] == copy.sha256
         unlink_regular(written[:path])
         raise KoboPublication::Unavailable, "The Kobo edition can't be rebuilt identically; send the book again"
@@ -174,7 +185,7 @@ module Kobo
     end
 
     def promote(written, source, digest)
-      key = KoboKepubCopy.storage_key_for(written[:sha256])
+      key = KoboKepubCopy.storage_key_for(written[:sha256], source_sha256: digest)
       final = private_directory(root.join(key).dirname).join(File.basename(key))
       if regular?(final) && File.size(final) == written[:size] && self.class.sha256_path(final) == written[:sha256]
         unlink_regular(written[:path])
@@ -228,22 +239,23 @@ module Kobo
 
     # Frees space by removing copies no delivery references and nobody used
     # recently, oldest first. Returns the bytes this copy may use.
-    def make_room(needed)
+    def make_room(needed, excluding: nil)
       maximum = self.class.max_total_bytes
       KoboKepubCopy.unreferenced.where(last_used_at: ...RECENT.ago).or(KoboKepubCopy.unreferenced.where(last_used_at: nil))
         .order(Arel.sql("COALESCE(last_used_at, created_at) ASC"), :id).each do |candidate|
-        break if used_bytes + needed <= maximum
+        break if used_bytes(excluding: excluding) + needed <= maximum
 
         remove(candidate)
       end
-      available = maximum - used_bytes
+      available = maximum - used_bytes(excluding: excluding)
       raise Failure, "cache_full" unless available.positive?
 
       [ available, MAX_COPY_BYTES ].min
     end
 
-    def used_bytes
-      KoboKepubCopy.sum(:size_bytes)
+    def used_bytes(excluding: nil)
+      copies = excluding ? KoboKepubCopy.where.not(id: excluding.id) : KoboKepubCopy.all
+      copies.sum(:size_bytes)
     end
 
     def remove(copy)
