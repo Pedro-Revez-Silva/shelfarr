@@ -17,6 +17,8 @@ const FORMAT_LABELS = { epub: "EPUB", pdf: "PDF", cbz: "Comic (CBZ)" }
 const PAGE_FORMATS = new Set(["pdf", "cbz"])
 const WEB_EBOOK_LIMIT = 32 * 1024 * 1024
 const READ_ALONG_ACTIVE = "shelfarr-read-along-active"
+const BOOK_IMAGE_TAGS = new Set(["img", "image"])
+const BOOK_IMAGE_ATTRS = new Set(["src", "href", "xlink:href"])
 
 export default class extends Controller {
   static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote",
@@ -410,12 +412,24 @@ export default class extends Controller {
       const { ePub, DOMPurify } = await engine
       if (!this.active || this.currentAsset !== asset) return
       this.book = ePub(undefined, { replacements: "blobUrl" })
+      // EPUB.js has already replaced each picture in the book with a blob: URL
+      // it made from the book's own file. DOMPurify drops every blob: URL, so
+      // image-only books (manga, comics as EPUB) opened to empty pages. Keep
+      // exactly those URLs, and only as the source of an image.
       const sanitize = (html, section) => {
-        const clean = DOMPurify.sanitize(html, {
-          WHOLE_DOCUMENT: true, SANITIZE_NAMED_PROPS: true,
-          FORBID_TAGS: ["script", "iframe", "frame", "form", "input", "button", "object", "embed", "base", "meta", "audio", "video", "source"],
-          FORBID_ATTR: ["srcset", "action", "formaction"]
-        })
+        const images = new Set((this.book.resources?.replacementUrls || []).filter(url => typeof url === "string" && url.startsWith(`blob:${window.location.origin}/`)))
+        const ownImage = (node, data) => {
+          if (BOOK_IMAGE_TAGS.has(node.nodeName.toLowerCase()) && BOOK_IMAGE_ATTRS.has(data.attrName) && images.has(data.attrValue)) data.forceKeepAttr = true
+        }
+        DOMPurify.addHook("uponSanitizeAttribute", ownImage)
+        let clean
+        try {
+          clean = DOMPurify.sanitize(html, {
+            WHOLE_DOCUMENT: true, SANITIZE_NAMED_PROPS: true,
+            FORBID_TAGS: ["script", "iframe", "frame", "form", "input", "button", "object", "embed", "base", "meta", "audio", "video", "source"],
+            FORBID_ATTR: ["srcset", "action", "formaction"]
+          })
+        } finally { DOMPurify.removeHook("uponSanitizeAttribute", ownImage) }
         const document = new DOMParser().parseFromString(clean, "text/html")
         for (const link of document.querySelectorAll("[href]")) {
           const href = link.getAttribute("href") || ""
@@ -483,20 +497,27 @@ export default class extends Controller {
           const walker = contents.document.createTreeWalker(contents.document.body, NodeFilter.SHOW_TEXT)
           const nodes = []
           while (walker.nextNode()) if (walker.currentNode.textContent.length) nodes.push(walker.currentNode)
-          let offset = Math.floor(nodes.reduce((length, node) => length + node.textContent.length, 0) * Math.min(1, locator.locations.progression))
-          for (const node of nodes) {
-            if (offset <= node.textContent.length) {
-              const range = contents.document.createRange()
-              range.setStart(node, offset)
-              range.collapse(true)
-              await this.showPlace(contents.cfiFromRange(range))
-              break
+          // A chapter of pictures has no text to measure, only the spaces
+          // between them; its fraction names a picture (one per page).
+          const pictures = nodes.some(node => node.textContent.trim()) ? [] : [...contents.document.querySelectorAll("img, image")]
+          if (pictures.length) {
+            await this.showPlace(contents.cfiFromNode(pictures[Math.min(pictures.length - 1, Math.round(pictures.length * locator.locations.progression))]))
+          } else {
+            let offset = Math.floor(nodes.reduce((length, node) => length + node.textContent.length, 0) * Math.min(1, locator.locations.progression))
+            for (const node of nodes) {
+              if (offset <= node.textContent.length) {
+                const range = contents.document.createRange()
+                range.setStart(node, offset)
+                range.collapse(true)
+                await this.showPlace(contents.cfiFromRange(range))
+                break
+              }
+              offset -= node.textContent.length
             }
-            offset -= node.textContent.length
           }
         }
       }
-      this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
+      this.lastEbookCfi = this.pageCfi()
       this.readerReady = true
       await this.readAlongRestored(locator)
       if (this.deferredPlace) { const place = this.deferredPlace; this.deferredPlace = null; this.applyPlace(place) }
@@ -598,8 +619,29 @@ export default class extends Controller {
   // page they produced. That start lies before the place, so re-anchoring on it
   // let each change drift earlier until the saved text left the page.
   anchorAt(target) {
-    const cfi = typeof target === "string" && target.startsWith("epubcfi(") ? target : this.rendition.currentLocation()?.start?.cfi
+    const cfi = typeof target === "string" && target.startsWith("epubcfi(") ? target : this.pageCfi()
     if (cfi) this.readingAnchor = cfi
+  }
+
+  // EPUB.js names a page by the first text on it. A page of pictures (manga,
+  // comics and picture books converted to EPUB) has none, so every picture
+  // page of a section got the section's first name: only the first turn was
+  // saved, and reopening went back to the first page. A page whose name is
+  // not text on that page is named by its first picture instead.
+  pageCfi(location = this.rendition?.currentLocation()) {
+    const start = location?.start
+    const contents = start?.cfi && this.rendition.getContents().find(item => item.sectionIndex === start.index)
+    const frame = contents?.window?.frameElement
+    if (!frame) return start?.cfi
+    const view = this.viewportTarget.getBoundingClientRect(), box = frame.getBoundingClientRect()
+    const onPage = rect => rect.width + rect.height > 0 && rect.right > view.left - box.left + 1 && rect.left < view.right - box.left - 1
+    let named = null
+    try { named = this.rendition.getRange(start.cfi) } catch (_) { named = null }
+    if (named && named.toString().trim() && onPage(named.getBoundingClientRect())) return start.cfi
+    const picture = [...contents.document.querySelectorAll("img, image")].find(node => onPage(node.getBoundingClientRect()))
+    // The picture itself, not a text offset in it: a picture has no text, and
+    // EPUB.js shows an element place on the page where that element is drawn.
+    return picture ? contents.cfiFromNode(picture) : start.cfi
   }
 
   layoutAnchor() {
@@ -768,15 +810,16 @@ export default class extends Controller {
     if (option) for (const menu of this.chapterMenus) menu.value = option.value
     // Only the reader's own moves are activity; restoring or reflowing is not.
     if (!this.readerReady) return
-    if (!this.userMoved) { this.lastEbookCfi = start.cfi; return }
-    this.readingAnchor = start.cfi
-    if (start.cfi === this.lastEbookCfi) return
-    this.lastEbookCfi = start.cfi
+    const cfi = this.pageCfi(location)
+    if (!this.userMoved) { this.lastEbookCfi = cfi; return }
+    this.readingAnchor = cfi
+    if (cfi === this.lastEbookCfi) return
+    this.lastEbookCfi = cfi
     // While narration plays, the place heard is the activity; turning pages
     // meanwhile is browsing and leaves it alone.
     if (this.readAlong?.session.playing) return
     if (this.readAlong) this.readAlong.readSinceHeard = true
-    this.recordPlace({ asset_id: this.currentAsset.id, locator: { href: this.zipHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi: start.cfi } } })
+    this.recordPlace({ asset_id: this.currentAsset.id, locator: { href: this.zipHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } })
   }
 
   async saveReadingStatus(event) {
@@ -814,7 +857,7 @@ export default class extends Controller {
       let reflow
       do { reflow = this.readerReflow; await reflow } while (reflow !== this.readerReflow)
       if (!this.active || !this.readerReady) return
-      this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
+      this.lastEbookCfi = this.pageCfi()
       this.userMoved = true
       // Moving away while narration plays pauses page-follow until the
       // reader returns to the narration.
@@ -1151,7 +1194,7 @@ export default class extends Controller {
         await this.rendition.display(cfi)
         this.readingAnchor = cfi
       }
-      this.lastEbookCfi = this.rendition.currentLocation()?.start?.cfi
+      this.lastEbookCfi = this.pageCfi()
     }
     const chain = this.readerReflow.then(run).catch(() => {})
     this.readerReflow = chain

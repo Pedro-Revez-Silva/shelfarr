@@ -57,6 +57,34 @@ module FixedLayoutFixtures
       [ 60, 180, 190 ], [ 240, 140, 40 ], [ 120, 120, 120 ], [ 200, 90, 150 ], [ 100, 170, 60 ] ][(position - 1) % 10]
   end
 
+  IMAGE_EPUB_COVER_COLOR = [ 15, 95, 85 ].freeze
+
+  # A reflowable, image-only EPUB shaped like a calibre conversion of a manga
+  # volume: an EPUB 2 package with an NCX table of contents only, a title page
+  # whose cover is an SVG <image xlink:href>, and one index.html holding every
+  # page as <p><a id/><img/></p>. No fixed-layout metadata, no viewport. Page N
+  # is one colour (fixed_layout_page_color) with a dark bar down its middle.
+  def image_only_epub(pages:, width: 330, height: 500)
+    images = (1..pages).to_h { |position| [ "index-#{position}_1.png", fixed_layout_png(width: width, height: height, color: fixed_layout_page_color(position), bars: 1) ] }
+    manifest = images.keys.each_with_index.map { |name, index| %(<item id="img#{index + 1}" href="#{name}" media-type="image/png"/>) }.join
+    paragraphs = (1..pages).map { |position| %(<p class="calibre1"><a id="p#{position}"></a><img src="index-#{position}_1.png" alt="Image #{position}" class="calibre2"/></p>) }.join("\n")
+    fixed_layout_zip({
+      "mimetype" => { data: "application/epub+zip", method: 0 },
+      "META-INF/container.xml" => '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+      "content.opf" => %(<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="uuid_id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf"><dc:title>Harbor Sketches</dc:title><dc:identifier id="uuid_id" opf:scheme="uuid">2f6d1c1e-8a4b-4c55-9d1a-0b8f3e7c6a21</dc:identifier><dc:language>en</dc:language><meta name="cover" content="cover"/></metadata>) +
+        %(<manifest><item id="cover" href="cover.png" media-type="image/png"/><item id="titlepage" href="titlepage.xhtml" media-type="application/xhtml+xml"/><item id="id1" href="index.html" media-type="application/xhtml+xml"/>) +
+        %(<item id="css" href="stylesheet.css" media-type="text/css"/><item id="page_css" href="page_styles.css" media-type="text/css"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>#{manifest}</manifest>) +
+        %(<spine toc="ncx"><itemref idref="titlepage"/><itemref idref="id1"/></spine><guide><reference type="cover" href="titlepage.xhtml" title="Cover"/></guide></package>),
+      "toc.ncx" => '<?xml version="1.0" encoding="utf-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="2f6d1c1e-8a4b-4c55-9d1a-0b8f3e7c6a21"/></head><docTitle><text>Harbor Sketches</text></docTitle><navMap><navPoint id="start" playOrder="1"><navLabel><text>Start</text></navLabel><content src="titlepage.xhtml"/></navPoint></navMap></ncx>',
+      "titlepage.xhtml" => %(<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/><meta name="calibre:cover" content="true"/><title>Cover</title><style type="text/css">@page {padding: 0pt; margin:0pt} body { text-align: center; padding:0pt; margin: 0pt; }</style></head>) +
+        %(<body><div><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="100%" height="100%" viewBox="0 0 #{width} #{height}" preserveAspectRatio="none"><image width="#{width}" height="#{height}" xlink:href="cover.png"/></svg></div></body></html>),
+      "index.html" => %(<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang=""><head><title>index</title><meta http-equiv="Content-Type" content="text/html; charset=utf-8"/><link rel="stylesheet" type="text/css" href="stylesheet.css"/><link rel="stylesheet" type="text/css" href="page_styles.css"/></head>\n<body class="calibre">\n#{paragraphs}\n</body></html>),
+      "stylesheet.css" => ".calibre { display: block; font-size: 1em; padding-left: 0; padding-right: 0; margin: 0 5pt } .calibre1 { display: block; margin: 1em 0 } .calibre2 { height: auto; width: auto }",
+      "page_styles.css" => "@page { margin-bottom: 5pt; margin-top: 5pt }",
+      "cover.png" => fixed_layout_png(width: width, height: height, color: IMAGE_EPUB_COVER_COLOR, bars: 0)
+    }.merge(images))
+  end
+
   def comic_pages(count, width: 300, height: 420)
     (1..count).to_h { |position| [ format("pages/%03d.png", position), fixed_layout_png(width: width, height: height, color: fixed_layout_page_color(position), bars: position) ] }
   end

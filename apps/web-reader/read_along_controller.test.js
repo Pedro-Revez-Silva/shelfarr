@@ -162,6 +162,8 @@ async function withLayout(state, check) {
       relocated()
     })),
     views: () => ({ all: () => [] }),
+    // No laid-out frames: pages are named by EPUB.js's own text place.
+    getContents: () => [],
     currentLocation: () => ({ start: { cfi: shown } }),
     get location() { return { start: { cfi: shown } } },
     themes: { fontSize: size => sizes.push(size) },

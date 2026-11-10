@@ -2,9 +2,12 @@
 
 require "application_system_test_case"
 require_relative "../test_helpers/consumer_test_helper"
+require_relative "../test_helpers/fixed_layout_fixtures"
+require "chunky_png"
 
 class ConsumerReaderTest < ApplicationSystemTestCase
   include ConsumerTestHelper
+  include FixedLayoutFixtures
 
   setup do
     prepare_consumer_library
@@ -329,6 +332,73 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_equal 0, outbox_size
   end
 
+  # Manga and comics are often converted to reflowable EPUBs whose pages are
+  # pictures. Their pictures must actually be painted, not just be present.
+  test "an image-only EPUB such as a manga volume shows its pictures on pages that turn, save and reopen" do
+    File.binwrite(@epub_path, image_only_epub(pages: 12))
+    page.current_window.resize_to(1280, 900)
+    visit consumer_publication_path(@ebook)
+    assert_selector "[data-consumer-reader-target=location]", text: "1 / 1 · chapter 1", visible: :all, wait: 20
+    assert_shows_picture "cover", IMAGE_EPUB_COVER_COLOR
+    capture("image-epub-cover-desktop.png")
+    assert_empty users(:one).consumer_progresses, "opening is not reading"
+
+    press_key :arrow_right
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A1 / 12 · chapter 2}, visible: :all, wait: 10
+    assert_shows_picture "Image 1", fixed_layout_page_color(1)
+    first = wait_for_progress(@ebook)
+    assert_equal "index.html", first.locator["href"]
+    2.upto(5) do |number|
+      press_key :arrow_right
+      assert_reader_page number
+      assert_shows_picture "Image #{number}", fixed_layout_page_color(number)
+    end
+    capture("image-epub-page-desktop.png")
+    # Every picture page is a place of its own: turning within the section
+    # saves the new page, not the section's first one again.
+    fifth = wait_for_new_place(first)
+    press_key :arrow_left
+    assert_reader_page 4
+    assert_shows_picture "Image 4", fixed_layout_page_color(4)
+    saved = wait_for_new_place(fifth)
+    assert_equal "index.html", saved.locator["href"]
+    assert_equal 3.0 / 12, saved.locator.dig("locations", "progression")
+    # Resizing the open book keeps the picture being read.
+    page.current_window.resize_to(390, 844)
+    wait_for_reader_layout
+    assert_shows_picture "Image 4", fixed_layout_page_color(4)
+
+    # Reopening shows the same picture, on a desktop and on a phone, and
+    # writes nothing.
+    [ [ 1280, 900 ], [ 390, 844 ] ].each do |width, height|
+      page.current_window.resize_to(width, height)
+      visit consumer_publication_path(@ebook)
+      assert_selector "[data-consumer-reader-target=location]", text: %r{\A4 / 12 · chapter 2}, visible: :all, wait: 20
+      assert_shows_picture "Image 4", fixed_layout_page_color(4)
+    end
+    capture("image-epub-reopened-mobile.png")
+    assert_equal saved.attributes.slice("version", "observed_at", "locator"), users(:one).consumer_progresses.find_by!(book: @ebook).attributes.slice("version", "observed_at", "locator")
+    assert_equal 0, outbox_size
+  end
+
+  # The Android and iOS readers (Readium) save a place as a fraction of the
+  # chapter, with no CFI; a Kobo place can arrive the same way. In a chapter of
+  # pictures that fraction is the picture to show.
+  test "a place saved by another app in a chapter of pictures reopens on that picture" do
+    File.binwrite(@epub_path, image_only_epub(pages: 12))
+    native = { "href" => "index.html", "type" => "application/xhtml+xml", "locations" => { "progression" => 0.5, "position" => 3, "totalProgression" => 0.75 } }
+    saved = users(:one).consumer_progresses.create!(book: @ebook, asset_id: consumer_asset(@ebook).id, locator: native, version: 1,
+      client_mutation_id: SecureRandom.uuid, observed_at: 1.minute.ago)
+    [ [ 1280, 900 ], [ 390, 844 ] ].each do |width, height|
+      page.current_window.resize_to(width, height)
+      visit consumer_publication_path(@ebook)
+      assert_selector "[data-consumer-reader-target=location]", text: %r{\A7 / 12 · chapter 2}, visible: :all, wait: 20
+      assert_shows_picture "Image 7", fixed_layout_page_color(7)
+    end
+    assert_equal saved.attributes.slice("version", "observed_at", "locator"), users(:one).consumer_progresses.find_by!(book: @ebook).attributes.slice("version", "observed_at", "locator"),
+      "showing another app's place is not reading"
+  end
+
   test "taps turn pages at the sides, reveal controls in the middle, and the hidden reveal button is reachable" do
     File.unlink(@epub_path)
     write_consumer_epub(@epub_path, chapter: "Tap through the pages. " * 900)
@@ -590,6 +660,48 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     cfi = current_reader_cfi
     wait_until("the account has the place on screen", detail: -> { "; saved #{saved_cfi.inspect}, shown #{cfi.inspect}" }) { saved_cfi == cfi }
     users(:one).consumer_progresses.find_by!(book: @ebook)
+  end
+
+  # Exactly one picture is on screen in the book, and the screen shows its
+  # pixels there: it was decoded and painted, not left as a broken image.
+  def assert_shows_picture(label, color)
+    picture = nil
+    wait_until("#{label} is painted in the book", detail: -> { "; on screen #{picture.inspect}" }) do
+      picture = page.evaluate_script(<<~JS)
+        (() => {
+          const view = document.querySelector("[data-consumer-reader-target=viewport]").getBoundingClientRect()
+          const frame = document.querySelector(".consumer-ebook iframe")
+          const box = frame.getBoundingClientRect()
+          const shown = [...frame.contentDocument.querySelectorAll("img, image")].map(node => {
+            const rect = node.getBoundingClientRect()
+            const left = Math.max(box.left + rect.left, view.left), right = Math.min(box.left + rect.right, view.right)
+            const top = Math.max(box.top + rect.top, view.top), bottom = Math.min(box.top + rect.bottom, view.bottom)
+            const ready = node.localName === "img" ? node.complete && node.naturalWidth > 0 : !!node.getAttribute("xlink:href")
+            return { label: node.getAttribute("alt") || "cover", ready, x: left + 6, y: top + 6, area: Math.max(0, right - left) * Math.max(0, bottom - top) }
+          }).filter(picture => picture.area > 400)
+          return { shown, ratio: window.devicePixelRatio }
+        })()
+      JS
+      shown = picture["shown"]
+      shown.size == 1 && shown.first["label"] == label && shown.first["ready"] &&
+        screen_pixel(shown.first["x"] * picture["ratio"], shown.first["y"] * picture["ratio"]).zip(color).all? { |got, want| (got - want).abs <= 12 }
+    end
+  end
+
+  # The account's place once it differs from an earlier one and nothing waits
+  # in this browser's outbox.
+  def wait_for_new_place(earlier)
+    progress = nil
+    wait_until("a new place is saved", detail: -> { "; still #{progress&.locator.inspect}" }) do
+      progress = users(:one).consumer_progresses.find_by(book: @ebook)
+      progress.version > earlier.version && progress.locator.dig("locations", "cfi") != earlier.locator.dig("locations", "cfi") && outbox_size.zero?
+    end
+    progress
+  end
+
+  def screen_pixel(x, y)
+    image = ChunkyPNG::Image.from_blob(page.driver.browser.screenshot_as(:png))
+    ChunkyPNG::Color.to_truecolor_bytes(image[x.floor, y.floor])
   end
 
   # Where a CFI's actual Range is drawn, not just which CFI the reader reports.
