@@ -77,4 +77,17 @@ class Kobo::SpanIndexTest < ActiveSupport::TestCase
     data = kepub_chapter(1).sub("<!DOCTYPE html>", '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">')
     assert_equal "kobo.2.1", index(data).locate({ "locations" => { "progression" => 0.2 } }).span
   end
+
+  test "a place in an original chapter is named in a prepared copy only when both have the same text" do
+    original = Kobo::SpanIndex.new(plain_chapter(2), require_spans: false)
+    assert_empty original.span_ids
+    converted = Kobo::KepubConverter.new(nil).send(:convert, plain_chapter(2)).first
+    copy = Kobo::SpanIndex.new(converted)
+    locator = { "locations" => { "cfi" => "epubcfi(/6/4!/4/8/3:4)", "progression" => 0.9 } }
+    assert_equal [ "kobo.4.4", "cfi" ], copy.locate(locator, spine_index: 1, original: original).to_h.values_at(:span, :method)
+
+    edited = Kobo::SpanIndex.new(plain_chapter(2).sub("begins here", "starts here"), require_spans: false)
+    assert_equal "text_mismatch", assert_raises(Kobo::SpanIndex::Unsupported) { copy.locate(locator, spine_index: 1, original: edited) }.reason
+    assert_equal "no_kobo_spans", assert_raises(Kobo::SpanIndex::Unsupported) { original.locate(locator) }.reason
+  end
 end

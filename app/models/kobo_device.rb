@@ -26,6 +26,10 @@ class KoboDevice < ApplicationRecord
     [ user.kobo_devices.new(**attributes, token_digest: Digest::SHA256.hexdigest(token)), token ]
   end
 
+  def self.delivered_edition(publication)
+    publication && [ publication["fingerprint"], publication.dig("kepub", "sha256") ]
+  end
+
   def self.authenticate(token)
     return unless token.to_s.match?(/\A[0-9a-f]{64}\z/)
 
@@ -82,15 +86,21 @@ class KoboDevice < ApplicationRecord
       save!
       delivery = kobo_deliveries.find_or_initialize_by(identity)
       delivery.entitlement_id ||= SecureRandom.uuid
-      changed = delivery.publication&.fetch("fingerprint") != publication.fetch("fingerprint")
+      # A different source generation, or different bytes for the same source
+      # (a plain EPUB first sent before Kobo editions, sent again as one), is a
+      # different file on the reader.
+      changed = self.class.delivered_edition(delivery.publication) != self.class.delivered_edition(publication)
       if changed
         delivery.progress_generation_ambiguous = true if delivery.persisted? && delivery.last_download_at.present?
         delivery.reading_state = nil
         delivery.progress_bridge = nil
         delivery.progress_outbound = nil
       end
+      copy_id = publication.dig("kepub", "copy_id")
+      raise KoboPublication::Unavailable, "The Kobo edition was removed meanwhile; send the book again" if copy_id && !KoboKepubCopy.exists?(copy_id)
+
       delivery.update!(revision_id: SecureRandom.uuid, sync_revision: sync_revision, file_sync_revision: sync_revision,
-        publication: publication, last_download_at: changed ? nil : delivery.last_download_at, **attributes)
+        publication: publication, last_download_at: changed ? nil : delivery.last_download_at, kobo_kepub_copy_id: copy_id, **attributes)
       kobo_local_entitlements.create_or_find_by!(entitlement_id: delivery.entitlement_id)
       delivery
     end

@@ -80,8 +80,9 @@ class KoboDevicesController < ApplicationController
   def send_book
     device = Current.user.kobo_devices.find(params[:id])
     book = Book.acquired.find(params[:book_id])
-    device.send_book!(book)
-    redirect_to library_path(book), notice: "Queued for #{device.name}. Sync your Kobo over Wi-Fi to download it."
+    delivery = device.send_book!(book)
+    edition = " as a Kobo edition (KEPUB) prepared from this EPUB; the library file is unchanged" if delivery.kepub_copy?
+    redirect_to library_path(book), notice: "Queued for #{device.name}#{edition}. Sync your Kobo over Wi-Fi to download it."
   rescue KoboPublication::Unavailable => error
     redirect_to library_path(book), alert: error.message
   end
@@ -100,7 +101,7 @@ class KoboDevicesController < ApplicationController
 
   def update_notice(was_coexisting, was_receiving)
     if @device.receive_progress? && !was_receiving
-      "#{@device.name} receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync."
+      "#{@device.name} receives Shelfarr reading places for books sent from your library at its next Wi-Fi sync."
     elsif !@device.receive_progress? && was_receiving
       "#{@device.name} no longer receives Shelfarr reading places. Places it already has stay on the reader."
     elsif @device.store_coexistence? && !was_coexisting

@@ -146,11 +146,11 @@ class KoboDevicesTest < ApplicationSystemTestCase
     visit kobo_device_path(@device)
     assert_checked_field "Share reading places with Shelfarr"
     assert_unchecked_field "Receive Shelfarr reading places"
-    assert_text "Only KEPUB files sent from your library can receive places"
+    assert_text "EPUB files are sent as a Kobo edition (KEPUB) that Shelfarr prepares from the original, which stays unchanged"
     assert_no_selector "[data-testid=kobo-outbound]"
     check "Receive Shelfarr reading places"
     click_button "Save settings"
-    assert_text "My Kobo receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync."
+    assert_text "My Kobo receives Shelfarr reading places for books sent from your library at its next Wi-Fi sync."
     assert_checked_field "Receive Shelfarr reading places"
     assert_selector "[data-testid=kobo-outbound]", text: "Shelfarr place (chapter 2 of 3, 40% of the book, read 20 minutes ago) waits for this Kobo's next Wi-Fi sync."
     assert_no_button "Send Shelfarr place"
@@ -188,7 +188,7 @@ class KoboDevicesTest < ApplicationSystemTestCase
     assert_in_delta 20.minutes.ago, users(:one).consumer_progresses.sole.observed_at, 60, "choosing never changes Shelfarr's reading time"
   end
 
-  test "a plain EPUB explains that it keeps its Kobo place" do
+  test "an EPUB without a Kobo edition explains that it keeps its Kobo place" do
     @device.update!(receive_progress: true)
     delivery = @device.send_book!(@book)
     delivery.update!(last_download_at: 1.hour.ago)
@@ -197,7 +197,8 @@ class KoboDevicesTest < ApplicationSystemTestCase
       "locator" => { "href" => "OEBPS/a.xhtml", "locations" => { "progression" => 0.1 } })
     page.current_window.resize_to(390, 844)
     visit kobo_device_path(@device)
-    assert_selector "[data-testid=kobo-outbound]", text: "This is a plain EPUB. Kobo reads it with an engine whose places Shelfarr can't name"
+    assert_selector "[data-testid=kobo-outbound]", text: "Shelfarr couldn't safely prepare a Kobo edition of this EPUB (it has no XHTML chapters), so the EPUB itself was sent"
+    assert_selector "[data-testid=kobo-edition]", text: "Sent as EPUB"
     assert_no_button "Send Shelfarr place"
     assert_no_horizontal_overflow
   end

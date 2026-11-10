@@ -74,7 +74,9 @@ class KoboDevicesHelperTest < ActionView::TestCase
       place.merge("status" => "needs_choice", "reason" => "kobo_time_unknown") => [ :choice, /This Kobo's place has no reading time/, true ],
       place.merge("status" => "needs_choice", "reason" => "edition_unverified") => [ :choice, /previous edition.*current file/, true ],
       place.except("span").merge("status" => "needs_choice", "reason" => "same_time") => [ :warning, /same moment/, false ],
-      place.merge("status" => "unsupported", "reason" => "plain_epub") => [ :warning, /plain EPUB.*KEPUB file of this book can receive them/, false ],
+      place.merge("status" => "unsupported", "reason" => "plain_epub") => [ :warning, /plain EPUB was sent before.*Send again to deliver a Kobo edition/, false ],
+      place.merge("status" => "unsupported", "reason" => "kepub_unavailable", "kepub_reason" => "not_well_formed") =>
+        [ :warning, /couldn't safely prepare a Kobo edition of this EPUB \(a chapter isn't well-formed XHTML\), so the EPUB itself was sent/, false ],
       place.merge("status" => "unsupported", "reason" => "different_edition") => [ :warning, /different file of this book/, false ],
       place.merge("status" => "unsupported", "reason" => "file_changed") => [ :warning, /Send it again/, false ],
       place.merge("status" => "unsupported", "reason" => "location_not_in_edition") => [ :warning, /chapter this edition doesn't have/, false ],

@@ -72,8 +72,12 @@ on the reader to disconnect it fully.
 ## Supported files and status
 
 - DRM-free EPUB and existing `.kepub`/`.kepub.epub` files, up to 250 MiB.
-  Shelfarr does not convert EPUB to KEPUB. EPUBs declaring encryption (including
-  font obfuscation) are rejected in this preview.
+  A plain EPUB is delivered as a **Kobo edition** (KEPUB) that Shelfarr prepares
+  from it, so Kobo uses its KEPUB engine and reading places can be shared both
+  ways; the library file is never changed. See
+  [Kobo editions of EPUB files](#kobo-editions-of-epub-files). KEPUB files are
+  delivered as they are. EPUBs declaring encryption (including font
+  obfuscation) are rejected in this preview.
 - Single-file library items and book-specific folders containing exactly one
   EPUB (up to five nested levels and 1,000 entries). Shared library-root folders
   and folders with multiple EPUBs must be disambiguated before sending.
@@ -98,6 +102,50 @@ on the reader to disconnect it fully.
   reader or the mobile apps is sent to the reader for KEPUB books; see
   [Shelfarr places on the Kobo](#shelfarr-places-on-the-kobo-preview).
   Read-along is not offered.
+
+## Kobo editions of EPUB files
+
+Kobo opens a plain `.epub` with its Adobe engine and a `.kepub.epub` with its
+own engine ([kobolabs/epub-spec](https://github.com/kobolabs/epub-spec)). Only
+the Kobo engine names a reading place by chapter and sentence marker, so
+**Send to Kobo** delivers a library EPUB as a separate Kobo edition:
+
+- **The library file stays original.** It is only read. The web reader and the
+  Android and iOS apps keep using it, and their reading places stay on it.
+- **What changes in the copy.** Only the spine XHTML chapters: every sentence of
+  body text is wrapped in a `<span class="koboSpan" id="kobo.P.S">`, the body in
+  `div#book-columns > div#book-inner`, and Kobo's one-line style tweak is added
+  to the head, following [kepubify](https://github.com/pgaskin/kepubify)'s
+  rules. No text is removed or rewritten, so each chapter's body text is
+  character-for-character the original's; inline markup, Unicode, entities,
+  ids and the XHTML document type are kept. The package, EPUB 2 NCX, EPUB 3
+  navigation, styles, images and fonts are copied with their original bytes and
+  paths. Nothing is decrypted.
+- **Verified before use.** A copy is used only after it was completely written,
+  synced and checked against the source: same entries, a valid EPUB, the same
+  text for every chapter and unique real markers. The output is deterministic.
+- **Bound to its source.** A copy belongs to the exact source bytes (SHA-256)
+  and converter version, and is served only while the library file is still
+  the generation it was sent from. A replaced or edited file never serves its
+  earlier copy; **Send again** prepares the new one.
+- **Cache.** Copies live in `storage/kobo_kepub_cache` (or
+  `KOBO_KEPUB_CACHE_PATH`), 0700/0600, up to 2 GiB in total
+  (`KOBO_KEPUB_CACHE_MAX_BYTES`). Copies a delivery uses are never evicted;
+  unused ones are removed oldest first. When the cache is full or the disk runs
+  out, sending is refused with a message and nothing already delivered changes.
+  A copy lost from disk, or changed after it was written, is rebuilt from its
+  unchanged source and served only if the rebuild is byte-identical; otherwise
+  the reader must be sent the book again.
+- **When no copy can be made**, the EPUB itself is delivered as before and the
+  reader page says why: a chapter that is not well-formed XHTML, document-type
+  declarations, existing Kobo markers, a chapter that would exceed 4 MiB or
+  50,000 sentences, more than 512 MiB of declared content, unsafe, duplicate or
+  symlink entries, or rights/encryption files.
+- **Earlier deliveries are not switched silently.** A plain EPUB sent before
+  this release keeps being served as that EPUB. **Send again** delivers the
+  Kobo edition as a different file; if the reader had downloaded the plain
+  copy, Shelfarr can't tell which copy a later bookmark names, so places for
+  that book wait for an explicit choice on the reader page.
 
 ## Kobo Store coexistence
 
@@ -187,15 +235,19 @@ or the Android or iOS app is offered to that Kobo at its next Wi-Fi sync. When
 you then read further on the Kobo, **Share reading places with Shelfarr**
 brings that later place back as before. Each option works on its own.
 
-- **Only KEPUB library files.** Kobo's KEPUB engine names a place by chapter
-  resource and the id of a `koboSpan` sentence marker that exists in the file
-  (`Location {Type: "KoboSpan", Source, Value: "kobo.P.S"}`). Shelfarr reads
-  those markers from the exact file generation it delivered and sends one of
-  them; it never constructs an id such as `kobo.1.1` from a percentage. Plain
-  EPUB files are opened by Kobo's other engine, whose place format has not been
-  established, so they are not sent places; Shelfarr does not convert EPUB to
-  KEPUB. Books shared from Kobo accounts, Kobo Store books, PDFs and comics keep
-  their Kobo place.
+- **Library books delivered as KEPUB.** Kobo's KEPUB engine names a place by
+  chapter resource and the id of a `koboSpan` sentence marker that exists in
+  the file (`Location {Type: "KoboSpan", Source, Value: "kobo.P.S"}`). Shelfarr
+  reads those markers from the exact file generation it delivered and sends one
+  of them; it never constructs an id such as `kobo.1.1` from a percentage. This
+  covers KEPUB library files and the [Kobo editions](#kobo-editions-of-epub-files)
+  Shelfarr prepares from EPUB files. For a Kobo edition the place is found in
+  the **original** chapter (the tree the web reader's CFI names) and mapped to
+  the copy's marker at the same character of text, only when both chapters
+  have identical text. A plain EPUB delivered before Kobo editions, or one no
+  copy could be made for, is opened by Kobo's other engine, whose place format
+  has not been established, so it is not sent places. Books shared from Kobo
+  accounts, Kobo Store books, PDFs and comics keep their Kobo place.
 - **Approximate, chapter-accurate.** The chapter is exact. Inside it, the place
   is the marker whose sentence holds the same point: the web reader's EPUB CFI
   for that file when it resolves inside the chapter, otherwise a fragment id,
@@ -203,8 +255,8 @@ brings that later place back as before. Each option works on its own.
   Kobo opens the page containing that sentence, so the page can differ from the
   one you left. A chapter without markers, larger than 4 MiB, with more than
   50,000 markers, or with declarations inside its document type is not sent.
-- **Same edition only.** The place must name the reader's delivered file as the
-  current consumer asset, and the reader must have downloaded it. A place in a
+- **Same edition only.** The place must name the reader's delivered file (for a
+  Kobo edition, the library file it was prepared from) as the current consumer asset, and the reader must have downloaded it. A place in a
   different file, a changed library file, or a reader that may still have an
   earlier file generation is not sent automatically.
 - **Original reading time.** The bookmark's `LastModified` and the state's
@@ -286,6 +338,9 @@ reader and complete the following on the oldest, middle, and newest generation:
 | Initialization and authenticated sync over actual network/TLS | Pending | Pending | Pending |
 | EPUB 2 and EPUB 3 download, open, chapter navigation, cover | Pending | Pending | Pending |
 | Existing KEPUB download and open | Pending | Pending | Pending |
+| EPUB 2 and EPUB 3 Kobo edition: download, open in the Kobo engine, chapter navigation, images, cover | Pending | Pending | Pending |
+| Kobo edition: web/app place opens at the sent sentence; Kobo place returns to the original EPUB in web/app | Pending | Pending | Pending |
+| Plain EPUB sent before Kobo editions: unchanged until Send again; then a new file and a place choice | Pending | Pending | Pending |
 | Second sync creates no duplicate or reading-position reset | Pending | Pending | Pending |
 | Interrupted transfer resumes; file replacement + Send again | Pending | Pending | Pending |
 | Sending to another reader leaves this reader unchanged | Pending | Pending | Pending |

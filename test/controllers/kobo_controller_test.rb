@@ -122,6 +122,43 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal original.bytesize.to_s, response.headers["Content-Length"]
   end
 
+  test "a plain EPUB downloads as its prepared Kobo edition, resumes, and stops after the library file is replaced" do
+    prepare_plain_epub
+    original = File.binread(@path)
+    delivery = @device.send_book!(@book)
+    copy = File.binread(Kobo::KepubCache.root.join(delivery.kobo_kepub_copy.storage_key))
+    url = "#{@base}/download/#{delivery.entitlement_id}/#{delivery.revision_id}"
+    get url
+    assert_response :ok
+    assert_equal copy, response.body.b
+    assert_not_equal original, copy
+    assert_match(/filename="Book\.kepub\.epub"/, response.headers["Content-Disposition"])
+    get url, headers: { "Range" => "bytes=10-", "If-Range" => response.headers["ETag"] }
+    assert_response :partial_content
+    assert_equal copy.byteslice(10..), response.body.b
+    assert_equal original, File.binread(@path), "serving the copy never touches the library file"
+
+    get "#{@base}/v1/library/#{delivery.entitlement_id}/metadata"
+    assert_equal [ "KEPUB" ], response.parsed_body.sole.fetch("DownloadUrls").map { |entry| entry["Format"] }
+
+    File.open(Kobo::KepubCache.root.join(".lock"), File::RDWR | File::CREAT, 0o600) do |lock|
+      lock.flock(File::LOCK_EX)
+      File.unlink(Kobo::KepubCache.root.join(delivery.kobo_kepub_copy.storage_key))
+      Kobo::KepubCache.lock_wait = 0.1
+      get url
+      assert_response :service_unavailable, "a lost copy being rebuilt elsewhere is not gone"
+    ensure
+      Kobo::KepubCache.lock_wait = nil
+    end
+    get url
+    assert_response :ok
+    assert_equal copy, response.body.b, "the lost copy was rebuilt byte for byte"
+
+    prepare_plain_epub(chapters: { "OEBPS/Text/ch2.xhtml" => plain_chapter(2, paragraphs: 7) })
+    get url
+    assert_response :gone, "a replaced source never serves its earlier copy"
+  end
+
   test "unsatisfiable malformed and multiple ranges never stream source bytes" do
     %w[bytes=999999- bytes=10-2 bytes=-0 bytes=- bytes=0-1,4-5 junk].each do |range|
       get "#{@base}/download/#{@delivery.entitlement_id}/#{@delivery.revision_id}", headers: { "Range" => range }

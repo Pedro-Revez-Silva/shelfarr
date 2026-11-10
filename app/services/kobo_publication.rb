@@ -35,18 +35,25 @@ class KoboPublication
     @book = book
   end
 
+  # What a Kobo is offered for this book. A KEPUB library file is delivered as
+  # it is. A plain EPUB is delivered as a Kobo edition (KEPUB) prepared from it
+  # (Kobo::KepubCache), so the Kobo engine and its sentence markers are used;
+  # the library file is not changed. When that copy cannot be made safely, the
+  # EPUB itself is delivered, with the reason.
   def snapshot
     file = open_file
     before = fingerprint(file)
     package_version = validate_epub(file)
+    kepub = @filename.match?(/\.kepub(?:\.epub)?\z/i)
+    edition = kepub ? {} : kobo_edition(file)
     raise Unavailable, "The ebook changed; try sending it again" unless before == fingerprint(file)
 
     {
       "fingerprint" => before, "size" => file.stat.size,
-      "filename" => @filename, "format" => @filename.match?(/\.kepub(?:\.epub)?\z/i) ? "KEPUB" : "EPUB",
+      "filename" => @filename, "format" => kepub ? "KEPUB" : "EPUB",
       "epub_version" => package_version,
       "title" => @book.title, "author" => @book.author, "description" => @book.description.to_s.first(20_000)
-    }
+    }.merge(edition)
   rescue Zip::Error, Nokogiri::XML::SyntaxError, IOError
     raise Unavailable, "This file is not a valid EPUB"
   ensure
@@ -149,6 +156,23 @@ class KoboPublication
 
   def download_book
     @book
+  end
+
+  KOBO_EDITION_FAILURES = {
+    "cache_full" => "Shelfarr's Kobo edition space is full. Try again when space is available; nothing was changed.",
+    "storage_full" => "The server ran out of disk space while preparing the Kobo edition; nothing was changed.",
+    "busy" => "Another Kobo edition is being prepared. Try again shortly; nothing was changed."
+  }.freeze
+
+  def kobo_edition(file)
+    copy = Kobo::KepubCache.prepare(file)
+    { "format" => "KEPUB", "filename" => "#{@filename.sub(/\.epub\z/i, '')}.kepub.epub", "size" => copy.size_bytes,
+      "source_format" => "EPUB", "source_size" => file.stat.size,
+      "kepub" => { "copy_id" => copy.id, "sha256" => copy.sha256, "source_sha256" => copy.source_sha256, "converter" => copy.converter } }
+  rescue Kobo::KepubConverter::Unsupported => error
+    { "kepub_unavailable" => error.reason }
+  rescue Kobo::KepubCache::Failure => error
+    raise Unavailable, KOBO_EDITION_FAILURES.fetch(error.code, "Shelfarr couldn't store the Kobo edition right now; nothing was changed.")
   end
 
   def publication_path

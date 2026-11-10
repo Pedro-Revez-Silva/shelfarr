@@ -303,16 +303,24 @@ class Kobo::OutboundProgressTest < ActiveSupport::TestCase
   end
 
   test "plain EPUB deliveries and private household copies keep normal syncing and get no place" do
+    # An .epub that already carries Kobo markup gets no prepared Kobo edition:
+    # Kobo reads a plain .epub with its other engine, so no place is sent.
     @book.update!(file_path: File.join(@root, "Book.epub"))
     write_epub(@book.file_path, package: KEPUB_PACKAGE, extra: { "OEBPS/Text/chapter 1.xhtml" => kepub_chapter(1),
       "OEBPS/Text/ch2.xhtml" => kepub_chapter(2), "OEBPS/Text/ch3.xhtml" => kepub_chapter(3) })
     @asset_id = Consumer::LibraryAssets.new(@book).list.sole.id
     plain = @device.send_book!(@book)
+    assert_equal [ "EPUB", "already_kobo_markup" ], plain.publication.values_at("format", "kepub_unavailable")
     plain.update!(last_download_at: Time.current)
     second = sync(@first.token)
     assert_equal "NewEntitlement", second.items.sole.keys.sole
     read_in_shelfarr
     assert_empty sync(second.token).items
+    assert_equal %w[unsupported kepub_unavailable already_kobo_markup], plain.reload.progress_outbound.values_at("status", "reason", "kepub_reason")
+
+    # A plain EPUB delivered before Kobo editions existed keeps its bytes.
+    plain.update_columns(publication: plain.publication.except("kepub_unavailable"), progress_outbound: nil)
+    Kobo::OutboundProgress.refresh(@device.reload, only: plain.reload)
     assert_equal %w[unsupported plain_epub], plain.reload.progress_outbound.values_at("status", "reason")
 
     private_copy = @device.kobo_deliveries.new(entitlement_id: SecureRandom.uuid, revision_id: SecureRandom.uuid, sync_revision: 1,

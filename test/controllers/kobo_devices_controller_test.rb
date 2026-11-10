@@ -73,6 +73,31 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_select "body", text: /Queued · waiting for download/
   end
 
+  test "sending a plain EPUB says it goes as a Kobo edition, and sending a downloaded older plain copy again asks first" do
+    prepare_plain_epub
+    post send_book_kobo_device_path(@device), params: { book_id: @book.id }
+    assert_match(/Queued for My Kobo as a Kobo edition \(KEPUB\) prepared from this EPUB; the library file is unchanged/, flash[:notice])
+    get kobo_device_path(@device)
+    assert_select "[data-testid=kobo-edition]", text: /Kobo edition \(KEPUB\) prepared from the library EPUB · library file unchanged/
+    assert_select "form[action=?][data-turbo-confirm]", send_book_kobo_device_path(@device), count: 0
+
+    # A delivery recorded before Kobo editions, already downloaded by the reader.
+    delivery = @device.kobo_deliveries.sole
+    delivery.update_columns(publication: delivery.publication.except("kepub").merge("format" => "EPUB", "filename" => "Book.epub"),
+      kobo_kepub_copy_id: nil, last_download_at: 1.hour.ago)
+    get kobo_device_path(@device)
+    assert_select "[data-testid=kobo-edition]", text: /Sent as plain EPUB before Kobo editions · Send again to deliver a Kobo edition/
+    assert_select "form[action=?][data-turbo-confirm*=?]", send_book_kobo_device_path(@device), "receives it as a different file"
+  end
+
+  test "an EPUB without a safe Kobo edition is sent as itself and says why" do
+    prepare_plain_epub(chapters: { "OEBPS/Text/ch2.xhtml" => "<html xmlns='http://www.w3.org/1999/xhtml'><body><p>Open</body></html>" })
+    post send_book_kobo_device_path(@device), params: { book_id: @book.id }
+    assert_no_match(/Kobo edition/, flash[:notice])
+    get kobo_device_path(@device)
+    assert_select "[data-testid=kobo-edition]", text: /Sent as EPUB: Shelfarr couldn't safely prepare a Kobo edition \(a chapter isn't well-formed XHTML\)/
+  end
+
   test "unavailable books return a useful message without adding delivery" do
     File.unlink(@path)
     assert_no_difference "KoboDelivery.count" do
@@ -196,13 +221,13 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_not @device.receive_progress?
     get kobo_devices_path
     assert_select "input[type=checkbox][name='kobo_device[receive_progress]']:not([checked])"
-    assert_select "#kobo-receive-help", text: /next Wi-Fi sync.*Only KEPUB files.*Plain EPUB files, books shared from Kobo accounts and Kobo Store books keep their Kobo place.*Not yet tested on a physical Kobo/
+    assert_select "#kobo-receive-help", text: /next Wi-Fi sync.*EPUB files are sent as a Kobo edition \(KEPUB\).*original, which stays unchanged.*Plain EPUB files sent before Kobo editions.*books shared from Kobo accounts and Kobo Store books keep their Kobo place.*Not yet tested on a physical Kobo/
     post kobo_devices_path, params: { kobo_device: { name: "Fresh", base_url: "https://shelfarr.example" } }
     assert_not users(:one).kobo_devices.find_by!(name: "Fresh").receive_progress?
 
     patch kobo_device_path(@device), params: { kobo_device: { receive_progress: "1" } }
     assert_redirected_to kobo_device_path(@device)
-    assert_match(/receives Shelfarr reading places for KEPUB books at its next Wi-Fi sync/, flash[:notice])
+    assert_match(/receives Shelfarr reading places for books sent from your library at its next Wi-Fi sync/, flash[:notice])
     assert @device.reload.receive_progress?
     assert_not @device.share_progress?, "the two directions are independent"
     patch kobo_device_path(@device), params: { kobo_device: { receive_progress: "0" } }

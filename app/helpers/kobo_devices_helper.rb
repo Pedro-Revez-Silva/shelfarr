@@ -2,6 +2,44 @@
 
 module KoboDevicesHelper
   Notice = Data.define(:tone, :text, :choosable)
+  KOBO_EDITION_REASONS = {
+    "not_well_formed" => "a chapter isn't well-formed XHTML",
+    "not_xhtml" => "a chapter isn't XHTML",
+    "unsafe_resource" => "a chapter declares its own document-type entities",
+    "already_kobo_markup" => "it already contains Kobo sentence markers",
+    "chapter_too_large" => "a chapter would be larger than 4 MiB",
+    "too_many_spans" => "a chapter has more than 50,000 sentences",
+    "too_large" => "the book is too large",
+    "too_many_entries" => "the book has too many files",
+    "protected" => "it declares rights or encryption",
+    "no_text" => "it has no XHTML chapters",
+    "verification_failed" => "the prepared copy didn't match the original"
+  }.freeze
+
+  # Which file this reader is offered for a library book.
+  def kobo_edition_text(delivery)
+    return if delivery.private_source? || delivery.publication.blank?
+
+    publication = delivery.publication
+    if delivery.kepub_copy?
+      "Kobo edition (KEPUB) prepared from the library EPUB · library file unchanged"
+    elsif publication["kepub_unavailable"]
+      "Sent as EPUB: Shelfarr couldn't safely prepare a Kobo edition (#{kobo_edition_reason(publication['kepub_unavailable'])})"
+    elsif publication["format"] == "EPUB"
+      "Sent as plain EPUB before Kobo editions · Send again to deliver a Kobo edition"
+    else
+      "KEPUB library file"
+    end
+  end
+
+  # Sending again replaces a downloaded plain EPUB with a different file.
+  def kobo_send_again_confirmation(delivery, device)
+    publication = delivery.publication || {}
+    return unless delivery.last_download_at && publication["format"] == "EPUB" && !publication.key?("kepub_unavailable")
+
+    "Send a Kobo edition (KEPUB) of #{publication['title']} to #{device.name}? The reader receives it as a different file. " \
+      "Reading places on the copy it already has aren't shared automatically; you choose them on this page."
+  end
 
   def kobo_mode_label(device)
     device.store_coexistence? ? "Kobo Store + Shelfarr" : "Shelfarr books only"
@@ -74,7 +112,8 @@ module KoboDevicesHelper
       in [ "needs_choice", "unknown_time" ] then "Shelfarr's place (#{place}) has no reading time, so it can't be compared with this Kobo's place."
       in [ "needs_choice", "kobo_time_unknown" ] then "This Kobo's place has no reading time, so Shelfarr's place (#{place}) wasn't sent automatically."
       in [ "needs_choice", "edition_unverified" ] then "This reader may still have the previous edition, so Shelfarr's place (#{place}) wasn't sent automatically. Send it only if the reader has the current file."
-      in [ "unsupported", "plain_epub" ] then "This is a plain EPUB. Kobo reads it with an engine whose places Shelfarr can't name, so Shelfarr places aren't sent. A KEPUB file of this book can receive them."
+      in [ "unsupported", "plain_epub" ] then "This plain EPUB was sent before Shelfarr prepared Kobo editions. Kobo reads it with an engine whose places Shelfarr can't name, so Shelfarr places aren't sent. Send again to deliver a Kobo edition (KEPUB) that can receive them."
+      in [ "unsupported", "kepub_unavailable" ] then "Shelfarr couldn't safely prepare a Kobo edition of this EPUB (#{kobo_edition_reason(outbound['kepub_reason'])}), so the EPUB itself was sent. Kobo reads it with an engine whose places Shelfarr can't name, so Shelfarr places aren't sent."
       in [ "unsupported", "different_edition" ] then "Shelfarr's place is in a different file of this book, so it isn't sent to this reader."
       in [ "unsupported", "file_changed" ] then "The library file changed after it was sent. Send it again to receive Shelfarr places."
       in [ "unsupported", "location_not_in_edition" ] then "Shelfarr's place names a chapter this edition doesn't have, so it wasn't sent."
@@ -88,6 +127,10 @@ module KoboDevicesHelper
   end
 
   private
+
+  def kobo_edition_reason(code)
+    KOBO_EDITION_REASONS.fetch(code.to_s, "its archive can't be read safely")
+  end
 
   def kobo_place_text(bridge)
     parts = []

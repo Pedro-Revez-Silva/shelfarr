@@ -79,7 +79,7 @@
         <section class="mt-6 pt-6 border-t border-gray-800">
           <h3 class="text-sm font-medium text-gray-300 mb-3">Send to Kobo</h3>
           <% if @kobo_devices.any? %>
-            <p class="text-sm text-gray-400 mb-3">Choose a reader, then sync it over Wi-Fi. EPUB files only.</p>
+            <p class="text-sm text-gray-400 mb-3">Choose a reader, then sync it over Wi-Fi. EPUB files only. An EPUB is sent as a Kobo edition (KEPUB) prepared from it, so reading places can be shared both ways; the library file is not changed.</p>
             <div class="flex flex-wrap gap-3">
               <% @kobo_devices.each do |device| %>
                 <%= button_to "Send to #{device.name}", send_book_kobo_device_path(device), params: { book_id: @book.id }, class: "rounded-lg bg-blue-700 px-4 py-2 text-sm text-white hover:bg-blue-600" %>

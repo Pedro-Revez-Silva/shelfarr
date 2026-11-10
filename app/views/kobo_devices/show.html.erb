@@ -30,6 +30,9 @@
           <% else %>
             <p class="text-gray-200 break-words"><%= delivery.publication["title"] %></p>
           <% end %>
+          <% if (edition = kobo_edition_text(delivery)) %>
+            <p class="text-sm text-gray-400 mt-1 break-words" data-testid="kobo-edition"><%= edition %></p>
+          <% end %>
           <% unless delivery.private_source? %>
             <p class="text-sm text-gray-400 mt-1"><%= delivery.book&.acquired? ? (delivery.last_download_at ? "Download requested #{time_ago_in_words(delivery.last_download_at)} ago" : "Queued · waiting for download") : "Source removed from library · copy on reader kept" %></p>
           <% end %>
@@ -52,7 +55,8 @@
             <%= button_to "Use Kobo place", use_kobo_place_kobo_device_path(@device), params: { entitlement_id: delivery.entitlement_id }, form: { data: { turbo_confirm: "Resume #{delivery.publication['title']} at the Kobo place in Shelfarr's web and mobile readers?" } }, class: "rounded-lg bg-sky-800 px-3 py-2 text-sm text-white hover:bg-sky-700" %>
           <% end %>
           <% if delivery.book&.acquired? %>
-            <%= button_to "Send again", send_book_kobo_device_path(@device), params: { book_id: delivery.book_id }, class: "rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700" %>
+            <% confirmation = kobo_send_again_confirmation(delivery, @device) %>
+            <%= button_to "Send again", send_book_kobo_device_path(@device), params: { book_id: delivery.book_id }, form: (confirmation ? { data: { turbo_confirm: confirmation } } : {}), class: "rounded-lg bg-gray-800 px-3 py-2 text-sm text-gray-200 hover:bg-gray-700" %>
           <% end %>
         </div>
       </div>

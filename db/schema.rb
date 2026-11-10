@@ -1,4 +1,4 @@
-ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_10_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -434,6 +434,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
     t.integer "kobo_account_book_file_id"
     t.integer "file_sync_revision"
     t.json "progress_outbound"
+    t.integer "kobo_kepub_copy_id"
     t.index ["book_id"], name: "index_kobo_deliveries_on_book_id"
     t.index ["entitlement_id"], name: "index_kobo_deliveries_on_entitlement_id", unique: true
     t.index ["kobo_account_book_file_id"], name: "index_kobo_deliveries_on_kobo_account_book_file_id"
@@ -443,6 +444,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
     t.index ["kobo_device_id", "kobo_account_book_id"], name: "idx_on_kobo_device_id_kobo_account_book_id_cb630d6317", unique: true
     t.index ["kobo_device_id", "sync_revision"], name: "index_kobo_deliveries_on_kobo_device_id_and_sync_revision"
     t.index ["kobo_device_id"], name: "index_kobo_deliveries_on_kobo_device_id"
+    t.index ["kobo_kepub_copy_id"], name: "index_kobo_deliveries_on_kobo_kepub_copy_id"
   end
 
   create_table "kobo_devices", force: :cascade do |t|
@@ -462,6 +464,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
     t.boolean "receive_progress", default: false, null: false
     t.index ["token_digest"], name: "index_kobo_devices_on_token_digest", unique: true
     t.index ["user_id"], name: "index_kobo_devices_on_user_id"
+  end
+
+  create_table "kobo_kepub_copies", force: :cascade do |t|
+    t.string "converter", null: false
+    t.string "source_sha256", null: false
+    t.bigint "source_size", null: false
+    t.string "sha256", null: false
+    t.bigint "size_bytes", null: false
+    t.string "storage_key", null: false
+    t.text "file_device"
+    t.text "file_inode"
+    t.string "file_changed_at"
+    t.integer "chapters", default: 0, null: false
+    t.integer "spans", default: 0, null: false
+    t.datetime "last_used_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["converter", "source_sha256"], name: "index_kobo_kepub_copies_on_converter_and_source_sha256"
+    t.index ["storage_key"], name: "index_kobo_kepub_copies_on_storage_key", unique: true
   end
 
   create_table "kobo_local_entitlements", force: :cascade do |t|
@@ -916,6 +937,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_09_220000) do
   add_foreign_key "kobo_deliveries", "kobo_account_books"
   add_foreign_key "kobo_deliveries", "kobo_account_shares"
   add_foreign_key "kobo_deliveries", "kobo_devices"
+  add_foreign_key "kobo_deliveries", "kobo_kepub_copies", on_delete: :nullify
   add_foreign_key "kobo_devices", "users"
   add_foreign_key "kobo_local_entitlements", "kobo_devices", on_delete: :cascade
   add_foreign_key "notifications", "users"

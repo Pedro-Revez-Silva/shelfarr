@@ -4,9 +4,12 @@ module Kobo
   # Sends the reader owner's Shelfarr place (web, Android and iOS) to a stock
   # Kobo that opted in, for the same edition Shelfarr delivered to it.
   #
-  # A place is sent only for a library KEPUB this reader downloaded, which is
-  # still the current consumer asset the place names. Its destination is a real
-  # koboSpan of that file's chapter (see SpanIndex), never a constructed one.
+  # A place is sent only for a library book delivered to this reader as KEPUB
+  # (a KEPUB library file, or a Kobo edition prepared from a library EPUB),
+  # which it downloaded, and whose library file is still the current consumer
+  # asset the place names. Its destination is a real koboSpan of the delivered
+  # chapter (see SpanIndex), never a constructed one. For a prepared edition
+  # the place is resolved in the original chapter and mapped into the copy.
   # The bookmark carries the place's original activity time; evaluation,
   # queuing, retries and syncs never stamp it with a new time.
   #
@@ -99,7 +102,7 @@ module Kobo
       # Queuing is not proof that the file is still the delivered generation
       # when a later sync or state request actually serves the bookmark.
       def current_edition?(delivery, progress)
-        file = delivery.open_file
+        file = delivery.open_source
         stat = file.stat
         Consumer::LibraryAssets.new(delivery.book).list.any? do |asset|
           asset.id == progress.asset_id && asset.device == stat.dev && asset.inode == stat.ino && asset.size_bytes == stat.size
@@ -222,7 +225,7 @@ module Kobo
       return result.merge("status" => "unsupported", "reason" => "not_an_ebook") unless @book&.ebook? && @progress.locator.is_a?(Hash)
       # This reader's own place, shared through ProgressBridge, is not sent back.
       return result.merge("status" => "kobo_place") if ProgressBridge.written_by?(@delivery, @progress)
-      return result.merge("status" => "unsupported", "reason" => "plain_epub") unless @delivery.publication&.fetch("format", nil) == "KEPUB"
+      return result.merge(plain_epub) unless @delivery.publication&.fetch("format", nil) == "KEPUB"
       return result.merge("status" => "waiting", "reason" => "not_downloaded") if @delivery.last_download_at.nil?
 
       place = destination
@@ -235,10 +238,18 @@ module Kobo
       compare(candidate)
     end
 
+    # A plain EPUB was delivered: sent before Kobo editions existed, or its
+    # Kobo edition could not be prepared safely.
+    def plain_epub
+      reason = @delivery.publication["kepub_unavailable"]
+      reason ? { "status" => "unsupported", "reason" => "kepub_unavailable", "kepub_reason" => reason } : { "status" => "unsupported", "reason" => "plain_epub" }
+    end
+
     # The span of the place in the exact delivered generation, if the place
-    # names that generation as the current consumer asset.
+    # names that generation as the current consumer asset. The consumer asset
+    # is always the library file; a prepared Kobo edition is only its copy.
     def destination
-      file = @delivery.open_file
+      file = @delivery.open_source
       stat = file.stat
       matches = Consumer::LibraryAssets.new(@book).list.select do |asset|
         asset.device == stat.dev && asset.inode == stat.ino && asset.size_bytes == stat.size
@@ -252,7 +263,17 @@ module Kobo
       return { "status" => "unsupported", "reason" => "location_not_in_edition" } unless path
 
       chapter = order.fetch("items").keys.index(path)
-      place = SpanIndex.new(publication.resource(file, path, limit: SpanIndex::MAX_BYTES)).locate(@progress.locator, spine_index: chapter)
+      original = publication.resource(file, path, limit: SpanIndex::MAX_BYTES)
+      place =
+        if @delivery.kepub_copy?
+          # Resolve the CFI, fragment or progression in the original tree the
+          # reader saved it against, then name the copy's span at that offset.
+          delivered = @delivery.open_file
+          copy = SpanIndex.new(publication.resource(delivered, path, limit: SpanIndex::MAX_BYTES))
+          copy.locate(@progress.locator, spine_index: chapter, original: SpanIndex.new(original, require_spans: false))
+        else
+          SpanIndex.new(original).locate(@progress.locator, spine_index: chapter)
+        end
       total = @progress.locator.dig("locations", "totalProgression")
       { "asset_id" => matches.first.id, "source" => path, "package_dir" => order.fetch("package_dir"), "span" => place.span,
         "method" => place.method, "chapter" => chapter + 1, "chapters" => order.fetch("items").size,
@@ -266,6 +287,7 @@ module Kobo
       { "status" => "unsupported", "reason" => "file_changed" }
     ensure
       file&.close unless file&.closed?
+      delivered&.close unless delivered&.closed?
     end
 
     # Shelfarr locators use the manifest's ZIP-root spelling of a spine item.

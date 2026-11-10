@@ -102,6 +102,8 @@ class KoboController < ActionController::API
     file = selected.open_file
     selected.update_columns(last_download_at: Time.current) unless request.head?
     send_pinned_range(file, filename: selected.publication.fetch("filename"), etag: %Q("#{selected.revision_id}"))
+  rescue Kobo::KepubCache::Busy
+    head :service_unavailable
   rescue KoboPublication::Unavailable
     head :gone
   end

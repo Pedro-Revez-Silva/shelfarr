@@ -160,7 +160,9 @@ module Kobo
       return { "status" => "edition_changed", "reason" => "not_downloaded" } if @delivery.last_download_at.nil?
 
       assets = Consumer::LibraryAssets.new(@book).list
-      file = @delivery.open_file
+      # The library file, also for a prepared Kobo edition: its chapters keep
+      # the source's paths, and the consumer asset is the source.
+      file = @delivery.open_source
       stat = file.stat
       matches = assets.select { |asset| asset.device == stat.dev && asset.inode == stat.ino && asset.size_bytes == stat.size }
       return { "status" => "edition_changed", "reason" => "not_a_current_asset" } unless matches.one?

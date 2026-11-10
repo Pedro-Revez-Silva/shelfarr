@@ -28,7 +28,7 @@
     <%= form.check_box :receive_progress, class: "mt-1 shrink-0 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500 focus:ring-offset-gray-900", aria: { describedby: "kobo-receive-help" } %>
     <span class="min-w-0">
       <span class="block font-medium text-white">Receive Shelfarr reading places <span class="ml-1 rounded bg-amber-900/60 px-1.5 py-0.5 text-xs font-normal text-amber-200">Preview</span></span>
-      <span id="kobo-receive-help" class="mt-1 block text-sm text-gray-400">From Shelfarr to this Kobo. After you read in the web reader or the Android or iOS app, this Kobo opens the book there at its next Wi-Fi sync. Only KEPUB files sent from your library can receive places; Kobo opens the same chapter at the nearest sentence marker, so the page can differ slightly. Plain EPUB files, books shared from Kobo accounts and Kobo Store books keep their Kobo place, and a newer place on this Kobo is never replaced. Not yet tested on a physical Kobo.</span>
+      <span id="kobo-receive-help" class="mt-1 block text-sm text-gray-400">From Shelfarr to this Kobo. After you read in the web reader or the Android or iOS app, this Kobo opens the book there at its next Wi-Fi sync. Books sent from your library can receive places: EPUB files are sent as a Kobo edition (KEPUB) that Shelfarr prepares from the original, which stays unchanged, and KEPUB files are sent as they are. Kobo opens the same chapter at the nearest sentence marker, so the page can differ slightly. Plain EPUB files sent before Kobo editions (until you send them again), books shared from Kobo accounts and Kobo Store books keep their Kobo place, and a newer place on this Kobo is never replaced. Not yet tested on a physical Kobo.</span>
     </span>
   </label>
 </fieldset>

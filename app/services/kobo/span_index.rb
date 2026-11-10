@@ -16,6 +16,11 @@ module Kobo
   #
   # Character position is an approximation of a paginated progression, so a
   # place is chapter-accurate and sentence-near, not page-exact.
+  #
+  # For a Kobo edition Shelfarr prepared from a plain EPUB (KepubConverter),
+  # the place is found in the ORIGINAL chapter (the tree the web reader's CFI
+  # names) and then mapped by character offset into the copy. That mapping is
+  # only used when both chapters have exactly the same body text.
   class SpanIndex
     class Unsupported < StandardError
       attr_reader :reason
@@ -34,7 +39,11 @@ module Kobo
     PARSE = Nokogiri::XML::ParseOptions::NONET | Nokogiri::XML::ParseOptions::RECOVER
     Place = Data.define(:span, :method, :fraction)
 
-    def initialize(data)
+    attr_reader :text
+
+    # require_spans: false indexes a chapter without Kobo markers, such as the
+    # original of a prepared Kobo edition.
+    def initialize(data, require_spans: true)
       raise Unsupported, "chapter_too_large" if data.bytesize > MAX_BYTES
 
       @document = Nokogiri::XML(data, nil, nil, PARSE)
@@ -47,10 +56,28 @@ module Kobo
       raise Unsupported, "unreadable_resource" unless @root
 
       index
-      raise Unsupported, "no_kobo_spans" if @spans.empty?
+      raise Unsupported, "no_kobo_spans" if require_spans && @spans.empty?
     end
 
-    def locate(locator, spine_index: nil)
+    # The unique Kobo span ids of this chapter, in document order.
+    def span_ids
+      @spans.map(&:first)
+    end
+
+    # original: the chapter this file was prepared from. The locator is
+    # resolved in that tree, and its character offset names the same text here.
+    def locate(locator, spine_index: nil, original: nil)
+      raise Unsupported, "no_kobo_spans" if @spans.empty?
+      raise Unsupported, "text_mismatch" if original && original.text != text
+
+      offset, method = (original || self).offset(locator, spine_index)
+      span = containing(offset)
+      Place.new(span: span.first, method: method, fraction: @length.zero? ? 0.0 : span.last.fdiv(@length).clamp(0.0, 1.0))
+    end
+
+    protected
+
+    def offset(locator, spine_index)
       locations = locator.is_a?(Hash) && locator["locations"].is_a?(Hash) ? locator["locations"] : {}
       offset, method = cfi_offset(locations["cfi"], spine_index), "cfi"
       offset, method = fragment_offset(locations["fragments"]), "fragment" if offset.nil?
@@ -59,8 +86,7 @@ module Kobo
         progression = 0 unless progression.is_a?(Numeric) && progression.finite? && progression.between?(0, 1)
         offset, method = (progression * @length).floor, "progression"
       end
-      span = containing(offset)
-      Place.new(span: span.first, method: method, fraction: @length.zero? ? 0.0 : span.last.fdiv(@length).clamp(0.0, 1.0))
+      [ offset, method ]
     end
 
     private
@@ -73,6 +99,7 @@ module Kobo
       spans = []
       counts = @document.xpath("//*[@id]").each_with_object(Hash.new(0)) { |node, ids| ids[node["id"]] += 1 }
       position = 0
+      text = +""
       stack = [ body ]
       until stack.empty?
         node = stack.pop
@@ -86,9 +113,12 @@ module Kobo
           node.children.reverse_each { |child| stack << child }
         elsif node.text? || node.cdata?
           @starts[node.pointer_id] = position
-          position += node.content.length
+          content = node.content
+          text << content
+          position += content.length
         end
       end
+      @text = text.freeze
       @length = position
       # An id that is not unique does not name one place.
       @spans = spans.select { |id, _| counts[id] == 1 }

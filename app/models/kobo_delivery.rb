@@ -10,6 +10,7 @@ class KoboDelivery < ApplicationRecord
   belongs_to :kobo_account_book, optional: true
   belongs_to :kobo_account_share, optional: true
   belongs_to :kobo_account_book_file, optional: true
+  belongs_to :kobo_kepub_copy, optional: true
 
   def private_source?
     kobo_account_book_id.present?
@@ -21,16 +22,36 @@ class KoboDelivery < ApplicationRecord
     !private_source? || Kobo::HouseholdAccess.delivery_allowed?(self)
   end
 
+  # Whether the reader is offered a Kobo edition prepared from the library EPUB.
+  def kepub_copy?
+    !private_source? && publication&.fetch("kepub", nil).is_a?(Hash)
+  end
+
+  # The bytes the reader downloads. For a prepared Kobo edition, the library
+  # file must still be the generation it was prepared from: a replaced source
+  # never serves its earlier copy.
   def open_file
     return open_private_file if private_source?
+    return open_source unless kepub_copy?
+
+    source = open_source
+    Kobo::KepubCache.open(kobo_kepub_copy, sha256: publication.dig("kepub", "sha256"), source: source)
+  ensure
+    source&.close unless source&.closed?
+  end
+
+  # The library file this delivery was published from, pinned to the same
+  # generation. Reading places and consumer assets are always compared with it.
+  def open_source
     raise KoboPublication::Unavailable, "This book is no longer in the library" unless book
 
     KoboPublication.new(book).open_file(expected_fingerprint: publication.fetch("fingerprint"))
   end
 
-  # The embedded cover of the file this entry delivers.
+  # The embedded cover of the file this entry delivers. A prepared Kobo edition
+  # keeps the package and images of its source, so the source's cover is read.
   def cover
-    file = open_file
+    file = private_source? ? open_file : open_source
     KoboPublication.new(book).cover(file)
   ensure
     file&.close unless file&.closed?
