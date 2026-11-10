@@ -399,6 +399,46 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       "showing another app's place is not reading"
   end
 
+  # A picture beside text does not rename the page: its place stays the text
+  # EPUB.js names, through saving, reopening and resizing.
+  test "a page of text with a picture keeps its text place" do
+    File.unlink(@epub_path)
+    write_consumer_epub(@epub_path, chapter: ("Words around a picture. " * 300) + '<img src="one.png" alt="A generated picture"/>' + (" More words follow it." * 300))
+    Zip::File.open(@epub_path) do |zip|
+      opf = zip.read("OEBPS/content.opf").sub("</manifest>", '<item id="picture" href="one.png" media-type="image/png"/></manifest>')
+      zip.get_output_stream("OEBPS/content.opf") { |out| out.write(opf) }
+      zip.get_output_stream("OEBPS/one.png") { |out| out.write(fixed_layout_png(width: 100, height: 100)) }
+    end
+    page.current_window.resize_to(1280, 900)
+    visit consumer_publication_path(@ebook)
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A1 / \d+}, visible: :all, wait: 20
+    wait_for_reader_layout
+    turn_page_until { picture_on_page? }
+    label = location_text
+    saved = wait_until_saved_here
+    cfi = saved.locator.dig("locations", "cfi")
+    assert page.evaluate_script(<<~JS, cfi), "the saved place is text drawn on this page, beside the picture"
+      (() => {
+        const element = document.querySelector("[data-controller~='consumer-reader']")
+        const range = window.Stimulus.getControllerForElementAndIdentifier(element, "consumer-reader").rendition.getRange(arguments[0])
+        return range.startContainer.nodeType === Node.TEXT_NODE && /Words around|More words/.test(range.startContainer.textContent)
+      })()
+    JS
+    assert picture_on_page?
+
+    visit consumer_publication_path(@ebook)
+    assert_selector "[data-consumer-reader-target=location]", text: label, visible: :all, wait: 20
+    wait_for_reader_layout
+    assert picture_on_page?
+    assert_equal cfi, current_reader_cfi
+    page.current_window.resize_to(1100, 900)
+    wait_for_reader_layout
+    wait_until("the text place is still on screen") { reader_place(cfi)&.dig(:inside) }
+    assert_equal saved.attributes.slice("version", "observed_at", "locator"), users(:one).consumer_progresses.find_by!(book: @ebook).attributes.slice("version", "observed_at", "locator"),
+      "reopening and resizing are not reading"
+    assert_equal 0, outbox_size
+  end
+
   test "taps turn pages at the sides, reveal controls in the middle, and the hidden reveal button is reachable" do
     File.unlink(@epub_path)
     write_consumer_epub(@epub_path, chapter: "Tap through the pages. " * 900)
@@ -621,6 +661,19 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       wait_until("the page turns") { location_text != before }
     end
     flunk "Never reached the requested page (at #{location_text})"
+  end
+
+  def picture_on_page?
+    page.evaluate_script(<<~JS)
+      (() => {
+        const view = document.querySelector("[data-consumer-reader-target=viewport]").getBoundingClientRect()
+        const frame = document.querySelector(".consumer-ebook iframe")
+        const image = frame.contentDocument.querySelector("img")
+        if (!image?.complete || !image.naturalWidth) return false
+        const box = frame.getBoundingClientRect(), rect = image.getBoundingClientRect()
+        return box.left + rect.left >= view.left && box.left + rect.right <= view.right
+      })()
+    JS
   end
 
   # A key press delivered to whatever has focus, like a physical keyboard.

@@ -637,11 +637,26 @@ export default class extends Controller {
     const onPage = rect => rect.width + rect.height > 0 && rect.right > view.left - box.left + 1 && rect.left < view.right - box.left - 1
     let named = null
     try { named = this.rendition.getRange(start.cfi) } catch (_) { named = null }
-    if (named && named.toString().trim() && onPage(named.getBoundingClientRect())) return start.cfi
+    if (this.textOnPage(named, onPage)) return start.cfi
     const picture = [...contents.document.querySelectorAll("img, image")].find(node => onPage(node.getBoundingClientRect()))
     // The picture itself, not a text offset in it: a picture has no text, and
     // EPUB.js shows an element place on the page where that element is drawn.
     return picture ? contents.cfiFromNode(picture) : start.cfi
+  }
+
+  // EPUB.js's name for a page is a point in a text node: a collapsed range,
+  // with no text of its own. It names text on the page when the first
+  // non-blank character from that point is drawn there. A point in blank
+  // space, in an element, or in text on another page does not.
+  textOnPage(range, onPage) {
+    const node = range?.startContainer
+    if (node?.nodeType !== Node.TEXT_NODE) return false
+    const skip = node.textContent.slice(range.startOffset).search(/\S/)
+    if (skip < 0) return false
+    const character = node.ownerDocument.createRange()
+    character.setStart(node, range.startOffset + skip)
+    character.setEnd(node, range.startOffset + skip + 1)
+    return [...character.getClientRects()].some(onPage)
   }
 
   layoutAnchor() {
