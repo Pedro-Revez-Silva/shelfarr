@@ -89,21 +89,22 @@ class ZLibraryClient
       end
     end
 
-    def get_download_url(id:, hash:)
+    def get_download_url(id:, hash:, after_attempt: nil)
       ensure_configured!
 
-      with_authenticated_retry(context: "download lookup") do |auth|
-        exchange = get_file_exchange(auth, id: id, hash: hash)
+      with_authenticated_retry(context: "download lookup", after_attempt: after_attempt) do |auth|
+        exchange = get_file_exchange(auth, id: id, hash: hash, after_attempt: after_attempt)
         response = usable_search_response(exchange)
-        # Alternates that reject eAPI can still serve a book page. Try those before the walled mirror.
-        html_fallback_auths = search_exchange_walled?(exchange) ? [] : nil
+        # Collect walled and eAPI-rejected alternates even when this exchange is not a wall.
+        html_fallback_auths = []
 
         if response.nil? || download_html_fallback_response?(response)
           alternate_download_url = get_download_url_from_alternate_domains(
             auth,
             id: id,
             hash: hash,
-            html_fallback_auths: html_fallback_auths
+            html_fallback_auths: html_fallback_auths,
+            after_attempt: after_attempt
           )
           return alternate_download_url if alternate_download_url
 
@@ -111,11 +112,16 @@ class ZLibraryClient
             raise ConnectionError, "Z-Library download lookup failed: #{exchange[:error].presence || "no response"}"
           end
 
-          recovered = download_html_fallbacks(html_fallback_auths, id: id, hash: hash)
+          recovered = download_html_fallbacks(
+            html_fallback_auths,
+            id: id,
+            hash: hash,
+            after_attempt: after_attempt
+          )
           return recovered unless recovered.nil?
 
           Rails.logger.warn "[ZLibraryClient] eAPI download lookup unavailable; falling back to HTML book page"
-          recovered = get_html_download_url(auth, id: id, hash: hash)
+          recovered = get_html_download_url(auth, id: id, hash: hash, after_attempt: after_attempt)
           return recovered unless recovered == :bot_wall
 
           raise_download_bot_wall!(download_wall_domains(auth, html_fallback_auths))
@@ -1023,10 +1029,11 @@ class ZLibraryClient
     end
 
     # The file endpoint can 307 to the same bot wall search already follows.
-    def get_file_exchange(auth, id:, hash:)
+    def get_file_exchange(auth, id:, hash:, after_attempt: nil)
       follow_exchange(
         "#{auth[:base_url]}/eapi/book/#{id}/#{hash}/file",
         method: :get,
+        after_attempt: after_attempt,
         seed_cookies: cookie_header(auth)
       )
     end
@@ -1089,9 +1096,9 @@ class ZLibraryClient
       nil
     end
 
-    def get_download_url_from_alternate_domains(current_auth, id:, hash:, html_fallback_auths: nil)
-      each_alternate_auth(current_auth) do |auth|
-        exchange = get_file_exchange(auth, id: id, hash: hash)
+    def get_download_url_from_alternate_domains(current_auth, id:, hash:, html_fallback_auths: nil, after_attempt: nil)
+      each_alternate_auth(current_auth, after_attempt: after_attempt) do |auth|
+        exchange = get_file_exchange(auth, id: id, hash: hash, after_attempt: after_attempt)
         if search_exchange_walled?(exchange)
           html_fallback_auths << auth if html_fallback_auths
           next
@@ -1115,9 +1122,9 @@ class ZLibraryClient
       nil
     end
 
-    def download_html_fallbacks(auths, id:, hash:)
+    def download_html_fallbacks(auths, id:, hash:, after_attempt: nil)
       Array(auths).each do |auth|
-        result = get_html_download_url(auth, id: id, hash: hash)
+        result = get_html_download_url(auth, id: id, hash: hash, after_attempt: after_attempt)
         return result unless result == :bot_wall
       rescue JSON::ParserError, Faraday::Error, Error => error
         Rails.logger.debug "[ZLibraryClient] HTML download retry failed on #{auth[:domain]}: #{error.class}"
@@ -1328,10 +1335,11 @@ class ZLibraryClient
       card.at_css('[slot="author"]')&.text.to_s.split(";").map(&:strip).reject(&:blank?).join(", ").presence
     end
 
-    def get_html_download_url(auth, id:, hash:)
+    def get_html_download_url(auth, id:, hash:, after_attempt: nil)
       exchange = follow_exchange(
         "#{auth[:base_url]}/book/#{id}/#{hash}",
         method: :get,
+        after_attempt: after_attempt,
         seed_cookies: cookie_header(auth)
       )
       return :bot_wall if search_exchange_walled?(exchange)

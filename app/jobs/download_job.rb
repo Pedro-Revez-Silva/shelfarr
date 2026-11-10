@@ -320,9 +320,17 @@ class DownloadJob < ApplicationJob
     raise ZLibraryClient::Error, "Selected Z-Library result is missing download metadata" if book_id.blank? || file_hash.blank?
 
     Rails.logger.info "[DownloadJob] Fetching Z-Library download URL for book #{book_id}"
-    download_url = ZLibraryClient.get_download_url(id: book_id, hash: file_hash)
+    # Mirror rotation can outlast the enqueue timeout. Renew the dispatch between attempts.
+    download_url = ZLibraryClient.get_download_url(
+      id: book_id,
+      hash: file_hash,
+      after_attempt: -> { heartbeat_dispatch!(download) }
+    )
 
     handle_direct_http_download(download, search_result, download_url)
+  rescue ZLibraryClient::SearchCancelled => error
+    Rails.logger.info "[DownloadJob] Download ##{download.id} ownership changed during Z-Library lookup"
+    RemoteResult::Failed.new(error)
   end
 
   def handle_gutenberg_download(download, search_result)
@@ -822,6 +830,23 @@ class DownloadJob < ApplicationJob
 
     download.download_type = "direct"
     download.updated_at = now
+  end
+
+  # The enqueue watchdog fails a dispatching row whose updated_at goes stale.
+  def heartbeat_dispatch!(download)
+    now = Time.current
+    refreshed = Download
+      .where(
+        id: download.id,
+        status: Download.statuses[:downloading],
+        download_type: "dispatching",
+        external_id: [ nil, "" ]
+      )
+      .update_all(updated_at: now)
+    return false unless refreshed == 1
+
+    download.updated_at = now
+    true
   end
 
   def refresh_direct_download_heartbeat!(download)
