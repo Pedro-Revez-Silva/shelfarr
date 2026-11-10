@@ -414,8 +414,10 @@ described under [Offline reading and listening](#offline-reading-and-listening).
 PDFs and CBZ comics open in a page reader with the same quiet surface; see
 [PDF and comic reading](consumer-formats.md#web-page-reader).
 
-Reading an EPUB shows only the book text across the whole viewport: no header,
-cover, description, status form, chapter or font toolbar, or page buttons.
+On a desktop with a mouse or keyboard, the reader shows a small navigation bar
+with **Your library**, **Chapter**, and **Reading controls**. The book fills the
+space below it. On touch screens, reading an EPUB shows only the book text
+across the whole viewport, with no toolbar or page buttons.
 Arrow and Page keys, swipes, and taps on the left or right third turn pages.
 Escape, a tap in the middle, or the **Show reading controls** button (the first
 keyboard stop, visible when focused) reveals an overlay with the library link,

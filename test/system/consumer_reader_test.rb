@@ -169,10 +169,11 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_no_link "Library item details"
   end
 
-  test "reading mode shows only the text and reveals overlay controls without moving the book" do
+  test "touch reading stays quiet and desktop navigation stays visible without covering the book" do
     File.unlink(@epub_path)
     write_consumer_epub(@epub_path, chapter: "Quiet words fill the whole page. " * 700)
-    [ [ 390, 844, "mobile" ], [ 1280, 900, "desktop" ] ].each do |width, height, name|
+    [ [ 390, 844, "mobile" ], [ 1024, 768, "touch tablet" ], [ 1280, 900, "desktop" ] ].each do |width, height, name|
+      page.driver.browser.execute_cdp("Emulation.setTouchEmulationEnabled", enabled: name != "desktop", maxTouchPoints: 5)
       page.current_window.resize_to(width, height)
       visit consumer_publication_path(@ebook)
       assert_selector ".consumer-ebook iframe", wait: 20
@@ -182,10 +183,20 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       assert_no_selector ".consumer-reading-status"
       assert_no_selector "button", text: "Next →"
       assert_no_selector "[data-consumer-reader-target=chapters]"
+      if name == "desktop"
+        within("[data-consumer-reader-target=desktopNav]") do
+          assert_link "← Your library"
+          assert_select "Chapter", selected: "A beginning"
+          assert_button "Reading controls"
+        end
+      else
+        assert_no_selector "[data-consumer-reader-target=desktopNav]"
+      end
       assert_no_text "The Quiet Library"
       frame = page.evaluate_script("(() => { const r = document.querySelector('.consumer-ebook-frame').getBoundingClientRect(); return [r.width, r.height, window.innerWidth, window.innerHeight] })()")
       assert_equal frame[2], frame[0]
-      assert_equal frame[3], frame[1]
+      assert_equal frame[3] - (name == "desktop" ? 64 : 0), frame[1]
+      assert page.evaluate_script("(() => { const nav = document.querySelector('[data-consumer-reader-target=desktopNav]'); const text = document.querySelector('.consumer-ebook iframe'); return getComputedStyle(nav).display === 'none' || nav.getBoundingClientRect().bottom <= text.getBoundingClientRect().top })()"), "desktop navigation must not cover any text"
       assert_no_horizontal_overflow
       capture("consumer-reading-#{name}.png")
       before = iframe_box
@@ -201,6 +212,40 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       assert page.evaluate_script("document.activeElement.matches('[data-consumer-reader-target=viewport]')")
       assert_equal before, iframe_box
     end
+  ensure
+    page.driver.browser.execute_cdp("Emulation.setTouchEmulationEnabled", enabled: false)
+  end
+
+  test "desktop chapter selection and Back work without discovering a hidden tap zone" do
+    File.unlink(@epub_path)
+    write_consumer_epub(@epub_path, chapter: "The first chapter stays quiet. " * 400, second_chapter: "Desktop chapter selection works. " * 400)
+    Zip::File.open(@epub_path) do |zip|
+      nav = zip.read("OEBPS/nav.xhtml").sub("</ol>", '<li><a href="two.xhtml">Another chapter</a></li></ol>')
+      zip.get_output_stream("OEBPS/nav.xhtml") { |out| out.write(nav) }
+    end
+    page.current_window.resize_to(1280, 900)
+    visit consumer_publication_path(@ebook)
+    assert_selector ".consumer-ebook iframe", wait: 20
+    assert_selector "[data-consumer-reader-target=desktopNav]"
+    assert_empty users(:one).consumer_progresses, "showing the navigation is not reading"
+    within("[data-consumer-reader-target=desktopNav]") do
+      assert_select "Chapter", with_options: [ "A beginning", "Another chapter" ]
+      select "Another chapter", from: "Chapter"
+    end
+    assert_selector "[data-consumer-reader-target=location]", text: "chapter 2", visible: :all, wait: 10
+    within_frame(find(".consumer-ebook iframe")) { assert_text "Desktop chapter selection works." }
+    assert_equal "OEBPS/two.xhtml", wait_for_progress(@ebook).locator["href"]
+    before = iframe_box
+    within("[data-consumer-reader-target=desktopNav]") { click_button "Reading controls" }
+    assert_selector "[data-consumer-reader-target=controls]"
+    assert_no_selector "[data-consumer-reader-target=desktopNav]"
+    assert_equal before, iframe_box, "opening controls does not reflow the book"
+    click_button "Done"
+    assert_selector "[data-consumer-reader-target=desktopNav]"
+    assert_equal before, iframe_box
+    capture("consumer-desktop-visible-navigation.png")
+    within("[data-consumer-reader-target=desktopNav]") { click_link "← Your library" }
+    assert_current_path consumer_library_path
   end
 
   test "taps turn pages at the sides, reveal controls in the middle, and the hidden reveal button is reachable" do

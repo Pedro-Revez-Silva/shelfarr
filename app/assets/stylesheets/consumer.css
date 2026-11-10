@@ -173,6 +173,15 @@
 .consumer-ebook { height:100%; width:100%; max-width:46rem; min-width:0; margin:0 auto; }
 .consumer-ebook:focus { outline:none; }
 .consumer-ebook:focus-visible { outline:2px solid var(--accent); outline-offset:4px; border-radius:4px; }
+.consumer-desktop-reader-nav { display:none; }
+@media (min-width:768px) and (pointer:fine), (min-width:768px) and (pointer:none) {
+  .consumer-desktop-reader-nav { position:absolute; inset:0 0 auto; z-index:20; height:64px; box-sizing:border-box; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:6px 20px; border-bottom:1px solid var(--line); background:var(--surface); font-size:0.875rem; }
+  .consumer-desktop-reader-nav .consumer-back { margin:0; min-height:44px; display:inline-flex; align-items:center; flex-shrink:0; font-size:inherit; }
+  .consumer-desktop-reader-nav .consumer-chapters { flex:1; max-width:30rem; font-size:inherit; }
+  .consumer-desktop-reader-nav .consumer-chapters select { min-width:0; max-width:none; font-size:inherit; }
+  .consumer-desktop-reader-nav > button { min-height:44px; border:0; padding:0 8px; background:transparent; color:var(--accent); font-size:inherit; white-space:nowrap; }
+  .consumer-reading-session--ebook .consumer-ebook-frame,.consumer-reading-session--ebook .consumer-pages { top:64px; }
+}
 .consumer-controls-reveal { position:fixed; z-index:50; top:max(8px,env(safe-area-inset-top)); left:50%; transform:translateX(-50%); border:1px solid var(--line); border-radius:30px; background:var(--surface); padding:10px 18px; min-height:44px; font-size:13px; }
 .consumer-controls-reveal:not(:focus) { width:1px; height:1px; min-height:0; padding:0; border:0; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
 .consumer-reader-controls { position:fixed; inset:0; z-index:30; pointer-events:none; }

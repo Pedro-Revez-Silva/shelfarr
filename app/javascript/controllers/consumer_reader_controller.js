@@ -20,7 +20,7 @@ const READ_ALONG_ACTIVE = "shelfarr-read-along-active"
 
 export default class extends Controller {
   static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote",
-    "pdfResources", "textFrame", "pages", "announce", "editionPicker", "edition", "editionNote", "pageTools", "textTools", "pageNumber", "pageTotal", "pageSlider", "zoomLabel",
+    "desktopNav", "desktopChapters", "desktopTextTools", "desktopReveal", "pdfResources", "textFrame", "pages", "announce", "editionPicker", "edition", "editionNote", "pageTools", "textTools", "pageNumber", "pageTotal", "pageSlider", "zoomLabel",
     "readAlong", "readAlongNote", "readAlongTools", "readAlongPlay", "readAlongFollow", "readAlongSpeed", "readAlongAudio", "readAlongPill", "readAlongPillPlay", "readAlongReturn", "readAlongOffer"]
 
   connect() {
@@ -251,6 +251,7 @@ export default class extends Controller {
     if (this.hasPagesTarget) this.pagesTarget.hidden = !on
     if (this.hasPageToolsTarget) this.pageToolsTarget.hidden = !on
     if (this.hasTextToolsTarget) this.textToolsTarget.hidden = on
+    if (this.hasDesktopTextToolsTarget) this.desktopTextToolsTarget.hidden = on
     this.element.classList.toggle("consumer-reading-session--pages", on)
   }
 
@@ -463,13 +464,13 @@ export default class extends Controller {
       this.rendition.on("resized", () => this.reflowed())
       this.rendition.hooks.content.register(contents => this.bookInput(contents))
       if (prepared) this.startReadAlong(readAlongModule, prepared)
-      this.chaptersTarget.replaceChildren()
+      for (const menu of this.chapterMenus) menu.replaceChildren()
       const addChapters = (items, depth = 0) => {
         for (const item of items) {
           const option = document.createElement("option")
           option.value = item.href
           option.textContent = `${"— ".repeat(depth)}${item.label.trim()}`
-          this.chaptersTarget.append(option)
+          for (const menu of this.chapterMenus) menu.append(option.cloneNode(true))
           addChapters(item.subitems || [], depth + 1)
         }
       }
@@ -729,6 +730,8 @@ export default class extends Controller {
   showControls() {
     if (!this.hasControlsTarget || !this.controlsTarget.hidden) return
     this.controlsTarget.hidden = false
+    if (this.hasDesktopNavTarget) this.desktopNavTarget.hidden = true
+    if (this.hasDesktopRevealTarget) this.desktopRevealTarget.setAttribute("aria-expanded", "true")
     this.revealTarget.setAttribute("aria-expanded", "true")
     this.hideTarget.focus()
   }
@@ -737,6 +740,8 @@ export default class extends Controller {
     if (!this.hasControlsTarget || this.controlsTarget.hidden) return
     const hadFocus = this.controlsTarget.contains(document.activeElement)
     this.controlsTarget.hidden = true
+    if (this.hasDesktopNavTarget) this.desktopNavTarget.hidden = false
+    if (this.hasDesktopRevealTarget) this.desktopRevealTarget.setAttribute("aria-expanded", "false")
     this.revealTarget.setAttribute("aria-expanded", "false")
     if (hadFocus || document.activeElement === document.body) this.readingSurface.focus({ preventScroll: true })
   }
@@ -748,7 +753,7 @@ export default class extends Controller {
     const total = Math.min(1, (start.index + fraction) / Math.max(1, this.book.spine.length))
     this.locationTarget.textContent = `${start.displayed.page} / ${start.displayed.total} · chapter ${start.index + 1}`
     const option = [...this.chaptersTarget.options].find(option => option.value.split("#")[0] === start.href)
-    if (option) this.chaptersTarget.value = option.value
+    if (option) for (const menu of this.chapterMenus) menu.value = option.value
     // Only the reader's own moves are activity; restoring or reflowing is not.
     if (!this.readerReady) return
     if (!this.userMoved) { this.lastEbookCfi = start.cfi; return }
@@ -814,8 +819,10 @@ export default class extends Controller {
     if (this.pageReader) return this.movePage(reader => reader.next(), "Couldn't open the next page.")
     this.moveEbook(() => this.rendition.next(), "Couldn't open the next page.")
   }
-  chooseChapter() {
-    const chapter = this.chaptersTarget.value
+  get chapterMenus() { return [this.chaptersTarget, ...(this.hasDesktopChaptersTarget ? [this.desktopChaptersTarget] : [])] }
+
+  chooseChapter(event) {
+    const chapter = event?.currentTarget?.value ?? this.chaptersTarget.value
     this.moveEbook(() => this.showPlace(chapter), "This chapter couldn't be opened.")
   }
   smallerText() { this.resizeText(-10) }

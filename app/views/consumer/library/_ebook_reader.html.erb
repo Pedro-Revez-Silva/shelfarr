@@ -3,6 +3,11 @@
   <script type="application/json" data-consumer-reader-target="publication" data-offline-fill="publication"><%= raw json_escape(publication.to_json) if publication %></script>
   <script type="application/json" data-consumer-reader-target="pdfResources"><%= raw json_escape(consumer_pdf_resources.to_json) %></script>
   <section class="consumer-reader" aria-label="<%= title %>" data-offline-fill="label">
+    <nav class="consumer-desktop-reader-nav" data-consumer-reader-target="desktopNav" aria-label="Reader navigation">
+      <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
+      <label class="consumer-chapters" data-consumer-reader-target="desktopTextTools">Chapter<select data-consumer-reader-target="desktopChapters" data-action="change->consumer-reader#chooseChapter"><option>Opening book…</option></select></label>
+      <button type="button" data-consumer-reader-target="desktopReveal" data-action="consumer-reader#showControls" aria-controls="consumer-reader-controls" aria-expanded="false">Reading controls</button>
+    </nav>
     <button type="button" class="consumer-controls-reveal" data-consumer-reader-target="reveal" data-action="consumer-reader#showControls" aria-controls="consumer-reader-controls" aria-expanded="false">Show reading controls</button>
     <div class="consumer-ebook-frame" data-consumer-reader-target="textFrame" data-action="click->consumer-reader#marginTap">
       <div class="consumer-ebook" data-consumer-reader-target="viewport" tabindex="0" aria-label="Book text. Arrow keys turn pages; Escape shows reading controls."><p class="consumer-opening">Opening your book…</p></div>
