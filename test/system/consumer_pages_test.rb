@@ -133,7 +133,9 @@ class ConsumerPagesTest < ApplicationSystemTestCase
     assert_empty users(:one).consumer_progresses
     assert_no_horizontal_overflow
     capture("comic-page-mobile.png")
-    find(".consumer-pages").send_keys(:arrow_right)
+    # A keyboard turns the page before anything in the reader has focus.
+    assert page.evaluate_script("document.activeElement === document.body")
+    page.driver.browser.action.send_keys(:arrow_right).perform
     wait_for_page(2)
     assert_equal fixed_layout_page_color(2), image_pixel
     progress = wait_for_progress(@comic)

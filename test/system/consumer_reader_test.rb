@@ -248,6 +248,87 @@ class ConsumerReaderTest < ApplicationSystemTestCase
     assert_current_path consumer_library_path
   end
 
+  # Keys go wherever the browser has focus, as a person's keyboard does; no
+  # element is focused or targeted first.
+  test "keyboard turns an opened desktop book wherever focus is, once per press, leaving shortcuts and controls alone" do
+    File.unlink(@epub_path)
+    write_consumer_epub(@epub_path, chapter: "Keys turn these pages. " * 900)
+    page.current_window.resize_to(1280, 900)
+    visit consumer_publication_path(@ebook)
+    assert_selector ".consumer-ebook iframe", wait: 20
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A1 / \d+}, visible: :all, wait: 20
+    wait_for_reader_layout
+    assert page.evaluate_script("document.activeElement === document.body"), "a freshly opened page keeps focus on its body"
+    assert_empty users(:one).consumer_progresses, "opening is not reading"
+
+    # Nothing has been clicked: the body has focus.
+    turned = Time.current
+    press_key :arrow_right
+    assert_reader_page 2
+    progress = wait_until_saved_here
+    assert_operator progress.locator.dig("locations", "progression"), :>, 0
+    assert_in_delta turned.to_f, progress.observed_at.to_f, 5
+    assert_operator progress.observed_at, :<=, progress.updated_at
+    press_key :page_down
+    assert_reader_page 3
+    press_key :page_up
+    assert_reader_page 2
+    press_key :arrow_left
+    assert_reader_page 1
+    assert_equal 0, wait_until_saved_here.locator.dig("locations", "progression"), "turning back is saved too"
+
+    # Browser and system shortcuts are not page turns. (Alt+Left is Back and
+    # would leave the page, so only Alt+Right is pressed.) The next plain press
+    # then moves exactly one page from where they left it.
+    path = current_path
+    [ [ :control, :arrow_right ], [ :control, :arrow_left ], [ :meta, :arrow_right ], [ :meta, :arrow_left ], [ :alt, :arrow_right ] ].each do |modifier, key|
+      page.driver.browser.action.key_down(modifier).send_keys(key).key_up(modifier).perform
+    end
+    assert_equal path, current_path
+    press_key :arrow_right
+    assert_reader_page 2
+    saved = wait_until_saved_here
+
+    # Keys in the reader's own controls keep their native meaning.
+    within("[data-consumer-reader-target=desktopNav]") { click_button "Reading controls" }
+    assert_selector "[data-consumer-reader-target=controls]", visible: true
+    tab_to "[data-consumer-reader-target=chapters]"
+    press_key :arrow_right
+    press_key :page_down
+    tab_to "select[name=status]"
+    press_key :arrow_right
+    status = find("select[name=status]").value
+    press_key :arrow_down
+    wait_until("the status menu moves natively") { find("select[name=status]").value != status }
+    wait_for_reader_layout
+    assert_reader_page 2
+    # Escape still closes the controls from a menu and returns focus to the
+    # reading surface, where arrows turn again.
+    press_key :escape
+    assert_no_selector "[data-consumer-reader-target=controls]", visible: true
+    assert page.evaluate_script("document.activeElement.matches('[data-consumer-reader-target=viewport]')")
+    assert_equal saved.attributes.slice("version", "observed_at", "locator"), users(:one).consumer_progresses.find_by!(book: @ebook).attributes.slice("version", "observed_at", "locator"),
+      "opening controls, moving focus and using menus are not reading"
+    assert_equal 0, outbox_size
+    press_key :arrow_right
+    assert_reader_page 3
+
+    # Inside the sandboxed book frame its own listener turns the page; the frame's
+    # keys never reach the page as well, so each press is still one page.
+    view = find("[data-consumer-reader-target=viewport]")
+    view.click(x: (view.native.size.width * 0.35).to_i, y: 0)
+    assert_reader_page 4
+    assert page.evaluate_script("document.activeElement === document.querySelector('.consumer-ebook iframe')"), "clicking the text focuses the book frame"
+    press_key :arrow_right
+    assert_reader_page 5
+    turned = Time.current
+    press_key :arrow_left
+    assert_reader_page 4
+    progress = wait_until_saved_here
+    assert_in_delta turned.to_f, progress.observed_at.to_f, 5
+    assert_equal 0, outbox_size
+  end
+
   test "taps turn pages at the sides, reveal controls in the middle, and the hidden reveal button is reachable" do
     File.unlink(@epub_path)
     write_consumer_epub(@epub_path, chapter: "Tap through the pages. " * 900)
@@ -470,6 +551,45 @@ class ConsumerReaderTest < ApplicationSystemTestCase
       wait_until("the page turns") { location_text != before }
     end
     flunk "Never reached the requested page (at #{location_text})"
+  end
+
+  # A key press delivered to whatever has focus, like a physical keyboard.
+  def press_key(key)
+    page.driver.browser.action.send_keys(key).perform
+  end
+
+  # Moves focus with Tab, as a keyboard user does, until the control has it.
+  def tab_to(selector, limit: 30)
+    limit.times do
+      return if page.evaluate_script("document.activeElement.matches(arguments[0])", selector)
+
+      press_key :tab
+    end
+    flunk "Tab never reached #{selector}"
+  end
+
+  # The page shown once every queued turn and layout has run, so a press that
+  # turned twice cannot pass as one turn.
+  def assert_reader_page(number)
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A#{number} / \d+}, visible: :all, wait: 10
+    wait_for_reader_layout
+    assert_match %r{\A#{number} / \d+}, location_text
+  end
+
+  def current_reader_cfi
+    page.evaluate_script(<<~JS)
+      (() => {
+        const element = document.querySelector("[data-controller~='consumer-reader']")
+        return window.Stimulus.getControllerForElementAndIdentifier(element, "consumer-reader").rendition.currentLocation()?.start?.cfi
+      })()
+    JS
+  end
+
+  # The account holds exactly the place on screen.
+  def wait_until_saved_here
+    cfi = current_reader_cfi
+    wait_until("the account has the place on screen", detail: -> { "; saved #{saved_cfi.inspect}, shown #{cfi.inspect}" }) { saved_cfi == cfi }
+    users(:one).consumer_progresses.find_by!(book: @ebook)
   end
 
   # Where a CFI's actual Range is drawn, not just which CFI the reader reports.

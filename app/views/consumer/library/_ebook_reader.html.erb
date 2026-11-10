@@ -1,5 +1,5 @@
 <%# The reader for EPUB text and PDF/CBZ pages. The offline shell renders it as a template and fills the title, author and publication data. %>
-<div data-controller="consumer-reader" class="consumer-reading-session consumer-reading-session--ebook" data-action="keydown->consumer-reader#readerKey">
+<div data-controller="consumer-reader" class="consumer-reading-session consumer-reading-session--ebook" data-action="keydown@document->consumer-reader#documentKey">
   <script type="application/json" data-consumer-reader-target="publication" data-offline-fill="publication"><%= raw json_escape(publication.to_json) if publication %></script>
   <script type="application/json" data-consumer-reader-target="pdfResources"><%= raw json_escape(consumer_pdf_resources.to_json) %></script>
   <section class="consumer-reader" aria-label="<%= title %>" data-offline-fill="label">

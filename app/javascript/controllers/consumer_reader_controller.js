@@ -706,14 +706,26 @@ export default class extends Controller {
     else this.showControls()
   }
 
+  // Reading keys work wherever this page has focus. A freshly opened page
+  // keeps focus on its body, outside the reader, until something is clicked;
+  // listening only on the reader ignored every key until then. Keys from the
+  // book frames come through bookInput: their documents never bubble here.
+  documentKey(event) {
+    const target = event.target
+    if (target !== document.body && target !== document.documentElement && !this.element.contains(target)) return
+    this.readerKey(event)
+  }
+
   readerKey(event) {
     if (!this.hasControlsTarget) return
+    // Leave browser and system shortcuts (Alt+Left is Back) and text entry alone.
+    if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return
     if (event.key === "Escape") {
       event.preventDefault()
       this.controlsTarget.hidden ? this.showControls() : this.hideControls()
       return
     }
-    if (event.target.closest?.("select, input, textarea")) return
+    if (event.target.isContentEditable || event.target.closest?.("select, input, textarea")) return
     if (this.readAlong && event.key === " " && !event.target.closest?.("button, a")) { event.preventDefault(); return this.readAlongToggle() }
     if (this.pageReader) {
       if (event.key === "+" || event.key === "=") { event.preventDefault(); return this.zoomIn() }
