@@ -17,11 +17,12 @@ class KoboController < ActionController::API
   # Every other Store resource keeps Kobo's own URL, including sign-in.
   COEXISTENCE_RESOURCES = %w[library_sync library_metadata reading_state image_host image_url_template image_url_quality_template].freeze
   STORE_IMAGE = "https://cdn.kobo.com/book-images"
+  STORE_RESOURCES = JSON.parse(Rails.root.join("config/kobo_store_resources.json").read).freeze
 
   def initialization
     unless coexisting?
       headers["x-kobo-apitoken"] = "e30="
-      return render json: { Resources: local_resources }
+      return render json: { Resources: STORE_RESOURCES.merge(local_resources) }
     end
 
     response = store_request(path: "/v1/initialization")
