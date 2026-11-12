@@ -9,6 +9,7 @@ class KoboDevice < ApplicationRecord
   belongs_to :user
   has_many :kobo_deliveries, dependent: :destroy
   has_many :kobo_local_entitlements, dependent: :delete_all
+  has_many :kobo_tags, dependent: :delete_all
 
   validates :name, presence: true, length: { maximum: 80 }
   validates :token_digest, presence: true, uniqueness: true
@@ -67,6 +68,14 @@ class KoboDevice < ApplicationRecord
       "title" => book.title, "author" => book.author.to_s, "description" => "", "source" => "kobo_account"
     }
     publish!({ kobo_account_book: book }, publication, kobo_account_share: share, kobo_account_book_file: cached)
+  end
+
+  def change_tags!
+    with_lock do
+      increment(:sync_revision)
+      save!
+      yield kobo_tags, sync_revision
+    end
   end
 
   private

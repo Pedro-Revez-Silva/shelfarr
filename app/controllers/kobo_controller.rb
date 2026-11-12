@@ -167,6 +167,52 @@ class KoboController < ActionController::API
     render json: { Tags: [] }
   end
 
+  def create_tag
+    return proxy_store if coexisting?
+
+    body = bounded_json
+    return if performed?
+
+    items = KoboTag.items_from(body["Items"])
+    return head(:bad_request) unless body["Name"].is_a?(String) && items
+
+    tag = @device.change_tags! do |tags, revision|
+      tags.find_or_initialize_by(name: body["Name"]) { |created| created.assign_attributes(tag_id: SecureRandom.uuid, created_revision: revision) }
+        .tap { |found| found.update!(items: found.items | items, sync_revision: revision) }
+    end
+    render json: tag.tag_id.to_json, status: :created
+  rescue ActiveRecord::RecordInvalid
+    head :unprocessable_content
+  end
+
+  def update_tag
+    return proxy_store if coexisting?
+
+    if request.delete?
+      @device.kobo_tags.where(tag_id: params[:tag_id]).delete_all
+      return head(:ok)
+    end
+    body = bounded_json
+    return if performed?
+    return head(:bad_request) unless body["Name"].is_a?(String)
+
+    change_tag(:ok) { |tag| tag.name = body["Name"] }
+  end
+
+  def add_tag_items
+    change_tag_items(:created) { |tag, items| tag.items | items }
+  end
+
+  def remove_tag_items
+    change_tag_items(:ok) { |tag, items| tag.items - items }
+  end
+
+  def optional_store_resource
+    return proxy_store if coexisting?
+
+    render json: {}
+  end
+
   def unsupported
     return proxy_store if coexisting?
 
@@ -282,6 +328,31 @@ class KoboController < ActionController::API
     raise ActiveRecord::RecordNotFound unless found.deliverable?
 
     found
+  end
+
+  def change_tag_items(status)
+    return proxy_store if coexisting?
+
+    body = bounded_json
+    return if performed?
+
+    items = KoboTag.items_from(body["Items"])
+    return head(:bad_request) unless items
+
+    change_tag(status) { |tag| tag.items = yield(tag, items) }
+  end
+
+  def change_tag(status)
+    @device.change_tags! do |tags, revision|
+      tag = tags.find_by!(tag_id: params[:tag_id])
+      yield tag
+      tag.update!(sync_revision: revision)
+    end
+    head status
+  rescue ActiveRecord::RecordNotFound
+    head :not_found
+  rescue ActiveRecord::RecordInvalid
+    head :unprocessable_content
   end
 
   def bounded_json

@@ -620,7 +620,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
       post "#{@base}/v1/library/tags", params: body, as: :json
       assert_response :bad_request, body.inspect
     end
-    post "#{@base}/v1/library/tags", params: "{", headers: { "Content-Type" => "application/json" }
+    post "#{@base}/v1/library/tags", params: "{", headers: { "Content-Type" => "text/plain" }
     assert_response :bad_request
     post "#{@base}/v1/library/tags", params: { Name: "", Items: [] }, as: :json
     assert_response :unprocessable_content

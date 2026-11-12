@@ -13,10 +13,12 @@ class KoboSync
     # A Shelfarr place queued now gets a revision inside this sync's bounds.
     Kobo::OutboundProgress.refresh(@device)
     after, upper = cursor_bounds(raw_cursor)
-    deliveries = @device.kobo_deliveries.where(sync_revision: (after + 1)..upper).order(:sync_revision).limit(PAGE_SIZE + 1).to_a
-    more = deliveries.size > PAGE_SIZE
-    deliveries = deliveries.first(PAGE_SIZE)
-    next_after = more ? deliveries.last.sync_revision : upper
+    entries = changed(@device.kobo_deliveries, after, upper)
+    entries = (entries + changed(@device.kobo_tags, after, upper)).sort_by(&:sync_revision) unless @device.store_coexistence?
+    more = entries.size > PAGE_SIZE
+    entries = entries.first(PAGE_SIZE)
+    next_after = more ? entries.last.sync_revision : upper
+    tags, deliveries = entries.partition { |entry| entry.is_a?(KoboTag) }
     # A shared book whose grant ended is no longer announced. The cursor still
     # advances past it; no removal is sent, so a downloaded copy is untouched.
     deliveries = deliveries.select(&:deliverable?)
@@ -42,7 +44,7 @@ class KoboSync
     end
     Kobo::OutboundProgress.sent!(sent)
     @device.update_columns(last_sync_at: Time.current)
-    Result.new(items: items, token: token, more: more)
+    Result.new(items: items + tags.map { |tag| tag.sync_entry(after) }, token: token, more: more)
   end
 
   def metadata(delivery)
@@ -69,6 +71,10 @@ class KoboSync
   end
 
   private
+
+  def changed(scope, after, upper)
+    scope.where(sync_revision: (after + 1)..upper).order(:sync_revision).limit(PAGE_SIZE + 1).to_a
+  end
 
   def cursor_bounds(raw)
     payload = verifier.verified(raw.to_s, purpose: "kobo-sync") if raw.to_s.bytesize < 4096

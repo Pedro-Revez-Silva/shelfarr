@@ -46,4 +46,27 @@ class KoboSyncTest < ActiveSupport::TestCase
     @device.rotate_token!
     assert_equal 1, sync.call(cursor).items.size
   end
+
+  test "collections share the bounded pages and are announced once as new, then as changed" do
+    publication = KoboPublication.new(@book).snapshot
+    99.times do |index|
+      @device.kobo_deliveries.create!(entitlement_id: SecureRandom.uuid, revision_id: SecureRandom.uuid, sync_revision: index + 2, publication: publication)
+    end
+    @device.kobo_tags.create!(tag_id: "first", name: "First", created_revision: 1, sync_revision: 1)
+    @device.kobo_tags.create!(tag_id: "last", name: "Last", created_revision: 101, sync_revision: 101)
+    @device.update!(sync_revision: 101)
+    sync = KoboSync.new(@device, endpoint: @device.endpoint(@token))
+    first = sync.call(nil)
+    assert first.more
+    assert_equal [ [ "NewEntitlement", 99 ], [ "NewTag", 1 ] ], first.items.map { |item| item.keys.sole }.tally.to_a
+    assert_equal "First", first.items.last.dig("NewTag", "Tag", "Name")
+    second = sync.call(first.token)
+    assert_not second.more
+    assert_equal [ { "NewTag" => "Last" } ], second.items.map { |item| item.transform_values { |value| value.dig("Tag", "Name") } }
+
+    @device.change_tags! { |tags, revision| tags.find_by!(tag_id: "first").update!(name: "Renamed", sync_revision: revision) }
+    third = sync.call(second.token)
+    assert_equal [ { "ChangedTag" => "Renamed" } ], third.items.map { |item| item.transform_values { |value| value.dig("Tag", "Name") } }
+    assert_empty sync.call(third.token).items
+  end
 end

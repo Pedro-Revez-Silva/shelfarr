@@ -94,11 +94,20 @@ Rails.application.routes.draw do
     post "v1/auth/refresh", action: :auth
     get "v1/library/sync", action: :sync
     get "v1/library/tags", action: :tags
+    post "v1/library/tags", action: :create_tag
+    match "v1/library/tags/:tag_id", action: :update_tag, via: [ :put, :delete ]
+    post "v1/library/tags/:tag_id/items", action: :add_tag_items
+    post "v1/library/tags/:tag_id/items/delete", action: :remove_tag_items
     get "v1/library/:entitlement_id/metadata", action: :metadata
     match "v1/library/:entitlement_id/state", action: :state, via: [ :get, :put ]
     get "download/:entitlement_id/:revision_id", action: :download
     get ":entitlement_id/:width/:height/:greyscale/image.jpg", action: :cover
     get ":entitlement_id/:width/:height/:quality/:greyscale/image.jpg", action: :cover
+    %w[v1/user/profile v1/user/wishlist v1/user/loyalty/benefits v1/deals v1/affiliate].each do |path|
+      get path, action: :optional_store_resource
+    end
+    post "v1/analytics/gettests", action: :optional_store_resource
+    post "v1/analytics/event", action: :optional_store_resource
     # Unknown firmware endpoints must not produce a RoutingError containing
     # the unfiltered capability URL in its exception message.
     match "*unmatched", action: :unsupported, via: :all
