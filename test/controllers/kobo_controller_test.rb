@@ -45,7 +45,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
       "oauth_host" => "https://oauth.kobo.com", "blackstone_header" => { "key" => "x-amz-request-payer", "value" => "requester" }
     }, resources.slice(*%w[affiliaterequest user_profile get_tests_request post_analytics_event rename_tag use_one_store oauth_host blackstone_header]))
     assert_operator resources.size, :>=, 190
-    assert_equal [ endpoint ], resources.values.grep(/shelfarr/).map { |url| url[%r{\Ahttps://shelfarr\.example/kobo/\h{64}}] }.uniq
+    assert_equal %w[device_auth device_refresh image_host image_url_quality_template image_url_template library_metadata library_sync reading_state tags],
+      resources.select { |_, value| value.to_json.include?(@token) || value.to_json.include?("shelfarr") }.keys.sort
     assert_not_requested :any, /kobo\.com/
   end
 
@@ -306,6 +307,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
         "affiliaterequest" => "#{STORE}/v1/affiliate", "use_one_store" => "True" },
         resources.slice(*%w[device_auth device_refresh library_sync user_profile affiliaterequest use_one_store]))
       assert_operator resources.size, :>=, 190
+      assert_equal %w[device_auth device_refresh image_host image_url_quality_template image_url_template library_metadata library_sync reading_state tags],
+        resources.select { |_, value| value.to_json.include?(@token) }.keys.sort
       assert_nil response.headers["x-kobo-apitoken"]
       assert_equal "unavailable", @device.reload.store_status
     end
@@ -591,8 +594,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
 
     put "#{@base}/v1/library/tags/#{tag_id}", params: { Name: "Summer" }, as: :json
     assert_response :ok
-    2.times do
-      post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items("book-c") }, as: :json
+    [ "items", "Items" ].each do |items_path|
+      post "#{@base}/v1/library/tags/#{tag_id}/#{items_path}", params: { Items: tag_items("book-c") }, as: :json
       assert_response :created
     end
     2.times do
