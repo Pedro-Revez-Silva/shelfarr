@@ -25,6 +25,30 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal "no-referrer", response.headers["Referrer-Policy"]
   end
 
+  test "a Shelfarr-only reader receives Kobo's complete resource directory with Shelfarr's own resources in it" do
+    get "#{@base}/v1/initialization"
+    assert_response :success
+    resources = response.parsed_body.fetch("Resources")
+    endpoint = "https://shelfarr.example#{@base}"
+    assert_equal({
+      "library_sync" => "#{endpoint}/v1/library/sync", "library_metadata" => "#{endpoint}/v1/library/{Ids}/metadata",
+      "reading_state" => "#{endpoint}/v1/library/{Ids}/state", "device_auth" => "#{endpoint}/v1/auth/device",
+      "device_refresh" => "#{endpoint}/v1/auth/refresh", "image_host" => endpoint,
+      "image_url_template" => "#{endpoint}/{ImageId}/{Width}/{Height}/false/image.jpg",
+      "image_url_quality_template" => "#{endpoint}/{ImageId}/{Width}/{Height}/{Quality}/{IsGreyscale}/image.jpg",
+      "tags" => "#{endpoint}/v1/library/tags"
+    }, resources.slice(*%w[library_sync library_metadata reading_state device_auth device_refresh image_host image_url_template image_url_quality_template tags]))
+    assert_equal({
+      "affiliaterequest" => "https://storeapi.kobo.com/v1/affiliate", "user_profile" => "https://storeapi.kobo.com/v1/user/profile",
+      "get_tests_request" => "https://storeapi.kobo.com/v1/analytics/gettests", "post_analytics_event" => "https://storeapi.kobo.com/v1/analytics/event",
+      "rename_tag" => "https://storeapi.kobo.com/v1/library/tags/{TagId}", "use_one_store" => "True",
+      "oauth_host" => "https://oauth.kobo.com", "blackstone_header" => { "key" => "x-amz-request-payer", "value" => "requester" }
+    }, resources.slice(*%w[affiliaterequest user_profile get_tests_request post_analytics_event rename_tag use_one_store oauth_host blackstone_header]))
+    assert_operator resources.size, :>=, 190
+    assert_equal [ endpoint ], resources.values.grep(/shelfarr/).map { |url| url[%r{\Ahttps://shelfarr\.example/kobo/\h{64}}] }.uniq
+    assert_not_requested :any, /kobo\.com/
+  end
+
   test "all protocol routes require an active reader capability" do
     %w[v1/initialization v1/library/sync v1/library/tags].each do |path|
       get "/kobo/#{'0' * 64}/#{path}"
