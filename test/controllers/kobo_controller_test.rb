@@ -300,11 +300,21 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
       stub_request(:get, "#{STORE}/v1/initialization").to_return(**answer)
       get "#{@base}/v1/initialization", headers: kobo_headers
       assert_response :success
-      assert_equal "https://shelfarr.example#{@base}/v1/auth/device", response.parsed_body.dig("Resources", "device_auth")
+      resources = response.parsed_body.fetch("Resources")
+      assert_equal({ "device_auth" => "https://shelfarr.example#{@base}/v1/auth/device", "device_refresh" => "https://shelfarr.example#{@base}/v1/auth/refresh",
+        "library_sync" => "https://shelfarr.example#{@base}/v1/library/sync", "user_profile" => "#{STORE}/v1/user/profile",
+        "affiliaterequest" => "#{STORE}/v1/affiliate", "use_one_store" => "True" },
+        resources.slice(*%w[device_auth device_refresh library_sync user_profile affiliaterequest use_one_store]))
+      assert_operator resources.size, :>=, 190
+      assert_nil response.headers["x-kobo-apitoken"]
       assert_equal "unavailable", @device.reload.store_status
     end
     stub_request(:post, "#{STORE}/v1/auth/device").to_timeout
     post "#{@base}/v1/auth/device", params: { UserKey: "account" }, as: :json, headers: kobo_headers
+    assert_response :service_unavailable
+    assert_not response.body.include?("AccessToken")
+    stub_request(:post, "#{STORE}/v1/auth/refresh").to_timeout
+    post "#{@base}/v1/auth/refresh", params: { RefreshToken: "reader-refresh" }, as: :json, headers: kobo_headers
     assert_response :service_unavailable
     assert_not response.body.include?("AccessToken")
     assert_nil @device.reload.placeholder_auth_at
