@@ -177,7 +177,7 @@ class KoboController < ActionController::API
     return head(:bad_request) unless body["Name"].is_a?(String) && items
 
     tag = @device.change_tags! do |tags, revision|
-      tags.find_or_initialize_by(name: body["Name"]) { |created| created.assign_attributes(tag_id: SecureRandom.uuid, created_revision: revision) }
+      tags.find_or_initialize_by(name: body["Name"]) { |created| created.tag_id = SecureRandom.uuid }
         .tap { |found| found.update!(items: found.items | items, sync_revision: revision) }
     end
     render json: tag.tag_id.to_json, status: :created

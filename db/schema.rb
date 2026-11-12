@@ -497,7 +497,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
     t.string "tag_id", null: false
     t.string "name", null: false
     t.json "items", default: [], null: false
-    t.integer "created_revision", null: false
     t.integer "sync_revision", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false

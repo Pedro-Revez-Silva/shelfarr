@@ -47,26 +47,64 @@ class KoboSyncTest < ActiveSupport::TestCase
     assert_equal 1, sync.call(cursor).items.size
   end
 
-  test "collections share the bounded pages and are announced once as new, then as changed" do
+  def tag_names(result)
+    result.items.filter_map { |item| item.except("NewEntitlement").transform_values { |value| value.dig("Tag", "Name") }.presence }
+  end
+
+  def add_deliveries(count)
     publication = KoboPublication.new(@book).snapshot
-    99.times do |index|
-      @device.kobo_deliveries.create!(entitlement_id: SecureRandom.uuid, revision_id: SecureRandom.uuid, sync_revision: index + 2, publication: publication)
+    count.times do
+      @device.with_lock do
+        @device.increment!(:sync_revision)
+        @device.kobo_deliveries.create!(entitlement_id: SecureRandom.uuid, revision_id: SecureRandom.uuid, sync_revision: @device.sync_revision, publication: publication)
+      end
     end
-    @device.kobo_tags.create!(tag_id: "first", name: "First", created_revision: 1, sync_revision: 1)
-    @device.kobo_tags.create!(tag_id: "last", name: "Last", created_revision: 101, sync_revision: 101)
-    @device.update!(sync_revision: 101)
+  end
+
+  def change_tag(id, **attributes)
+    @device.change_tags! do |tags, revision|
+      tags.find_or_initialize_by(tag_id: id).tap { |tag| tag.update!(name: id, **attributes, sync_revision: revision) }
+    end
+  end
+
+  test "collections share the bounded pages and every announcement is a replayable new collection" do
+    change_tag("first")
+    add_deliveries(99)
+    change_tag("last")
     sync = KoboSync.new(@device, endpoint: @device.endpoint(@token))
     first = sync.call(nil)
     assert first.more
     assert_equal [ [ "NewEntitlement", 99 ], [ "NewTag", 1 ] ], first.items.map { |item| item.keys.sole }.tally.to_a
-    assert_equal "First", first.items.last.dig("NewTag", "Tag", "Name")
+    assert_equal [ { "NewTag" => "first" } ], tag_names(first)
     second = sync.call(first.token)
     assert_not second.more
-    assert_equal [ { "NewTag" => "Last" } ], second.items.map { |item| item.transform_values { |value| value.dig("Tag", "Name") } }
+    assert_equal [ { "NewTag" => "last" } ], tag_names(second)
 
-    @device.change_tags! { |tags, revision| tags.find_by!(tag_id: "first").update!(name: "Renamed", sync_revision: revision) }
+    change_tag("first", name: "Renamed")
     third = sync.call(second.token)
-    assert_equal [ { "ChangedTag" => "Renamed" } ], third.items.map { |item| item.transform_values { |value| value.dig("Tag", "Name") } }
+    assert_equal [ { "NewTag" => "Renamed" } ], tag_names(third)
     assert_empty sync.call(third.token).items
+  end
+
+  test "a collection edited past a page boundary is still announced as new in a full replay" do
+    change_tag("early")
+    add_deliveries(100)
+    change_tag("early", name: "Edited")
+    sync = KoboSync.new(@device, endpoint: @device.endpoint(@token))
+    first = sync.call(nil)
+    assert first.more
+    assert_empty tag_names(first)
+    assert_equal [ { "NewTag" => "Edited" } ], tag_names(sync.call(first.token))
+  end
+
+  test "a collection edited between pages of a snapshot is announced as new on the next sync" do
+    add_deliveries(100)
+    change_tag("late")
+    sync = KoboSync.new(@device, endpoint: @device.endpoint(@token))
+    first = sync.call(nil)
+    change_tag("late", name: "Edited")
+    second = sync.call(first.token)
+    assert_empty tag_names(second)
+    assert_equal [ { "NewTag" => "Edited" } ], tag_names(sync.call(second.token))
   end
 end

@@ -25,10 +25,9 @@ class KoboTag < ApplicationRecord
     items.uniq
   end
 
-  def sync_entry(after)
-    tag = { "Created" => created_at.utc.iso8601(3), "Id" => tag_id, "Items" => items, "LastModified" => updated_at.utc.iso8601(3),
-      "Name" => name, "Type" => "UserTag" }
-    { (created_revision > after ? "NewTag" : "ChangedTag") => { "Tag" => tag } }
+  def sync_entry
+    { "NewTag" => { "Tag" => { "Created" => created_at.utc.iso8601(3), "Id" => tag_id, "Items" => items,
+      "LastModified" => updated_at.utc.iso8601(3), "Name" => name, "Type" => "UserTag" } } }
   end
 
   private

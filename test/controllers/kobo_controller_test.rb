@@ -567,7 +567,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     end
     changed, cursor = synced_tags(cursor)
     assert_equal({ "Id" => tag_id, "Name" => "Summer", "Type" => "UserTag", "Items" => tag_items("book-b", "book-c") },
-      changed.sole.fetch("ChangedTag").fetch("Tag").slice("Id", "Name", "Type", "Items"))
+      changed.sole.fetch("NewTag").fetch("Tag").slice("Id", "Name", "Type", "Items"))
     assert_equal [], synced_tags(cursor).first
     assert_equal "Summer", synced_tags.first.sole.fetch("NewTag").fetch("Tag").fetch("Name")
 
@@ -638,7 +638,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal({ "name" => "Kept", "items" => [] }, @device.kobo_tags.sole.attributes.slice("name", "items"))
     assert_equal revision, @device.reload.sync_revision
 
-    (KoboTag::MAX_PER_DEVICE - 1).times { |index| @device.kobo_tags.create!(tag_id: SecureRandom.uuid, name: "T#{index}", created_revision: 1, sync_revision: 1) }
+    (KoboTag::MAX_PER_DEVICE - 1).times { |index| @device.kobo_tags.create!(tag_id: SecureRandom.uuid, name: "T#{index}", sync_revision: 1) }
     post "#{@base}/v1/library/tags", params: { Name: "One too many", Items: [] }, as: :json
     assert_response :unprocessable_content
     post "#{@base}/v1/library/tags", params: { Name: "Kept", Items: tag_items("book-a") }, as: :json

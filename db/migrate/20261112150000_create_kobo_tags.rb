@@ -5,7 +5,6 @@ class CreateKoboTags < ActiveRecord::Migration[8.1]
       t.string :tag_id, null: false
       t.string :name, null: false
       t.json :items, null: false, default: []
-      t.integer :created_revision, null: false
       t.integer :sync_revision, null: false
       t.timestamps
     end

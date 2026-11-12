@@ -44,7 +44,7 @@ class KoboSync
     end
     Kobo::OutboundProgress.sent!(sent)
     @device.update_columns(last_sync_at: Time.current)
-    Result.new(items: items + tags.map { |tag| tag.sync_entry(after) }, token: token, more: more)
+    Result.new(items: items + tags.map(&:sync_entry), token: token, more: more)
   end
 
   def metadata(delivery)
