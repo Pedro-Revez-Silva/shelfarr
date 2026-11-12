@@ -22,7 +22,7 @@ class KoboController < ActionController::API
   def initialization
     unless coexisting?
       headers["x-kobo-apitoken"] = "e30="
-      return render json: { Resources: STORE_RESOURCES.merge(local_resources) }
+      return render json: { Resources: resource_directory }
     end
 
     response = store_request(path: "/v1/initialization")
@@ -39,7 +39,7 @@ class KoboController < ActionController::API
     # Local books still sync. Sign-in resources point at Shelfarr's relay,
     # which never issues placeholder credentials in this mode.
     @device.update_columns(store_status: "unavailable", store_checked_at: Time.current)
-    render json: { Resources: local_resources }
+    render json: { Resources: resource_directory }
   rescue Kobo::StoreProxy::InvalidRequest
     head :not_found
   end
@@ -251,6 +251,10 @@ class KoboController < ActionController::API
       "image_url_quality_template" => "#{base}/{ImageId}/{Width}/{Height}/{Quality}/{IsGreyscale}/image.jpg",
       "tags" => "#{base}/v1/library/tags"
     }
+  end
+
+  def resource_directory
+    STORE_RESOURCES.merge(local_resources)
   end
 
   # The path after this reader's capability prefix, which never reaches Kobo.
