@@ -376,7 +376,8 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     get "#{@base}/0c5b1e4e-1111-4b8a-9d6c-000000000001/150/200/false/image.jpg"
     assert_response :not_found
     get "#{@base}/v1/user/profile", headers: kobo_headers
-    assert_response :not_found
+    assert_response :success
+    assert_equal({}, response.parsed_body)
     get "#{@base}/v1/library/store-book/metadata"
     assert_response :not_found
     assert_not_requested :any, /kobo\.com/
@@ -392,7 +393,7 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     post "#{@base}/v1/analytics/event", params: { DeviceId: "private-device-id", SerialNumber: "private-serial" }.to_json,
       headers: kobo_headers.merge("Content-Type" => "application/json")
     assert_response :internal_server_error
-    assert_includes output.string, "Processing by KoboController#unsupported", "the controller log is captured"
+    assert_includes output.string, "Processing by KoboController#optional_store_resource", "the controller log is captured"
     [ @token, "reader-own-kobo", "private-device-id", "private-serial", "provider-private-detail" ].each do |secret|
       assert_not_includes output.string, secret
     end
@@ -491,5 +492,192 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_not_requested :any, %r{\A#{Regexp.escape(STORE)}/v1/library/.*/state}
     assert_not_requested :post, %r{\A#{Regexp.escape(STORE)}/}
     assert_not_requested :put, %r{\A#{Regexp.escape(STORE)}/}
+  end
+
+  def tag_items(*revision_ids)
+    revision_ids.map { |id| { "RevisionId" => id, "Type" => "ProductRevisionTagItem" } }
+  end
+
+  def synced_tags(cursor = nil)
+    get "#{@base}/v1/library/sync", headers: cursor ? { "X-Kobo-Synctoken" => cursor } : {}
+    assert_response :success
+    [ response.parsed_body.select { |item| item.key?("NewTag") || item.key?("ChangedTag") }, response.headers.fetch("x-kobo-synctoken") ]
+  end
+
+  test "a Shelfarr-only reader without a Kobo Store account completes every request of its sync" do
+    post "#{@base}/v1/auth/device", params: { UserKey: "reader-key" }, as: :json
+    assert_response :success
+    get "#{@base}/v1/initialization"
+    assert_response :success
+    %w[v1/affiliate v1/user/profile v1/user/loyalty/benefits v1/deals v1/user/wishlist].each do |path|
+      get "#{@base}/#{path}", headers: kobo_headers
+      assert_response :success, path
+      assert_equal({}, response.parsed_body, path)
+    end
+    assert_no_changes -> { [ @device.reload.attributes, @delivery.reload.attributes ] } do
+      post "#{@base}/v1/analytics/gettests", params: { "Tests" => {} }.to_json, headers: kobo_headers.merge("Content-Type" => "application/json")
+      assert_equal({}, response.parsed_body)
+      62.times do
+        post "#{@base}/v1/analytics/event", params: { Events: [ { EventType: "PageTurn", SerialNumber: "private-serial" } ] }.to_json,
+          headers: kobo_headers.merge("Content-Type" => "application/json")
+        assert_response :success
+        assert_equal({}, response.parsed_body)
+      end
+    end
+    post "#{@base}/v1/library/tags", params: { Name: "Holiday", Items: tag_items(@delivery.revision_id) }, as: :json
+    assert_response :created
+    tag_id = response.parsed_body
+    assert_match(/\A\h{8}-\h{4}-\h{4}-\h{4}-\h{12}\z/, tag_id)
+    post "#{@base}/v1/library/tags", params: { Name: "Unread", Items: [] }, as: :json
+    assert_response :created
+
+    get "#{@base}/v1/library/sync"
+    assert_response :success
+    assert_equal @delivery.entitlement_id, response.parsed_body.first.fetch("NewEntitlement").fetch("BookEntitlement").fetch("Id")
+    tags = response.parsed_body.drop(1).map { |item| item.fetch("NewTag").fetch("Tag") }
+    assert_equal [ "Holiday", "Unread" ], tags.map { |tag| tag.fetch("Name") }
+    assert_equal({ "Id" => tag_id, "Name" => "Holiday", "Type" => "UserTag", "Items" => tag_items(@delivery.revision_id) },
+      tags.first.slice("Id", "Name", "Type", "Items"))
+    get "#{@base}/v1/library/#{@delivery.entitlement_id}/metadata"
+    assert_response :success
+    get "#{@base}/download/#{@delivery.entitlement_id}/#{@delivery.revision_id}"
+    assert_response :success
+    assert_not_requested :any, /kobo\.com/
+  end
+
+  test "collections persist on this reader, survive retries and edits, and come back in a full sync" do
+    post "#{@base}/v1/library/tags", params: { Name: "Holiday", Items: tag_items("book-a") }, as: :json
+    assert_response :created
+    tag_id = response.parsed_body
+    _, cursor = synced_tags
+    post "#{@base}/v1/library/tags", params: { Name: "Holiday", Items: tag_items("book-a", "book-b") }, as: :json
+    assert_response :created
+    assert_equal tag_id, response.parsed_body, "a retried create keeps one collection"
+    assert_equal 1, @device.kobo_tags.count
+
+    put "#{@base}/v1/library/tags/#{tag_id}", params: { Name: "Summer" }, as: :json
+    assert_response :ok
+    2.times do
+      post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items("book-c") }, as: :json
+      assert_response :created
+    end
+    2.times do
+      post "#{@base}/v1/library/tags/#{tag_id}/items/delete", params: { Items: tag_items("book-a") }, as: :json
+      assert_response :ok
+    end
+    changed, cursor = synced_tags(cursor)
+    assert_equal({ "Id" => tag_id, "Name" => "Summer", "Type" => "UserTag", "Items" => tag_items("book-b", "book-c") },
+      changed.sole.fetch("ChangedTag").fetch("Tag").slice("Id", "Name", "Type", "Items"))
+    assert_equal [], synced_tags(cursor).first
+    assert_equal "Summer", synced_tags.first.sole.fetch("NewTag").fetch("Tag").fetch("Name")
+
+    2.times do
+      delete "#{@base}/v1/library/tags/#{tag_id}"
+      assert_response :ok
+    end
+    assert_equal [], synced_tags.first
+    put "#{@base}/v1/library/tags/#{tag_id}", params: { Name: "Again" }, as: :json
+    assert_response :not_found
+    post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items("book-a") }, as: :json
+    assert_response :not_found
+    assert_equal 0, @device.kobo_tags.count
+  end
+
+  test "collections belong to one reader and end with its connection" do
+    post "#{@base}/v1/library/tags", params: { Name: "Mine", Items: tag_items("book-a") }, as: :json
+    assert_response :created
+    tag_id = response.parsed_body
+    other, token = KoboDevice.issue(user: users(:two), name: "Other Kobo", base_url: @device.base_url)
+    other.save!
+    get "/kobo/#{token}/v1/library/sync"
+    assert_equal [], response.parsed_body
+    put "/kobo/#{token}/v1/library/tags/#{tag_id}", params: { Name: "Taken" }, as: :json
+    assert_response :not_found
+    post "/kobo/#{token}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items("book-x") }, as: :json
+    assert_response :not_found
+    delete "/kobo/#{token}/v1/library/tags/#{tag_id}"
+    assert_response :ok
+    post "/kobo/#{token}/v1/library/tags", params: { Name: "Mine", Items: [] }, as: :json
+    assert_not_equal tag_id, response.parsed_body
+    assert_equal({ "name" => "Mine", "items" => tag_items("book-a") }, @device.kobo_tags.sole.attributes.slice("name", "items"))
+
+    @device.rotate_token!
+    post "#{@base}/v1/library/tags", params: { Name: "Late", Items: [] }, as: :json
+    assert_response :unauthorized
+    @device.destroy!
+    assert_equal 0, KoboTag.where(kobo_device_id: @device.id).count
+    assert_equal 1, other.kobo_tags.count
+  end
+
+  test "malformed, oversized and unbounded collection writes change nothing" do
+    post "#{@base}/v1/library/tags", params: { Name: "Kept", Items: [] }, as: :json
+    assert_response :created
+    tag_id = response.parsed_body
+    revision = @device.reload.sync_revision
+    [ {}, { Name: "No items" }, { Items: [] }, { Name: 7, Items: [] }, { Name: "Bad", Items: "x" },
+      { Name: "Bad", Items: [ "x" ] }, { Name: "Bad", Items: [ { Type: "ProductRevisionTagItem" } ] },
+      { Name: "Bad", Items: [ { RevisionId: "../x", Type: "ProductRevisionTagItem" } ] } ].each do |body|
+      post "#{@base}/v1/library/tags", params: body, as: :json
+      assert_response :bad_request, body.inspect
+    end
+    post "#{@base}/v1/library/tags", params: "{", headers: { "Content-Type" => "application/json" }
+    assert_response :bad_request
+    post "#{@base}/v1/library/tags", params: { Name: "", Items: [] }, as: :json
+    assert_response :unprocessable_content
+    post "#{@base}/v1/library/tags", params: { Name: "x" * 256, Items: [] }, as: :json
+    assert_response :unprocessable_content
+    put "#{@base}/v1/library/tags/#{tag_id}", params: { Items: [] }, as: :json
+    assert_response :bad_request
+    post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Name: "x" }, as: :json
+    assert_response :bad_request
+    post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items("a" * 40) * 2 }.to_json + (" " * 65_536),
+      headers: { "Content-Type" => "application/json" }
+    assert_response :content_too_large
+    post "#{@base}/v1/library/tags/#{tag_id}/items", params: { Items: tag_items(*Array.new(KoboTag::MAX_ITEMS + 1) { |index| "b#{index}" }) }, as: :json
+    assert_response :unprocessable_content
+    assert_equal({ "name" => "Kept", "items" => [] }, @device.kobo_tags.sole.attributes.slice("name", "items"))
+    assert_equal revision, @device.reload.sync_revision
+
+    (KoboTag::MAX_PER_DEVICE - 1).times { |index| @device.kobo_tags.create!(tag_id: SecureRandom.uuid, name: "T#{index}", created_revision: 1, sync_revision: 1) }
+    post "#{@base}/v1/library/tags", params: { Name: "One too many", Items: [] }, as: :json
+    assert_response :unprocessable_content
+    post "#{@base}/v1/library/tags", params: { Name: "Kept", Items: tag_items("book-a") }, as: :json
+    assert_response :created
+    assert_equal KoboTag::MAX_PER_DEVICE, @device.kobo_tags.count
+  end
+
+  test "requests Shelfarr does not support stay unsupported for a Shelfarr-only reader" do
+    [ [ :get, "v1/products/featured/x" ], [ :post, "v1/user/profile" ], [ :put, "v1/user/wishlist" ], [ :get, "v1/analytics/event" ],
+      [ :patch, "v1/library/tags/x" ], [ :delete, "v1/library/tags" ], [ :get, "v1/library/tags/x/items" ], [ :delete, "v1/library/#{@delivery.entitlement_id}" ] ].each do |verb, path|
+      send(verb, "#{@base}/#{path}")
+      assert_response :not_found, "#{verb} #{path}"
+    end
+    assert_not_requested :any, /kobo\.com/
+  end
+
+  test "coexistence still relays collections and optional Store requests to the reader's own Kobo account" do
+    post "#{@base}/v1/library/tags", params: { Name: "Kept here", Items: [] }, as: :json
+    assert_response :created
+    coexist!
+    created = stub_request(:post, "#{STORE}/v1/library/tags").to_return(status: 201, headers: { "Content-Type" => "application/json" }, body: '"store-tag"')
+    renamed = stub_request(:put, "#{STORE}/v1/library/tags/store-tag").to_return(status: 200)
+    added = stub_request(:post, "#{STORE}/v1/library/tags/store-tag/items").to_return(status: 201)
+    profile = stub_request(:get, "#{STORE}/v1/user/profile").to_return(headers: { "Content-Type" => "application/json" }, body: '{"Name":"Store"}')
+    post "#{@base}/v1/library/tags", params: { Name: "Store", Items: [] }.to_json, headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_response :created
+    assert_equal "store-tag", response.parsed_body
+    put "#{@base}/v1/library/tags/store-tag", params: { Name: "Renamed" }.to_json, headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_response :ok
+    post "#{@base}/v1/library/tags/store-tag/items", params: { Items: [] }.to_json, headers: kobo_headers.merge("Content-Type" => "application/json")
+    assert_response :created
+    get "#{@base}/v1/user/profile", headers: kobo_headers
+    assert_equal({ "Name" => "Store" }, response.parsed_body)
+    [ created, renamed, added, profile ].each { |stub| assert_requested stub }
+
+    stub_request(:get, "#{STORE}/v1/library/sync").to_return(headers: { "Content-Type" => "application/json" }, body: "[]")
+    get "#{@base}/v1/library/sync", headers: kobo_headers
+    assert_equal [ "NewEntitlement" ], response.parsed_body.flat_map(&:keys), "collections kept in Shelfarr-only mode are not merged into the Store's"
+    @device.update!(store_coexistence: false)
+    assert_equal [ "Kept here" ], synced_tags.first.map { |item| item.fetch("NewTag").fetch("Tag").fetch("Name") }
   end
 end
