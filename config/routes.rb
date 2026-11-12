@@ -97,6 +97,7 @@ Rails.application.routes.draw do
     post "v1/library/tags", action: :create_tag
     match "v1/library/tags/:tag_id", action: :update_tag, via: [ :put, :delete ]
     post "v1/library/tags/:tag_id/items", action: :add_tag_items
+    post "v1/library/tags/:tag_id/Items", action: :add_tag_items
     post "v1/library/tags/:tag_id/items/delete", action: :remove_tag_items
     get "v1/library/:entitlement_id/metadata", action: :metadata
     match "v1/library/:entitlement_id/state", action: :state, via: [ :get, :put ]
