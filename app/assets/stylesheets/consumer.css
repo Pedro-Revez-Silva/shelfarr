@@ -65,6 +65,8 @@
 .consumer-button { display:inline-block; padding:12px 20px; border-radius:30px; background:var(--accent); color:var(--paper)!important; font-weight:600; font-size:13px; border:0; }
 .consumer-button--subtle { background:transparent; color:var(--ink)!important; border:1px solid var(--line); }
 .consumer-pagination { text-align:center; margin-top:40px; }
+.consumer-app-links { display:flex; flex-wrap:wrap; justify-content:center; gap:12px; }
+@media (display-mode:standalone) { .consumer-home-screen-link { display:none; } }
 .consumer-empty { text-align:center; padding:70px 16px; border:1px dashed var(--line); border-radius:16px; }
 .consumer-empty > span { font-size:36px; color:var(--accent); display:block; margin-bottom:20px; }
 .consumer-empty h3,.consumer-empty h2 { font-family:Newsreader,Georgia,serif; font-weight:400; font-size:27px; }

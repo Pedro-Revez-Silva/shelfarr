@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="color-scheme" content="light dark">
     <meta name="turbo-cache-control" content="no-cache">
+    <%= render "shared/web_app_head" %>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBF7F0">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130F">
     <%= csrf_meta_tags %>
     <%= csp_meta_tag %>
     <%= stylesheet_link_tag "consumer", "data-turbo-track": "reload" %>

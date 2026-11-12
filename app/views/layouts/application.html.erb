@@ -12,10 +12,10 @@
 
     <%= yield :head %>
 
-    <%#= tag.link rel: "manifest", href: pwa_manifest_path(format: :json) %>
+    <%= render "shared/web_app_head" %>
+    <meta name="theme-color" content="#030712">
 
     <link rel="icon" href="<%= public_asset_path('icon.png') %>" type="image/png">
-    <link rel="apple-touch-icon" href="<%= public_asset_path('icon.png') %>">
 
     <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
     <%= javascript_importmap_tags %>

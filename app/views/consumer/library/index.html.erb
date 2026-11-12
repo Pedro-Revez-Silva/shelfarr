@@ -70,6 +70,9 @@
   <% end %>
 </section>
 
-<% if (android_page = android_app_page_path) %>
-  <div class="consumer-pagination"><%= link_to "Get the Android app", android_page, class: "consumer-button consumer-button--subtle" %></div>
-<% end %>
+<div class="consumer-pagination consumer-app-links">
+  <%= link_to "Add Shelfarr to your home screen", profile_path(anchor: "home-screen"), class: "consumer-button consumer-button--subtle consumer-home-screen-link" %>
+  <% if (android_page = android_app_page_path) %>
+    <%= link_to "Get the Android app", android_page, class: "consumer-button consumer-button--subtle" %>
+  <% end %>
+</div>

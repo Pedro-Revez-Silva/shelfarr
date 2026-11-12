@@ -553,6 +553,20 @@ own timeout before the shell appears. Automated browser tests cover Chromium;
 Safari and Firefox apply their own storage and service-worker policies and have
 not been verified on devices.
 
+**Home screen app.** `<subpath>/manifest.webmanifest` is public and the same for
+every visitor. Its `id` and `scope` are `<subpath>/` and it starts at
+`<subpath>/read`, so an installed copy opens the library, or the offline shell
+when the server can't be reached and books were downloaded. Every layout links
+it. It adds no service worker: the reader worker above stays the only one, is
+registered after the first download and answers only the requests listed above.
+**Account → Shelfarr on your home screen** shows **Install Shelfarr** only while
+the browser offers installation (`beforeinstallprompt`), steps for Chrome on
+Android and Safari on iPhone and iPad otherwise, and reports Shelfarr as installed
+only after the browser's `appinstalled` event. A window opened from the home
+screen doesn't offer installation again. An installed copy has the same browser
+storage limits: it doesn't download in the background or receive notifications,
+and on iPhone and iPad it may ask for its own sign-in.
+
 The browser engine is checked in at `vendor/javascript/consumer_reader_engine.js`.
 Production does not install JavaScript packages or fetch reader code from a CDN.
 To reproduce it with Bun 1.4.4:

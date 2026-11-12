@@ -6,6 +6,9 @@
     <meta name="color-scheme" content="light dark">
     <meta name="turbo-visit-control" content="reload">
     <meta name="turbo-cache-control" content="no-cache">
+    <%= render "shared/web_app_head" %>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBF7F0">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130F">
     <%# No session token is cached: the shell asks for one once it is back online. %>
     <meta name="csrf-param" content="authenticity_token">
     <meta name="csrf-token" content="">

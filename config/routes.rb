@@ -183,6 +183,7 @@ Rails.application.routes.draw do
   get "apps/android/:channel/:file", to: "android_app_files#apk", as: :android_app_apk,
     format: false, constraints: { channel: /release|development/, file: /[1-9]\d{0,9}-[0-9a-f]{64}\.apk/ }
 
+  get "manifest.webmanifest", to: "web_app_manifests#show", as: :web_app_manifest, format: false
   get "consumer/connect", to: "consumer/connections#show", as: :consumer_connect
   post "consumer/connect", to: "consumer/connections#create"
   get "read-offline-worker.js", to: "consumer/offline#worker", as: :consumer_offline_worker, format: false
