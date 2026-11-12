@@ -249,7 +249,18 @@ class KoboController < ActionController::API
       "image_host" => base,
       "image_url_template" => "#{base}/{ImageId}/{Width}/{Height}/false/image.jpg",
       "image_url_quality_template" => "#{base}/{ImageId}/{Width}/{Height}/{Quality}/{IsGreyscale}/image.jpg",
-      "tags" => "#{base}/v1/library/tags"
+      "tags" => "#{base}/v1/library/tags",
+      "rename_tag" => "#{base}/v1/library/tags/{TagId}",
+      "delete_tag" => "#{base}/v1/library/tags/{TagId}",
+      "tag_items" => "#{base}/v1/library/tags/{TagId}/items",
+      "delete_tag_items" => "#{base}/v1/library/tags/{TagId}/items/delete",
+      "user_profile" => "#{base}/v1/user/profile",
+      "user_wishlist" => "#{base}/v1/user/wishlist",
+      "user_loyalty_benefits" => "#{base}/v1/user/loyalty/benefits",
+      "deals" => "#{base}/v1/deals",
+      "affiliaterequest" => "#{base}/v1/affiliate",
+      "get_tests_request" => "#{base}/v1/analytics/gettests",
+      "post_analytics_event" => "#{base}/v1/analytics/event"
     }
   end
 
