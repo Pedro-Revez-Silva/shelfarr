@@ -25,6 +25,10 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_equal "no-referrer", response.headers["Referrer-Policy"]
   end
 
+  SHELFARR_RESOURCES = %w[affiliaterequest deals delete_tag delete_tag_items device_auth device_refresh get_tests_request image_host
+    image_url_quality_template image_url_template library_metadata library_sync post_analytics_event reading_state rename_tag tag_items tags
+    user_loyalty_benefits user_profile user_wishlist].freeze
+
   test "a Shelfarr-only reader receives Kobo's complete resource directory with Shelfarr's own resources in it" do
     get "#{@base}/v1/initialization"
     assert_response :success
@@ -39,14 +43,11 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
       "tags" => "#{endpoint}/v1/library/tags"
     }, resources.slice(*%w[library_sync library_metadata reading_state device_auth device_refresh image_host image_url_template image_url_quality_template tags]))
     assert_equal({
-      "affiliaterequest" => "https://storeapi.kobo.com/v1/affiliate", "user_profile" => "https://storeapi.kobo.com/v1/user/profile",
-      "get_tests_request" => "https://storeapi.kobo.com/v1/analytics/gettests", "post_analytics_event" => "https://storeapi.kobo.com/v1/analytics/event",
-      "rename_tag" => "https://storeapi.kobo.com/v1/library/tags/{TagId}", "use_one_store" => "True",
-      "oauth_host" => "https://oauth.kobo.com", "blackstone_header" => { "key" => "x-amz-request-payer", "value" => "requester" }
-    }, resources.slice(*%w[affiliaterequest user_profile get_tests_request post_analytics_event rename_tag use_one_store oauth_host blackstone_header]))
+      "add_device" => "https://storeapi.kobo.com/v1/user/add-device", "exchange_auth" => "https://storeapi.kobo.com/v1/auth/exchange",
+      "use_one_store" => "True", "oauth_host" => "https://oauth.kobo.com", "blackstone_header" => { "key" => "x-amz-request-payer", "value" => "requester" }
+    }, resources.slice(*%w[add_device exchange_auth use_one_store oauth_host blackstone_header]))
     assert_operator resources.size, :>=, 190
-    assert_equal %w[device_auth device_refresh image_host image_url_quality_template image_url_template library_metadata library_sync reading_state tags],
-      resources.select { |_, value| value.to_json.include?(@token) || value.to_json.include?("shelfarr") }.keys.sort
+    assert_equal SHELFARR_RESOURCES, resources.select { |_, value| value.to_json.include?(@token) || value.to_json.include?("shelfarr") }.keys.sort
     assert_not_requested :any, /kobo\.com/
   end
 
@@ -303,12 +304,11 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
       assert_response :success
       resources = response.parsed_body.fetch("Resources")
       assert_equal({ "device_auth" => "https://shelfarr.example#{@base}/v1/auth/device", "device_refresh" => "https://shelfarr.example#{@base}/v1/auth/refresh",
-        "library_sync" => "https://shelfarr.example#{@base}/v1/library/sync", "user_profile" => "#{STORE}/v1/user/profile",
-        "affiliaterequest" => "#{STORE}/v1/affiliate", "use_one_store" => "True" },
-        resources.slice(*%w[device_auth device_refresh library_sync user_profile affiliaterequest use_one_store]))
+        "library_sync" => "https://shelfarr.example#{@base}/v1/library/sync", "user_profile" => "https://shelfarr.example#{@base}/v1/user/profile",
+        "exchange_auth" => "#{STORE}/v1/auth/exchange", "use_one_store" => "True" },
+        resources.slice(*%w[device_auth device_refresh library_sync user_profile exchange_auth use_one_store]))
       assert_operator resources.size, :>=, 190
-      assert_equal %w[device_auth device_refresh image_host image_url_quality_template image_url_template library_metadata library_sync reading_state tags],
-        resources.select { |_, value| value.to_json.include?(@token) }.keys.sort
+      assert_equal SHELFARR_RESOURCES, resources.select { |_, value| value.to_json.include?(@token) }.keys.sort
       assert_nil response.headers["x-kobo-apitoken"]
       assert_equal "unavailable", @device.reload.store_status
     end
@@ -579,6 +579,42 @@ class KoboControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     get "#{@base}/download/#{@delivery.entitlement_id}/#{@delivery.revision_id}"
     assert_response :success
+    assert_not_requested :any, /kobo\.com/
+  end
+
+  def directory_path(resources, key, **values)
+    url = values.reduce(resources.fetch(key)) { |template, (name, value)| template.sub("{#{name}}", value) }
+    assert url.start_with?("https://shelfarr.example#{@base}/"), "#{key} points at this reader's Shelfarr address"
+    url.delete_prefix("https://shelfarr.example")
+  end
+
+  test "a Shelfarr-only reader that follows its resource directory reaches Shelfarr for every collection and optional request" do
+    get "#{@base}/v1/initialization"
+    resources = response.parsed_body.fetch("Resources")
+    post directory_path(resources, "tags"), params: { Name: "Directory", Items: [] }, as: :json
+    assert_response :created
+    tag_id = response.parsed_body
+    post directory_path(resources, "tag_items", TagId: tag_id), params: { Items: tag_items("book-a", "book-b") }, as: :json
+    assert_response :created
+    post directory_path(resources, "delete_tag_items", TagId: tag_id), params: { Items: tag_items("book-a") }, as: :json
+    assert_response :ok
+    put directory_path(resources, "rename_tag", TagId: tag_id), params: { Name: "Renamed" }, as: :json
+    assert_response :ok
+    assert_equal({ "Name" => "Renamed", "Items" => tag_items("book-b") }, synced_tags.first.sole.fetch("NewTag").fetch("Tag").slice("Name", "Items"))
+    delete directory_path(resources, "delete_tag", TagId: tag_id)
+    assert_response :ok
+    assert_equal [], synced_tags.first
+
+    %w[user_profile user_wishlist user_loyalty_benefits deals affiliaterequest].each do |key|
+      get directory_path(resources, key)
+      assert_response :success, key
+      assert_equal({}, response.parsed_body, key)
+    end
+    %w[get_tests_request post_analytics_event].each do |key|
+      post directory_path(resources, key), params: {}, as: :json
+      assert_response :success, key
+      assert_equal({}, response.parsed_body, key)
+    end
     assert_not_requested :any, /kobo\.com/
   end
 
