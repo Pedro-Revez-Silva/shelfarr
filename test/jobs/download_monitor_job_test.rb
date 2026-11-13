@@ -55,10 +55,12 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     clear_enqueued_jobs
 
     assert_not DownloadMonitorJob.monitoring_required?
+    DownloadMonitorJob.perform_later
 
-    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+    enqueued = jobs_enqueued_during(DownloadMonitorJob) do
       DownloadMonitorJob.perform_now
     end
+    assert_equal 0, enqueued.size
   end
 
   test "does not enqueue another monitor after checking" do
@@ -758,11 +760,13 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
 
   test "ensure_running! does not enqueue when a protected monitor job is pending" do
     Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, 1.minute.ago.to_i)
+    DownloadMonitorJob.perform_later
 
     DownloadMonitorJob.stub(:monitor_job_pending?, true) do
-      assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+      enqueued = jobs_enqueued_during(DownloadMonitorJob) do
         DownloadMonitorJob.ensure_running!
       end
+      assert_equal 0, enqueued.size
     end
   end
 
@@ -804,10 +808,12 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   test "a scheduled run before the interval elapses does not monitor or enqueue" do
     SettingsService.set(:download_check_interval, 60)
     Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, Time.current)
+    DownloadMonitorJob.perform_later
 
-    assert_no_enqueued_jobs(only: DownloadMonitorJob) do
+    enqueued = jobs_enqueued_during(DownloadMonitorJob) do
       DownloadMonitorJob.perform_now(scheduled: true)
     end
+    assert_equal 0, enqueued.size
     assert_equal 50, @download.reload.progress
   end
 
@@ -1320,6 +1326,12 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
           }
         }.to_json
       )
+  end
+
+  def jobs_enqueued_during(job_class)
+    seen = enqueued_jobs.map { |job| job["job_id"] }
+    yield
+    enqueued_jobs.select { |job| job[:job] == job_class && !seen.include?(job["job_id"]) }
   end
 end
 
