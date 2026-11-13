@@ -121,6 +121,54 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal [ "Comics & Manga cannot be requested for book content" ], result.errors
   end
 
+  test "blocks an omitted-metadata request after the provider resolves an acquired book" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-hail-mary-resolved",
+      file_path: "/ebooks/project-hail-mary-resolved.epub"
+    )
+    details = GoogleBooksClient::BookDetails.new(
+      id: "2jiGzgEACAAJ",
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      description: "A novel about a last-ditch space mission.",
+      published_date: "2021-05-04",
+      cover_url: nil,
+      has_ebook: true,
+      language: "en",
+      page_count: 476,
+      categories: []
+    )
+    calls = 0
+    lookup = lambda do |volume_id|
+      calls += 1
+      assert_equal "2jiGzgEACAAJ", volume_id
+      details
+    end
+
+    result = GoogleBooksClient.stub(:book, lookup) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "google_books:2jiGzgEACAAJ",
+        book_types: [ "both" ],
+        metadata_attrs: {}
+      )
+    end
+
+    assert_equal 1, calls
+    assert_equal [ "audiobook" ], result.created_requests.map { |request| request.book.book_type }
+    audiobook = result.created_requests.first.book
+    assert_equal "Project Hail Mary", audiobook.title
+    assert_equal "Andy Weir", audiobook.author
+    assert_equal "A novel about a last-ditch space mission.", audiobook.description
+    assert_includes result.errors.join, "Project Hail Mary"
+    assert_includes result.errors.join, "already in your library"
+    assert_not_includes result.errors.join, "Audiobook"
+    assert_nil Book.find_by(google_books_id: "2jiGzgEACAAJ", book_type: :ebook)
+  end
+
   test "blocks a request for an acquired book known only by another provider" do
     Book.create!(
       title: "Project Hail Mary",
