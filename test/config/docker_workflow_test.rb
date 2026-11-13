@@ -139,7 +139,7 @@ class DockerWorkflowTest < ActiveSupport::TestCase
     assert commands.any? { |command| command.include?("dotnet restore") && command.include?("--locked-mode") }
     assert commands.any? { |command| command.include?("dotnet format") && command.include?("--verify-no-changes") }
     assert commands.any? { |command| command.include?("dotnet test") && command.include?("--no-restore") }
-    assert_equal "10.0.402", setup_step.dig("with", "dotnet-version")
+    assert_equal "10.0.404", setup_step.dig("with", "dotnet-version")
   end
 
   test "pull request CI keeps companion and container validation without publishing" do
@@ -178,22 +178,22 @@ class DockerWorkflowTest < ActiveSupport::TestCase
       "# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e"
     )
     assert_includes dockerfile,
-      "mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2"
+      "mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb"
     assert_includes dockerfile,
-      "rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db"
-    assert_includes dockerfile, "087c1076850d63f2ad172417535f3f0b025e722a"
-    assert_includes dockerfile, "Libation-14.2.0-source.tar.gz"
-    assert_includes dockerfile, "662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6"
-    assert_equal "10.0.402", sdk.dig("sdk", "version")
+      "rmcrackan/libation:14.2.5@sha256:7bb47a417311d154c6691747320d0b62ce15527280ad99f0e2a85ac9a6b07e40"
+    assert_includes dockerfile, "8003ae6f29ef28f057e1df994da13817dbdda670"
+    assert_includes dockerfile, "Libation-14.2.5-source.tar.gz"
+    assert_includes dockerfile, "c7f637fe147bb319aab5dfa337e060ed2cfea17e7ac3929297378e72a8a38fc4"
+    assert_equal "10.0.404", sdk.dig("sdk", "version")
     assert_equal "disable", sdk.dig("sdk", "rollForward")
     assert_equal Rails.root.join("LICENSE").binread, packaged_license
 
-    assert_includes notice, "Version: `14.2.0`"
+    assert_includes notice, "Version: `14.2.5`"
     assert_includes notice,
-      "Manifest digest: `sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db`"
-    assert_includes notice, "Source commit: `087c1076850d63f2ad172417535f3f0b025e722a`"
+      "Manifest digest: `sha256:7bb47a417311d154c6691747320d0b62ce15527280ad99f0e2a85ac9a6b07e40`"
+    assert_includes notice, "Source commit: `8003ae6f29ef28f057e1df994da13817dbdda670`"
     assert_includes notice,
-      "Source snapshot SHA-256: `662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6`"
+      "Source snapshot SHA-256: `c7f637fe147bb319aab5dfa337e060ed2cfea17e7ac3929297378e72a8a38fc4`"
   end
 
   test "release build helper images are pinned" do

@@ -13,20 +13,20 @@ Shelfarr source tag `vX.Y.Z`). A copy of its license is installed at
 
 ## Libation
 
-The Shelfarr Libation Companion is built on the pinned Libation container with its CLI rebuilt from the exact upstream source using the serviced .NET 10.0.13 runtime
+The Shelfarr Libation Companion is built on the pinned Libation container with its CLI rebuilt from the exact upstream source using the serviced .NET 10.0.15 runtime
 and invokes Libation through its command-line interface. Shelfarr and its
 companion are independent projects and are not affiliated with Audible or
 Amazon.
 
 - Project: [rmcrackan/Libation](https://github.com/rmcrackan/Libation)
-- Version: `14.2.0`
-- Image: `rmcrackan/libation:14.2.0`
-- Manifest digest: `sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db`
-- Source commit: `087c1076850d63f2ad172417535f3f0b025e722a`
-- License: [GNU General Public License v3.0](https://github.com/rmcrackan/Libation/blob/v14.2.0/LICENSE)
-- Source for the distributed version: [Libation v14.2.0](https://github.com/rmcrackan/Libation/tree/v14.2.0)
-- Source snapshot in this image: `/companion/SOURCES/Libation-14.2.0-source.tar.gz`
-- Source snapshot SHA-256: `662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6`
+- Version: `14.2.5`
+- Image: `rmcrackan/libation:14.2.5`
+- Manifest digest: `sha256:7bb47a417311d154c6691747320d0b62ce15527280ad99f0e2a85ac9a6b07e40`
+- Source commit: `8003ae6f29ef28f057e1df994da13817dbdda670`
+- License: [GNU General Public License v3.0](https://github.com/rmcrackan/Libation/blob/v14.2.5/LICENSE)
+- Source for the distributed version: [Libation v14.2.5](https://github.com/rmcrackan/Libation/tree/v14.2.5)
+- Source snapshot in this image: `/companion/SOURCES/Libation-14.2.5-source.tar.gz`
+- Source snapshot SHA-256: `c7f637fe147bb319aab5dfa337e060ed2cfea17e7ac3929297378e72a8a38fc4`
 - Documentation: [getlibation.com/docs](https://getlibation.com/docs)
 
 Libation is Copyright (C) its authors and contributors. The Shelfarr project

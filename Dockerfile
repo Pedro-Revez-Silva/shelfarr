@@ -20,7 +20,7 @@ ENV RAILS_ENV="production" \
     BUNDLE_WITHOUT="development" \
     LD_PRELOAD="/usr/local/lib/libjemalloc.so"
 
-FROM golang:1.27.3 AS thruster-build
+FROM golang:1.27.4 AS thruster-build
 WORKDIR /source
 RUN git init . && git remote add origin https://github.com/basecamp/thruster.git && \
     git fetch --depth 1 origin 97dd28dc956e79830ff82c3e435c7d2d56977720 && git checkout --detach FETCH_HEAD && \

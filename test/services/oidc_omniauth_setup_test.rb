@@ -55,6 +55,21 @@ class OidcOmniauthSetupTest < ActiveSupport::TestCase
       strategy.options.dig(:client_options, :redirect_uri)
   end
 
+  test "reads OIDC callback hosts from SHELFARR_ALLOWED_HOSTS" do
+    previous = ENV["SHELFARR_ALLOWED_HOSTS"]
+    ENV["SHELFARR_ALLOWED_HOSTS"] = " shelf.example.com, Shelf.Example.com , ,localhost "
+    assert_equal [ "shelf.example.com", "Shelf.Example.com", "localhost" ], OidcOmniauthSetup.allowed_hosts
+
+    ENV["SHELFARR_ALLOWED_HOSTS"] = nil
+    assert_empty OidcOmniauthSetup.allowed_hosts
+  ensure
+    if previous.nil?
+      ENV.delete("SHELFARR_ALLOWED_HOSTS")
+    else
+      ENV["SHELFARR_ALLOWED_HOSTS"] = previous
+    end
+  end
+
   test "does not build a provider redirect_uri when OIDC is not configured" do
     SettingsService.set(:oidc_enabled, false)
     strategy = FakeStrategy.new

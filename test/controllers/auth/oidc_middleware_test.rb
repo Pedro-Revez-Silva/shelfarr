@@ -68,6 +68,37 @@ class Auth::OidcMiddlewareTest < ActionDispatch::IntegrationTest
     assert_equal "https://shelf.example.com/books/auth/oidc/callback", params.fetch("redirect_uri")
   end
 
+  test "allow-list accepts the configured forwarded host" do
+    previous = OmniAuth.config.allowed_hosts
+    OmniAuth.config.allowed_hosts = [ "shelf.example.com" ]
+
+    post "/books/auth/oidc", headers: {
+      "X-Forwarded-Proto" => "https", "X-Forwarded-Host" => "Shelf.Example.com"
+    }
+
+    assert_response :redirect
+    params = Rack::Utils.parse_query(URI.parse(response.location).query)
+    assert_equal "https://Shelf.Example.com/books/auth/oidc/callback", params.fetch("redirect_uri")
+  ensure
+    OmniAuth.config.allowed_hosts = previous
+  end
+
+  test "allow-list rejects a forged forwarded host" do
+    previous = OmniAuth.config.allowed_hosts
+    OmniAuth.config.allowed_hosts = [ "shelf.example.com" ]
+
+    post "/books/auth/oidc", headers: {
+      "X-Forwarded-Proto" => "https", "X-Forwarded-Host" => "evil.example"
+    }
+
+    assert_response :redirect
+    assert_match %r{\A/books/auth/failure\?}, response.location
+    assert_includes response.location, "invalid_host"
+    refute_includes response.location, "evil.example"
+  ensure
+    OmniAuth.config.allowed_hosts = previous
+  end
+
   test "provider rejection returns through mounted failure route" do
     post "/books/auth/oidc"
     params = Rack::Utils.parse_query(URI.parse(response.location).query)

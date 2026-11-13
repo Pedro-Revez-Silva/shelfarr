@@ -39,7 +39,9 @@ def wait_for(description, timeout: 30)
 end
 
 def supervisors
-  SolidQueue::Process.uncached { SolidQueue::Process.where(kind: "Supervisor").pluck(:pid) }
+  SolidQueue::Process.uncached do
+    SolidQueue::Process.where(kind: [ "Supervisor", "Supervisor(fork)", "Supervisor(async)" ]).pluck(:pid)
+  end
 end
 
 def process_exists?(pid)
