@@ -31,16 +31,12 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a beta server is offered the newest beta or stable build and nothing else" do
+  test "a beta server is offered the highest beta or stable build whatever order GitHub lists the tags in" do
     use_release_channel("beta")
     VCR.turned_off do
-      stub_github_releases(
-        release("2026.11.30.1-beta", draft: true),
-        { "tag_name" => "android-release-v2026.12.1.1", "name" => "Android", "prerelease" => false },
-        release("2026.11.16.1-beta", prerelease: true),
-        release("2026.11.23.1"),
-        release("2026.11.09.1")
-      )
+      older = (1..1200).map { |number| "v2025.#{format('%02d', number % 12 + 1)}.#{format('%02d', number % 28 + 1)}.#{number}" }
+      stub_server_tags("v2026.11.23.1", *older, "v2026.11.16.1-beta", "v2026.11.30.1-rc", "v2026.12.01.1-beta-beta", "v2026.11.09.1")
+      stub_release_by_tag(release("2026.11.23.1"))
 
       UpdateCheckerService.stub(:current_version, "2026.11.16.1-beta") do
         result = UpdateCheckerService.check(force: true)
@@ -52,14 +48,11 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a beta server finds a newer build behind a full page of Android releases" do
+  test "a beta server is offered a newer beta build than any stable one" do
     use_release_channel("beta")
     VCR.turned_off do
-      android = (1..100).map do |number|
-        { "tag_name" => "android-release-v2026.11.13.#{number}", "name" => "Android", "draft" => false, "prerelease" => false }
-      end
-      stub_github_releases(*android)
-      stub_github_releases(release("2026.11.12.1-beta", prerelease: true), release("2026.11.09.1"), page: 2)
+      stub_server_tags("v2026.11.01.1-beta", "v2026.11.09.1", "v2026.11.12.1-beta")
+      stub_release_by_tag(release("2026.11.12.1-beta", prerelease: true))
 
       UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
         result = UpdateCheckerService.check(force: true)
@@ -67,34 +60,46 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
         assert result.update_available?
         assert_equal "2026.11.12.1-beta", result.latest_version
       end
-      assert_not_requested :get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=100&page=3"
     end
   end
 
-  test "a beta server with no server releases reads a bounded number of pages" do
+  test "a beta server is not told it is up to date when the newest tag has no published release" do
     use_release_channel("beta")
     VCR.turned_off do
-      android = (1..100).map { |number| { "tag_name" => "android-release-v2026.11.13.#{number}", "draft" => false } }
-      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases")
-        .with(query: hash_including("per_page" => "100"))
-        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: android.to_json)
+      stub_server_tags("v2026.11.09.1", "v2026.11.12.1-beta")
+      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases/tags/v2026.11.12.1-beta")
+        .to_return(status: 404, headers: { "Content-Type" => "application/json" }, body: { message: "Not Found" }.to_json)
 
       UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
         result = UpdateCheckerService.check(force: true)
 
         assert_not result.update_available?
-        assert_equal "No releases found", result.latest_message
+        assert_nil result.latest_version
+        assert_equal "Release v2026.11.12.1-beta is not published", result.latest_message
       end
-      assert_requested :get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases",
-        query: hash_including("per_page" => "100"), times: UpdateCheckerService::RELEASE_PAGE_LIMIT
+    end
+  end
+
+  test "a beta server reports a failed tag listing instead of an update result" do
+    use_release_channel("beta")
+    VCR.turned_off do
+      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/git/matching-refs/tags/v20")
+        .to_return(status: 403, headers: { "Content-Type" => "application/json" }, body: { message: "rate limited" }.to_json)
+
+      UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert_not result.update_available?
+        assert_equal "Could not list release tags (HTTP 403)", result.latest_message
+      end
     end
   end
 
   test "a beta server already on the newest build has no update" do
     use_release_channel("beta")
     VCR.turned_off do
-      stub_github_releases(release("2026.11.16.2-beta", prerelease: true), release("2026.11.16.1-beta", prerelease: true),
-        release("2026.11.09.1"))
+      stub_server_tags("v2026.11.16.2-beta", "v2026.11.16.1-beta", "v2026.11.09.1")
+      stub_release_by_tag(release("2026.11.16.2-beta", prerelease: true))
 
       UpdateCheckerService.stub(:current_version, "2026.11.16.2-beta") do
         result = UpdateCheckerService.check(force: true)
@@ -342,9 +347,15 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     }
   end
 
-  def stub_github_releases(*releases, page: 1)
-    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=100&page=#{page}")
-      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: releases.to_json)
+  def stub_server_tags(*tags)
+    refs = tags.map { |tag| { "ref" => "refs/tags/#{tag}", "object" => { "type" => "commit", "sha" => "0" * 40 } } }
+    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/git/matching-refs/tags/v20")
+      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: refs.to_json)
+  end
+
+  def stub_release_by_tag(release)
+    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases/tags/#{release.fetch('tag_name')}")
+      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: release.to_json)
   end
 
   def stub_github_release(version, name: nil, date: "2026-02-15T10:00:00Z", prerelease: false)

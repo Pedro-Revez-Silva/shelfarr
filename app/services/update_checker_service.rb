@@ -11,8 +11,7 @@ class UpdateCheckerService
 
   CACHE_KEY = "shelfarr:update_check"
   CACHE_TTL = 1.hour
-  RELEASE_PAGE_SIZE = 100
-  RELEASE_PAGE_LIMIT = 10
+  SERVER_TAG_PREFIX = "v20"
 
   class << self
     def check(force: false)
@@ -105,24 +104,25 @@ class UpdateCheckerService
     end
 
     def fetch_newest_published_release(repo)
-      (1..RELEASE_PAGE_LIMIT).each do |page|
-        releases = fetch_release_page(repo, page)
-        return nil if releases.nil?
+      newest = newest_server_tag_version(repo)
+      return nil unless newest
 
-        candidates = releases.select { |data| published_server_release?(data) }
-        return release_details(candidates.max_by { |data| Gem::Version.new(release_version(data)) }) if candidates.any?
-        return nil if releases.size < RELEASE_PAGE_SIZE
+      response = connection.get("/repos/#{repo}/releases/tags/v#{newest}")
+      unless response.status == 200 && response.body.is_a?(Hash) && !response.body["draft"]
+        raise Error, "Release v#{newest} is not published"
       end
-      nil
+
+      release_details(response.body)
     end
 
-    def fetch_release_page(repo, page)
-      response = connection.get("/repos/#{repo}/releases", per_page: RELEASE_PAGE_SIZE, page: page)
-      response.body if response.status == 200 && response.body.is_a?(Array)
-    end
+    def newest_server_tag_version(repo)
+      response = connection.get("/repos/#{repo}/git/matching-refs/tags/#{SERVER_TAG_PREFIX}")
+      raise Error, "Could not list release tags (HTTP #{response.status})" unless response.status == 200 && response.body.is_a?(Array)
 
-    def published_server_release?(data)
-      data.is_a?(Hash) && !data["draft"] && Shelfarr::ReleaseChannel.published_version?(release_version(data))
+      response.body
+        .filter_map { |ref| ref["ref"].to_s.delete_prefix("refs/tags/v") if ref.is_a?(Hash) }
+        .select { |version| Shelfarr::ReleaseChannel.published_version?(version) }
+        .max_by { |version| Gem::Version.new(version) }
     end
 
     def release_version(data)
