@@ -3,7 +3,7 @@
 <% advanced = category == "download" ? settings.slice(*Admin::SettingsHelper::ADVANCED_DOWNLOAD_SETTINGS) : {} %>
 <% basic = settings.except(*advanced.keys) %>
 <% section_tag = collapsible ? :details : :div %>
-<%= content_tag section_tag, class: "bg-gray-900 rounded-lg border border-gray-800", open: collapsible && enabled ? true : nil, data: collapsible ? { settings_form_target: "sourceSection", enabled_key: "#{category}_enabled" } : {} do %>
+<%= content_tag section_tag, id: settings_section_id(category), class: "bg-gray-900 rounded-lg border border-gray-800 scroll-mt-40", open: collapsible && enabled ? true : nil, data: collapsible ? { settings_form_target: "sourceSection", enabled_key: "#{category}_enabled" } : {} do %>
   <%= content_tag(collapsible ? :summary : :div, class: "px-6 py-4 border-b border-gray-800 #{'cursor-pointer' if collapsible}") do %>
     <h2 class="inline font-bold text-xl text-white"><%= SettingsService::CATEGORIES[category] || category.titleize %></h2>
     <% if collapsible %>

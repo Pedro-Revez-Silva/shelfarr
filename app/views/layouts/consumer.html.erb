@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title><%= content_for(:title) || "Your library · Shelfarr" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="turbo-cache-control" content="no-cache">
+    <%= render "shared/web_app_head" %>
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBF7F0">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130F">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <%= stylesheet_link_tag "consumer", "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+    <%= yield :head %>
+  </head>
+  <body class="consumer-app<%= " consumer-app--reading" if content_for?(:reading_mode) %>" data-controller="consumer-offline-presence" data-consumer-offline-presence-account-value="<%= Current.user.id %>" data-consumer-offline-presence-base-value="<%= request.script_name %>" data-consumer-offline-presence-max-age-days-value="<%= SettingsService.get(:session_max_age_days, default: 30).to_i %>">
+    <% unless content_for?(:reading_mode) %>
+    <a class="consumer-skip" href="#consumer-main">Skip to content</a>
+    <header class="consumer-header">
+      <%= link_to consumer_library_path, class: "consumer-wordmark", aria: { label: "Shelfarr library" } do %>
+        <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 4h5v16H4zM10 7h4v13h-4zM16 4l4-1 3 16-4 1z"/></svg>
+        shelfarr<% if release_channel.beta? %><span class="consumer-preview" title="<%= release_channel.label %>" data-release-badge>Beta</span><% end %>
+      <% end %>
+      <%= link_to profile_path, class: "consumer-avatar", aria: { label: "My profile" } do %><%= Current.user.name.first.upcase %><% end %>
+    </header>
+    <% end %>
+    <main id="consumer-main" class="consumer-main <%= content_for(:main_class) %>">
+      <% flash.each do |kind, text| %><p role="status" class="consumer-notice"><%= text %></p><% end %>
+      <%= yield %>
+    </main>
+    <% unless content_for?(:hide_navigation) %>
+      <nav class="consumer-navigation" aria-label="Main navigation">
+        <% [ [ "Library", consumer_library_path, :library ], [ "Discover", discover_entry_path, :discover ], [ "Requests", requests_path, :requests ], [ "Account", profile_path, :account ] ].each do |label, path, section| %>
+          <%= link_to label, path, aria: { current: ("page" if navigation_section == section) }, class: ("is-active" if navigation_section == section) %>
+        <% end %>
+      </nav>
+    <% end %>
+  </body>
+</html>

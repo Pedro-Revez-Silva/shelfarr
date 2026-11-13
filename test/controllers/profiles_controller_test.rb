@@ -25,7 +25,7 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
   test "show displays user info" do
     get profile_path
     assert_response :success
-    assert_select "h1", "My Profile"
+    assert_select "h1", "Account"
     assert_select "h2", @user.name
   end
 
@@ -288,6 +288,19 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
     get two_factor_profile_path
     assert_response :success
     assert_select "h3", "Step 1: Scan QR Code"
+  end
+
+  test "two factor QR encodes markup as data instead of embedding it in SVG" do
+    uri = "otpauth://totp/Shelfarr:reader?secret=FIXTURE&issuer=<script>alert(1)</script>"
+    svg = ProfilesController.new.send(:generate_qr_code, uri)
+    document = Nokogiri::XML(svg)
+
+    assert_empty document.errors
+    assert_equal "svg", document.root.name
+    assert document.xpath("//*").all? { |element| %w[svg g path rect].include?(element.name) }
+    assert_empty document.xpath("//@*").select { |attribute| attribute.name.start_with?("on") || attribute.name == "href" }
+    assert_not_includes svg, "<script>"
+    assert_not_includes svg, "FIXTURE"
   end
 
   test "two_factor page shows enabled status when 2FA active" do

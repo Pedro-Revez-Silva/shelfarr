@@ -33,7 +33,7 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to root_path
   end
 
-  test "show starts on prowlarr and the header can rerun setup" do
+  test "show starts on prowlarr and the admin overview can rerun setup" do
     get admin_setup_wizard_url
 
     assert_response :success
@@ -41,7 +41,9 @@ class Admin::SetupWizardControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", "Prowlarr"
     assert_select "button", "Skip this step"
     assert_select "button", "Skip setup"
-    assert_select "form[action='#{restart_admin_setup_wizard_path}'] button", "Setup"
+
+    get admin_root_url
+    assert_select "form[action='#{restart_admin_setup_wizard_path}'] button", "Run setup again"
   end
 
   test "wizard stays available when an indexer and download client already exist" do

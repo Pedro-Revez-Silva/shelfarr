@@ -52,8 +52,8 @@
     </div>
   </div>
   <div class="flex-shrink-0 flex items-center gap-2">
-    <% if Current.user.admin? && result.info_url.present? %>
-      <%= link_to "Info", result.info_url, target: "_blank", rel: "noopener",
+    <% if Current.user.admin? && (info_url = result.safe_info_url) %>
+      <%= link_to "Info", info_url, target: "_blank", rel: "noopener",
           class: "px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded font-medium transition" %>
     <% end %>
     <% if Current.user.admin? %>

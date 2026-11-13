@@ -1,0 +1,83 @@
+# Generate the Xcode project with `xcodegen generate` (see docs/native-consumer.md).
+name: Shelfarr
+options:
+  bundleIdPrefix: org.shelfarr
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+    CODE_SIGN_STYLE: Automatic
+packages:
+  Readium:
+    url: https://github.com/readium/swift-toolkit.git
+    exactVersion: 3.11.1
+  ShelfarrCore:
+    path: ShelfarrCore
+targets:
+  Shelfarr:
+    type: application
+    platform: iOS
+    sources:
+      - path: Shelfarr
+        excludes:
+          - Info.plist
+          - Info-Debug.plist
+      - path: ../design/assets/fonts
+        type: folder
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.shelfarr.app
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      configs:
+        Debug:
+          INFOPLIST_FILE: Shelfarr/Info-Debug.plist
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG ALLOW_LOCAL_HTTP
+        Release:
+          INFOPLIST_FILE: Shelfarr/Info.plist
+    dependencies:
+      - package: ShelfarrCore
+      - package: Readium
+        product: ReadiumShared
+      - package: Readium
+        product: ReadiumStreamer
+      - package: Readium
+        product: ReadiumNavigator
+  # Simulator runtime smoke test; see apps/scripts/ios-runtime-smoke.sh.
+  ShelfarrUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ShelfarrUITests
+    dependencies:
+      - target: Shelfarr
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.shelfarr.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Shelfarr
+schemes:
+  ShelfarrRuntimeSmoke:
+    build:
+      targets:
+        Shelfarr: all
+        ShelfarrUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - name: ShelfarrUITests
+  Shelfarr:
+    build:
+      targets:
+        Shelfarr: all
+    run:
+      config: Debug
+    archive:
+      config: Release

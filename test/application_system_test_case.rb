@@ -20,6 +20,8 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   driven_by :selenium, using: :headless_chrome, screen_size: [ 1400, 1400 ],
     options: { native_displayed: true } do |options|
     options.add_argument("--no-sandbox") if Process.uid.zero?
+    # Test browsers never make sound, whatever a page plays.
+    options.add_argument("--mute-audio")
   end
 
   setup do

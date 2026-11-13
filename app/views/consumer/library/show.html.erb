@@ -1,0 +1,20 @@
+<% content_for :title, "#{@book.title} · Shelfarr" %>
+<% content_for :hide_navigation, "true" %>
+<% reading = !@book.audiobook? && @publication[:assets].any? %>
+<% content_for :main_class, reading ? "consumer-publication consumer-reading" : "consumer-publication" %>
+<% content_for :reading_mode, "true" if reading %>
+<% status_form = capture do %>
+  <%= form_with url: consumer_reading_status_path(@book), method: :put, class: "consumer-reading-status", data: { action: "submit->consumer-reader#saveReadingStatus", turbo: false } do |form| %>
+    <label>Reading status<%= form.select :status, [["Unread", "unread"], ["Reading", "in_progress"], ["Finished", "finished"]], selected: @publication[:reading_status] %></label>
+    <%= form.submit "Save status", class: "consumer-button consumer-button--subtle" %>
+    <span role="status">Your saved place is kept.</span>
+  <% end %>
+<% end %>
+<% if reading %>
+  <%= render "ebook_reader", title: @book.title, author: @book.author, publication: @publication, status_form: status_form, offline: false %>
+<% else %>
+  <%= link_to "← Your library", consumer_library_path, class: "consumer-back" %>
+  <%= render "audio_session", title: @book.title, author: @book.author, description: truncate(strip_tags(@book.description.to_s), length: 380),
+    ebook: !@book.audiobook?, cover: render("cover", book: @book, publication: @publication), tracks: @publication[:assets].map { |asset| asset[:filename] },
+    publication: @publication, status_form: status_form, recovery_path: consumer_publication_path(@book), offline: false %>
+<% end %>

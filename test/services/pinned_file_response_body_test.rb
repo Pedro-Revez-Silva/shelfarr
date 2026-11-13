@@ -41,4 +41,16 @@ class PinnedFileResponseBodyTest < ActiveSupport::TestCase
 
     assert @file.closed?
   end
+
+  test "streams only the requested slice and closes the pin" do
+    body = PinnedFileResponseBody.new(@file, offset: 2, length: 4)
+    assert_equal "nned", body.each.to_a.join
+    assert @file.closed?
+  end
+
+  test "zero length is empty and closes the pin" do
+    body = PinnedFileResponseBody.new(@file, offset: 2, length: 0)
+    assert_empty body.each.to_a
+    assert @file.closed?
+  end
 end

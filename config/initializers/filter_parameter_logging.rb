@@ -1,7 +1,14 @@
 Rails.application.config.filter_parameters += [
   :passw, :email, :secret, :token, :_key, :crypt, :salt, :certificate, :otp, :ssn, :cvv, :cvc,
   :nzb_url, :download_url, :response_url, :authorization_code, :account, :session_id, :userkey,
+  :readingstates, :currentbookmark,
+  :locator, :position_seconds,
+  :activation_code, :activation_poll_url, :kobo_user_id, :kobo_user_key,
+  :kobo_email, :device_id, :serial_number, :access_token, :refresh_token,
   # OAuth callback and device sign-in values. Matched exactly so unrelated
   # keys that merely contain "code" (an ISBN code, a language code) still log.
-  /\A(?:code|device_code|user_code|code_verifier)\z/i
+  /\A(?:code|device_code|user_code|code_verifier)\z/i,
+  # Consumer transfer grants travel in the query string. Exact, so OAuth
+  # `grant_type` and other keys that merely contain "grant" still log.
+  /\Agrant\z/i
 ]

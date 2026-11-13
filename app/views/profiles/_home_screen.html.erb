@@ -1,0 +1,33 @@
+<section id="home-screen" aria-labelledby="home-screen-heading" class="border-t border-gray-700 bg-gray-900/40 px-6 py-5" data-controller="web-app-install">
+  <h2 id="home-screen-heading" class="text-sm font-medium text-gray-200">Shelfarr on your home screen</h2>
+  <p class="mt-1 text-sm text-gray-400">Open your library from its own icon, in a window without the browser's address bar.</p>
+
+  <p data-web-app-install-target="installed" class="mt-4 text-sm text-gray-300" hidden>You're using Shelfarr from your home screen.</p>
+  <div data-web-app-install-target="offer" class="mt-4" hidden>
+    <button type="button" data-action="web-app-install#install" class="rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition hover:bg-blue-500 cursor-pointer">Install Shelfarr</button>
+  </div>
+  <p data-web-app-install-target="status" role="status" class="mt-3 text-sm text-gray-300 empty:hidden"></p>
+  <p data-web-app-install-target="insecure" class="mt-3 text-sm text-yellow-400" hidden>This page isn't using a secure connection (HTTPS), so your browser may only add a shortcut that opens in the browser.</p>
+
+  <div data-web-app-install-target="guide" class="mt-4 grid gap-4 text-sm text-gray-300 md:grid-cols-2">
+    <div>
+      <h3 class="font-medium text-gray-200">Android</h3>
+      <ol class="mt-2 list-decimal space-y-1 pl-5">
+        <li>Open Shelfarr in Chrome.</li>
+        <li>Tap <span aria-hidden="true">⋮</span> More, then <strong class="font-medium text-gray-100">Install and create shortcut</strong> or <strong class="font-medium text-gray-100">Add to Home screen</strong>.</li>
+        <li>Tap <strong class="font-medium text-gray-100">Install</strong>.</li>
+      </ol>
+    </div>
+    <div>
+      <h3 class="font-medium text-gray-200">iPhone and iPad</h3>
+      <ol class="mt-2 list-decimal space-y-1 pl-5">
+        <li>Open Shelfarr in Safari.</li>
+        <li>Tap <strong class="font-medium text-gray-100">Share</strong>. On iPhone, you may need to tap <span aria-hidden="true">⋯</span> More first.</li>
+        <li>Tap <strong class="font-medium text-gray-100">Add to Home Screen</strong>, keep <strong class="font-medium text-gray-100">Open as Web App</strong> on, then tap <strong class="font-medium text-gray-100">Add</strong>.</li>
+      </ol>
+    </div>
+    <p class="text-gray-400 md:col-span-2">If Shelfarr asks you to sign in when you open it from your home screen, sign in there too.</p>
+  </div>
+
+  <p class="mt-4 text-sm text-gray-400">Shelfarr still needs a connection to this server. Without one, you can open only the books you downloaded on this device. Downloads continue only while Shelfarr is open, and your device may remove them when it needs space.</p>
+</section>

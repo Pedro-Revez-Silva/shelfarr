@@ -1,21 +1,46 @@
 {
   "ignored_warnings": [
     {
-      "warning_type": "File Access",
-      "fingerprint": "file_access_uploads_controller",
-      "note": "Admin-only file deletion - path is from database, not user input"
+      "warning_type": "SQL Injection",
+      "fingerprint": "015ca1e96b825fdfa4144c1f6b049d0b71485faac9187ac0e302957211100faf",
+      "note": "preferred_first interpolates only fixed SQL fragments/constants and SettingsService.preferred_download_types, which normalizes persisted values against DOWNLOAD_TYPES. SearchResultTest verifies SQL-like persisted preferences are excluded before executing the ordering."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "fingerprint": "24d8734ebe4e6cde59bbdb2b828becebc394f3ce8cf5d419c30f6643d00d51b2",
+      "note": "The upsert assignments use only the fixed UPSERT_UPDATE_COLUMNS list and adapter-quoted schema identifiers. Imported values are bound by upsert_all, not interpolated into this fragment. AudiobookshelfLibrarySyncServiceTest exercises bulk writes and newer/older snapshot handling."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "fingerprint": "27acc326a67939555adce0cb398f8c47ccda7caaa13896d7d96a50961297b304",
+      "note": "latest_by_owned_library_item_id converts every ID with Integer(exception: false) before interpolation. Columns come only from the database schema and are adapter-quoted. OwnedMediaImportTest rejects SQL-bearing identifiers and checks the correct latest row."
+    },
+    {
+      "warning_type": "Cross-Site Scripting",
+      "fingerprint": "7b3129849878142c3fb98be15e8773f7ea6238c910e873a9dd72dfcb975f1709",
+      "note": "The only source of @qr_code is RQRCode as_svg with fixed attributes: it renders QR modules as shapes rather than inserting the input URI into markup. ProfilesControllerTest verifies malicious URI markup is encoded as shapes and no script, href or event attribute appears."
+    },
+    {
+      "warning_type": "SQL Injection",
+      "fingerprint": "90f353fb48b78649f3121ff8e0a7e7db42f1f7973de074c7b7270757669772f0",
+      "note": "connection is a Faraday HTTP connection returned by open_connection. delete sends an HTTP DELETE to the configured Audiobookshelf endpoint; it is not an ActiveRecord connection and does not execute SQL."
     },
     {
       "warning_type": "Mass Assignment",
-      "fingerprint": "mass_assignment_users_controller",
-      "note": "Admin-only role assignment is intentional"
+      "fingerprint": "9a67a57b56a1a01deab2c19b797a5aeaa863f70bfff64eb70c2d60acbd2019f0",
+      "note": "Role assignment is an intentional admin-only operation behind Admin::BaseController#require_admin. Admin::UsersControllerTest verifies regular users cannot assign roles through create or update and administrators can do so."
+    },
+    {
+      "warning_type": "Cross-Site Scripting",
+      "fingerprint": "a202b84a77291f64dc6e7180ed700290e9eabf1fce2879e82375b79ec0246832",
+      "note": "The href now passes SearchResult#safe_info_url: an absolute URI::HTTP/HTTPS URL with a nonempty host and no credentials. URI parsing rejects malformed/control-character inputs; link_to escapes the attribute. Model and both result-page integration tests reject executable schemes and retain HTTP/HTTPS links."
     },
     {
       "warning_type": "Mass Assignment",
-      "fingerprint": "mass_assignment_registrations_controller",
-      "note": "First user gets admin role automatically, role param is ignored for subsequent users"
+      "fingerprint": "e825b8d64c9991bf96f2e323676ca4e058dfe5c1eeda31840ad24a9ee84db3b4",
+      "note": "RegistrationsController permits role only for Current.user.admin?. require_admin_for_new_users restricts later registrations to an administrator; the initial account is made admin by the model. RegistrationsControllerTest covers first-user setup, intentional admin role creation and blocked anonymous/regular-user attempts."
     }
   ],
-  "updated": "2025-12-23",
+  "updated": "2026-11-09",
   "brakeman_version": "7.1.1"
 }

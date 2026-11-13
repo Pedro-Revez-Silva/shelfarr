@@ -1,0 +1,469 @@
+package org.shelfarr.app.core
+
+import java.io.File
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import mockwebserver3.Dispatcher
+import mockwebserver3.MockResponse
+import mockwebserver3.MockWebServer
+import mockwebserver3.RecordedRequest
+import okio.Buffer
+import org.junit.After
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+
+/**
+ * Read-along narration kept with a downloaded book, over real HTTP and files. The book is
+ * readable as soon as its own file is complete; narration is offered offline only when its
+ * manifest and every file are present for one generation.
+ */
+class NarrationDownloadTest {
+    @get:Rule val folder = TemporaryFolder()
+    private val web = MockWebServer()
+    private lateinit var server: ServerAddress
+    private val scopes = mutableListOf<CoroutineScope>()
+    private val requests = ConcurrentLinkedQueue<RecordedRequest>()
+    private val routes = ConcurrentHashMap<String, (RecordedRequest) -> MockResponse>()
+
+    private val gardenEpub = ReadAlongFixtures.epub(overlay = true)
+    private val lighthouseEpub = ReadAlongFixtures.epub(overlay = false)
+    private val track1 = ReadAlongFixtures.wav(8_000)
+    private val track2 = ReadAlongFixtures.wav(8_000).also { it[it.size - 1] = 7 }
+
+    @Volatile private var gardenGeneration = ReadAlongFixtures.GENERATION
+    @Volatile private var publications = mapOf<String, Publication>()
+    @Volatile private var detailsFailure = false
+
+    private fun summary(source: String, generation: String, manifest: String, audio: Long) =
+        ReadAlongSummary("available", source, generation, manifest, audioBytes = audio)
+
+    private fun garden() = Publication(
+        id = "garden-1", title = "The Narrated Garden", bookType = BookType.EBOOK,
+        assets = listOf(
+            Asset(
+                ReadAlongFixtures.EPUB_ID, "garden.epub", "application/epub+zip", "epub", gardenEpub.size.toLong(), "/files/epub-garden",
+                readAlong = summary("media_overlay", gardenGeneration, GARDEN_MANIFEST, ReadAlongFixtures.narration.size.toLong()),
+            ),
+        ),
+    )
+
+    private fun lighthouse() = Publication(
+        id = "lighthouse-1", title = "The Paired Lighthouse", bookType = BookType.EBOOK,
+        assets = listOf(
+            Asset(
+                "epub-lighthouse", "lighthouse.epub", "application/epub+zip", "epub", lighthouseEpub.size.toLong(), "/files/epub-lighthouse",
+                readAlong = summary("imported", ReadAlongFixtures.OTHER_GENERATION, LIGHTHOUSE_MANIFEST, (track1.size + track2.size).toLong()),
+            ),
+        ),
+    )
+
+    @Before
+    fun setUp() {
+        web.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests += request
+                // Only this account's credential, on every request.
+                if (request.headers["Authorization"] != "Bearer secret") return MockResponse.Builder().code(401).build()
+                val route = routes[request.target.substringBefore('?')] ?: return MockResponse.Builder().code(404).build()
+                return route(request)
+            }
+        }
+        web.start()
+        server = (ServerAddress.parse(web.url("/").toString(), true) as ServerAddress.ParseResult.Valid).address
+        routes["/files/epub-garden"] = { bytes(gardenEpub, "\"g\"") }
+        routes["/files/epub-lighthouse"] = { bytes(lighthouseEpub, "\"l\"") }
+        routes["/files/lh-1"] = { bytes(track1, "\"lh1\"") }
+        routes["/files/lh-2"] = { bytes(track2, "\"lh2\"") }
+        routes[GARDEN_MANIFEST] = { json(ReadAlongFixtures.overlayManifest(generation = gardenGeneration)) }
+        routes[LIGHTHOUSE_MANIFEST] = { json(ReadAlongFixtures.importedManifest(trackSizes = listOf(track1.size, track2.size))) }
+        publications = mapOf("garden-1" to garden(), "lighthouse-1" to lighthouse())
+    }
+
+    @After
+    fun tearDown() {
+        scopes.forEach { it.cancel() }
+        web.close()
+    }
+
+    private fun bytes(data: ByteArray, etag: String) = MockResponse.Builder().code(200).addHeader("ETag", etag).body(Buffer().write(data)).build()
+    private fun json(body: String) = MockResponse.Builder().code(200).addHeader("Content-Type", "application/json").body(body).build()
+
+    private val root get() = File(folder.root, "acct/downloads")
+
+    private fun manager(beforeFetch: suspend () -> Unit = {}): DownloadManager {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scopes += it }
+        return DownloadManager(
+            root = root,
+            client = buildHttpClient({ Credential(server, "secret") }),
+            server = server,
+            fetchPublication = { id ->
+                beforeFetch()
+                if (detailsFailure) throw ApiException.Offline()
+                publications[id] ?: throw ApiException.NotFound()
+            },
+            scope = scope,
+            usableSpace = { Long.MAX_VALUE },
+        ).also { runBlocking { it.start() } }
+    }
+
+    private fun DownloadManager.await(id: String, condition: (DownloadRecord) -> Boolean): DownloadRecord = runBlocking {
+        withTimeout(15_000) { records.first { it[id]?.let(condition) == true } }[id]!!
+    }
+
+    private fun narrationFiles(id: String): List<String> {
+        val book = File(root, folderOf(id))
+        return book.listFiles().orEmpty().map { it.name }.filter { it.startsWith("ra-") }.sorted()
+    }
+
+    private fun folderOf(id: String) = java.security.MessageDigest.getInstance("SHA-256").digest(id.toByteArray()).take(16).joinToString("") { "%02x".format(it) }
+
+    @Test
+    fun `media overlay narration is copied out of the downloaded EPUB and plays offline only when whole`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val record = downloads.await("garden-1") { it.narration?.isReady == true }
+        assertTrue(record.isReady)
+        val local = requireNotNull(downloads.narrationFor(record))
+        assertEquals(ReadAlongFixtures.GENERATION, local.generation)
+        assertArrayEquals(ReadAlongFixtures.narration, local.tracks.single().readBytes())
+        // The stored manifest is the server's and still checks out against this edition.
+        val manifest = local.manifest.inputStream().use { ReadAlong.read(it, ReadAlongFixtures.EPUB_ID, ReadAlongFixtures.GENERATION, server) }
+        assertEquals(8, manifest.cueCount)
+        // No narration bytes were fetched twice: the audio came from the EPUB on this device.
+        assertFalse(requests.any { it.target.contains("/read_along/resources/") })
+        assertEquals(record.files.single().sizeBytes + ReadAlongFixtures.narration.size, record.bytesDone)
+        // A missing file after a restart is never offered, and the book still reads offline.
+        local.tracks.single().delete()
+        val restarted = manager()
+        val reloaded = restarted.record("garden-1")!!
+        assertTrue(reloaded.isReady)
+        assertEquals(NarrationState.FAILED, reloaded.narration!!.state)
+        assertEquals(DownloadProblem.MISSING, reloaded.narration!!.problem)
+        assertNull(restarted.narrationFor(reloaded))
+        assertNotNull(restarted.fileFor(reloaded, ReadAlongFixtures.EPUB_ID))
+    }
+
+    @Test
+    fun `an imported alignment's audiobook files are fetched with this account, and a failure leaves the book readable`() {
+        routes["/files/lh-2"] = { MockResponse.Builder().code(404).build() }
+        val downloads = manager()
+        runBlocking { downloads.enqueue(lighthouse(), narration = true) }
+        val failed = downloads.await("lighthouse-1") { it.narration?.state == NarrationState.FAILED }
+        assertTrue(failed.isReady)
+        assertEquals(DownloadProblem.NOT_FOUND, failed.narration!!.problem)
+        assertNull(downloads.narrationFor(failed))
+        assertNotNull(downloads.fileFor(failed, "epub-lighthouse"))
+        assertTrue(failed.narration!!.tracks[0].complete)
+        // Retrying resumes: the complete first file is not fetched again.
+        routes["/files/lh-2"] = { bytes(track2, "\"lh2\"") }
+        val before = requests.count { it.target == "/files/lh-1" }
+        runBlocking { downloads.retry("lighthouse-1") }
+        val ready = downloads.await("lighthouse-1") { it.narration?.isReady == true }
+        assertEquals(before, requests.count { it.target == "/files/lh-1" })
+        val local = downloads.narrationFor(ready)!!
+        assertArrayEquals(track1, local.tracks[0].readBytes())
+        assertArrayEquals(track2, local.tracks[1].readBytes())
+        assertTrue(requests.all { it.headers["Authorization"] == "Bearer secret" })
+    }
+
+    @Test
+    fun `a text-only download fetches no narration`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = false) }
+        val ready = downloads.await("garden-1") { it.isReady }
+        Thread.sleep(200)
+        assertNull(ready.narration)
+        assertFalse(requests.any { it.target.contains("read_along") })
+        assertTrue(narrationFiles("garden-1").isEmpty())
+    }
+
+    @Test
+    fun `a newer generation is fetched beside the old one, which stays in use until the new one is whole`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        downloads.await("garden-1") { it.narration?.isReady == true }
+        val oldFiles = narrationFiles("garden-1")
+
+        gardenGeneration = "3".repeat(64)
+        publications = mapOf("garden-1" to garden())
+        routes[GARDEN_MANIFEST] = { MockResponse.Builder().code(500).build() }
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val failed = downloads.await("garden-1") { it.narrationStopProblem != null }
+        // The update failed; the complete earlier narration is untouched and still offered.
+        assertEquals(ReadAlongFixtures.GENERATION, downloads.narrationFor(failed)!!.generation)
+        assertEquals(oldFiles, narrationFiles("garden-1"))
+
+        routes[GARDEN_MANIFEST] = { json(ReadAlongFixtures.overlayManifest(generation = gardenGeneration)) }
+        runBlocking { downloads.retry("garden-1") }
+        val updated = downloads.await("garden-1") { it.narration?.generation == gardenGeneration && it.narration?.isReady == true }
+        assertNull(updated.narrationUpdate)
+        assertEquals(gardenGeneration, downloads.narrationFor(updated)!!.generation)
+        // The old files are deleted immediately after the complete replacement is recorded.
+        runBlocking { withTimeout(5_000) { while (narrationFiles("garden-1").any { it in oldFiles }) delay(20) } }
+    }
+
+    /** Holds the manifest request open until [release], counting down [started] when it arrives. */
+    private fun holdManifest(path: String, body: () -> String): Pair<CountDownLatch, CountDownLatch> {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        routes[path] = {
+            started.countDown()
+            release.await(10, TimeUnit.SECONDS)
+            json(body())
+        }
+        return started to release
+    }
+
+    @Test
+    fun `removing narration while its manifest is still being fetched leaves nothing to save or promote`() {
+        val (started, release) = holdManifest(LIGHTHOUSE_MANIFEST) { ReadAlongFixtures.importedManifest(trackSizes = listOf(track1.size, track2.size)) }
+        val downloads = manager()
+        runBlocking { downloads.enqueue(lighthouse(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        // Suspended in the manifest fetch: no narration work is recorded yet.
+        assertNull(downloads.record("lighthouse-1")!!.narrationWork)
+        runBlocking { downloads.removeNarration("lighthouse-1") }
+        release.countDown()
+        runBlocking { delay(500) }
+        val record = downloads.record("lighthouse-1")!!
+        assertTrue(record.isReady)
+        assertFalse(record.withNarration)
+        assertNull(record.narration)
+        assertNull(record.narrationUpdate)
+        assertTrue(narrationFiles("lighthouse-1").isEmpty())
+        assertFalse(requests.any { it.target.startsWith("/files/lh-") })
+    }
+
+    @Test
+    fun `removing the book during the manifest fetch can't bring narration back`() {
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        runBlocking { downloads.remove("garden-1") }
+        release.countDown()
+        runBlocking { delay(500) }
+        assertNull(downloads.record("garden-1"))
+        assertFalse(File(root, folderOf("garden-1")).exists())
+    }
+
+    @Test
+    fun `stopping an update during its manifest fetch keeps the earlier ready generation`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        downloads.await("garden-1") { it.narration?.isReady == true }
+        val oldFiles = narrationFiles("garden-1")
+        gardenGeneration = "4".repeat(64)
+        publications = mapOf("garden-1" to garden())
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest(generation = gardenGeneration) }
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        runBlocking { downloads.removeNarration("garden-1", removeAll = false) }
+        release.countDown()
+        runBlocking { delay(500) }
+        val record = downloads.record("garden-1")!!
+        assertEquals(ReadAlongFixtures.GENERATION, downloads.narrationFor(record)!!.generation)
+        assertNull(record.narrationUpdate)
+        assertEquals(oldFiles, narrationFiles("garden-1"))
+    }
+
+    @Test
+    fun `a narration update queued while the ready worker finishes starts afterwards`() = runBlocking {
+        var finishing: CompletableJob? = null
+        val downloads = manager {
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(garden(), narration = true)
+            downloads.await("garden-1") { it.narration?.isReady == true }
+            gardenGeneration = "4".repeat(64)
+            publications = mapOf("garden-1" to garden())
+            downloads.enqueue(garden(), narration = true)
+            assertTrue(downloads.record("garden-1")!!.narrationRequested)
+            requireNotNull(finishing).complete()
+            val updated = downloads.await("garden-1") { it.narration?.generation == gardenGeneration && it.narration?.isReady == true }
+            assertTrue(updated.isReady)
+            assertEquals(gardenGeneration, downloads.narrationFor(updated)!!.generation)
+        } finally {
+            finishing?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `retrying narration before the failed worker finishes starts afterwards`() = runBlocking {
+        var finishing: CompletableJob? = null
+        var retriedFinishing: CompletableJob? = null
+        routes["/files/lh-2"] = { MockResponse.Builder().code(404).build() }
+        val downloads = manager {
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+            else if (retriedFinishing == null) retriedFinishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(lighthouse(), narration = true)
+            val failed = downloads.await("lighthouse-1") { it.narration?.state == NarrationState.FAILED }
+            assertTrue(failed.isReady)
+            val firstTrackFetches = requests.count { it.target == "/files/lh-1" }
+            routes["/files/lh-2"] = { bytes(track2, "\"lh2\"") }
+            downloads.retry("lighthouse-1")
+            assertEquals(NarrationState.QUEUED, downloads.record("lighthouse-1")!!.narrationWork!!.state)
+            requireNotNull(finishing).complete()
+            val ready = downloads.await("lighthouse-1") { it.narration?.isReady == true }
+            assertTrue(ready.isReady)
+            assertFalse("completed narration is no longer queued or transferring", ready.isActive)
+            assertEquals(firstTrackFetches, requests.count { it.target == "/files/lh-1" })
+            val local = downloads.narrationFor(ready)!!
+            assertArrayEquals(track1, local.tracks[0].readBytes())
+            assertArrayEquals(track2, local.tracks[1].readBytes())
+        } finally {
+            finishing?.complete()
+            retriedFinishing?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `cancelling queued narration before the worker finishes keeps the ready generation stopped`() = runBlocking {
+        var finishing: CompletableJob? = null
+        var fetches = 0
+        val downloads = manager {
+            fetches++
+            if (finishing == null) finishing = Job(currentCoroutineContext()[Job])
+        }
+        try {
+            downloads.enqueue(garden(), narration = true)
+            val first = downloads.await("garden-1") { it.narration?.isReady == true }
+            val files = narrationFiles("garden-1")
+            gardenGeneration = "4".repeat(64)
+            publications = mapOf("garden-1" to garden())
+            downloads.enqueue(garden(), narration = true)
+            assertTrue(downloads.record("garden-1")!!.narrationRequested)
+            downloads.cancel("garden-1")
+            requireNotNull(finishing).complete()
+            val stopped = downloads.record("garden-1")!!
+            assertTrue(stopped.isReady)
+            assertFalse(stopped.isActive)
+            assertEquals(first.narration, stopped.narration)
+            assertEquals(files, narrationFiles("garden-1"))
+            assertEquals(1, fetches)
+            assertNotNull(downloads.fileFor(stopped, ReadAlongFixtures.EPUB_ID))
+        } finally {
+            finishing?.complete()
+            downloads.close()
+        }
+    }
+
+    @Test
+    fun `cancelling a ready book's narration transfer, as the notification does, keeps the book`() {
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        assertTrue(downloads.record("garden-1")!!.let { it.isReady && it.isActive })
+        runBlocking { downloads.cancel("garden-1") }
+        release.countDown()
+        runBlocking { delay(500) }
+        val record = downloads.record("garden-1")!!
+        assertTrue(record.isReady)
+        assertFalse(record.isActive)
+        assertNotNull(downloads.fileFor(record, ReadAlongFixtures.EPUB_ID))
+        assertTrue(narrationFiles("garden-1").isEmpty())
+    }
+
+    @Test
+    fun `removing narration keeps the book`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        downloads.await("garden-1") { it.narration?.isReady == true }
+        runBlocking { downloads.removeNarration("garden-1") }
+        val record = downloads.record("garden-1")!!
+        assertTrue(record.isReady)
+        assertNull(downloads.narrationFor(record))
+        assertTrue(narrationFiles("garden-1").isEmpty())
+        assertNotNull(downloads.fileFor(record, ReadAlongFixtures.EPUB_ID))
+    }
+
+    @Test
+    fun `failed details refresh during narration update keeps the ready book and narration`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val ready = downloads.await("garden-1") { it.narration?.isReady == true }
+        assertNotNull(downloads.fileFor(ready, ReadAlongFixtures.EPUB_ID))
+        val previous = requireNotNull(downloads.narrationFor(ready)).generation
+
+        detailsFailure = true
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val failed = downloads.await("garden-1") { !it.isActive }
+        assertTrue("a narration refresh cannot make the book ${failed.state}/${failed.problem}", failed.isReady)
+        assertNotNull(downloads.fileFor(failed, ReadAlongFixtures.EPUB_ID))
+        assertEquals(previous, downloads.narrationFor(failed)?.generation)
+        assertEquals(DownloadProblem.OFFLINE, failed.narrationStopProblem)
+
+        detailsFailure = false
+        runBlocking { downloads.resumeTransient() }
+        val resumed = downloads.await("garden-1") { !it.isActive && it.narrationStopProblem == null }
+        assertTrue(resumed.isReady)
+        assertNotNull(downloads.fileFor(resumed, ReadAlongFixtures.EPUB_ID))
+        assertEquals(previous, downloads.narrationFor(resumed)?.generation)
+    }
+
+    @Test
+    fun `an unusable replacement cannot keep removed book files marked ready`() {
+        val downloads = manager()
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        downloads.await("garden-1") { it.narration?.isReady == true }
+
+        // The edition disappears between the details screen and the refresh.
+        publications = publications + ("garden-1" to garden().copy(assets = emptyList()))
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        val failed = downloads.await("garden-1") { !it.isActive }
+        assertEquals(DownloadState.FAILED, failed.state)
+        assertNull(downloads.fileFor(failed, ReadAlongFixtures.EPUB_ID))
+        assertNull(downloads.narrationFor(failed))
+    }
+
+    @Test
+    fun `stop narration delivered after its completion keeps all ready files`() {
+        val downloads = manager()
+        val (started, release) = holdManifest(GARDEN_MANIFEST) { ReadAlongFixtures.overlayManifest() }
+        runBlocking { downloads.enqueue(garden(), narration = true) }
+        assertTrue(started.await(10, TimeUnit.SECONDS))
+        val displayed = requireNotNull(downloads.record("garden-1"))
+        assertTrue(displayed.isReady && displayed.isActive)
+        val delayedClick: suspend () -> Unit = { downloads.cancel(displayed.publicationId) }
+
+        release.countDown()
+        downloads.await("garden-1") { it.narration?.isReady == true }
+        runBlocking { delayedClick() }
+        val kept = requireNotNull(downloads.record("garden-1"))
+        assertTrue("the delayed Stop narration must keep the EPUB", kept.isReady)
+        assertArrayEquals(gardenEpub, requireNotNull(downloads.fileFor(kept, ReadAlongFixtures.EPUB_ID)).readBytes())
+        assertArrayEquals(ReadAlongFixtures.narration, requireNotNull(downloads.narrationFor(kept)).tracks.single().readBytes())
+    }
+
+    private companion object {
+        const val GARDEN_MANIFEST = "/api/consumer/v1/library/garden-1/assets/epub-garden/read_along"
+        const val LIGHTHOUSE_MANIFEST = "/api/consumer/v1/library/lighthouse-1/assets/epub-lighthouse/read_along"
+    }
+}

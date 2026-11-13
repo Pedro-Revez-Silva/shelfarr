@@ -1,5 +1,4 @@
-
-ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -46,9 +45,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.string "token_prefix", null: false
     t.datetime "updated_at", null: false
     t.integer "user_id"
+    t.string "issued_via"
+    t.integer "replaces_api_token_id"
+    t.string "connection_key"
     t.index ["revoked_at"], name: "index_api_tokens_on_revoked_at"
     t.index ["token_digest"], name: "index_api_tokens_on_token_digest", unique: true
     t.index ["token_prefix"], name: "index_api_tokens_on_token_prefix"
+    t.index ["user_id", "connection_key"], name: "index_api_tokens_on_user_id_and_connection_key"
     t.index ["user_id"], name: "index_api_tokens_on_user_id"
   end
 
@@ -83,6 +86,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.integer "year"
+    t.index "LOWER(COALESCE(title, '')), id", name: "index_books_on_consumer_title", where: "file_path IS NOT NULL AND TRIM(file_path) <> ''"
     t.index ["acquisition_reservation_token"], name: "index_books_on_acquisition_reservation_token", unique: true, where: "acquisition_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_books_on_book_type"
     t.index ["comic_vine_id"], name: "index_books_on_comic_vine_id"
@@ -94,6 +98,55 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.index ["open_library_edition_id"], name: "index_books_on_open_library_edition_id"
     t.index ["open_library_work_id"], name: "index_books_on_open_library_work_id"
     t.index ["series_position"], name: "index_books_on_series_position"
+  end
+
+  create_table "consumer_device_grants", force: :cascade do |t|
+    t.integer "user_id"
+    t.string "client_name", null: false
+    t.string "device_code_digest", null: false
+    t.string "user_code_digest", null: false
+    t.datetime "expires_at", null: false
+    t.datetime "approved_at"
+    t.datetime "denied_at"
+    t.datetime "consumed_at"
+    t.datetime "last_polled_at"
+    t.integer "poll_interval", default: 5, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.text "scopes"
+    t.integer "replaces_api_token_id"
+    t.index ["device_code_digest"], name: "index_consumer_device_grants_on_device_code_digest", unique: true
+    t.index ["expires_at"], name: "index_consumer_device_grants_on_expires_at"
+    t.index ["user_code_digest"], name: "index_consumer_device_grants_on_user_code_digest", unique: true
+    t.index ["user_id"], name: "index_consumer_device_grants_on_user_id"
+  end
+
+  create_table "consumer_progresses", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.integer "book_id", null: false
+    t.string "asset_id", null: false
+    t.json "locator"
+    t.float "position_seconds"
+    t.integer "version", default: 1, null: false
+    t.string "client_mutation_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.datetime "observed_at"
+    t.index ["book_id"], name: "index_consumer_progresses_on_book_id"
+    t.index ["user_id", "book_id"], name: "index_consumer_progresses_on_user_id_and_book_id", unique: true
+    t.index ["user_id"], name: "index_consumer_progresses_on_user_id"
+  end
+
+  create_table "consumer_reading_states", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.integer "book_id", null: false
+    t.integer "status", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["book_id"], name: "index_consumer_reading_states_on_book_id"
+    t.index ["user_id", "book_id"], name: "index_consumer_reading_states_on_user_id_and_book_id", unique: true
+    t.index ["user_id"], name: "index_consumer_reading_states_on_user_id"
+    t.check_constraint "status IN (0, 1, 2)", name: "consumer_reading_status"
   end
 
   create_table "download_clients", force: :cascade do |t|
@@ -281,6 +334,176 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.index ["user_id"], name: "index_hardcover_subscriptions_on_user_id"
   end
 
+  create_table "kobo_account_book_files", force: :cascade do |t|
+    t.integer "kobo_account_book_id", null: false
+    t.integer "requested_by_id"
+    t.string "status", default: "fetching", null: false
+    t.string "request_id", null: false
+    t.string "kobo_revision_id"
+    t.string "format"
+    t.bigint "expected_size"
+    t.bigint "size_bytes"
+    t.string "sha256"
+    t.string "epub_version"
+    t.string "storage_key"
+    t.text "file_device"
+    t.text "file_inode"
+    t.string "error"
+    t.datetime "started_at"
+    t.datetime "fetched_at"
+    t.datetime "last_used_at"
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["kobo_account_book_id", "status"], name: "idx_on_kobo_account_book_id_status_20bf05badb"
+    t.index ["kobo_account_book_id"], name: "index_kobo_account_book_files_on_kobo_account_book_id"
+    t.index ["requested_by_id"], name: "index_kobo_account_book_files_on_requested_by_id"
+    t.index ["storage_key"], name: "index_kobo_account_book_files_on_storage_key"
+  end
+
+  create_table "kobo_account_books", force: :cascade do |t|
+    t.integer "kobo_account_id", null: false
+    t.string "entitlement_id", null: false
+    t.string "revision_id"
+    t.string "title", null: false
+    t.text "author"
+    t.string "media_type", default: "ebook", null: false
+    t.string "ownership_type", default: "unknown", null: false
+    t.boolean "archived", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "rights"
+    t.string "download_format"
+    t.bigint "download_size"
+    t.datetime "rights_checked_at"
+    t.index ["kobo_account_id", "entitlement_id"], name: "index_kobo_account_books_on_kobo_account_id_and_entitlement_id", unique: true
+    t.index ["kobo_account_id"], name: "index_kobo_account_books_on_kobo_account_id"
+  end
+
+  create_table "kobo_account_shares", force: :cascade do |t|
+    t.integer "kobo_account_id", null: false
+    t.integer "recipient_id", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["kobo_account_id", "recipient_id"], name: "index_kobo_account_shares_on_kobo_account_id_and_recipient_id", unique: true
+    t.index ["kobo_account_id"], name: "index_kobo_account_shares_on_kobo_account_id"
+    t.index ["recipient_id"], name: "index_kobo_account_shares_on_recipient_id"
+  end
+
+  create_table "kobo_accounts", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.string "name", null: false
+    t.string "status", default: "pending", null: false
+    t.text "device_id", null: false
+    t.text "serial_number", null: false
+    t.text "activation_poll_url"
+    t.text "activation_code"
+    t.datetime "activation_expires_at"
+    t.datetime "next_poll_at"
+    t.text "kobo_user_id"
+    t.text "kobo_user_key"
+    t.text "kobo_email"
+    t.text "access_token"
+    t.text "refresh_token"
+    t.string "sync_status", default: "idle", null: false
+    t.string "sync_request_id"
+    t.datetime "sync_started_at"
+    t.datetime "last_synced_at"
+    t.string "last_error"
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["user_id"], name: "index_kobo_accounts_on_user_id"
+  end
+
+  create_table "kobo_deliveries", force: :cascade do |t|
+    t.integer "kobo_device_id", null: false
+    t.integer "book_id"
+    t.string "entitlement_id", null: false
+    t.string "revision_id", null: false
+    t.integer "sync_revision", null: false
+    t.json "publication", null: false
+    t.json "reading_state"
+    t.datetime "last_download_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.json "progress_bridge"
+    t.boolean "progress_generation_ambiguous", default: false, null: false
+    t.integer "kobo_account_book_id"
+    t.integer "kobo_account_share_id"
+    t.integer "kobo_account_book_file_id"
+    t.integer "file_sync_revision"
+    t.json "progress_outbound"
+    t.integer "kobo_kepub_copy_id"
+    t.index ["book_id"], name: "index_kobo_deliveries_on_book_id"
+    t.index ["entitlement_id"], name: "index_kobo_deliveries_on_entitlement_id", unique: true
+    t.index ["kobo_account_book_file_id"], name: "index_kobo_deliveries_on_kobo_account_book_file_id"
+    t.index ["kobo_account_book_id"], name: "index_kobo_deliveries_on_kobo_account_book_id"
+    t.index ["kobo_account_share_id"], name: "index_kobo_deliveries_on_kobo_account_share_id"
+    t.index ["kobo_device_id", "book_id"], name: "index_kobo_deliveries_on_kobo_device_id_and_book_id", unique: true
+    t.index ["kobo_device_id", "kobo_account_book_id"], name: "idx_on_kobo_device_id_kobo_account_book_id_cb630d6317", unique: true
+    t.index ["kobo_device_id", "sync_revision"], name: "index_kobo_deliveries_on_kobo_device_id_and_sync_revision"
+    t.index ["kobo_device_id"], name: "index_kobo_deliveries_on_kobo_device_id"
+    t.index ["kobo_kepub_copy_id"], name: "index_kobo_deliveries_on_kobo_kepub_copy_id"
+  end
+
+  create_table "kobo_devices", force: :cascade do |t|
+    t.integer "user_id", null: false
+    t.string "name", null: false
+    t.string "base_url", null: false
+    t.string "token_digest", null: false
+    t.integer "sync_revision", default: 0, null: false
+    t.datetime "last_sync_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "store_coexistence", default: false, null: false
+    t.boolean "share_progress", default: false, null: false
+    t.string "store_status"
+    t.datetime "store_checked_at"
+    t.datetime "placeholder_auth_at"
+    t.boolean "receive_progress", default: false, null: false
+    t.index ["token_digest"], name: "index_kobo_devices_on_token_digest", unique: true
+    t.index ["user_id"], name: "index_kobo_devices_on_user_id"
+  end
+
+  create_table "kobo_kepub_copies", force: :cascade do |t|
+    t.string "converter", null: false
+    t.string "source_sha256", null: false
+    t.bigint "source_size", null: false
+    t.string "sha256", null: false
+    t.bigint "size_bytes", null: false
+    t.string "storage_key", null: false
+    t.text "file_device"
+    t.text "file_inode"
+    t.string "file_changed_at"
+    t.integer "chapters", default: 0, null: false
+    t.integer "spans", default: 0, null: false
+    t.datetime "last_used_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["converter", "source_sha256"], name: "index_kobo_kepub_copies_on_converter_and_source_sha256"
+    t.index ["storage_key"], name: "index_kobo_kepub_copies_on_storage_key", unique: true
+  end
+
+  create_table "kobo_local_entitlements", force: :cascade do |t|
+    t.integer "kobo_device_id", null: false
+    t.string "entitlement_id", null: false
+    t.index ["kobo_device_id", "entitlement_id"], name: "idx_on_kobo_device_id_entitlement_id_17aca6c006", unique: true
+    t.index ["kobo_device_id"], name: "index_kobo_local_entitlements_on_kobo_device_id"
+  end
+
+  create_table "kobo_tags", force: :cascade do |t|
+    t.integer "kobo_device_id", null: false
+    t.string "tag_id", null: false
+    t.string "name", null: false
+    t.json "items", default: [], null: false
+    t.integer "sync_revision", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["kobo_device_id", "sync_revision"], name: "index_kobo_tags_on_kobo_device_id_and_sync_revision"
+    t.index ["kobo_device_id", "tag_id"], name: "index_kobo_tags_on_kobo_device_id_and_tag_id", unique: true
+  end
+
   create_table "library_items", force: :cascade do |t|
     t.string "asin"
     t.string "audiobookshelf_id", null: false
@@ -437,6 +660,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.index ["requested_by_id"], name: "index_owned_media_imports_on_requested_by_id"
     t.index ["status"], name: "index_owned_media_imports_on_status"
     t.index ["upload_id"], name: "index_owned_media_imports_on_upload_id"
+  end
+
+  create_table "read_along_alignments", force: :cascade do |t|
+    t.integer "ebook_book_id", null: false
+    t.integer "audiobook_book_id", null: false
+    t.integer "imported_by_id"
+    t.string "ebook_asset_id", null: false
+    t.string "ebook_sha256", null: false
+    t.json "audio", null: false
+    t.string "document_sha256", null: false
+    t.string "tool"
+    t.integer "cue_count", null: false
+    t.binary "cues_gzip", null: false
+    t.json "coverage", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["audiobook_book_id"], name: "index_read_along_alignments_on_audiobook_book_id"
+    t.index ["ebook_book_id"], name: "index_read_along_alignments_on_ebook_book_id", unique: true
+    t.index ["imported_by_id"], name: "index_read_along_alignments_on_imported_by_id"
   end
 
   create_table "request_events", force: :cascade do |t|
@@ -684,6 +926,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
 
   add_foreign_key "activity_logs", "users"
   add_foreign_key "api_tokens", "users"
+  add_foreign_key "consumer_device_grants", "users"
+  add_foreign_key "consumer_progresses", "books"
+  add_foreign_key "consumer_progresses", "users"
+  add_foreign_key "consumer_reading_states", "books"
+  add_foreign_key "consumer_reading_states", "users"
   add_foreign_key "download_routing_rules", "download_clients"
   add_foreign_key "downloads", "requests"
   add_foreign_key "downloads", "search_results", on_delete: :nullify
@@ -691,6 +938,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
   add_foreign_key "hardcover_request_budgets", "users"
   add_foreign_key "hardcover_subscription_items", "hardcover_subscriptions"
   add_foreign_key "hardcover_subscriptions", "users"
+  add_foreign_key "kobo_account_book_files", "kobo_account_books"
+  add_foreign_key "kobo_account_book_files", "users", column: "requested_by_id", on_delete: :nullify
+  add_foreign_key "kobo_account_books", "kobo_accounts"
+  add_foreign_key "kobo_account_shares", "kobo_accounts"
+  add_foreign_key "kobo_account_shares", "users", column: "recipient_id"
+  add_foreign_key "kobo_accounts", "users"
+  add_foreign_key "kobo_deliveries", "books"
+  add_foreign_key "kobo_deliveries", "kobo_account_book_files"
+  add_foreign_key "kobo_deliveries", "kobo_account_books"
+  add_foreign_key "kobo_deliveries", "kobo_account_shares"
+  add_foreign_key "kobo_deliveries", "kobo_devices"
+  add_foreign_key "kobo_deliveries", "kobo_kepub_copies", on_delete: :nullify
+  add_foreign_key "kobo_devices", "users"
+  add_foreign_key "kobo_local_entitlements", "kobo_devices", on_delete: :cascade
+  add_foreign_key "kobo_tags", "kobo_devices", on_delete: :cascade
   add_foreign_key "notifications", "users"
   add_foreign_key "owned_library_connections", "users", column: "automatic_backup_user_id", on_delete: :nullify
   add_foreign_key "owned_library_items", "books", on_delete: :nullify
@@ -700,6 +962,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
   add_foreign_key "owned_media_imports", "requests", on_delete: :nullify
   add_foreign_key "owned_media_imports", "uploads", on_delete: :nullify
   add_foreign_key "owned_media_imports", "users", column: "requested_by_id", on_delete: :nullify
+  add_foreign_key "read_along_alignments", "books", column: "audiobook_book_id", on_delete: :cascade
+  add_foreign_key "read_along_alignments", "books", column: "ebook_book_id", on_delete: :cascade
+  add_foreign_key "read_along_alignments", "users", column: "imported_by_id", on_delete: :nullify
   add_foreign_key "request_events", "downloads"
   add_foreign_key "request_events", "requests"
   add_foreign_key "requests", "books"

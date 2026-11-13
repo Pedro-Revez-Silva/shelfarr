@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Merged only into builds that can update themselves (see build.gradle.kts). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Lets Shelfarr hand its own verified update to Android's installer. Android
+         still asks the person to allow it once, and to confirm each installation. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <!-- Android's installer reports through a PendingIntent naming this receiver. -->
+        <receiver
+            android:name=".update.UpdateInstallReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

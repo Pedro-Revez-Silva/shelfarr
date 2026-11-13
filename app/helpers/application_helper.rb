@@ -8,4 +8,12 @@ module ApplicationHelper
   def oidc_auth_path
     "#{request.script_name}/auth/oidc"
   end
+
+  # The public Android install page for this server, if it offers a build.
+  def android_app_page_path
+    channels = AndroidUpdates::Configuration.current.channels
+    return if channels.empty?
+
+    channels.include?("release") ? android_app_path : android_app_path(channel: channels.first)
+  end
 end

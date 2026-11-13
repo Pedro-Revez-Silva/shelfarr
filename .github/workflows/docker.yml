@@ -24,10 +24,15 @@ jobs:
       contents: read
     outputs:
       should_release: ${{ steps.plan.outputs.should_release }}
+      channel: ${{ steps.plan.outputs.channel }}
       previous_tag: ${{ steps.plan.outputs.previous_tag }}
       head_sha: ${{ steps.plan.outputs.head_sha }}
       tag: ${{ steps.plan.outputs.tag }}
       version: ${{ steps.plan.outputs.version }}
+      image_channel_tag: ${{ steps.plan.outputs.image_channel_tag }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      make_latest: ${{ steps.plan.outputs.make_latest }}
+      title: ${{ steps.plan.outputs.title }}
 
     steps:
       - name: Checkout main
@@ -37,6 +42,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
+        with:
+          ruby-version: .ruby-version
+
       - name: Plan release
         id: plan
         shell: bash
@@ -44,39 +54,7 @@ jobs:
           set -euo pipefail
 
           git fetch origin main --tags --force
-          head_sha="$(git rev-parse HEAD)"
-          previous_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-
-          if [[ -n "${previous_tag}" ]] && git diff --quiet "${previous_tag}"..HEAD; then
-            echo "No changes since ${previous_tag}; skipping release."
-            {
-              echo "should_release=false"
-              echo "previous_tag=${previous_tag}"
-              echo "head_sha=${head_sha}"
-              echo "tag="
-              echo "version="
-            } >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          date_version="$(date -u +'%Y.%m.%d')"
-          release_number=1
-          while IFS= read -r existing_tag; do
-            suffix="${existing_tag##*.}"
-            if [[ "${suffix}" =~ ^[0-9]+$ ]] && (( suffix >= release_number )); then
-              release_number=$((suffix + 1))
-            fi
-          done < <(git tag --list "v${date_version}.*" --sort=version:refname)
-
-          version="${date_version}.${release_number}"
-          tag="v${version}"
-          {
-            echo "should_release=true"
-            echo "previous_tag=${previous_tag}"
-            echo "head_sha=${head_sha}"
-            echo "tag=${tag}"
-            echo "version=${version}"
-          } >> "${GITHUB_OUTPUT}"
+          bin/release-plan >> "${GITHUB_OUTPUT}"
 
   validate:
     needs: [plan]
@@ -221,7 +199,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=raw,value=${{ needs.plan.outputs.version }}
-            type=raw,value=latest
+            type=raw,value=${{ needs.plan.outputs.image_channel_tag }}
 
       - name: Extract Libation companion release metadata
         id: libation_meta
@@ -231,7 +209,7 @@ jobs:
           flavor: latest=false
           tags: |
             type=raw,value=${{ needs.plan.outputs.version }}
-            type=raw,value=latest
+            type=raw,value=${{ needs.plan.outputs.image_channel_tag }}
 
       - name: Extract immutable Shelfarr candidate metadata
         id: shelfarr_candidate_meta
@@ -340,6 +318,11 @@ jobs:
           PREVIOUS_TAG: ${{ needs.plan.outputs.previous_tag }}
           TAG: ${{ needs.plan.outputs.tag }}
           VERSION: ${{ needs.plan.outputs.version }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          IMAGE_CHANNEL_TAG: ${{ needs.plan.outputs.image_channel_tag }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.plan.outputs.make_latest }}
+          TITLE: ${{ needs.plan.outputs.title }}
         shell: bash
         run: |
           set -euo pipefail
@@ -351,14 +334,26 @@ jobs:
             git log --oneline --no-decorate -n 50 > release-notes.txt
           fi
 
+          release_flags=()
+          case "${CHANNEL}:${PRERELEASE}:${MAKE_LATEST}:${IMAGE_CHANNEL_TAG}" in
+            stable:false:true:latest) release_flags=(--latest) ;;
+            beta:true:false:beta) release_flags=(--prerelease --latest=false) ;;
+            *) echo "::error::Refusing an inconsistent ${CHANNEL} release plan"; exit 1 ;;
+          esac
+
           {
-            echo "Weekly or manually triggered Shelfarr release."
+            if [[ "${CHANNEL}" == beta ]]; then
+              echo "Beta build. Servers that follow the stable latest images are not moved to it."
+              echo "Back up Shelfarr's storage before installing it: see docs/releases.md."
+            else
+              echo "Weekly or manually triggered Shelfarr release."
+            fi
             echo
             echo "Docker images:"
             echo "- ghcr.io/${image_name}:${VERSION}"
-            echo "- ghcr.io/${image_name}:latest"
+            echo "- ghcr.io/${image_name}:${IMAGE_CHANNEL_TAG}"
             echo "- ghcr.io/${image_name}-libation:${VERSION}"
-            echo "- ghcr.io/${image_name}-libation:latest"
+            echo "- ghcr.io/${image_name}-libation:${IMAGE_CHANNEL_TAG}"
             echo
             echo "Changes:"
             sed 's/^/- /' release-notes.txt
@@ -366,8 +361,9 @@ jobs:
 
           gh release create "${TAG}" \
             --target "${HEAD_SHA}" \
-            --title "Release ${VERSION}" \
-            --notes-file release-body.txt
+            --title "${TITLE}" \
+            --notes-file release-body.txt \
+            "${release_flags[@]}"
 
       - name: Verify release tag and release target
         shell: bash
@@ -375,8 +371,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ needs.plan.outputs.head_sha }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
           set -euo pipefail
           tag_commit="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq '.object.sha')"
           test "${tag_commit}" = "${HEAD_SHA}"
-          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
+          published_prerelease="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isPrerelease --jq '.isPrerelease')"
+          test "${published_prerelease}" = "${PRERELEASE}"

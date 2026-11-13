@@ -11,6 +11,8 @@ class UpdateCheckerService
 
   CACHE_KEY = "shelfarr:update_check"
   CACHE_TTL = 1.hour
+  SERVER_TAG_PREFIX = "v20"
+  RELEASE_LOOKUP_LIMIT = 20
 
   class << self
     def check(force: false)
@@ -37,7 +39,11 @@ class UpdateCheckerService
 
     def cache_key_for(version)
       suffix = version.presence || "unknown"
-      "#{CACHE_KEY}:#{suffix}"
+      "#{CACHE_KEY}:#{release_channel.name}:#{suffix}"
+    end
+
+    def release_channel
+      Shelfarr::ReleaseChannel.current
     end
 
     def perform_check
@@ -47,7 +53,7 @@ class UpdateCheckerService
       repo = github_repo
       return no_update_result(current, "GitHub repo not configured") if repo.blank?
 
-      latest = fetch_latest_release(repo)
+      latest = release_channel.beta? ? fetch_newest_published_release(repo, current) : fetch_latest_release(repo)
       return no_update_result(current, "No releases found") unless latest
 
       update = newer_version?(current, latest[:version])
@@ -93,12 +99,55 @@ class UpdateCheckerService
       return nil unless response.status == 200
 
       data = response.body
-      tag = data["tag_name"]
-      version = tag&.delete_prefix("v")
+      return nil if data["prerelease"] || Shelfarr::ReleaseChannel.beta_version?(release_version(data))
 
+      release_details(data)
+    end
+
+    def fetch_newest_published_release(repo, current)
+      candidates = server_tag_versions(repo).select { |version| at_least_current?(version, current) }
+      return nil if candidates.empty?
+
+      candidates.first(RELEASE_LOOKUP_LIMIT).each do |version|
+        release = published_release(repo, version)
+        return release_details(release) if release
+      end
+      raise Error, "None of the newest #{RELEASE_LOOKUP_LIMIT} release tags has a published release" if candidates.size > RELEASE_LOOKUP_LIMIT
+
+      nil
+    end
+
+    def server_tag_versions(repo)
+      response = connection.get("/repos/#{repo}/git/matching-refs/tags/#{SERVER_TAG_PREFIX}")
+      raise Error, "Could not list release tags (HTTP #{response.status})" unless response.status == 200 && response.body.is_a?(Array)
+
+      response.body
+        .filter_map { |ref| ref["ref"].to_s.delete_prefix("refs/tags/v") if ref.is_a?(Hash) }
+        .select { |version| Shelfarr::ReleaseChannel.published_version?(version) }
+        .sort_by { |version| Gem::Version.new(version) }
+        .reverse
+    end
+
+    def at_least_current?(version, current)
+      !Gem::Version.correct?(current) || Gem::Version.new(version) >= Gem::Version.new(current)
+    end
+
+    def published_release(repo, version)
+      response = connection.get("/repos/#{repo}/releases/tags/v#{version}")
+      return nil if response.status == 404
+      raise Error, "Could not read release v#{version} (HTTP #{response.status})" unless response.status == 200 && response.body.is_a?(Hash)
+
+      response.body unless response.body["draft"]
+    end
+
+    def release_version(data)
+      data["tag_name"].to_s.delete_prefix("v")
+    end
+
+    def release_details(data)
       {
-        version: version,
-        message: data["name"] || tag,
+        version: release_version(data),
+        message: data["name"] || data["tag_name"],
         date: parse_date(data["published_at"]),
         url: data["html_url"]
       }

@@ -1,0 +1,84 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<% eligibility = kobo_book_eligibility(@book) %>
+<% owner = @grant.owner? %>
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← #{@account.name}", owner ? kobo_account_path(@account) : kobo_shared_library_path(@account), class: "text-blue-400 hover:text-blue-300 break-words" %>
+  <div class="flex flex-wrap gap-4 items-start">
+    <% if @cover %>
+      <%= image_tag cover_kobo_account_book_path(@book), alt: "", class: "w-20 rounded border border-gray-800 bg-gray-800", loading: "lazy" %>
+    <% end %>
+    <div class="min-w-0 flex-1 basis-56">
+      <h1 class="text-3xl font-bold text-white break-words"><%= @book.title %></h1>
+      <p class="mt-1 text-gray-300 break-words"><%= @book.author.presence || "Unknown author" %></p>
+      <p class="mt-2 text-sm text-gray-400 break-words">From <%= kobo_owner_label(@account, Current.user) %></p>
+    </div>
+  </div>
+
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-4 sm:p-6 space-y-3" aria-labelledby="kobo-rights-heading">
+    <h2 id="kobo-rights-heading" class="text-xl font-semibold text-white">Can it be sent?</h2>
+    <p class="font-medium <%= kobo_tone(eligibility.tone) %>" data-testid="kobo-eligibility"><%= eligibility.label %></p>
+    <p class="text-sm text-gray-400"><%= eligibility.detail %></p>
+    <% if @book.deliverable? && @book.download_size %>
+      <p class="text-sm text-gray-400"><%= @book.download_format %> · <%= number_to_human_size(@book.download_size) %> according to Kobo</p>
+    <% end %>
+  </section>
+
+  <% if @book.deliverable? %>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-4 sm:p-6 space-y-3" aria-labelledby="kobo-copy-heading">
+      <h2 id="kobo-copy-heading" class="text-xl font-semibold text-white">Private copy</h2>
+      <% if @failure %>
+        <p role="alert" class="rounded-lg border border-amber-800 bg-amber-950/30 p-4 text-sm text-amber-200" data-testid="kobo-copy-error"><%= @failure.error_message %></p>
+      <% end %>
+      <% if @fetch %>
+        <div data-controller="kobo-account" data-kobo-account-url-value="<%= status_kobo_account_book_path(@book) %>">
+          <p role="status" data-kobo-account-target="status" class="text-gray-200">Preparing a private copy from Kobo… This page updates when it finishes.</p>
+        </div>
+        <%= button_to "Check progress", status_kobo_account_book_path(@book), form: { data: { turbo: false } }, class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+      <% elsif @file %>
+        <p class="text-gray-200" data-testid="kobo-copy-status">Ready · <%= @file.format || "EPUB" %><%= " #{@file.epub_version}" if @file.epub_version.present? %>, <%= number_to_human_size(@file.size_bytes) %>, prepared <%= time_ago_in_words(@file.fetched_at) %> ago</p>
+        <% if @file.stale? %>
+          <p class="text-sm text-amber-300" data-testid="kobo-copy-stale">Kobo now lists a newer edition of this book. Readers that already received this copy keep it; prepare again to send the newer one.</p>
+          <%= button_to "Prepare newer edition", prepare_kobo_account_book_path(@book), class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+        <% end %>
+      <% elsif !@account.connected? %>
+        <p class="text-sm text-amber-300"><%= owner ? "Reconnect this Kobo account to prepare a copy." : "#{@account.user.name} needs to reconnect this Kobo account before a copy can be prepared." %></p>
+      <% else %>
+        <p class="text-sm text-gray-400">Shelfarr first saves a private copy of the DRM-free EPUB on this server, using <%= owner ? "your" : "#{@account.user.name}'s" %> Kobo connection. <%= "Nobody else sees the sign-in. " unless owner %>The copy is checked before it can be sent and stays out of the shared library.</p>
+        <%= button_to @failure ? "Try again" : "Prepare copy", prepare_kobo_account_book_path(@book), class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500" %>
+      <% end %>
+    </section>
+
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-4 sm:p-6 space-y-3" aria-labelledby="kobo-send-heading">
+      <h2 id="kobo-send-heading" class="text-xl font-semibold text-white">Send to your Kobo</h2>
+      <% if @devices.empty? %>
+        <p class="text-gray-300" data-testid="kobo-no-reader">You haven't connected a Kobo reader to Shelfarr yet.</p>
+        <p class="text-sm text-gray-400">Set up your reader in <%= link_to "Kobo readers", kobo_devices_path, class: "text-blue-400 hover:text-blue-300" %>. It keeps its own Kobo sign-in; this account is never added to it.</p>
+      <% else %>
+        <% unless @file %>
+          <p class="text-sm text-gray-400">You can send it to these readers once the private copy is ready.</p>
+        <% end %>
+        <ul class="divide-y divide-gray-800">
+          <% @devices.each do |device| %>
+            <% delivery = @deliveries[device.id] %>
+            <li class="py-3 flex flex-wrap items-center justify-between gap-3" data-testid="kobo-send-target">
+              <div class="min-w-0 flex-1 basis-48">
+                <p class="text-gray-200 break-words"><%= device.name %></p>
+                <p class="text-sm text-gray-400"><%= delivery ? kobo_shared_delivery_text(delivery) : kobo_mode_label(device) %><%= " · an older copy" if delivery && @file && delivery.kobo_account_book_file_id != @file.id %></p>
+              </div>
+              <% if @file %>
+                <%= button_to delivery ? "Send again" : "Send to #{device.name}", deliver_kobo_account_book_path(@book), params: { device_id: device.id },
+                  class: "rounded-lg #{delivery ? 'bg-gray-800 text-gray-200 hover:bg-gray-700' : 'bg-blue-600 text-white hover:bg-blue-500'} px-3 py-2 text-sm",
+                  "aria-label": "#{delivery ? 'Send again to' : 'Send to'} #{device.name}" %>
+              <% end %>
+            </li>
+          <% end %>
+        </ul>
+        <p class="text-sm text-gray-400">The book arrives beside your own books at the reader's next Wi-Fi sync. Reading places stay on that reader.
+          <% unless owner %>If <%= @account.user.name %> stops sharing, Shelfarr stops offering this book, but a copy already downloaded stays on your Kobo.<% end %>
+          <% if owner %>A reader signed in to this same Kobo account may also show the Store's own copy.<% end %></p>
+      <% end %>
+    </section>
+  <% end %>
+</div>

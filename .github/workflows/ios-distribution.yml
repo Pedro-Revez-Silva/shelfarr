@@ -1,0 +1,194 @@
+name: iOS distribution
+
+on:
+  pull_request:
+    paths:
+      - apps/ios/**
+      - apps/design/**
+      - apps/scripts/ios-*
+      - apps/scripts/tests/test_ios_distribution.py
+      - .github/workflows/ios-distribution.yml
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Three-part calendar version, such as 2026.11.9"
+        type: string
+        required: true
+      build_number:
+        description: "Increasing Apple build number, such as 5"
+        type: string
+        required: true
+      method:
+        description: "App Store Connect/TestFlight, or an IPA for registered devices"
+        type: choice
+        options: [app-store-connect, release-testing]
+        default: app-store-connect
+      upload:
+        description: "Upload the verified IPA to App Store Connect (default branch only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-distribution-${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+# Store submission requires an iOS 26+ SDK. The existing native workflow keeps
+# Xcode 16.4 coverage for older runtimes; this lane tests the distribution SDK.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  XCODEGEN_VERSION: 2.46.0
+  XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Test signing policy and cleanup
+        run: python3 -m unittest discover -s apps/scripts/tests -p test_ios_distribution.py -v
+
+      - name: Validate a publication request
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version_name }}
+          BUILD: ${{ inputs.build_number }}
+          METHOD: ${{ inputs.method }}
+          UPLOAD: ${{ inputs.upload }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          upload=()
+          if [[ "${UPLOAD}" == true ]]; then
+            if [[ "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+              echo '::error::App Store Connect uploads are restricted to the default branch.'
+              exit 1
+            fi
+            upload=(--upload)
+          fi
+          python3 apps/scripts/ios-distribute.py plan --version "${VERSION}" --build "${BUILD}" \
+            --method "${METHOD}" "${upload[@]}"
+
+  compatibility:
+    needs: policy
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install pinned XcodeGen
+        run: |
+          set -euo pipefail
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  ${RUNNER_TEMP}/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "${RUNNER_TEMP}/xcodegen.zip" -d "${RUNNER_TEMP}/xcodegen"
+          echo "${RUNNER_TEMP}/xcodegen/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Test, render and resume on current iPhone and iPad simulators
+        run: |
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+            DEVELOPER_DIR="${DEVELOPER_DIR}" apps/scripts/ios-check.sh
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+            DEVELOPER_DIR="${DEVELOPER_DIR}" apps/scripts/ios-runtime-smoke.sh --device all
+
+      - name: Compile the release archive without signing credentials
+        working-directory: apps/ios
+        run: |
+          set -euo pipefail
+          mkdir -p build/distribution-check
+          env -i HOME="${HOME}" USER="${USER}" LOGNAME="${USER}" PATH="${PATH}" TMPDIR="${RUNNER_TEMP}" LANG=en_US.UTF-8 \
+            DEVELOPER_DIR="${DEVELOPER_DIR}" xcodebuild \
+            -project Shelfarr.xcodeproj -scheme Shelfarr -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build/distribution-check/DerivedData \
+            -archivePath build/distribution-check/Shelfarr.xcarchive \
+            CODE_SIGNING_ALLOWED=NO archive > build/distribution-check/archive.log 2>&1
+
+      - name: Keep compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-distribution-compatibility
+          if-no-files-found: ignore
+          path: |
+            apps/ios/build/runtime-smoke
+            apps/ios/test-results
+            apps/ios/build/distribution-check/archive.log
+
+  package:
+    if: github.event_name == 'workflow_dispatch'
+    needs: compatibility
+    runs-on: macos-26
+    timeout-minutes: 75
+    environment: ios-distribution
+    steps:
+      - name: Checkout the tested commit
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Check signing inputs before building
+        env:
+          VERSION: ${{ inputs.version_name }}
+          BUILD: ${{ inputs.build_number }}
+          METHOD: ${{ inputs.method }}
+          UPLOAD: ${{ inputs.upload }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID }}
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          upload=()
+          [[ "${UPLOAD}" != true ]] || upload=(--upload)
+          python3 apps/scripts/ios-distribute.py preflight --version "${VERSION}" --build "${BUILD}" \
+            --method "${METHOD}" "${upload[@]}"
+
+      - name: Install pinned XcodeGen
+        run: |
+          set -euo pipefail
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o "${RUNNER_TEMP}/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          echo "${XCODEGEN_SHA256}  ${RUNNER_TEMP}/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "${RUNNER_TEMP}/xcodegen.zip" -d "${RUNNER_TEMP}/xcodegen"
+          echo "${RUNNER_TEMP}/xcodegen/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Sign, verify, export and optionally upload
+        env:
+          VERSION: ${{ inputs.version_name }}
+          BUILD: ${{ inputs.build_number }}
+          METHOD: ${{ inputs.method }}
+          UPLOAD: ${{ inputs.upload }}
+          IOS_TEAM_ID: ${{ vars.IOS_TEAM_ID }}
+          IOS_CERTIFICATE_P12_BASE64: ${{ secrets.IOS_CERTIFICATE_P12_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}
+          APP_STORE_CONNECT_KEY_ID: ${{ vars.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          upload=()
+          [[ "${UPLOAD}" != true ]] || upload=(--upload)
+          python3 apps/scripts/ios-distribute.py distribute --version "${VERSION}" --build "${BUILD}" \
+            --method "${METHOD}" --output apps/ios/build/distribution "${upload[@]}"
+
+      - name: Keep the signed IPA, symbols and sanitized build logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-distribution
+          if-no-files-found: ignore
+          retention-days: 14
+          path: apps/ios/build/distribution

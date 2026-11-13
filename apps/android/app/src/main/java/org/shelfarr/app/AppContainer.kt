@@ -1,0 +1,491 @@
+package org.shelfarr.app
+
+import android.content.Context
+import android.content.SharedPreferences
+import coil3.ImageLoader
+import coil3.disk.DiskCache
+import coil3.disk.directory
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import coil3.request.crossfade
+import java.io.File
+import java.util.concurrent.atomic.AtomicReference
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
+import org.shelfarr.app.core.AccountPublications
+import org.shelfarr.app.core.ApiException
+import org.shelfarr.app.core.LibraryCache
+import org.shelfarr.app.core.LibraryPage
+import org.shelfarr.app.core.LibraryQuery
+import org.shelfarr.app.core.NetworkMonitor
+import org.shelfarr.app.core.OfflineLibraryResult
+import org.shelfarr.app.core.SessionState
+import org.shelfarr.app.core.ConsumerApi
+import org.shelfarr.app.core.Credential
+import org.shelfarr.app.core.DeviceAuthorizer
+import org.shelfarr.app.core.RequestingAccess
+import org.shelfarr.app.core.RequestingBackend
+import org.shelfarr.app.core.DownloadManager
+import org.shelfarr.app.core.Publication
+import org.shelfarr.app.core.ReadingStatus
+import org.shelfarr.app.core.EpubCache
+import org.shelfarr.app.core.FileProgressStore
+import org.shelfarr.app.core.KeystoreSecureStore
+import org.shelfarr.app.core.ProgressRegistry
+import org.shelfarr.app.core.Session
+import org.shelfarr.app.core.SessionManager
+import org.shelfarr.app.core.ServerAddress
+import org.shelfarr.app.core.StorageLayout
+import org.shelfarr.app.core.buildHttpClient
+import org.shelfarr.app.playback.PlaybackController
+import org.shelfarr.app.reader.ReaderSettingsStore
+import org.shelfarr.app.transfer.DownloadActionReceiver
+import org.shelfarr.app.transfer.TransferAccount
+import org.shelfarr.app.transfer.TransferNotifications
+import org.shelfarr.app.transfer.TransferScheduler
+import org.shelfarr.app.ui.theme.AppearanceMode
+import org.shelfarr.app.update.AndroidPackageInspector
+import org.shelfarr.app.update.AndroidSessionInstaller
+import org.shelfarr.app.update.AppUpdater
+import org.shelfarr.app.update.PlaybackGuard
+import org.shelfarr.app.update.ServerDiscovery
+import org.shelfarr.app.update.UpdateFetcher
+import org.shelfarr.app.update.UpdateSource
+import org.shelfarr.app.update.buildUpdateHttpClient
+
+/** Everything tied to one signed-in account. Replaced wholesale when the account changes. */
+class AccountServices(
+    private val live: AtomicReference<Session>,
+    val api: ConsumerApi,
+    val progress: ProgressRegistry,
+    override val downloads: DownloadManager,
+    val directory: File,
+    /** Metadata this device has seen, for browsing the library offline. */
+    val titles: LibraryCache,
+    private val store: FileProgressStore,
+    private val scope: CoroutineScope,
+    /** Completes once downloads are loaded and reconciled with the OS hosts. */
+    val ready: Job,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : TransferAccount {
+    /** The account's live session. Its token may be replaced in place by [adopt]. */
+    val session: Session get() = live.get()
+
+    override val accountKey: String get() = session.accountKey
+
+    /**
+     * Takes a newly approved credential for this same account (more permission, same
+     * user and server). Downloads, saved places, the title cache and playback continue;
+     * transfers stopped by an earlier sign-in problem resume with the new credential.
+     */
+    fun adopt(next: Session) {
+        require(next.accountKey == session.accountKey && next.server == session.server)
+        live.set(next)
+        scope.launch { downloads.resumeAfterSignIn() }
+    }
+
+    /**
+     * Stops transfers, timers and writes; the caller may then delete [directory].
+     * [signedOut] keeps unfinished downloads ready to resume on the same account.
+     */
+    suspend fun close(signedOut: Boolean = false) {
+        downloads.close(signedOut)
+        titles.close()
+        scope.cancel()
+        store.close()
+    }
+
+    /** One library page, remembered for offline browsing. */
+    suspend fun libraryPage(query: LibraryQuery, cursor: String?): LibraryPage {
+        val observedAt = clock()
+        return api.library(session.server, query, cursor).also { titles.recordPage(query, cursor, it, observedAt) }
+    }
+
+    suspend fun publication(id: String): Publication {
+        val observedAt = clock()
+        return api.publication(session.server, id).also { titles.remember(it, observedAt) }
+    }
+
+    suspend fun continueReading(limit: Int): List<Publication> {
+        val observedAt = clock()
+        return api.continueReading(session.server, limit).also { titles.rememberAll(it, observedAt) }
+    }
+
+    /** Needs the server; the cached copy changes only once it has accepted the status. */
+    suspend fun setReadingStatus(id: String, status: ReadingStatus): Publication {
+        val observedAt = clock()
+        return api.setReadingStatus(session.server, id, status).also { titles.remember(it, observedAt) }
+    }
+
+    /** What this device can show for [query] without a connection, downloads included. */
+    suspend fun offlineLibrary(query: LibraryQuery): OfflineLibraryResult =
+        titles.query(query, downloads.records.value.values.map { it.publication })
+
+    /** Last details seen for [id]: the download's pinned copy if newer data is missing. */
+    suspend fun recall(id: String): Publication? = titles.recall(id) ?: downloads.find(id)?.publication
+
+    /**
+     * Best effort: an explicit Read or Listen marks an unread publication in progress.
+     * It never blocks opening, and never changes a finished status.
+     */
+    fun markStarted(publication: Publication) {
+        if (publication.status != ReadingStatus.UNREAD) return
+        scope.launch {
+            try {
+                setReadingStatus(publication.id, ReadingStatus.IN_PROGRESS)
+            } catch (error: ApiException) {
+                // Offline or refused: the saved place still records the reading.
+                Log.i("ShelfarrAccount", "Could not mark a title in progress: ${error.message}")
+            }
+        }
+    }
+}
+
+/** Hand-rolled dependency graph; the app is small enough not to need a framework. */
+class AppContainer(context: Context) {
+    private val appContext = context.applicationContext
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val sessions = SessionManager(KeystoreSecureStore(appContext)).apply {
+        // A replacement token left unconfirmed by an earlier process is checked with exactly
+        // that token, before the old one's first refusal can end the sign-in.
+        useCandidateCheck { candidate -> ConsumerApi(buildHttpClient({ candidate })).me(candidate.server) }
+    }
+
+    /**
+     * Follows whoever is signed in. A refusal is replayed only for the sign-in that held the
+     * refused token, with the replacement it was handed over to.
+     */
+    val httpClient: OkHttpClient = buildHttpClient(
+        sessions,
+        { rejected, canceled -> sessions.resolveRefusalBlocking(rejected, canceled = canceled) },
+    ) { rejected -> sessions.markExpired(rejected) }
+    val api = ConsumerApi(httpClient)
+    val authorizer = DeviceAuthorizer(api)
+
+    /** Adding the opt-in requesting permission to this connection, in place. */
+    val requesting = RequestingAccess(
+        object : RequestingBackend {
+            override val sessions get() = this@AppContainer.sessions
+            override val api get() = this@AppContainer.api
+            override val authorizer get() = this@AppContainer.authorizer
+            override fun apiFor(credential: Credential) = ConsumerApi(buildHttpClient({ credential }))
+        },
+        scope,
+        CLIENT_NAME,
+    )
+    val epubCache = EpubCache(File(appContext.cacheDir, StorageLayout.EPUB_CACHE_DIRECTORY), httpClient)
+    val playback = PlaybackController(appContext, CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate))
+
+    // Display preferences only. No credential or identifier belongs here.
+    private val preferences: SharedPreferences = appContext.getSharedPreferences(StorageLayout.PREFERENCES, Context.MODE_PRIVATE)
+    val readerSettings = ReaderSettingsStore(preferences)
+
+    /** True while one of the app's screens is visible, which is when Android lets it start user-initiated work. */
+    @Volatile
+    var isVisible: Boolean = false
+        private set
+
+    val network = NetworkMonitor(appContext)
+    val transferNotifications = TransferNotifications(appContext).apply { ensureChannel() }
+    val transfers = TransferScheduler(appContext, { isVisible }, preferences)
+
+    private val accountState = MutableStateFlow<AccountServices?>(null)
+
+    /** The live account's services, for OS hosts that must follow account changes. */
+    val transferAccounts: StateFlow<TransferAccount?> = accountState
+
+    /** Whether the first download prompt for notifications has been shown. */
+    var askedForNotifications: Boolean
+        get() = preferences.getBoolean(KEY_ASKED_NOTIFICATIONS, false)
+        set(value) = preferences.edit().putBoolean(KEY_ASKED_NOTIFICATIONS, value).apply()
+
+    private val appearanceState = MutableStateFlow(
+        AppearanceMode.entries.getOrElse(preferences.getInt(KEY_APPEARANCE, 0)) { AppearanceMode.SYSTEM },
+    )
+    val appearance: StateFlow<AppearanceMode> = appearanceState.asStateFlow()
+
+    val imageLoader: ImageLoader by lazy {
+        ImageLoader.Builder(appContext)
+            .components { add(OkHttpNetworkFetcherFactory(callFactory = { httpClient })) }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(File(appContext.cacheDir, StorageLayout.COVER_CACHE_DIRECTORY))
+                    .maxSizeBytes(128L * 1024 * 1024)
+                    .build()
+            }
+            .crossfade(true)
+            .build()
+    }
+
+    private var account: AccountServices? = null
+
+    /** The account an interrupted requesting approval was last resumed for. */
+    private var resumedUpgradeFor: String? = null
+
+    private val autoDownloadUpdatesState = MutableStateFlow(preferences.getBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, false))
+
+    /** Whether a found update may download on its own over an unmetered network. Installing always waits. */
+    val autoDownloadUpdates: StateFlow<Boolean> = autoDownloadUpdatesState.asStateFlow()
+
+    /**
+     * Updates this app from the feed the connected server offers, or the build-time
+     * publisher feed for servers that predate that. It has its own HTTP client and never
+     * sends the account's credential, cookies or anything the account holds.
+     */
+    val updater: AppUpdater = buildUpdateHttpClient().let { client ->
+        AppUpdater(
+            builtIn = UpdateSource.parse(BuildConfig.UPDATE_FEED_URL),
+            channel = BuildConfig.UPDATE_CHANNEL,
+            fetcherFor = { source -> UpdateFetcher(client, source) },
+            inspector = AndroidPackageInspector(appContext),
+            installer = AndroidSessionInstaller(appContext),
+            directory = StorageLayout.updatesDirectory(appContext),
+            playback = object : PlaybackGuard {
+                override val isPlaying: Boolean get() = playback.isListening
+                override fun pause() = playback.pause()
+            },
+            scope = scope,
+            beforeInstall = ::saveBeforeInstall,
+            discovery = if (BuildConfig.UPDATE_FROM_SERVER) ServerDiscovery(client) else null,
+            server = { updateServer(sessions.session.value) },
+            autoDownload = { autoDownloadUpdatesState.value && network.isUnmetered() },
+        ).also { it.start() }
+    }
+
+    init {
+        // A different server may offer a different feed; what the previous one offered no longer applies.
+        scope.launch {
+            sessions.session.map { updateServer(it)?.identity }.distinctUntilChanged().drop(1).collect { updater.onServerChanged() }
+        }
+        // Streams can't continue without a session, so don't leave a dead player behind.
+        scope.launch {
+            sessions.session.collect { state ->
+                val live = sessions.signedIn
+                if (live != null) adoptable(live)
+                val previous = synchronized(this@AppContainer) {
+                    account?.takeIf { !it.session.hasSameAccountAndToken(live) }?.also {
+                        account = null
+                        accountState.value = null
+                    }
+                }
+                // An expired sign-in keeps this account's downloads, recorded so they resume after signing in again.
+                val expired = state is SessionState.Expired && previous != null && state.server == previous.session.server
+                if (previous != null) previous.close(signedOut = expired)
+                if (live == null || previous != null) playback.stop()
+                // Resume this account's unfinished downloads as soon as it is signed in.
+                if (live != null) account(live)
+                if (live == null) {
+                    requesting.detach()
+                    resumedUpgradeFor = null
+                } else if (resumedUpgradeFor != live.accountKey) {
+                    resumedUpgradeFor = live.accountKey
+                    requesting.resume(live)
+                }
+            }
+        }
+    }
+
+    /** The services for the live session, built on first use. */
+    @Synchronized
+    fun account(session: Session): AccountServices {
+        account?.takeIf { it.session.hasSameAccountAndToken(session) }?.let { return it }
+        adoptable(session)?.let { return it }
+        // The next account's downloads wait until the previous transfers have stopped.
+        val closing = account?.let { previous -> scope.launch { previous.close() } }
+        val accountScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val directory = StorageLayout.accountDirectory(appContext, session.accountKey)
+        val store = FileProgressStore(File(directory, StorageLayout.PROGRESS_FILE))
+        // Bound to this sign-in, so its retries and downloads can't borrow another token. It
+        // follows a replacement token the moment the sign-in is handed over to it, not when
+        // these services are next told; a refusal while that replacement is being confirmed
+        // waits for it and is sent once more with it.
+        val live = AtomicReference(session)
+        val accountClient = buildHttpClient(
+            { sessions.continuing(session)?.let { Credential(it.server, it.accessToken) } },
+            { rejected, canceled -> sessions.resolveRefusalBlocking(rejected, session, canceled) },
+        ) { sessions.markExpired(it) }
+        val accountApi = ConsumerApi(accountClient)
+        val registry = ProgressRegistry(
+            store = store,
+            remote = { id, update ->
+                if (sessions.continuing(session) == null) throw ApiException.Unauthorized()
+                accountApi.saveProgress(session.server, id, update)
+            },
+            scope = accountScope,
+        )
+        lateinit var downloads: DownloadManager
+        downloads = DownloadManager(
+            root = File(directory, StorageLayout.DOWNLOADS_DIRECTORY),
+            client = accountClient,
+            server = session.server,
+            fetchPublication = { id ->
+                if (sessions.continuing(session) == null) throw ApiException.Unauthorized()
+                accountApi.publication(session.server, id)
+            },
+            scope = accountScope,
+            // The record is on disk by now, so a host started in a new process finds it.
+            onQueued = { transfers.request(downloads.remainingBytes) },
+        )
+        val titles = LibraryCache(
+            file = File(directory, StorageLayout.LIBRARY_FILE),
+            scope = accountScope,
+            protectedIds = { downloads.records.value.keys },
+            legacy = AccountPublications(directory),
+        )
+        val ready = accountScope.launch {
+            closing?.join()
+            downloads.start()
+            // Nothing will continue an earlier process's downloads: say so rather than restart them unasked.
+            if (!transfers.hasScheduledWork()) downloads.interruptInherited()
+            downloads.resumeAfterSignIn()
+        }
+        return AccountServices(live, accountApi, registry, downloads, directory, titles, store, accountScope, ready)
+            .also {
+                account = it
+                accountState.value = it
+            }
+    }
+
+    fun currentAccount(): AccountServices? = sessions.signedIn?.let(::account)
+
+    /**
+     * The live services, updated in place, when [session] is only a new credential for
+     * the signed-in account: requesting was added without signing out.
+     */
+    @Synchronized
+    private fun adoptable(session: Session): AccountServices? {
+        val existing = account ?: return null
+        val live = sessions.signedIn ?: return null
+        if (!live.hasSameAccountAndToken(session)) return null
+        if (existing.session.accountKey != session.accountKey || existing.session.server != session.server) return null
+        existing.adopt(session)
+        return existing
+    }
+
+    fun setAutoDownloadUpdates(enabled: Boolean) {
+        preferences.edit().putBoolean(StorageLayout.KEY_AUTO_DOWNLOAD_UPDATES, enabled).apply()
+        autoDownloadUpdatesState.value = enabled
+    }
+
+    fun setAppearance(mode: AppearanceMode) {
+        preferences.edit().putInt(KEY_APPEARANCE, mode.ordinal).apply()
+        appearanceState.value = mode
+    }
+
+    /**
+     * Cancels downloads from a notification, only if [accountKey] is still the signed-in
+     * account. Cancelling never needs the network or the token.
+     */
+    suspend fun cancelDownloads(accountKey: String?, ids: List<String>) {
+        val current = currentAccount()
+        if (current == null || current.accountKey != accountKey) {
+            DownloadActionReceiver.logIgnored()
+            return
+        }
+        ids.forEach { current.downloads.cancel(it) }
+    }
+
+    fun onForeground() {
+        isVisible = true
+        updater.onForeground()
+        val current = currentAccount() ?: return
+        scope.launch {
+            current.progress.flushAll()
+            // Let a cold start decide what an earlier process left behind before asking for a host.
+            current.ready.join()
+            current.downloads.retryInterrupted()
+            // Visible now, so Android allows upgrading to a user-initiated transfer.
+            if (current.downloads.hasActiveWork) transfers.request(current.downloads.remainingBytes)
+            try {
+                sessions.refreshUser(current.api.me(current.session.server), current.session)
+            } catch (_: ApiException) {
+                // Offline is fine and a 401 was already handled by the HTTP stack.
+            }
+        }
+    }
+
+    fun onBackground() {
+        isVisible = false
+        // Taken on the main thread as the app leaves, so the place is the one just heard.
+        val listening = playback.checkpointNow()
+        val current = currentAccount() ?: return
+        scope.launch {
+            listening?.join()
+            current.progress.flushAll()
+        }
+    }
+
+    /** Android may replace this process once it installs an update: save places first. */
+    private suspend fun saveBeforeInstall() {
+        val listening = withContext(Dispatchers.Main.immediate) { playback.checkpointNow() }
+        withTimeoutOrNull(NETWORK_GRACE_MS) {
+            listening?.join()
+            currentAccount()?.progress?.flushAll()
+        }
+    }
+
+    /**
+     * Disconnects this device: last sync, server-side revoke, then every local trace.
+     * Local cleanup happens whether or not the server could be reached. This runs on
+     * the app scope because signing out tears down the screen that asked for it.
+     */
+    fun disconnect() {
+        scope.launch { forgetAccount() }
+    }
+
+    private suspend fun forgetAccount() {
+        val session = sessions.signedIn
+        val current = session?.let(::account)
+        withTimeoutOrNull(NETWORK_GRACE_MS) {
+            playback.stop()
+            try {
+                current?.progress?.flushAll()
+                session?.let { api.revoke(it.server) }
+            } catch (_: ApiException) {
+                // The token is deleted below regardless; expiry covers the rest.
+            }
+        }
+        current?.close()
+        transfers.cancel()
+        transferNotifications.cancelProgress()
+        sessions.clear()
+        if (session != null) {
+            epubCache.clear(session.accountKey)
+            current?.directory?.deleteRecursively()
+        }
+        synchronized(this) {
+            account = null
+            accountState.value = null
+        }
+        imageLoader.memoryCache?.clear()
+        imageLoader.diskCache?.clear()
+    }
+
+    private companion object {
+        const val KEY_APPEARANCE = StorageLayout.KEY_APPEARANCE
+        const val KEY_ASKED_NOTIFICATIONS = StorageLayout.KEY_ASKED_NOTIFICATIONS
+        const val NETWORK_GRACE_MS = 5_000L
+        const val CLIENT_NAME = "Shelfarr Android"
+
+        /** The server to ask for updates: the signed-in one, or the one whose sign-in ended. */
+        fun updateServer(state: SessionState): ServerAddress? = when (state) {
+            is SessionState.SignedIn -> state.session.server
+            is SessionState.Expired -> state.server
+            SessionState.SignedOut -> null
+        }
+    }
+}

@@ -1,0 +1,86 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<div class="mx-auto max-w-3xl space-y-6">
+  <%= link_to "← Kobo accounts", kobo_accounts_path, class: "text-blue-400 hover:text-blue-300" %>
+  <div>
+    <h1 class="text-3xl font-bold text-white break-words"><%= @account.name %></h1>
+    <p class="mt-2 text-gray-400"><%= @shares.empty? ? "Private to your Shelfarr user" : "Shared with #{pluralize(@shares.size, 'person', plural: 'people')} in your household" %></p>
+  </div>
+  <% if @account.error_message %>
+    <p role="alert" class="rounded-lg border border-amber-800 bg-amber-950/30 p-5 text-amber-200"><%= @account.error_message %></p>
+  <% end %>
+
+  <% if @account.pending? %>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4"
+      data-controller="kobo-account" data-kobo-account-url-value="<%= poll_kobo_account_path(@account) %>">
+      <h2 class="text-xl font-semibold text-white">Approve this connection on Kobo</h2>
+      <p class="text-gray-300">Open Kobo's activation page, sign in to the account you want to connect, and enter this code:</p>
+      <p class="font-mono text-3xl tracking-widest text-white" data-testid="kobo-activation-code"><%= @account.activation_code %></p>
+      <%= link_to "Open Kobo activation", "https://www.kobo.com/activate", target: "_blank", rel: "noopener noreferrer", class: "inline-block rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500" %>
+      <p class="text-sm text-gray-400">Return here after approving. This code expires in <%= distance_of_time_in_words(Time.current, @account.activation_expires_at) %>. Keep it private.</p>
+      <p role="status" data-kobo-account-target="status" class="text-sm text-gray-300">Waiting for approval…</p>
+      <%= button_to "Check connection", poll_kobo_account_path(@account), form: { data: { turbo: false } }, class: "rounded-lg bg-gray-800 px-4 py-2 text-gray-200 hover:bg-gray-700" %>
+    </section>
+  <% elsif @account.connected? || @account.status == "reauthorization_required" %>
+    <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
+      <h2 class="text-xl font-semibold text-white"><%= @account.connected? ? "Connected to Kobo" : "Kobo sign-in required" %></h2>
+      <p class="text-gray-300 break-all">Account: <%= @account.kobo_email %></p>
+      <p class="text-sm text-gray-400">Check that this is the account you intended to connect. Only you and people you share it with below can see its catalogue, and only you can see this sign-in. Book files are copied only when someone prepares a DRM-free title.</p>
+      <% if @account.sync_active? %>
+        <div data-controller="kobo-account" data-kobo-account-url-value="<%= poll_kobo_account_path(@account, phase: 'catalogue') %>">
+          <p role="status" data-kobo-account-target="status" class="text-gray-300">Refreshing your catalogue… This page will update when it finishes.</p>
+        </div>
+      <% elsif @account.connected? %>
+        <%= button_to "Refresh catalogue", sync_kobo_account_path(@account), class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500" %>
+      <% end %>
+      <% if @account.last_synced_at %>
+        <p class="text-sm text-gray-400">Last refreshed <%= time_ago_in_words(@account.last_synced_at) %> ago.</p>
+      <% end %>
+    </section>
+    <section id="sharing" class="rounded-lg border border-gray-800 bg-gray-900 p-4 sm:p-6 space-y-4" aria-labelledby="kobo-sharing-heading">
+      <h2 id="kobo-sharing-heading" class="text-xl font-semibold text-white">Household sharing</h2>
+      <p class="text-sm text-gray-400">
+        <%= @shares.empty? ? "Only you can see this catalogue." : "You and the people below can see this catalogue." %>
+        People you share with can send its DRM-free purchases to their own Kobo reader. They never see your Kobo sign-in or email, can't change this connection, and can't reach your readers.
+        Protected, subscription and preview titles stay listed as unavailable.
+      </p>
+      <% if @shares.any? %>
+        <ul class="divide-y divide-gray-800 border-y border-gray-800">
+          <% @shares.each do |share| %>
+            <li class="py-3 flex flex-wrap items-center justify-between gap-3" data-testid="kobo-share">
+              <div class="min-w-0">
+                <p class="text-gray-200 break-words"><%= share.recipient.name %> <span class="text-gray-500">(<%= share.recipient.username %>)</span></p>
+                <p class="text-sm text-gray-400">Shared <%= time_ago_in_words(share.created_at) %> ago<%= " · account no longer active" if share.recipient.deleted? %></p>
+              </div>
+              <%= button_to "Stop sharing", kobo_account_share_path(@account, share), method: :delete,
+                form: { data: { turbo_confirm: "Stop sharing with #{share.recipient.name}? Shelfarr stops offering these books to their readers. Copies already downloaded stay on their Kobo." } },
+                class: "rounded-lg bg-red-900 px-3 py-2 text-sm text-red-100 hover:bg-red-800", "aria-label": "Stop sharing with #{share.recipient.name}" %>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+      <% if @share_candidates.any? %>
+        <%= form_with url: kobo_account_shares_path(@account), class: "flex flex-wrap items-end gap-3" do |form| %>
+          <div class="min-w-0 flex-1 basis-56">
+            <%= form.label :recipient_id, "Share with", class: "block text-sm text-gray-300 mb-2" %>
+            <%= form.select :recipient_id, @share_candidates.map { |user| [ "#{user.name} (#{user.username})", user.id ] },
+              { prompt: "Choose a person" }, required: true, class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white" %>
+          </div>
+          <%= form.submit "Share catalogue", class: "rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-500 cursor-pointer" %>
+        <% end %>
+      <% else %>
+        <p class="text-sm text-gray-400">There are no other Shelfarr users to share with<%= " who don't already have access" if @shares.any? %>.</p>
+      <% end %>
+    </section>
+    <%= render "kobo_account_books/catalogue", account: @account, books: @books, count: @count, sendable_count: @sendable_count,
+      page: @page, more: @more, filter: @filter, page_path: ->(**query) { kobo_account_path(@account, **query.compact) } %>
+  <% else %>
+    <p class="text-gray-300">This connection did not complete. Return to Kobo accounts to start a new connection.</p>
+  <% end %>
+  <section class="rounded-lg border border-gray-800 bg-gray-900 p-6 space-y-4">
+    <h2 class="text-xl font-semibold text-white">Disconnect</h2>
+    <p class="text-sm text-gray-400">Remove this connection's saved credentials, private catalogue, prepared copies and shares from Shelfarr. People you shared with stop receiving its books. This does not sign out or reset a physical Kobo, remove books already on readers, or revoke credentials at Kobo.</p>
+    <%= button_to "Disconnect Kobo account", kobo_account_path(@account), method: :delete, data: { turbo_confirm: "Remove this connection and its catalogue from Shelfarr?" }, class: "rounded-lg bg-red-900 px-4 py-2 text-red-100 hover:bg-red-800" %>
+  </section>
+</div>

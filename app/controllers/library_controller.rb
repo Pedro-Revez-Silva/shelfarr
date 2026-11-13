@@ -420,6 +420,7 @@ class LibraryController < ApplicationController
 
   def show
     @book = Book.acquired.find(params[:id])
+    @kobo_devices = Current.user.kobo_devices.order(:name) if @book.ebook?
     @user_request = @book.requests.completed.first
     @attention_request = @book.requests.where(attention_needed: true).first
   end

@@ -1,5 +1,11 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8 text-white">My Profile</h1>
+  <h1 class="font-bold text-4xl text-white">Account</h1>
+  <p class="mt-2 mb-8 text-sm text-gray-400">
+    Your own sign-in, reading devices and apps. These settings only affect you.
+    <% if @user.admin? %>
+      Settings for the whole server are in <%= link_to "Admin", admin_root_path, class: "text-blue-400 hover:text-blue-300" %>.
+    <% end %>
+  </p>
 
   <div class="bg-gray-900 rounded-lg shadow overflow-hidden border border-gray-800">
     <div class="p-6">
@@ -77,6 +83,15 @@
 
     <div class="px-6 py-4 bg-gray-800 border-t border-gray-700 flex flex-wrap gap-4">
       <%= link_to "Edit Profile", edit_profile_path, class: "px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition" %>
+      <%= link_to "Kobo readers", kobo_devices_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <%= link_to "Kobo accounts", kobo_accounts_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% if @user.received_kobo_account_shares.effective.exists? %>
+        <%= link_to "Shared Kobo books", kobo_shared_libraries_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% end %>
+      <%= link_to "Your library", consumer_library_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% if (android_page = android_app_page_path) %>
+        <%= link_to "Get the Android app", android_page, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <% end %>
       <%= link_to "Change Password", password_profile_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% if SettingsService.oidc_configured? && !@user.oidc_user? %>
         <%= button_to "Link OIDC Login", link_oidc_profile_path, method: :post, form: { data: { turbo: false } }, class: "px-4 py-2 bg-indigo-700 hover:bg-indigo-600 text-white font-medium rounded-lg transition cursor-pointer" %>
@@ -90,6 +105,8 @@
         </span>
       <% end %>
     </div>
+
+    <%= render "home_screen" %>
 
     <% if SettingsService.oidc_configured? && @user.oidc_user? %>
       <div class="border-t border-gray-700 bg-gray-900/40 px-6 py-5">
@@ -123,7 +140,7 @@
           <%= form.text_field :name, placeholder: "Token name", class: "w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500" %>
           <%= form.submit "Create API Token", class: "rounded-lg bg-blue-700 px-4 py-2 font-medium text-white transition hover:bg-blue-600 cursor-pointer" %>
           <div class="flex flex-wrap gap-4 text-sm text-gray-300 md:col-span-2">
-            <% [["search:read", "Search"], ["requests:read", "Read requests"], ["requests:write", "Create/cancel requests"]].each do |scope, label| %>
+            <% [["search:read", "Search"], ["requests:read", "Read requests"], ["requests:write", "Create/cancel requests"], ["library:read", "Read/download library"], ["progress:write", "Save reading/listening progress"]].each do |scope, label| %>
               <label class="inline-flex items-center gap-2">
                 <%= check_box_tag "scopes[]", scope, true, class: "rounded border-gray-600 bg-gray-700 text-blue-600 focus:ring-blue-500" %>
                 <span><%= label %></span>
@@ -157,4 +174,15 @@
       </div>
     </div>
   </div>
+
+  <section id="about-shelfarr" class="mt-8 rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="about-shelfarr-heading">
+    <h2 id="about-shelfarr-heading" class="text-lg font-semibold text-white">About this server</h2>
+    <p class="mt-2 text-sm text-gray-300">This server runs <strong class="text-white"><%= release_channel.label %></strong>.</p>
+    <% if release_channel.beta? %>
+      <p class="mt-1 text-sm text-gray-400">Beta builds are ready to use, but some screens may still change before Shelfarr <%= release_channel.series %> is final. Your administrator decides when the server is updated and keeps its backups.</p>
+    <% end %>
+    <% if @user.admin? %>
+      <p class="mt-2 text-sm"><%= link_to "Release, updates and backups", admin_root_path(anchor: "release"), class: "text-blue-400 hover:text-blue-300" %></p>
+    <% end %>
+  </section>
 </div>

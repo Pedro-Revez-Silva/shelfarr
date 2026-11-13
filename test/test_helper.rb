@@ -6,6 +6,7 @@ require "mutant/minitest/coverage"
 require_relative "test_helpers/session_test_helper"
 require_relative "test_helpers/synthetic_library_modes_test_helper"
 require_relative "test_helpers/hardcover_test_helper"
+require_relative "test_helpers/release_channel_test_helper"
 require_relative "support/vcr_setup"
 
 # Resolve hostnames to a fixed public test address instead of doing real DNS
@@ -19,6 +20,18 @@ module ActiveSupport
     fixtures :all
 
     include VCRHelper
+    include ReleaseChannelTestHelper
+
+    # Kobo editions prepared by a test never reach the app's storage/ cache.
+    setup do
+      @kobo_kepub_cache_env = ENV["KOBO_KEPUB_CACHE_PATH"]
+      ENV["KOBO_KEPUB_CACHE_PATH"] = File.join(Dir.tmpdir, "kobo-kepub-#{Process.pid}-#{SecureRandom.hex(8)}")
+    end
+
+    teardown do
+      FileUtils.rm_rf(ENV["KOBO_KEPUB_CACHE_PATH"]) if ENV["KOBO_KEPUB_CACHE_PATH"].to_s.include?("kobo-kepub-")
+      ENV["KOBO_KEPUB_CACHE_PATH"] = @kobo_kepub_cache_env
+    end
 
     def stub_qbittorrent_connection(url, session_id: "test_session_id")
       stub_request(:post, "#{url}/api/v2/auth/login")

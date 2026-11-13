@@ -1,0 +1,37 @@
+<%# locals: (account:, books:, count:, sendable_count:, page:, more:, filter:, page_path:) %>
+<section class="rounded-lg border border-gray-800 bg-gray-900 p-4 sm:p-6" aria-labelledby="kobo-catalogue-heading">
+  <h2 id="kobo-catalogue-heading" class="text-xl font-semibold text-white">Kobo catalogue · <%= count %> <%= "title".pluralize(count) %></h2>
+  <p class="mt-1 text-sm text-gray-400"><%= sendable_count %> can be sent to a Kobo reader as DRM-free EPUBs.</p>
+  <nav aria-label="Catalogue filter" class="mt-4 flex flex-wrap gap-2">
+    <% [ [ "all", "All titles" ], [ "sendable", "Can be sent" ] ].each do |value, label| %>
+      <% if filter == value %>
+        <span aria-current="page" class="rounded-full bg-blue-900/60 px-3 py-1 text-sm text-blue-100"><%= label %></span>
+      <% else %>
+        <%= link_to label, page_path.call(filter: value == "all" ? nil : value), class: "rounded-full bg-gray-800 px-3 py-1 text-sm text-gray-300 hover:bg-gray-700" %>
+      <% end %>
+    <% end %>
+  </nav>
+  <% if books.empty? %>
+    <p class="mt-4 text-gray-400">
+      <% if filter == "sendable" %>
+        No titles in this catalogue can be sent yet.
+      <% else %>
+        <%= account.last_synced_at ? "Kobo returned no catalogue entries for this connection." : "The catalogue will appear after the first successful refresh." %>
+      <% end %>
+    </p>
+  <% end %>
+  <ul class="mt-2">
+    <% books.each do |book| %>
+      <% eligibility = kobo_book_eligibility(book) %>
+      <li class="border-t border-gray-800 py-4 mt-2 min-w-0" data-testid="kobo-catalogue-entry">
+        <%= link_to book.title, kobo_account_book_path(book), class: "font-medium text-gray-100 hover:text-blue-400 break-words" %>
+        <p class="mt-1 text-sm text-gray-400 break-words"><%= book.author.presence || "Unknown author" %></p>
+        <p class="mt-1 text-sm <%= kobo_tone(eligibility.tone) %>"><%= eligibility.label %></p>
+      </li>
+    <% end %>
+  </ul>
+  <nav aria-label="Catalogue pages" class="mt-4 flex flex-wrap gap-4">
+    <%= link_to "Previous", page_path.call(page: page - 1, filter: (filter if filter == "sendable")), class: "text-blue-400 hover:text-blue-300" if page > 1 %>
+    <%= link_to "Next", page_path.call(page: page + 1, filter: (filter if filter == "sendable")), class: "text-blue-400 hover:text-blue-300" if more %>
+  </nav>
+</section>

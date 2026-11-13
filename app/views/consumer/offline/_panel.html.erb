@@ -1,0 +1,13 @@
+<%# Download control for one publication. Hidden until the browser's offline support is known. %>
+<div class="consumer-offline" data-controller="consumer-offline" data-consumer-offline-mode-value="<%= offline ? "offline" : "online" %>" hidden>
+  <div class="consumer-offline__row">
+    <p class="consumer-offline__state"><span class="consumer-offline__mark" data-consumer-offline-target="mark" aria-hidden="true"></span><span data-consumer-offline-target="state" role="status" aria-live="polite">Checking this device…</span></p>
+    <div class="consumer-offline__actions">
+      <button type="button" class="consumer-offline__button" data-consumer-offline-target="primary" data-action="consumer-offline#primary" hidden>Download</button>
+      <button type="button" class="consumer-offline__button consumer-offline__button--quiet" data-consumer-offline-target="secondary" data-action="consumer-offline#secondary" hidden>Remove</button>
+    </div>
+  </div>
+  <progress class="consumer-offline__progress" data-consumer-offline-target="progress" max="1" value="0" aria-label="Download progress" hidden></progress>
+  <p class="consumer-offline__note" data-consumer-offline-target="note" hidden></p>
+  <%= link_to "Manage downloads", consumer_downloads_path, class: "consumer-offline__link", data: { consumer_offline_target: "manage" }, hidden: true %>
+</div>

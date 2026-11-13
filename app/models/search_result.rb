@@ -32,6 +32,15 @@ class SearchResult < ApplicationRecord
   scope :blocklisted, -> { where.not(blocklisted_at: nil) }
   scope :not_blocklisted, -> { where(blocklisted_at: nil) }
 
+  # Provider metadata supplies this link. Escaping an href does not make an
+  # executable URL scheme safe, even on the administrator's results screen.
+  def safe_info_url
+    uri = URI.parse(info_url.to_s)
+    uri.to_s if uri.is_a?(URI::HTTP) && uri.host.present? && uri.userinfo.nil?
+  rescue URI::InvalidURIError, ArgumentError
+    nil # Missing or malformed provider links are optional, not render failures.
+  end
+
   scope :preferred_first, -> {
     ordered_types = SettingsService.preferred_download_types
     type_order_sql = ordered_types.each_with_index.map { |type, index| "WHEN '#{type}' THEN #{index}" }.join(" ")

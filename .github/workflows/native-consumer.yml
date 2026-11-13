@@ -1,0 +1,143 @@
+name: Native consumer apps
+
+on:
+  pull_request:
+    paths:
+      - apps/**
+      - docs/native-consumer.md
+      - .github/workflows/native-consumer.yml
+  push:
+    branches: [main, master, dev]
+    paths:
+      - apps/**
+      - docs/native-consumer.md
+      - .github/workflows/native-consumer.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-consumer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  design:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+
+      - name: Check design tokens and contrast
+        run: python3 apps/scripts/check-design-tokens.py
+
+      - name: Check Android tooling and consumer fixtures
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 -m unittest discover -s apps/scripts/tests -p 'test_android_*.py' -q
+          python3 -m unittest discover -s apps/scripts/tests -p 'test_mock_read_along.py' -q
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          # The upgrade check builds the last published pre-discovery app as its baseline.
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Accept Android SDK licenses
+        run: |
+          # sdkmanager closes stdin once done; yes then exits with SIGPIPE.
+          # Keep the SDK command's result instead of the producer's exit 141.
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+
+      - name: Test, lint and build
+        run: apps/scripts/android-check.sh
+
+      - name: Enable KVM for the reader smoke test
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Render and resume an EPUB, and reopen downloads offline, on Android
+        uses: reactivecircus/android-emulator-runner@4c44018e59b437e86cdfc41da381398f93ed8808 # v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_7
+          disable-linux-hw-accel: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: |
+            apps/scripts/android-reader-smoke.sh
+            apps/android/tools/upgrade-preservation.sh
+
+      - name: Upload debug build and rendered screens
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-debug
+          if-no-files-found: ignore
+          path: |
+            apps/android/app/build/outputs/apk/debug/app-debug.apk
+            apps/android/app/build/screenshots
+            apps/android/app/build/reports/lint-results-debug.html
+            apps/android/app/build/reports/tests
+            apps/android/app/build/test-results/testDebugUnitTest
+            apps/android/app/build/reports/androidTests
+            apps/android/app/build/reports/reader-smoke
+            apps/android/app/build/reports/upgrade-preservation
+            apps/android/app/build/outputs/connected_android_test_additional_output
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Install XcodeGen
+        env:
+          XCODEGEN_VERSION: 2.46.0
+          XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+        run: |
+          curl --retry 3 --retry-delay 2 --retry-max-time 120 -fsSL -o xcodegen.zip "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          echo "$XCODEGEN_SHA256  xcodegen.zip" | shasum -a 256 -c -
+          unzip -q xcodegen.zip -d "$RUNNER_TEMP/xcodegen"
+          echo "$RUNNER_TEMP/xcodegen/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Test the core and build for the simulator
+        run: apps/scripts/ios-check.sh
+
+      - name: Exercise reading, listening and offline resume on iPhone and iPad
+        run: apps/scripts/ios-runtime-smoke.sh --device all
+
+      - name: Upload iOS runtime results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-runtime
+          if-no-files-found: ignore
+          path: |
+            apps/ios/build/**/*.xcresult
+            apps/ios/build/runtime-smoke
+            apps/ios/test-results

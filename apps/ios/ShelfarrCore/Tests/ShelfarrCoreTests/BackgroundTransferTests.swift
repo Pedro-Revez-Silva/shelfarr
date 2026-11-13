@@ -1,0 +1,548 @@
+import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+@testable import ShelfarrCore
+import XCTest
+
+private final class HandoverSecrets: SecretStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    func read(_ name: String) -> Data? { lock.withLock { values[name] } }
+    func write(_ name: String, _ value: Data) { lock.withLock { values[name] = value } }
+    func delete(_ name: String) { _ = lock.withLock { values.removeValue(forKey: name) } }
+}
+
+/// The manager against a transfer daemon that outlives it, as iOS's background
+/// session does: relaunch, reconciliation, ordering and the account boundary.
+final class BackgroundTransferTests: DownloadTestCase {
+    private var router = TransferRouter()
+    /// The system background session: grant-authorized requests only.
+    private lazy var system = FakeSystem(router: router)
+    /// The in-app foreground transport, used without grants.
+    private lazy var app = FakeSystem(router: router)
+    private let grants = Grants()
+
+    private func manager(_ folder: String = "acct", token: String = "secret", max: Int = 2, chunk: Int64 = 32 << 20, onUnauthorized: @escaping @Sendable () -> Void = {}) -> DownloadManager {
+        let grants = self.grants
+        let executors = DownloadExecutors(foreground: app, background: system, mintGrant: { try grants.mint($0, $1) })
+        return manager(folder, token: token, executors: executors, router: router, max: max, chunk: chunk, onUnauthorized: onUnauthorized)
+    }
+
+    /// A new process: a new router and manager over the same disk and daemon.
+    private func relaunch(_ folder: String = "acct", token: String = "secret", max: Int = 2, chunk: Int64 = 32 << 20, onUnauthorized: @escaping @Sendable () -> Void = {}) -> DownloadManager {
+        router = TransferRouter()
+        system.router = router
+        app.router = router
+        return manager(folder, token: token, max: max, chunk: chunk, onUnauthorized: onUnauthorized)
+    }
+
+    private func submissions(_ count: Int) async throws {
+        try await until("\(count) submitted transfers") { system.live.count >= count }
+    }
+
+    private func data(for job: FakeSystem.Job) -> (Data, String) {
+        switch job.request.url!.path {
+        case "/files/e1": return (epub, "\"e1\"")
+        case "/files/t1": return (track1, "\"t1\"")
+        default: return (track2, "\"t2\"")
+        }
+    }
+
+    private func serve(_ job: FakeSystem.Job) async {
+        let (body, etag) = data(for: job)
+        system.serve(job, body, etag: etag)
+        await idle(router)
+    }
+
+    func testTicketsAreDurableBeforeSubmissionAndSurviveARelaunch() async throws {
+        let manifest = downloadsRoot("acct").appendingPathComponent("manifest.json")
+        let seenOnDisk = Counter()
+        system.onSubmit = { job in
+            let text = (try? String(contentsOf: manifest, encoding: .utf8)) ?? ""
+            if text.contains(job.tag.ticket) { seenOnDisk.note() }
+        }
+        let first = manager(chunk: 4_000)
+        await first.enqueue(audiobook)
+        try await submissions(4)
+        XCTAssertEqual(seenOnDisk.value, system.submitted.count, "every ticket reaches the manifest before its transfer exists")
+        XCTAssertEqual(system.submitted.map(\.tag.account), Array(repeating: "acct", count: system.submitted.count))
+        XCTAssertTrue(system.submitted.allSatisfy { $0.request.value(forHTTPHeaderField: "Authorization") == nil }, "background requests never hold the bearer")
+        XCTAssertTrue(system.submitted.allSatisfy { $0.request.url!.query?.hasPrefix("grant=") == true })
+        XCTAssertFalse(system.submitted.contains { $0.tag.description.contains("secret") }, "a task description never carries the token")
+        XCTAssertTrue(app.submitted.isEmpty)
+
+        // The process ends without closing; the daemon keeps the transfers.
+        let submittedBefore = system.submitted.count
+        let second = relaunch(chunk: 4_000)
+        await second.start()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(system.submitted.count, submittedBefore, "live transfers are adopted, not duplicated")
+        XCTAssertTrue(transport.allRequests.filter { $0.httpMethod == "HEAD" }.count == 2, "no network is needed to adopt them")
+        let adopted = await second.record("audio")
+        XCTAssertEqual(adopted?.state, .downloading)
+
+        for job in system.live { await serve(job) }
+        let ready = try await wait(second, "audio", [.ready])
+        let filesFound = await second.fileURLs(ready)
+        let files = try XCTUnwrap(filesFound)
+        XCTAssertEqual(try Data(contentsOf: files["t1"]!), track1)
+        XCTAssertEqual(try Data(contentsOf: files["t2"]!), track2)
+        let left = await second.pendingTickets
+        XCTAssertTrue(left.isEmpty)
+    }
+
+    func testTheCompletionHandlerWaitsUntilEventsAreOnDisk() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await submissions(1)
+        let manifest = downloadsRoot("acct").appendingPathComponent("manifest.json")
+        let job = system.live[0]
+        system.serve(job, epub, etag: "\"e1\"")
+        let stored: String = await withCheckedContinuation { continuation in
+            router.whenIdle {
+                continuation.resume(returning: (try? String(contentsOf: manifest, encoding: .utf8)) ?? "")
+            }
+        }
+        XCTAssertTrue(stored.contains("\"ready\""), "the system is told events are handled only once they are durable")
+    }
+
+    func testRangesArriveOutOfOrderAndAreAppendedInOrder() async throws {
+        let downloads = manager(chunk: 1_500)
+        await downloads.enqueue(book)
+        try await submissions(3)
+        let jobs = system.live.sorted { ($0.request.value(forHTTPHeaderField: "Range") ?? "") < ($1.request.value(forHTTPHeaderField: "Range") ?? "") }
+        XCTAssertEqual(jobs.map { $0.request.value(forHTTPHeaderField: "Range") }, ["bytes=0-1499", "bytes=1500-2999", "bytes=3000-4001"])
+        XCTAssertTrue(jobs.allSatisfy { $0.request.value(forHTTPHeaderField: "If-Range") == "\"e1\"" })
+        await serve(jobs[2])
+        await serve(jobs[1])
+        let waiting = await downloads.record("book")
+        XCTAssertEqual(waiting?.state, .downloading)
+        XCTAssertEqual(waiting?.bytesDone, 2_502)
+        await serve(jobs[0])
+        let ready = try await wait(downloads, "book", [.ready])
+        let readyFile = await downloads.fileURL(ready, assetId: "e1")
+        XCTAssertEqual(try Data(contentsOf: try XCTUnwrap(readyFile)), epub)
+    }
+
+    func testStagedRangesSurviveARelaunchBeforeTheGapIsFilled() async throws {
+        let first = manager(chunk: 2_100)
+        await first.enqueue(book)
+        try await submissions(2)
+        let jobs = system.live.sorted { ($0.request.value(forHTTPHeaderField: "Range") ?? "") < ($1.request.value(forHTTPHeaderField: "Range") ?? "") }
+        await serve(jobs[1])
+
+        let second = relaunch(chunk: 2_100)
+        await second.start()
+        let restored = await second.record("book")
+        XCTAssertEqual(restored?.bytesDone, Int64(epub.count - 2_100))
+        await serve(jobs[0])
+        _ = try await wait(second, "book", [.ready])
+    }
+
+    func testLostTransfersArePlannedAgainAndOrphansAreCancelled() async throws {
+        let first = manager(chunk: 2_100)
+        await first.enqueue(book)
+        try await submissions(2)
+        let lost = system.live[0]
+        // The daemon forgot one transfer, and holds one no ticket owns.
+        system.forget(lost.tag)
+        let orphan = TransferTag(account: "acct", ticket: "orphan-1")
+        system.adopt(orphan, url: URL(string: "https://example.org/files/e1")!)
+
+        let second = relaunch(chunk: 2_100)
+        await second.start()
+        XCTAssertTrue(system.cancelled.contains(orphan))
+        try await submissions(2)
+        let replacement = try XCTUnwrap(system.live.first { $0.tag != system.submitted[1].tag })
+        XCTAssertEqual(replacement.request.value(forHTTPHeaderField: "Range"), lost.request.value(forHTTPHeaderField: "Range"))
+        for job in system.live { await serve(job) }
+        _ = try await wait(second, "book", [.ready])
+    }
+
+    func testTransfersSentWithAnOldTokenAreReplacedAndCannotExpireTheNewSession() async throws {
+        let first = manager(token: "old-token", chunk: 2_100)
+        await first.enqueue(book)
+        try await submissions(2)
+        let old = system.live
+
+        // Signed in again with a new token: the daemon still holds the old requests.
+        let rejected = Counter()
+        let second = relaunch(token: "new-token", chunk: 2_100, onUnauthorized: { rejected.note() })
+        await second.start()
+        XCTAssertTrue(old.allSatisfy { system.cancelled.contains($0.tag) })
+        try await submissions(2)
+        XCTAssertEqual(grants.count, 2, "the replacements use a grant minted by the new token")
+
+        // The session's own token is refused while planning: that one signs it out.
+        await second.cancel("book")
+        grants.mode = .signedOut
+        await second.enqueue(book)
+        let failed = try await wait(second, "book", [.failed])
+        XCTAssertEqual(failed.problem, .signIn)
+        XCTAssertEqual(rejected.value, 1, "only a rejection of this session's own token signs it out")
+    }
+
+    /// Requesting added in place: the same account's token is replaced while transfers run.
+    /// They are kept; one refused because its grant came from the old token is planned
+    /// again with the new one; only a refusal of the token in use signs out.
+    func testATokenHandedOverInPlaceKeepsTransfersAndOnlyItsOwnRefusalSignsOut() async throws {
+        let sessions = SessionManager(store: HandoverSecrets())
+        let before = Session(server: server, user: Me(id: "u1"), accessToken: "old-token")
+        sessions.signIn(before)
+        let binding = SignInBinding(session: before, sessions: sessions)
+        let api = binding.api(transport: transport)
+        let grants = self.grants, known = publications
+        let downloads = DownloadManager(
+            root: downloadsRoot("acct"),
+            account: before.accountKey,
+            currentCredential: { binding.credentialTag },
+            transport: transport,
+            executors: DownloadExecutors(foreground: app, background: system, mintGrant: { publicationId, assetId in
+                guard binding.isLive else { throw CancellationError() }
+                return try grants.mint(publicationId, assetId)
+            }),
+            router: router,
+            server: server,
+            authorize: { api.authorized($0) },
+            fetchPublication: { id in
+                guard let found = known[id] else { throw APIError.notFound }
+                return found
+            },
+            chunkSize: 2_100,
+            onUnauthorized: { binding.refused($0) }
+        )
+        downloads.connect()
+        await downloads.enqueue(book)
+        try await submissions(2)
+        let old = system.live
+        XCTAssertEqual(grants.count, 1)
+
+        let after = Session(server: server, user: Me(id: "u1"), accessToken: "new-token", grantedScopes: RequestScopes.base + RequestScopes.requesting)
+        XCTAssertTrue(sessions.replaceToken(expected: before, upgraded: after))
+        XCTAssertTrue(system.cancelled.isEmpty, "running transfers are kept")
+        await serve(old[0])
+        system.respond(old[1], status: 401, body: nil)
+        await idle(router)
+        try await until("a replacement with a grant minted by the new token") { grants.count == 2 && system.live.count == 1 }
+        XCTAssertEqual(sessions.signedIn, after, "a refusal of the replaced token doesn't sign out")
+        await serve(system.live[0])
+        let ready = try await wait(downloads, "book", [.ready])
+        XCTAssertEqual(ready.files.first?.complete, true)
+
+        grants.mode = .signedOut
+        await downloads.enqueue(audiobook)
+        let failed = try await wait(downloads, "audio", [.failed])
+        XCTAssertEqual(failed.problem, .signIn)
+        XCTAssertNil(sessions.signedIn, "a refusal of the token in use still signs out")
+        XCTAssertFalse(binding.isLive)
+    }
+
+    /// A foreground transfer refused while a replacement token is being confirmed (the
+    /// server retired the old token when the replacement was first used) waits for the
+    /// answer and is planned again with the replacement; it is never failed as signed out.
+    func testATransferRefusedBeforeTheReplacementIsConfirmedContinuesWithIt() async throws {
+        for confirmed in [true, false] {
+            let sessions = SessionManager(store: HandoverSecrets())
+            let before = Session(server: server, user: Me(id: "u1"), accessToken: "old-token")
+            sessions.signIn(before)
+            let downloads = boundManager(sessions, before, folder: confirmed ? "confirmed" : "unanswered")
+            await downloads.enqueue(book)
+            try await until("a foreground transfer") { app.live.count == 1 }
+            let first = app.live[0]
+            XCTAssertEqual(first.request.value(forHTTPHeaderField: "Authorization"), "Bearer old-token")
+
+            let gate = Gate()
+            let grant = DeviceGrant(deviceCode: "d", userCode: "ABCD-EFGH", verificationUri: "/c", verificationUriComplete: "/c?u=1", expiresIn: 600)
+            let scopes = RequestScopes.base + RequestScopes.requesting
+            XCTAssertTrue(sessions.beginHandover(
+                expected: before, pending: PendingUpgrade(accountKey: before.accountKey, grant: grant, expiresAt: Date().addingTimeInterval(600)),
+                accessToken: "new-token", grantedScopes: scopes,
+                check: { _ in
+                    await gate.pass()
+                    if !confirmed { throw APIError.offline(certificate: false) }
+                    return Me(id: "u1", scopes: scopes)
+                }
+            ))
+            let requesting = Task { await sessions.confirmHandover() }
+            try await until("the replacement's first request") { gate.arrivals == 1 }
+            app.respond(first, status: 401, body: nil)
+            await idle(router)
+            let waiting = await downloads.record("book")
+            XCTAssertEqual(waiting?.state, .downloading, "the download waits for the answer")
+            XCTAssertEqual(sessions.signedIn, before)
+
+            gate.release()
+            let outcome = await requesting.value
+            if confirmed {
+                guard case .adopted = outcome else { return XCTFail("\(outcome)") }
+                try await until("planned again with the replacement") {
+                    app.live.first?.request.value(forHTTPHeaderField: "Authorization") == "Bearer new-token"
+                }
+                app.serve(app.live[0], epub, etag: "\"e1\"")
+                await idle(router)
+                _ = try await wait(downloads, "book", [.ready])
+                XCTAssertEqual(sessions.signedIn?.accessToken, "new-token")
+            } else {
+                XCTAssertEqual(outcome, .unconfirmed)
+                let failed = try await wait(downloads, "book", [.failed])
+                XCTAssertEqual(failed.problem, .offline, "retried like a dropped connection, not signed out")
+                XCTAssertEqual(sessions.signedIn, before)
+                XCTAssertTrue(sessions.hasPendingHandover(for: before), "the replacement is kept for the next check")
+            }
+            await downloads.close()
+        }
+    }
+
+    private func boundManager(_ sessions: SessionManager, _ session: Session, folder: String) -> DownloadManager {
+        let binding = SignInBinding(session: session, sessions: sessions)
+        let api = binding.api(transport: transport)
+        let known = publications
+        let downloads = DownloadManager(
+            root: downloadsRoot(folder),
+            account: session.accountKey,
+            currentCredential: { binding.credentialTag },
+            transport: transport,
+            executors: DownloadExecutors(foreground: app),
+            router: router,
+            server: server,
+            authorize: { api.authorized($0) },
+            fetchPublication: { id in
+                guard let found = known[id] else { throw APIError.notFound }
+                return found
+            },
+            onUnauthorized: { binding.refused($0) },
+            resolveRefusal: { await binding.resolveRefusal($0) }
+        )
+        downloads.connect()
+        return downloads
+    }
+
+    func testARefusedGrantIsReplacedAndNeverSignsTheAccountOut() async throws {
+        let rejected = Counter()
+        let downloads = manager(onUnauthorized: { rejected.note() })
+        await downloads.enqueue(book)
+        try await submissions(1)
+        system.respond(system.live[0], status: 401, body: nil)
+        await idle(router)
+        try await until("a replacement with a fresh grant") { grants.count == 2 && system.live.count == 1 }
+        XCTAssertEqual(rejected.value, 0)
+        await serve(system.live[0])
+        _ = try await wait(downloads, "book", [.ready])
+
+        // A server that keeps refusing its own grants stops instead of looping.
+        await downloads.remove("book")
+        await downloads.enqueue(book)
+        for _ in 0 ..< 3 {
+            try await submissions(1)
+            system.respond(system.live[0], status: 401, body: nil)
+            await idle(router)
+        }
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .server)
+        XCTAssertEqual(rejected.value, 0)
+    }
+
+    func testWithoutGrantsTransfersStayInTheAppWithTheBearer() async throws {
+        grants.mode = .unsupported
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await until("a foreground transfer") { app.live.count == 1 }
+        XCTAssertTrue(system.submitted.isEmpty, "the bearer never goes to the background session")
+        let job = app.live[0]
+        XCTAssertEqual(job.request.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+        XCTAssertNil(job.request.url?.query)
+        app.serve(job, epub, etag: "\"e1\"")
+        await idle(router)
+        _ = try await wait(downloads, "book", [.ready])
+        let tickets = await downloads.pendingTickets
+        XCTAssertTrue(tickets.isEmpty)
+    }
+
+    func testAGrantForAnotherServerIsRefused() async throws {
+        grants.mode = .offServer
+        let downloads = manager()
+        await downloads.enqueue(book)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .invalid)
+        XCTAssertTrue(system.submitted.isEmpty)
+        XCTAssertTrue(app.submitted.isEmpty)
+    }
+
+    func testAGoneGenerationIsAChangedFile() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await submissions(1)
+        system.respond(system.live[0], status: 410, body: Data("{}".utf8))
+        await idle(router)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .changed)
+    }
+
+    func testARejectedOldTicketDeliveredLateDoesNotSignOutTheCurrentSession() async throws {
+        let first = manager(token: "old-token", chunk: 2_100)
+        await first.enqueue(book)
+        try await submissions(2)
+        let old = system.live
+        let rejected = Counter()
+        // A new process, whose events for the old transfers arrive before it reconciles.
+        let second = relaunch(token: "new-token", chunk: 2_100, onUnauthorized: { rejected.note() })
+        system.respond(old[0], status: 401, body: nil)
+        await idle(router)
+        XCTAssertEqual(rejected.value, 0)
+        let record = await second.record("book")
+        XCTAssertNotEqual(record?.state, .failed)
+    }
+
+    func testCallbacksForAClosedAccountOrARemovedDownloadWriteNothing() async throws {
+        let alice = manager("alice", token: "alice-token")
+        await alice.enqueue(book)
+        try await submissions(1)
+        let aliceJob = system.live[0]
+        let bob = manager("bob", token: "bob-token")
+        await bob.enqueue(audiobook)
+        try await submissions(3)
+
+        // Alice signs out; the daemon still finishes her transfer afterwards.
+        system.onSubmit = nil
+        await alice.close()
+        try FileManager.default.removeItem(at: root.appendingPathComponent("alice"))
+        system.serve(aliceJob, epub, etag: "\"e1\"")
+        await idle(router)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("alice").path), "a late callback never recreates a signed-out account")
+        let bobsBook = await bob.record("book")
+        XCTAssertNil(bobsBook, "it never reaches another account")
+
+        // Bob removes his download; its late bodies are not written either.
+        let bobJobs = system.live.filter { $0.tag.account == "bob" }
+        await bob.remove("audio")
+        for job in bobJobs { system.serve(job, track1, etag: "\"t1\"") }
+        await idle(router)
+        let staging = downloadsRoot("bob").appendingPathComponent("staging")
+        let staged = (try? FileManager.default.contentsOfDirectory(atPath: staging.path)) ?? []
+        XCTAssertTrue(staged.isEmpty)
+        let removed = await bob.record("audio")
+        XCTAssertNil(removed)
+    }
+
+    func testARedirectAwayFromTheServerIsDiscarded() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await submissions(1)
+        system.serve(system.live[0], epub, etag: "\"e1\"", finalURL: URL(string: "https://cdn.example.net/e1")!)
+        await idle(router)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .redirect)
+        XCTAssertEqual(failed.bytesDone, 0)
+        let ready = await downloads.ready("book")
+        XCTAssertNil(ready)
+    }
+
+    func testAForceQuitIsReportedAndRetriedOnReturn() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await submissions(1)
+        let reason = URLError(.cancelled, userInfo: ["NSURLErrorBackgroundTaskCancelledReasonKey": 0])
+        system.fail(system.live[0], reason)
+        await idle(router)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .interrupted)
+        await downloads.retryInterrupted()
+        try await submissions(1)
+        await serve(system.live[0])
+        _ = try await wait(downloads, "book", [.ready])
+    }
+
+    func testABodyThatCannotBeStoredIsAStorageFailure() async throws {
+        let downloads = manager()
+        await downloads.enqueue(book)
+        try await submissions(1)
+        let staging = downloadsRoot("acct").appendingPathComponent("staging")
+        try? FileManager.default.removeItem(at: staging)
+        try Data().write(to: staging)
+        await serve(system.live[0])
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .storage)
+    }
+
+    func testAShortOrMisplacedRangeIsNeverStitched() async throws {
+        let downloads = manager(chunk: 2_100)
+        await downloads.enqueue(book)
+        try await submissions(2)
+        let job = system.live.first { $0.request.value(forHTTPHeaderField: "Range") == "bytes=0-2099" }!
+        system.respond(job, status: 206, headers: ["ETag": "\"e1\"", "Content-Range": "bytes 10-2109/4002"], body: epub.subdata(in: 10 ..< 2110))
+        await idle(router)
+        let failed = try await wait(downloads, "book", [.failed])
+        XCTAssertEqual(failed.problem, .invalid)
+        XCTAssertEqual(failed.bytesDone, 0)
+    }
+
+    func testAtMostTwoPublicationsTransferAtOnce() async throws {
+        let third = Publication(id: "third", title: "Third", bookType: .ebook, assets: [
+            Asset(id: "e1", filename: "b.epub", mediaType: "application/epub+zip", format: "epub", sizeBytes: Int64(epub.count), contentUrl: "/files/e1"),
+        ])
+        publications["third"] = third
+        let downloads = manager()
+        await downloads.enqueue(book)
+        await downloads.enqueue(audiobook)
+        await downloads.enqueue(third)
+        try await submissions(3)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(Set(system.live.map(\.request.url!.path)), ["/files/e1", "/files/t1", "/files/t2"])
+        let waiting = await downloads.record("third")
+        XCTAssertEqual(waiting?.state, .queued)
+        let bookJob = system.live.first { $0.request.url!.path == "/files/e1" }!
+        await serve(bookJob)
+        _ = try await wait(downloads, "book", [.ready])
+        _ = try await wait(downloads, "third", [.downloading])
+    }
+
+    func testCancelStopsTransfersBeforeDeletingAndKeepsTheEntry() async throws {
+        let downloads = manager(chunk: 2_100)
+        await downloads.enqueue(book)
+        try await submissions(2)
+        let jobs = system.live
+        await serve(jobs[1])
+        await downloads.cancel("book")
+        XCTAssertTrue(system.cancelled.contains(jobs[0].tag))
+        XCTAssertTrue(system.live.isEmpty)
+        let record = await downloads.record("book")
+        XCTAssertEqual(record?.state, .cancelled)
+        XCTAssertEqual(record?.bytesDone, 0)
+        let tickets = await downloads.pendingTickets
+        XCTAssertTrue(tickets.isEmpty)
+        let staging = downloadsRoot("acct").appendingPathComponent("staging")
+        XCTAssertTrue(((try? FileManager.default.contentsOfDirectory(atPath: staging.path)) ?? []).isEmpty)
+    }
+
+    func testTagsRoundTripAndRejectAnythingElse() {
+        let tag = TransferTag(account: "0123abcd", ticket: "f00d-1")
+        XCTAssertEqual(TransferTag(tag.description), tag)
+        XCTAssertNil(TransferTag("shelfarr-download/1/a/b/c"))
+        XCTAssertNil(TransferTag("shelfarr-download/1/../x"))
+        XCTAssertNil(TransferTag("other/1/a/b"))
+        XCTAssertNil(TransferTag(nil))
+    }
+    func testAnExpiredGrantSharedBySeveralRangesIsRefreshedOnce() async throws {
+        let downloads = manager(chunk: 1_500)
+        await downloads.enqueue(book)
+        try await submissions(3)
+        let expired = system.live
+        XCTAssertEqual(Set(expired.map { $0.request.url!.query! }).count, 1)
+        for job in expired { system.respond(job, status: 401, body: nil) }
+        await idle(router)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let record = await downloads.record("book")
+        XCTAssertNotEqual(record?.state, .failed, "one expired grant must not be counted as three successive fresh-grant failures")
+        try await until("a replacement grant") { grants.count > 1 && !system.live.isEmpty }
+        for _ in 0 ..< 20 {
+            for job in system.live { await serve(job) }
+            await idle(router)
+            if await downloads.record("book")?.state == .ready { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        _ = try await wait(downloads, "book", [.ready])
+        await downloads.close()
+    }
+
+}

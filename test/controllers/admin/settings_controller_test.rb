@@ -40,11 +40,26 @@ class Admin::SettingsControllerTest < ActionDispatch::IntegrationTest
   test "index shows settings page" do
     get admin_settings_url
     assert_response :success
-    assert_select "h1", "Settings"
+    assert_select "h1", "Server Settings"
     assert_select "#settings-tabs noscript", text: /Use Save All/
     assert_select "#settings-tabs noscript style", count: 0
     assert_select "#settings-tabs [data-settings-tabs-target='tablist'].hidden [role='tablist']", count: 1
     assert_select "input[name='settings[health_check_interval]'][min='#{SettingsService::MIN_HEALTH_CHECK_INTERVAL}']"
+  end
+
+  test "every section a health link names is inside its settings tab" do
+    get admin_settings_url
+
+    {
+      "settings-section-indexer" => "search",
+      "settings-section-paths" => "downloads",
+      "settings-section-audiobookshelf" => "integrations",
+      "settings-section-hardcover" => "integrations"
+    }.each do |section, tab|
+      assert_select "[data-settings-tabs-target='panel'][data-tab='#{tab}'] ##{section}", 1
+    end
+    assert_select "[role='tablist'][aria-label='Settings categories'] [role='tab']", 5
+    assert_select "a[href='#{admin_root_path}']", text: "← Admin overview"
   end
 
   test "index shows telegram group authorization only in integrations tab" do

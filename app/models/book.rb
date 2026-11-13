@@ -8,6 +8,11 @@ class Book < ApplicationRecord
   has_many :requests, dependent: :restrict_with_error
   has_many :uploads, dependent: :nullify
   has_many :owned_library_items, dependent: :nullify
+  has_many :kobo_deliveries, dependent: :nullify
+  has_many :consumer_progresses, dependent: :destroy
+  has_many :consumer_reading_states, dependent: :destroy
+  has_many :read_along_alignments, foreign_key: :ebook_book_id, inverse_of: :ebook_book, dependent: :delete_all
+  has_many :paired_read_along_alignments, class_name: "ReadAlongAlignment", foreign_key: :audiobook_book_id, inverse_of: :audiobook_book, dependent: :delete_all
 
   before_destroy :prevent_destroy_during_active_acquisition, prepend: true
 

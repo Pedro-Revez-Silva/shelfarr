@@ -1,0 +1,461 @@
+name: Android release
+
+# Publishes one signed Android build for Shelfarr servers to offer: an immutable
+# android-<channel>-v<version> GitHub release holding the APK, then the catalog
+# asset on the android-catalog-v1 release, last. Operator steps and the signing
+# setup are in docs/android-publishing.md. Independent of the server's Docker
+# release; the per-change Android checks stay in native-consumer.yml.
+
+run-name: Android ${{ inputs.channel }} ${{ inputs.version_name }} (${{ inputs.version_code }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "release (org.shelfarr.app) or development (org.shelfarr.app.debug)"
+        type: choice
+        options: [release, development]
+        required: true
+      version_name:
+        description: "Calendar version label, such as 2026.11.8.1 (development builds append -debug)"
+        type: string
+        required: true
+      version_code:
+        description: "Android version code, larger than every published build of this channel"
+        type: string
+        required: true
+      consumer_api_versions:
+        description: "Consumer API generations this build speaks, comma separated"
+        type: string
+        default: "1"
+      release_notes:
+        description: "Plain-text notes shown on phones and install pages (optional)"
+        type: string
+        required: false
+      fallback_feed_url:
+        description: "Optional built-in direct feed for servers without discovery (usually empty)"
+        type: string
+        required: false
+      create_catalog:
+        description: "First publication only: create the catalog when none exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Every Android publication reads and replaces the same catalog: one at a time,
+# never cancelled halfway.
+concurrency:
+  group: android-publication
+  cancel-in-progress: false
+
+env:
+  CATALOG_TAG: android-catalog-v1
+  CATALOG_NAME: android-catalog.json
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Holds the channel's signing key; give android-release reviewers and a
+    # main-only branch rule (docs/android-publishing.md).
+    environment: android-${{ inputs.channel }}
+    permissions:
+      contents: read
+    outputs:
+      skip: ${{ steps.catalog.outputs.skip }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      apk_url: ${{ steps.plan.outputs.apk_url }}
+      catalog_url: ${{ steps.plan.outputs.catalog_url }}
+      apk_sha256: ${{ steps.describe.outputs.apk_sha256 }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Check the request
+        id: plan
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          API_VERSIONS: ${{ inputs.consumer_api_versions }}
+          FALLBACK_FEED_URL: ${{ inputs.fallback_feed_url }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          calver='^20[0-9]{2}\.(0?[1-9]|1[0-2])\.[0-9]{1,6}(\.[0-9]{1,6})?$'
+          code='^[1-9][0-9]{0,9}$'
+          apis='^[1-9][0-9]{0,3}(,[1-9][0-9]{0,3}){0,15}$'
+          feed='^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+\.json$'
+          case "${CHANNEL}" in
+            release) package=org.shelfarr.app; apk_version_name="${VERSION_NAME}" ;;
+            development) package=org.shelfarr.app.debug; apk_version_name="${VERSION_NAME}-debug" ;;
+            *) echo "::error::Unknown channel"; exit 1 ;;
+          esac
+          if [[ ! "${VERSION_NAME}" =~ $calver ]]; then
+            echo "::error::version_name must be a calendar version such as 2026.11.8.1"; exit 1
+          fi
+          if [[ ! "${VERSION_CODE}" =~ $code ]] || (( VERSION_CODE > 2100000000 )); then
+            echo "::error::version_code must be a whole number from 1 to 2100000000"; exit 1
+          fi
+          api_versions="${API_VERSIONS// /}"
+          if [[ ! "${api_versions}" =~ $apis ]]; then
+            echo "::error::consumer_api_versions must be a comma list of generations, such as 1 or 1,2"; exit 1
+          fi
+          if [[ -n "${FALLBACK_FEED_URL}" && ! "${FALLBACK_FEED_URL}" =~ $feed ]]; then
+            echo "::error::fallback_feed_url must be an https .json URL without query or fragment"; exit 1
+          fi
+          if [[ "${CHANNEL}" == release && "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]]; then
+            echo "::error::Release builds are published from ${DEFAULT_BRANCH} only"; exit 1
+          fi
+          tag="android-${CHANNEL}-v${VERSION_NAME}"
+          asset="shelfarr-android-${CHANNEL}-${VERSION_NAME}-${VERSION_CODE}.apk"
+          {
+            echo "sha=${GITHUB_SHA}"
+            echo "package=${package}"
+            echo "apk_version_name=${apk_version_name}"
+            echo "api_versions=${api_versions}"
+            echo "tag=${tag}"
+            echo "asset=${asset}"
+            echo "apk_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${asset}"
+            echo "catalog_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${CATALOG_TAG}/${CATALOG_NAME}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Check the signing configuration
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ vars.ANDROID_KEY_ALIAS }}
+          SIGNER_SHA256: ${{ vars.ANDROID_SIGNER_SHA256 }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${KEYSTORE_BASE64}" ]] || missing+=(secret ANDROID_KEYSTORE_BASE64)
+          [[ -n "${KEYSTORE_PASSWORD}" ]] || missing+=(secret ANDROID_KEYSTORE_PASSWORD)
+          [[ -n "${KEY_ALIAS}" ]] || missing+=(variable ANDROID_KEY_ALIAS)
+          if (( ${#missing[@]} )); then
+            echo "::error::The android-${CHANNEL} environment is missing: ${missing[*]}"; exit 1
+          fi
+          if [[ ! "${SIGNER_SHA256}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Set the ANDROID_SIGNER_SHA256 variable to the signing certificate's SHA-256 (64 hex characters)"; exit 1
+          fi
+
+      - name: Check the version against the published catalog
+        id: catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          CREATE_CATALOG: ${{ inputs.create_catalog }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          APK_VERSION_NAME: ${{ steps.plan.outputs.apk_version_name }}
+          CATALOG_URL: ${{ steps.plan.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/catalog-check"
+          mkdir -p "${work}"
+          status=0
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" \
+            github-fetch --repo "${GITHUB_REPOSITORY}" --tag "${CATALOG_TAG}" --name "${CATALOG_NAME}" \
+            --output "${work}/current.json" > /dev/null || status=$?
+          case "${status}" in
+            0) previous=(--previous "${work}/current.json") ;;
+            3)
+              if [[ "${CREATE_CATALOG}" != true ]]; then
+                echo "::error::There is no published catalog. For the very first publication only, run again with create_catalog."
+                exit 1
+              fi
+              previous=(--no-previous) ;;
+            *) echo "::error::Could not read the published catalog; nothing was built or published."; exit 1 ;;
+          esac
+          result="$(python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" next "${previous[@]}" \
+            --channel "${CHANNEL}" --version-code "${VERSION_CODE}" --version-name "${APK_VERSION_NAME}")"
+          if [[ "${result}" == present ]]; then
+            echo "::notice::${CHANNEL} ${APK_VERSION_NAME} (${VERSION_CODE}) is already in the catalog; nothing to publish."
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Test the publishing scripts
+        if: steps.catalog.outputs.skip == 'false'
+        run: python3 -m unittest discover -s apps/scripts/tests
+
+      - name: Set up Java
+        if: steps.catalog.outputs.skip == 'false'
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Gradle
+        if: steps.catalog.outputs.skip == 'false'
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          # A publication never writes the shared build cache.
+          cache-read-only: true
+
+      - name: Accept Android SDK licenses
+        if: steps.catalog.outputs.skip == 'false'
+        run: |
+          # sdkmanager closes stdin once done; yes then exits with SIGPIPE.
+          # Keep the SDK command's result instead of the producer's exit 141.
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+
+      - name: Test, lint and build
+        if: steps.catalog.outputs.skip == 'false'
+        run: apps/scripts/android-check.sh
+
+      - name: Build the ${{ inputs.channel }} APK
+        if: steps.catalog.outputs.skip == 'false'
+        id: build
+        working-directory: apps/android
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          ORG_GRADLE_PROJECT_shelfarrVersionCode: ${{ inputs.version_code }}
+          ORG_GRADLE_PROJECT_shelfarrVersionName: ${{ inputs.version_name }}
+          ORG_GRADLE_PROJECT_shelfarrUpdateFeedUrl: ${{ inputs.channel == 'development' && inputs.fallback_feed_url || '' }}
+          ORG_GRADLE_PROJECT_shelfarrReleaseUpdateFeedUrl: ${{ inputs.channel == 'release' && inputs.fallback_feed_url || '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${CHANNEL}" == release ]]; then
+            # No signing configuration in Gradle: the release APK comes out unsigned.
+            ./gradlew --no-daemon :app:assembleRelease
+            built="$(pwd)/app/build/outputs/apk/release/app-release-unsigned.apk"
+          else
+            # Signed with a throwaway debug key here and re-signed below.
+            ./gradlew --no-daemon :app:assembleDebug
+            built="$(pwd)/app/build/outputs/apk/debug/app-debug.apk"
+          fi
+          test -f "${built}"
+          echo "apk=${built}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign with the ${{ inputs.channel }} key
+        if: steps.catalog.outputs.skip == 'false'
+        env:
+          BUILT_APK: ${{ steps.build.outputs.apk }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ vars.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          signing="${RUNNER_TEMP}/android-signing"
+          rm -rf "${signing}"
+          mkdir -m 700 "${signing}"
+          trap 'rm -rf "${signing}"' EXIT
+          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > "${signing}/signing.keystore"
+          # The key password defaults to the keystore password.
+          if [[ -z "${ANDROID_KEY_PASS}" ]]; then key_pass=env:ANDROID_KS_PASS; else key_pass=env:ANDROID_KEY_PASS; fi
+          version="$(find "${ANDROID_HOME}/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n 1)"
+          build_tools="${ANDROID_HOME}/build-tools/${version}"
+          test -x "${build_tools}/apksigner" && test -x "${build_tools}/zipalign"
+          out="${RUNNER_TEMP}/android-publication"
+          mkdir -p "${out}"
+          "${build_tools}/zipalign" -f -P 16 4 "${BUILT_APK}" "${signing}/aligned.apk"
+          # Passwords are read from the environment, never from the command line.
+          "${build_tools}/apksigner" sign \
+            --ks "${signing}/signing.keystore" --ks-key-alias "${KEY_ALIAS}" \
+            --ks-pass env:ANDROID_KS_PASS --key-pass "${key_pass}" \
+            --out "${out}/${ASSET}" "${signing}/aligned.apk" < /dev/null
+          chmod 644 "${out}/${ASSET}"
+
+      - name: Check the signed APK and describe it for the catalog
+        if: steps.catalog.outputs.skip == 'false'
+        id: describe
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          NOTES: ${{ inputs.release_notes }}
+          SIGNER_SHA256: ${{ vars.ANDROID_SIGNER_SHA256 }}
+          PACKAGE: ${{ steps.plan.outputs.package }}
+          APK_VERSION_NAME: ${{ steps.plan.outputs.apk_version_name }}
+          API_VERSIONS: ${{ steps.plan.outputs.api_versions }}
+          ASSET: ${{ steps.plan.outputs.asset }}
+          APK_URL: ${{ steps.plan.outputs.apk_url }}
+          CATALOG_URL: ${{ steps.plan.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/android-publication"
+          printf '%s\n' "${NOTES}" > "${out}/notes.txt"
+          api_arguments=()
+          IFS=, read -r -a api_list <<< "${API_VERSIONS}"
+          for api in "${api_list[@]}"; do api_arguments+=(--consumer-api "${api}"); done
+          python3 apps/scripts/android-update-manifest.py --catalog-entry \
+            --apk "${out}/${ASSET}" --apk-url "${APK_URL}" --catalog-url "${CATALOG_URL}" \
+            --channel "${CHANNEL}" --package "${PACKAGE}" --signer-sha256 "${SIGNER_SHA256}" \
+            --expect-version-code "${VERSION_CODE}" --expect-version-name "${APK_VERSION_NAME}" \
+            "${api_arguments[@]}" --notes-file "${out}/notes.txt" --output "${out}/entry.json"
+          # The catalog must accept it (a dry run against the catalog read above).
+          if [[ -f "${RUNNER_TEMP}/catalog-check/current.json" ]]; then
+            previous=(--previous "${RUNNER_TEMP}/catalog-check/current.json")
+          else
+            previous=(--no-previous)
+          fi
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" add "${previous[@]}" \
+            --entry "${out}/entry.json" --output "${RUNNER_TEMP}/catalog-preview.json"
+          echo "apk_sha256=$(sha256sum "${out}/${ASSET}" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Keep the tested build for publication
+        if: steps.catalog.outputs.skip == 'false'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-publication
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/android-publication/*.apk
+            ${{ runner.temp }}/android-publication/entry.json
+            ${{ runner.temp }}/android-publication/notes.txt
+
+  publish:
+    needs: build
+    if: needs.build.outputs.skip == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout the tested commit
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          persist-credentials: false
+
+      - name: Fetch the tested build
+        id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_SHA256: ${{ needs.build.outputs.apk_sha256 }}
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          files="${RUNNER_TEMP}/publication"
+          gh run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name android-publication --dir "${files}"
+          apks=("${files}"/*.apk)
+          test "${#apks[@]}" -eq 1 && test -f "${apks[0]}"
+          echo "${APK_SHA256}  ${apks[0]}" | sha256sum --check --strict -
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" verify-file \
+            --entry "${files}/entry.json" --file "${apks[0]}"
+          echo "apk=${apks[0]}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build the new catalog from the published one
+        id: catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CREATE_CATALOG: ${{ inputs.create_catalog }}
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/catalog"
+          mkdir -p "${work}"
+          status=0
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" \
+            github-fetch --repo "${GITHUB_REPOSITORY}" --tag "${CATALOG_TAG}" --name "${CATALOG_NAME}" \
+            --output "${work}/current.json" > "${work}/current.sha256" || status=$?
+          case "${status}" in
+            0) previous=(--previous "${work}/current.json"); promote=(--previous-sha256 "$(cat "${work}/current.sha256")") ;;
+            3)
+              if [[ "${CREATE_CATALOG}" != true ]]; then
+                echo "::error::The catalog disappeared since the build started; nothing was published."; exit 1
+              fi
+              previous=(--no-previous); promote=(--allow-new) ;;
+            *) echo "::error::Could not read the published catalog; nothing was published."; exit 1 ;;
+          esac
+          result="$(python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" add "${previous[@]}" \
+            --entry "${RUNNER_TEMP}/publication/entry.json" --output "${work}/next.json")"
+          echo "result=${result}" >> "${GITHUB_OUTPUT}"
+          printf '%s\n' "${promote[@]}" > "${work}/promote-arguments"
+
+      - name: Publish the APK release at the tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          SHA: ${{ needs.build.outputs.sha }}
+          APK: ${{ steps.files.outputs.apk }}
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          [[ "${CHANNEL}" == release ]] || prerelease=(--prerelease)
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" github-publish-apk \
+            --repo "${GITHUB_REPOSITORY}" --target-sha "${SHA}" \
+            --entry "${RUNNER_TEMP}/publication/entry.json" --file "${APK}" \
+            --title "Shelfarr for Android ${VERSION_NAME} (${CHANNEL})" \
+            --notes-file "${RUNNER_TEMP}/publication/notes.txt" "${prerelease[@]}"
+
+      - name: Download the APK the way servers will
+        env:
+          APK_URL: ${{ needs.build.outputs.apk_url }}
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
+            --retry 5 --retry-all-errors --max-filesize 268435456 \
+            --output "${RUNNER_TEMP}/public.apk" "${APK_URL}"
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" verify-file \
+            --entry "${RUNNER_TEMP}/publication/entry.json" --file "${RUNNER_TEMP}/public.apk"
+
+      - name: Promote the catalog
+        if: steps.catalog.outputs.result == 'added'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.build.outputs.sha }}
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/catalog"
+          mapfile -t promote < "${work}/promote-arguments"
+          python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" github-promote \
+            --repo "${GITHUB_REPOSITORY}" --tag "${CATALOG_TAG}" --name "${CATALOG_NAME}" \
+            --file "${work}/next.json" --target-sha "${SHA}" "${promote[@]}"
+
+      - name: Read the catalog back the way servers will
+        env:
+          CATALOG_URL: ${{ needs.build.outputs.catalog_url }}
+        run: |
+          set -euo pipefail
+          expected="$(sha256sum "${RUNNER_TEMP}/catalog/next.json" | cut -d ' ' -f 1)"
+          for attempt in 1 2 3 4 5 6; do
+            if curl --proto '=https' --proto-redir '=https' --fail --silent --show-error --location \
+                --max-filesize 1048576 --output "${RUNNER_TEMP}/public-catalog.json" "${CATALOG_URL}" &&
+              [[ "$(sha256sum "${RUNNER_TEMP}/public-catalog.json" | cut -d ' ' -f 1)" == "${expected}" ]]; then
+              python3 apps/scripts/android-update-catalog.py --catalog-url "${CATALOG_URL}" check "${RUNNER_TEMP}/public-catalog.json"
+              exit 0
+            fi
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::The public catalog does not match the one just published"
+          exit 1
+
+      - name: Summarize
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          TAG: ${{ needs.build.outputs.tag }}
+          APK_URL: ${{ needs.build.outputs.apk_url }}
+          APK_SHA256: ${{ needs.build.outputs.apk_sha256 }}
+          RESULT: ${{ steps.catalog.outputs.result }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          {
+            echo "### Android ${CHANNEL} ${VERSION_NAME} (${VERSION_CODE})"
+            echo
+            echo "- Release: \`${TAG}\` at \`${SHA}\`"
+            echo "- APK: ${APK_URL}"
+            echo "- SHA-256: \`${APK_SHA256}\`"
+            echo "- Catalog: ${RESULT}"
+          } >> "${GITHUB_STEP_SUMMARY}"

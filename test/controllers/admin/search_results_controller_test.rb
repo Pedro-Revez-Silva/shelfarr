@@ -49,6 +49,18 @@ module Admin
       assert_select "[data-search-refresh-disabled]", count: 0
     end
 
+    test "provider info links reject executable schemes and retain ordinary links" do
+      @pending_result.update!(info_url: "https://provider.example/details?book=1&edition=2")
+      get admin_request_search_results_path(@request_record)
+      assert_response :success
+      assert_select "a[href=?][rel='noopener']", @pending_result.info_url, text: "Info"
+
+      @pending_result.update!(info_url: "javascript:alert(document.domain)")
+      get admin_request_search_results_path(@request_record)
+      assert_response :success
+      assert_select "a", text: "Info", count: 0
+    end
+
     test "index disables refresh while the request is acquiring" do
       @request_record.update!(status: :downloading)
 

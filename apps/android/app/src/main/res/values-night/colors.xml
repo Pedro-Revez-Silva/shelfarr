@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="shelfarr_background">#16130F</color>
+    <color name="shelfarr_accent">#EE9270</color>
+    <bool name="shelfarr_light_bars">false</bool>
+</resources>

@@ -1,6 +1,6 @@
 <div class="mx-auto max-w-2xl">
   <div class="mb-6">
-    <%= link_to "&larr; Back to Library".html_safe, library_index_path, class: "text-blue-400 hover:text-blue-300" %>
+    <%= link_to "&larr; Book files".html_safe, library_index_path, class: "text-blue-400 hover:text-blue-300" %>
   </div>
 
   <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
@@ -75,6 +75,25 @@
           <% end %>
         </div>
 
+      <% if @book.ebook? %>
+        <section class="mt-6 pt-6 border-t border-gray-800">
+          <h3 class="text-sm font-medium text-gray-300 mb-3">Send to Kobo</h3>
+          <% if @kobo_devices.any? %>
+            <p class="text-sm text-gray-400 mb-3">Choose a reader, then sync it over Wi-Fi. EPUB files only. An EPUB is sent as a Kobo edition (KEPUB) prepared from it, so reading places can be shared both ways; the library file is not changed.</p>
+            <div class="flex flex-wrap gap-3">
+              <% @kobo_devices.each do |device| %>
+                <%= button_to "Send to #{device.name}", send_book_kobo_device_path(device), params: { book_id: @book.id }, class: "rounded-lg bg-blue-700 px-4 py-2 text-sm text-white hover:bg-blue-600" %>
+              <% end %>
+            </div>
+          <% else %>
+            <%= link_to "Connect a Kobo reader", kobo_devices_path, class: "text-sm text-blue-400 hover:text-blue-300" %>
+          <% end %>
+        </section>
+      <% end %>
+
+      <% if @book.ebook? || @book.audiobook? %>
+        <div class="mt-6 pt-6 border-t border-gray-800"><%= link_to @book.ebook? ? "Open in reader preview" : "Open in listening preview", consumer_publication_path(@book), class: "inline-flex items-center rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600" %></div>
+      <% end %>
       <% if Current.user&.admin? %>
         <% if @attention_request %>
           <div class="mt-6 pt-6 border-t border-gray-800">
