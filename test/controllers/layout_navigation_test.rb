@@ -88,6 +88,7 @@ class LayoutNavigationTest < ActionDispatch::IntegrationTest
   end
 
   test "both shells show that this server runs the beta" do
+    use_release_channel("beta")
     sign_in_as(@user)
 
     get root_url
@@ -100,8 +101,7 @@ class LayoutNavigationTest < ActionDispatch::IntegrationTest
   end
 
   test "a stable server shows no beta badge" do
-    original = Shelfarr::ReleaseChannel.current
-    Shelfarr::ReleaseChannel.instance_variable_set(:@current, Shelfarr::ReleaseChannel.new(name: "stable", series: "1.0"))
+    use_release_channel("stable")
     sign_in_as(@user)
 
     get root_url
@@ -109,7 +109,5 @@ class LayoutNavigationTest < ActionDispatch::IntegrationTest
 
     get consumer_library_url
     assert_select "[data-release-badge]", count: 0
-  ensure
-    Shelfarr::ReleaseChannel.instance_variable_set(:@current, original)
   end
 end

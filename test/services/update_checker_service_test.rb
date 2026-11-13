@@ -4,8 +4,7 @@ require "test_helper"
 
 class UpdateCheckerServiceTest < ActiveSupport::TestCase
   setup do
-    @original_channel = Shelfarr::ReleaseChannel.current
-    use_channel("stable")
+    use_release_channel("stable")
     @original_repo = SettingsService.get(:github_repo)
     SettingsService.set(:github_repo, "Pedro-Revez-Silva/shelfarr")
     UpdateCheckerService.clear_cache
@@ -16,7 +15,6 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     SettingsService.set(:github_repo, @original_repo || "Pedro-Revez-Silva/shelfarr")
     UpdateCheckerService.clear_cache
     UpdateCheckerService.instance_variable_set(:@connection, nil)
-    Shelfarr::ReleaseChannel.instance_variable_set(:@current, @original_channel)
   end
 
   test "a stable server is never offered a beta prerelease" do
@@ -34,7 +32,7 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
   end
 
   test "a beta server is offered the newest beta or stable build and nothing else" do
-    use_channel("beta")
+    use_release_channel("beta")
     VCR.turned_off do
       stub_github_releases(
         release("2026.11.30.1-beta", draft: true),
@@ -54,8 +52,46 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "a beta server finds a newer build behind a full page of Android releases" do
+    use_release_channel("beta")
+    VCR.turned_off do
+      android = (1..100).map do |number|
+        { "tag_name" => "android-release-v2026.11.13.#{number}", "name" => "Android", "draft" => false, "prerelease" => false }
+      end
+      stub_github_releases(*android)
+      stub_github_releases(release("2026.11.12.1-beta", prerelease: true), release("2026.11.09.1"), page: 2)
+
+      UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert result.update_available?
+        assert_equal "2026.11.12.1-beta", result.latest_version
+      end
+      assert_not_requested :get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=100&page=3"
+    end
+  end
+
+  test "a beta server with no server releases reads a bounded number of pages" do
+    use_release_channel("beta")
+    VCR.turned_off do
+      android = (1..100).map { |number| { "tag_name" => "android-release-v2026.11.13.#{number}", "draft" => false } }
+      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases")
+        .with(query: hash_including("per_page" => "100"))
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: android.to_json)
+
+      UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert_not result.update_available?
+        assert_equal "No releases found", result.latest_message
+      end
+      assert_requested :get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases",
+        query: hash_including("per_page" => "100"), times: UpdateCheckerService::RELEASE_PAGE_LIMIT
+    end
+  end
+
   test "a beta server already on the newest build has no update" do
-    use_channel("beta")
+    use_release_channel("beta")
     VCR.turned_off do
       stub_github_releases(release("2026.11.16.2-beta", prerelease: true), release("2026.11.16.1-beta", prerelease: true),
         release("2026.11.09.1"))
@@ -295,10 +331,6 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
 
   private
 
-  def use_channel(name)
-    Shelfarr::ReleaseChannel.instance_variable_set(:@current, Shelfarr::ReleaseChannel.new(name: name, series: "1.0"))
-  end
-
   def release(version, prerelease: false, draft: false)
     {
       "tag_name" => "v#{version}",
@@ -310,8 +342,8 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     }
   end
 
-  def stub_github_releases(*releases)
-    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=30")
+  def stub_github_releases(*releases, page: 1)
+    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=100&page=#{page}")
       .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: releases.to_json)
   end
 

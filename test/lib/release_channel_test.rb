@@ -12,11 +12,12 @@ class ReleaseChannelTest < ActiveSupport::TestCase
     FileUtils.remove_entry(@root)
   end
 
-  test "this source tree is a 1.0 beta" do
+  test "this source tree names a supported channel and the server keeps using it" do
     channel = Shelfarr::ReleaseChannel.load(Rails.root)
 
-    assert_equal [ "beta", "1.0", "Shelfarr 1.0 Beta", "beta" ],
-      [ channel.name, channel.series, channel.label, channel.image_channel_tag ]
+    assert_includes Shelfarr::ReleaseChannel::NAMES, channel.name
+    assert_equal [ channel.name, channel.series ],
+      [ Shelfarr::ReleaseChannel.current.name, Shelfarr::ReleaseChannel.current.series ]
     assert_same Shelfarr::ReleaseChannel.current, Shelfarr::ReleaseChannel.current
   end
 

@@ -11,7 +11,8 @@ class UpdateCheckerService
 
   CACHE_KEY = "shelfarr:update_check"
   CACHE_TTL = 1.hour
-  RELEASE_LIST_SIZE = 30
+  RELEASE_PAGE_SIZE = 100
+  RELEASE_PAGE_LIMIT = 10
 
   class << self
     def check(force: false)
@@ -104,14 +105,24 @@ class UpdateCheckerService
     end
 
     def fetch_newest_published_release(repo)
-      response = connection.get("/repos/#{repo}/releases", per_page: RELEASE_LIST_SIZE)
-      return nil unless response.status == 200 && response.body.is_a?(Array)
+      (1..RELEASE_PAGE_LIMIT).each do |page|
+        releases = fetch_release_page(repo, page)
+        return nil if releases.nil?
 
-      candidates = response.body.select do |data|
-        data.is_a?(Hash) && !data["draft"] && Shelfarr::ReleaseChannel.published_version?(release_version(data))
+        candidates = releases.select { |data| published_server_release?(data) }
+        return release_details(candidates.max_by { |data| Gem::Version.new(release_version(data)) }) if candidates.any?
+        return nil if releases.size < RELEASE_PAGE_SIZE
       end
-      newest = candidates.max_by { |data| Gem::Version.new(release_version(data)) }
-      newest && release_details(newest)
+      nil
+    end
+
+    def fetch_release_page(repo, page)
+      response = connection.get("/repos/#{repo}/releases", per_page: RELEASE_PAGE_SIZE, page: page)
+      response.body if response.status == 200 && response.body.is_a?(Array)
+    end
+
+    def published_server_release?(data)
+      data.is_a?(Hash) && !data["draft"] && Shelfarr::ReleaseChannel.published_version?(release_version(data))
     end
 
     def release_version(data)

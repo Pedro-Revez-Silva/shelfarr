@@ -26,11 +26,8 @@ class DockerWorkflowTest < ActiveSupport::TestCase
 
     assert_equal "main", checkout.dig("with", "ref")
     assert_equal "read", plan_job.dig("permissions", "contents")
-    assert_includes planner, "git diff --quiet"
-    assert_includes planner, "date -u +'%Y.%m.%d'"
-    assert_includes planner, 'version="${date_version}.${release_number}"'
-    assert_includes planner, 'git tag --list "v${date_version}.*"'
-    assert_includes planner, 'echo "should_release=false"'
+    assert_includes planner, "git fetch origin main --tags --force"
+    assert_includes planner, 'bin/release-plan >> "${GITHUB_OUTPUT}"'
     assert_equal "weekly-release-main", @workflow.dig("concurrency", "group")
     assert_equal false, @workflow.dig("concurrency", "cancel-in-progress")
   end

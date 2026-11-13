@@ -6,6 +6,7 @@ require "mutant/minitest/coverage"
 require_relative "test_helpers/session_test_helper"
 require_relative "test_helpers/synthetic_library_modes_test_helper"
 require_relative "test_helpers/hardcover_test_helper"
+require_relative "test_helpers/release_channel_test_helper"
 require_relative "support/vcr_setup"
 
 # Resolve hostnames to a fixed public test address instead of doing real DNS
@@ -19,6 +20,7 @@ module ActiveSupport
     fixtures :all
 
     include VCRHelper
+    include ReleaseChannelTestHelper
 
     # Kobo editions prepared by a test never reach the app's storage/ cache.
     setup do

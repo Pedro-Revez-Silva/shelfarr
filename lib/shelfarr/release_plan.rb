@@ -64,7 +64,7 @@ module Shelfarr
     end
 
     def unchanged_since?(tag)
-      output, status = Open3.capture2e("git", "diff", "--quiet", "#{tag}..HEAD", chdir: @root)
+      output, status = Open3.capture2e("git", "diff", "--quiet", tag, "HEAD", "--", chdir: @root)
       return status.exitstatus.zero? if [ 0, 1 ].include?(status.exitstatus)
 
       raise GitFailed, "git diff failed: #{output.strip}"

@@ -71,6 +71,7 @@ class Admin::DashboardControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "the release card names the beta channel, its build and how to go back without contacting GitHub" do
+    use_release_channel("beta")
     get admin_root_url
 
     assert_select "#release p", text: "Shelfarr 1.0 Beta"
@@ -79,6 +80,15 @@ class Admin::DashboardControllerTest < ActionDispatch::IntegrationTest
     assert_select "#release dd", text: "Not checked yet"
     assert_select "#release pre", text: "docker pull ghcr.io/pedro-revez-silva/shelfarr:beta"
     assert_select "#release a[href='https://github.com/Pedro-Revez-Silva/shelfarr/blob/main/docs/releases.md']"
+  end
+
+  test "a stable release card follows stable images" do
+    use_release_channel("stable")
+    get admin_root_url
+
+    assert_select "#release p", text: "Shelfarr 1.0"
+    assert_select "#release dd", text: "Stable releases only"
+    assert_select "#release pre", text: "docker pull ghcr.io/pedro-revez-silva/shelfarr:latest"
   end
 
   test "the overview links every settings category to its tab" do
