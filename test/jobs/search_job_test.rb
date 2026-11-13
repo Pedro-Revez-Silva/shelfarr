@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "ostruct"
 
 class SearchJobTest < ActiveJob::TestCase
   # Prowlarr book searches are now shaped by what each indexer advertises, so

@@ -3,6 +3,10 @@
 # Runtime OmniAuth setup for the OIDC provider. Settings are read from
 # SettingsService so issuer/client credentials can change without reboot.
 class OidcOmniauthSetup
+  def self.allowed_hosts
+    ENV.fetch("SHELFARR_ALLOWED_HOSTS", "").split(",").filter_map { |host| host.strip.presence }
+  end
+
   def self.call(env)
     strategy = env["omniauth.strategy"]
 

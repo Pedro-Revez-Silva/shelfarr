@@ -113,6 +113,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `TZ` | `UTC` | IANA time zone used for displayed timestamps (e.g., `America/New_York`) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set. `RAILS_MASTER_KEY_FILE` reads it from a file; see [Docker secrets](#docker-secrets) |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
+| `SHELFARR_ALLOWED_HOSTS` | unset | Comma-separated public hostnames that may appear in an OIDC callback URL. When unset, the callback uses the request host, including `X-Forwarded-Host`. Set the hostnames registered with the identity provider so a forged host cannot receive the login code. |
 | `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
 
@@ -220,6 +221,7 @@ Shelfarr supports OpenID Connect for single sign-on with identity providers like
 1. Create an OIDC client in your identity provider:
    - **Redirect URI**: `http://your-shelfarr-url/auth/oidc/callback`
      (include the application prefix when set, for example `https://your-shelfarr-url/books/auth/oidc/callback` with `RAILS_RELATIVE_URL_ROOT=/books`)
+   - Set `SHELFARR_ALLOWED_HOSTS` to that callback hostname (and any other hostname you serve). Without it, OmniAuth uses the request host.
    - **Scopes**: `openid profile email`
 
 2. In **Admin → Settings → OIDC/SSO Authentication**:

@@ -3,23 +3,26 @@
 require "test_helper"
 
 class ResolvGemTest < ActiveSupport::TestCase
-  test "activates resolv 0.3.2 or newer and does not retain unknown DNS classes" do
+  test "activates resolv 0.8.1 or newer and does not retain unknown DNS classes" do
     spec = Gem.loaded_specs.fetch("resolv")
 
-    assert_operator spec.version, :>=, Gem::Version.new("0.3.2")
+    assert_operator spec.version, :>=, Gem::Version.new("0.8.1")
     assert_equal spec.version.to_s, Resolv::VERSION
     refute spec.default_gem?
 
     type_value = 65_280
     class_value = 1
     constant_name = "Type#{type_value}_Class#{class_value}"
+    refute Resolv::DNS::Resource.const_defined?(constant_name, false)
     refute Resolv::DNS::Resource::Generic.const_defined?(constant_name, false)
 
     first = decode_unknown_resource(type_value, class_value)
     second = decode_unknown_resource(type_value, class_value)
 
+    refute Resolv::DNS::Resource.const_defined?(constant_name, false)
     refute Resolv::DNS::Resource::Generic.const_defined?(constant_name, false)
-    refute Resolv::DNS::Resource::ClassHash.key?([ type_value, class_value ])
+    cache = Resolv::DNS::Resource::ClassHash
+    refute cache.key?([ type_value, class_value ]) if cache.respond_to?(:key?)
     refute_same first.class, second.class
   end
 

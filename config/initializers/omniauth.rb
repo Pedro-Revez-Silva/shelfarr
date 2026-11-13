@@ -11,6 +11,15 @@ end
 # Silence OmniAuth "authenticity error" for API-style callbacks
 OmniAuth.config.silence_get_warning = true
 
+# OIDC callbacks use the request host, including X-Forwarded-Host, because a
+# self-hosted install has no single public hostname. When the operator lists
+# the hostnames registered with the identity provider, reject every other host
+# before that callback URL is sent. An empty list would reject every login.
+Rails.application.config.to_prepare do
+  allowed_hosts = OidcOmniauthSetup.allowed_hosts
+  OmniAuth.config.allowed_hosts = allowed_hosts if allowed_hosts.any?
+end
+
 OmniAuth.config.path_prefix = "/auth"
 
 OmniAuth.config.on_failure = Proc.new { |env|

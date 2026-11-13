@@ -9,6 +9,8 @@ gem "crass", ">= 1.0.8"
 gem "loofah", ">= 2.25.3"
 # HTML parser. 1.19.4 leaves < and > unescaped in serialized attribute values.
 gem "nokogiri", ">= 1.19.5"
+# msgpack before 1.8.7 sizes a container from an uncapped header count.
+gem "msgpack", ">= 1.8.7"
 # Safe-list sanitizer. 1.7.1 shares one scrubber across concurrent sanitize calls.
 gem "rails-html-sanitizer", ">= 1.7.2"
 gem "propshaft"
@@ -46,7 +48,7 @@ gem "faraday-multipart"
 gem "addressable", ">= 2.9.1"
 # Public and private suffix boundaries for credential-bearing redirects
 gem "public_suffix", "~> 7.0"
-gem "resolv", "~> 0.3.2"
+gem "resolv", "~> 0.8.1"
 gem "oj"
 gem "rubyzip", ">= 3.4.0", require: "zip"
 gem "bencode"
@@ -54,7 +56,8 @@ gem "id3tag"
 gem "pdf-reader"
 gem "rotp"
 gem "rqrcode"
-gem "omniauth"
+# OmniAuth 2.1.4 builds OAuth callback URLs from a client-supplied host.
+gem "omniauth", ">= 2.2.0"
 gem "omniauth-rails_csrf_protection"
 gem "omniauth_openid_connect"
 

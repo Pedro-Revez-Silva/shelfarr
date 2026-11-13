@@ -22,7 +22,7 @@ public sealed class ApiContractTests
     [Fact]
     public void PinsTheLibationReleaseThatFixesDeviceSerialThrottling()
     {
-        Assert.Equal("14.2.0", CompanionOptions.PinnedLibationVersion);
+        Assert.Equal("14.2.5", CompanionOptions.PinnedLibationVersion);
     }
 
     [Fact]

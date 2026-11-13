@@ -2,7 +2,7 @@
 
 # Pin the exact multi-architecture SDK manifest. A Shelfarr release must not
 # silently acquire a different compiler or runtime pack on a later rebuild.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:747cbade5bfd918a175ac32f8f1d931edec2c7d0d5397a3de72eaef1ac1f66d2 AS companion-build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0.404-noble@sha256:fe0fd4e93bd2fbb47c883b7a6369e5c8d3db8bf01cdc5981f6ee35fbdf3ff4fb AS companion-build
 ARG TARGETARCH
 ARG APP_VERSION=0.0.0
 
@@ -38,29 +38,29 @@ RUN case "${TARGETARCH}" in \
 RUN git init --quiet /var/cache/libation-source \
     && install -d /source-artifacts \
     && git -C /var/cache/libation-source remote add origin https://github.com/rmcrackan/Libation.git \
-    && git -C /var/cache/libation-source fetch --quiet --depth 1 origin 087c1076850d63f2ad172417535f3f0b025e722a \
-    && test "$(git -C /var/cache/libation-source rev-parse FETCH_HEAD)" = "087c1076850d63f2ad172417535f3f0b025e722a" \
+    && git -C /var/cache/libation-source fetch --quiet --depth 1 origin 8003ae6f29ef28f057e1df994da13817dbdda670 \
+    && test "$(git -C /var/cache/libation-source rev-parse FETCH_HEAD)" = "8003ae6f29ef28f057e1df994da13817dbdda670" \
     && git -C /var/cache/libation-source archive \
       --format=tar.gz \
-      --prefix=Libation-14.2.0/ \
-      --output=/source-artifacts/Libation-14.2.0-source.tar.gz \
+      --prefix=Libation-14.2.5/ \
+      --output=/source-artifacts/Libation-14.2.5-source.tar.gz \
       FETCH_HEAD \
     && printf '%s  %s\n' \
-      662f065621f042c8cacd7c86a3f487f42cc490ed2ae96ce1f7566e7a491678b6 \
-      /source-artifacts/Libation-14.2.0-source.tar.gz \
+      c7f637fe147bb319aab5dfa337e060ed2cfea17e7ac3929297378e72a8a38fc4 \
+      /source-artifacts/Libation-14.2.5-source.tar.gz \
       | sha256sum --check --strict
 
 # Compile the exact shipped source with the serviced runtime; preserve the
 # source archive and upstream application behavior.
 RUN mkdir /libation-source && \
-    tar -xzf /source-artifacts/Libation-14.2.0-source.tar.gz --strip-components=1 -C /libation-source && \
+    tar -xzf /source-artifacts/Libation-14.2.5-source.tar.gz --strip-components=1 -C /libation-source && \
     case "${TARGETARCH}" in amd64) dotnet_arch=x64 ;; arm64) dotnet_arch=arm64 ;; *) exit 64 ;; esac && \
     dotnet publish /libation-source/Source/LibationCli/LibationCli.csproj \
       --configuration Release --runtime "linux-${dotnet_arch}" --self-contained true \
-      -p:RuntimeFrameworkVersion=10.0.13 --output /libation-out
+      -p:RuntimeFrameworkVersion=10.0.15 --output /libation-out
 
 # Keep this exact tag and manifest digest in sync with THIRD_PARTY_NOTICES.md.
-FROM rmcrackan/libation:14.2.0@sha256:c0ab061d317621057e914c51506d57238d5b6afb158c4aa5801b2fa29b15d8db
+FROM rmcrackan/libation:14.2.5@sha256:7bb47a417311d154c6691747320d0b62ce15527280ad99f0e2a85ac9a6b07e40
 
 USER root
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -68,7 +68,8 @@ RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 COPY --from=companion-build /usr/share/dotnet/shared/ /usr/share/dotnet/shared/
 COPY --from=companion-build /usr/share/dotnet/host/ /usr/share/dotnet/host/
 COPY --from=companion-build /usr/share/dotnet/dotnet /usr/share/dotnet/dotnet
-RUN rm -rf /usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.11 /usr/share/dotnet/shared/Microsoft.AspNetCore.App/10.0.11 /usr/share/dotnet/host/fxr/10.0.11
+ENV DOTNET_VERSION=10.0.15
+RUN rm -rf /usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.14 /usr/share/dotnet/shared/Microsoft.AspNetCore.App/10.0.14 /usr/share/dotnet/host/fxr/10.0.14
 COPY --from=companion-build /libation-out/ /libation/
 RUN test -x /libation/LibationCli \
     && command -v script >/dev/null \
@@ -82,7 +83,7 @@ COPY --chmod=0555 docker/entrypoint.sh /companion/entrypoint.sh
 COPY --chown=1000:1000 THIRD_PARTY_NOTICES.md /companion/THIRD_PARTY_NOTICES.md
 COPY --chown=1000:1000 LICENSES/Libation-GPL-3.0.txt /companion/LICENSES/Libation-GPL-3.0.txt
 COPY --chown=1000:1000 LICENSES/Libation-GPL-3.0.txt /companion/LICENSES/Shelfarr-GPL-3.0.txt
-COPY --from=companion-build --chown=1000:1000 /source-artifacts/Libation-14.2.0-source.tar.gz /companion/SOURCES/Libation-14.2.0-source.tar.gz
+COPY --from=companion-build --chown=1000:1000 /source-artifacts/Libation-14.2.5-source.tar.gz /companion/SOURCES/Libation-14.2.5-source.tar.gz
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
     DOTNET_EnableDiagnostics=0 \

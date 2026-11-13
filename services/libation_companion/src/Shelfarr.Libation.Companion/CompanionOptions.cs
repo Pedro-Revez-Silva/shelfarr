@@ -3,7 +3,7 @@ namespace Shelfarr.Libation.Companion;
 public sealed record CompanionOptions
 {
     public const string ApiVersion = "1";
-    public const string PinnedLibationVersion = "14.2.0";
+    public const string PinnedLibationVersion = "14.2.5";
 
     public required string LibationCliPath { get; init; }
     public required string LibationFilesDirectory { get; init; }
