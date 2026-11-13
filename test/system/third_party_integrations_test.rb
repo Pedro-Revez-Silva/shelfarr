@@ -104,9 +104,9 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
 
     assert_current_path admin_settings_path
     assert_selector "form[data-history-autosave-started='true']"
-    assert_no_text "Admin Dashboard"
+    assert_no_text "Server overview"
     page.execute_script("window.releaseHistoryAutosave()")
-    assert_text "Admin Dashboard"
+    assert_text "Server overview"
     assert_equal 29, SettingsService.get(:max_retries)
 
     page.go_forward
@@ -139,10 +139,10 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
 
     assert_current_path admin_settings_path
     assert_selector "form[data-visit-autosave-started='true']"
-    assert_no_text "Admin Dashboard"
+    assert_no_text "Server overview"
     page.execute_script("window.releaseVisitAutosave()")
 
-    assert_text "Admin Dashboard"
+    assert_text "Server overview"
     assert_current_path admin_root_path
     assert_equal 32, SettingsService.get(:max_retries)
   end

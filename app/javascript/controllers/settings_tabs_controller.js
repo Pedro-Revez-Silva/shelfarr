@@ -24,6 +24,7 @@ export default class extends Controller {
     if (requestedTab && this.panelTargets.some((panel) => panel.dataset.tab === requestedTab)) {
       this.activeValue = requestedTab
     }
+    const requestedSection = this.sectionFor(hash)
 
     // Fetch-based Turbo redirects discard URL fragments. Controllers include
     // a temporary query value so we can restore the selected tab, then return
@@ -35,6 +36,7 @@ export default class extends Controller {
     }
 
     this.showTab()
+    if (requestedSection) this.revealSection(requestedSection)
     window.addEventListener("hashchange", this.handleHashChange)
     document.addEventListener("turbo:render", this.handleTurboRender)
   }
@@ -92,10 +94,34 @@ export default class extends Controller {
 
   handleHashChange() {
     const hash = window.location.hash.replace("#", "")
+    const section = this.sectionFor(hash)
+    if (section) {
+      this.revealSection(section)
+      return
+    }
     if (!hash || !this.panelTargets.some((panel) => panel.dataset.tab === hash)) return
 
     this.activeValue = hash
     this.showTab()
+  }
+
+  sectionFor(id) {
+    if (!id) return null
+
+    const section = document.getElementById(id)
+    const panel = section?.closest("[data-settings-tabs-target='panel']")
+    return panel && this.element.contains(panel) ? section : null
+  }
+
+  revealSection(section) {
+    const panel = section.closest("[data-settings-tabs-target='panel']")
+    this.activeValue = panel.dataset.tab
+    this.showTab()
+    if (section.tagName === "DETAILS") section.open = true
+    history.replaceState(history.state, "", `#${this.activeValue}`)
+    if (!section.hasAttribute("tabindex")) section.setAttribute("tabindex", "-1")
+    section.scrollIntoView({ block: "start" })
+    section.focus({ preventScroll: true })
   }
 
   handleTurboRender() {

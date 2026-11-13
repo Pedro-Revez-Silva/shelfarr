@@ -1,5 +1,11 @@
 <div class="mx-auto max-w-2xl">
-  <h1 class="font-bold text-4xl mb-8 text-white">My Profile</h1>
+  <h1 class="font-bold text-4xl text-white">Account</h1>
+  <p class="mt-2 mb-8 text-sm text-gray-400">
+    Your own sign-in, reading devices and apps. These settings only affect you.
+    <% if @user.admin? %>
+      Settings for the whole server are in <%= link_to "Admin", admin_root_path, class: "text-blue-400 hover:text-blue-300" %>.
+    <% end %>
+  </p>
 
   <div class="bg-gray-900 rounded-lg shadow overflow-hidden border border-gray-800">
     <div class="p-6">
@@ -82,7 +88,7 @@
       <% if @user.received_kobo_account_shares.effective.exists? %>
         <%= link_to "Shared Kobo books", kobo_shared_libraries_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% end %>
-      <%= link_to "Reader preview", consumer_library_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
+      <%= link_to "Your library", consumer_library_path, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% if (android_page = android_app_page_path) %>
         <%= link_to "Get the Android app", android_page, class: "px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-medium rounded-lg transition" %>
       <% end %>
@@ -168,4 +174,15 @@
       </div>
     </div>
   </div>
+
+  <section id="about-shelfarr" class="mt-8 rounded-lg border border-gray-800 bg-gray-900 p-6" aria-labelledby="about-shelfarr-heading">
+    <h2 id="about-shelfarr-heading" class="text-lg font-semibold text-white">About this server</h2>
+    <p class="mt-2 text-sm text-gray-300">This server runs <strong class="text-white"><%= release_channel.label %></strong>.</p>
+    <% if release_channel.beta? %>
+      <p class="mt-1 text-sm text-gray-400">Beta builds are ready to use, but some screens may still change before Shelfarr <%= release_channel.series %> is final. Your administrator decides when the server is updated and keeps its backups.</p>
+    <% end %>
+    <% if @user.admin? %>
+      <p class="mt-2 text-sm"><%= link_to "Release, updates and backups", admin_root_path(anchor: "release"), class: "text-blue-400 hover:text-blue-300" %></p>
+    <% end %>
+  </section>
 </div>

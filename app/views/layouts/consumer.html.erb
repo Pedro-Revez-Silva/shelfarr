@@ -20,7 +20,7 @@
     <header class="consumer-header">
       <%= link_to consumer_library_path, class: "consumer-wordmark", aria: { label: "Shelfarr library" } do %>
         <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 4h5v16H4zM10 7h4v13h-4zM16 4l4-1 3 16-4 1z"/></svg>
-        shelfarr<span class="consumer-preview">Reader preview</span>
+        shelfarr<% if release_channel.beta? %><span class="consumer-preview" title="<%= release_channel.label %>" data-release-badge>Beta</span><% end %>
       <% end %>
       <%= link_to profile_path, class: "consumer-avatar", aria: { label: "My profile" } do %><%= Current.user.name.first.upcase %><% end %>
     </header>
@@ -31,10 +31,9 @@
     </main>
     <% unless content_for?(:hide_navigation) %>
       <nav class="consumer-navigation" aria-label="Main navigation">
-        <%= link_to "Library", consumer_library_path, aria: { current: "page" }, class: "is-active" %>
-        <%= link_to "Discover", HardcoverIntegration.enabled? ? discover_path : search_path %>
-        <%= link_to "Requests", requests_path %>
-        <%= link_to "Account", profile_path %>
+        <% [ [ "Library", consumer_library_path, :library ], [ "Discover", discover_entry_path, :discover ], [ "Requests", requests_path, :requests ], [ "Account", profile_path, :account ] ].each do |label, path, section| %>
+          <%= link_to label, path, aria: { current: ("page" if navigation_section == section) }, class: ("is-active" if navigation_section == section) %>
+        <% end %>
       </nav>
     <% end %>
   </body>

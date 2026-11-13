@@ -24,13 +24,13 @@
           <li><strong class="text-white">Search for titles and request ebooks and audiobooks as <%= Current.user.name %>.</strong> Requests follow this server's usual rules, including duplicate checks.</li>
           <li>See and cancel your own requests.</li>
         </ul>
-        <p class="text-gray-400">It cannot see other people's requests, manage users or change server settings. You can revoke it from My Profile.</p>
+        <p class="text-gray-400">It cannot see other people's requests, manage users or change server settings. You can revoke it from your Account page.</p>
         <% if @grant.upgrade? %>
           <p class="text-gray-400">If you choose Not now, the app keeps its current read-and-listen access.</p>
         <% end %>
       </div>
     <% else %>
-      <p class="text-sm text-gray-400">The app can browse and download your library and save your reading/listening progress. It cannot request books or manage your server. You can revoke it from My Profile.</p>
+      <p class="text-sm text-gray-400">The app can browse and download your library and save your reading/listening progress. It cannot request books or manage your server. You can revoke it from your Account page.</p>
     <% end %>
     <p class="mt-3 text-sm text-amber-300">Only approve a connection you started yourself. Do not approve a code someone sent you.</p>
     <%= form_with url: consumer_connect_path, data: { turbo: false }, class: "mt-6 flex flex-wrap gap-3" do |form| %>

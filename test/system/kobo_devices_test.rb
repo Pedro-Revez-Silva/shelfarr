@@ -15,7 +15,7 @@ class KoboDevicesTest < ApplicationSystemTestCase
 
   test "connect a stock reader and send an acquired ebook" do
     visit profile_path
-    assert_link "Reader preview", href: consumer_library_path
+    assert_link "Your library", href: consumer_library_path
     click_link "Kobo readers"
     assert_text "keep its own Kobo Store library beside Shelfarr books"
     fill_in "Reader name", with: "My older Kobo"

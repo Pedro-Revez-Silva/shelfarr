@@ -69,7 +69,7 @@
       <% else %>
         <p class="text-sm text-gray-500">
           <% if Current.user.admin? %>
-            To let users connect, register a Hardcover developer app and add its client ID in <%= link_to "Settings → Integrations → Hardcover", admin_settings_path, class: "text-blue-400 hover:text-blue-300" %>.
+            To let users connect, register a Hardcover developer app and add its client ID in <%= link_to "Settings → Integrations → Hardcover", admin_settings_path(anchor: "settings-section-hardcover"), class: "text-blue-400 hover:text-blue-300" %>.
           <% else %>
             An administrator has not enabled Hardcover account connections yet.
           <% end %>

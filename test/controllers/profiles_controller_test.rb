@@ -25,7 +25,7 @@ class ProfilesControllerTest < ActionDispatch::IntegrationTest
   test "show displays user info" do
     get profile_path
     assert_response :success
-    assert_select "h1", "My Profile"
+    assert_select "h1", "Account"
     assert_select "h2", @user.name
   end
 

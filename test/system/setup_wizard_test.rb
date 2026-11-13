@@ -86,7 +86,8 @@ class SetupWizardTest < ApplicationSystemTestCase
     assert_nil client.download_path
     assert_not_requested :post, "http://qbittorrent:8080/api/v2/torrents/createCategory"
 
-    click_button "Setup"
+    visit admin_root_path
+    click_button "Run setup again"
     assert_text "Prowlarr URL"
     assert_equal false, SettingsService.get(:setup_wizard_completed)
   end
