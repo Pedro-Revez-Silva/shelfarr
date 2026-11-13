@@ -106,6 +106,30 @@ class OutboundUrlGuardTest < ActiveSupport::TestCase
     end
   end
 
+  test "pins an IPv4 address when the resolver returns IPv6 first" do
+    with_resolver(->(host) { [ "2001:db8::10", "203.0.113.10", "203.0.113.11" ] }) do
+      uri = OutboundUrlGuard.validate!("https://downloads.test/file.epub")
+
+      assert_equal "203.0.113.10", uri.ipaddr
+    end
+  end
+
+  test "pins the only IPv6 address when no IPv4 address was validated" do
+    with_resolver(->(host) { [ "2001:db8::10" ] }) do
+      uri = OutboundUrlGuard.validate!("https://downloads.test/file.epub")
+
+      assert_equal "2001:db8::10", uri.ipaddr
+    end
+  end
+
+  test "rejects a blocked IPv6 address even when a public IPv4 answer follows" do
+    with_resolver(->(host) { [ "fe80::1", "203.0.113.10" ] }) do
+      assert_raises(OutboundUrlGuard::BlockedUrlError) do
+        OutboundUrlGuard.validate!("https://rebinding.test/file.epub")
+      end
+    end
+  end
+
   test "obviously_private_host? detects localhost and private literals" do
     assert OutboundUrlGuard.obviously_private_host?("localhost")
     assert OutboundUrlGuard.obviously_private_host?("127.0.0.1")

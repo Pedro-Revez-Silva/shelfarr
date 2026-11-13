@@ -68,7 +68,7 @@ class OutboundUrlGuard
         end
       end
 
-      ValidatedUrl.new(uri:, ipaddr: addresses.first.to_s)
+      ValidatedUrl.new(uri:, ipaddr: preferred_address(addresses).to_s)
     rescue URI::InvalidURIError => e
       raise BlockedUrlError, "Invalid URL: #{e.message}"
     end
@@ -87,6 +87,12 @@ class OutboundUrlGuard
     end
 
     private
+
+    # resolv 0.8 returns AAAA before A when the machine has a global IPv6
+    # address. Net::HTTP pins ipaddr and will not fall back to IPv4.
+    def preferred_address(addresses)
+      addresses.find(&:ipv4?) || addresses.first
+    end
 
     def resolve_addresses(host)
       return [ IPAddr.new("127.0.0.1") ] if host.to_s.casecmp("localhost").zero?
