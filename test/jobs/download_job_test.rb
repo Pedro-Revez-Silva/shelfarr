@@ -307,6 +307,38 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not @selected_result.reload.blocklisted?
   end
 
+  test "z-library lookup heartbeats the dispatch and stops when ownership changes" do
+    @selected_result.update!(source: SearchResult::SOURCE_ZLIBRARY, guid: "999:deadbeef")
+    SettingsService.set(:download_enqueue_timeout_minutes, 5)
+    attempts = 0
+    lookup = lambda do |id:, hash:, after_attempt:|
+      assert_equal "999", id
+      assert_equal "deadbeef", hash
+      2.times do
+        travel 6.minutes
+        assert after_attempt.call
+        attempts += 1
+        DownloadMonitorJob.new.send(:handle_stale_queued_download, Download.find(@download.id))
+        assert @download.reload.downloading?
+        assert_equal "dispatching", @download.download_type
+      end
+
+      @download.update!(status: :failed)
+      assert_not after_attempt.call
+      raise ZLibraryClient::SearchCancelled, "Search ownership changed"
+    end
+
+    assert_nothing_raised do
+      ZLibraryClient.stub(:get_download_url, lookup) do
+        DownloadJob.perform_now(@download.id)
+      end
+    end
+
+    assert_equal 2, attempts
+    assert @download.reload.failed?
+    assert_not_includes @request.reload.issue_description.to_s, "Z-Library error"
+  end
+
   test "does not blocklist on LibriVox transient connection error" do
     @selected_result.update!(
       source: SearchResult::SOURCE_LIBRIVOX,
