@@ -17,13 +17,14 @@ class DuplicateDetectionService
   SUBTITLE_SEPARATOR = /\s*(?::|;|\u2013|\u2014|\s-\s)\s*/
   AUTHOR_SEPARATOR = /\s*(?:&|\/)\s*|\s*;\s*|\s+\b(?:and|with)\b\s+/i
   NAME_SUFFIX = /\b(?:jr|sr|ii|iii|iv|ph\.?d|m\.?d)\b\.?/i
+  ORDINAL_ANNIVERSARY = /\b(\d+)(st|nd|rd|th)\s+anniversary\b/
   AuthorName = Data.define(:surname, :given_names)
   AcquiredCopy = Data.define(:book, :names, :ordinal)
   UNSEPARATED_NAME = /\A[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]+\z/
   INITIAL_LETTER = /\A[\p{Latin}\p{Cyrillic}\p{Greek}]\z/
   private_constant :EDITION_WORDS, :PARTICLES, :APOSTROPHE, :PARENTHETICAL,
-    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :AuthorName,
-    :AcquiredCopy, :UNSEPARATED_NAME, :INITIAL_LETTER
+    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :ORDINAL_ANNIVERSARY,
+    :AuthorName, :AcquiredCopy, :UNSEPARATED_NAME, :INITIAL_LETTER
 
   Result = Data.define(:status, :message, :existing_book, :existing_request) do
     def allow?
@@ -137,10 +138,10 @@ class DuplicateDetectionService
     end
 
     def find_existing_book(work_ids, book_type:, existing_books_lookup: nil)
-      if existing_books_lookup.present?
-        Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
-      else
+      if existing_books_lookup.nil?
         Book.find_by_any_work_id(work_ids, book_type: book_type)
+      else
+        Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
       end
     end
 
@@ -227,11 +228,24 @@ class DuplicateDetectionService
     end
 
     def edition_suffix?(text)
-      words = normalized_title(text).split
+      words = normalized_title(text).gsub(ORDINAL_ANNIVERSARY) { ordinal_anniversary(Regexp.last_match) }.split
       return false if words.empty?
       return false if words.intersect?(%w[and or versus vs])
 
       words.all? { |word| EDITION_WORDS.include?(word) }
+    end
+
+    def ordinal_anniversary(match)
+      number = match[1].to_i
+      return match[0] unless number.positive? && match[2] == ordinal_suffix(number)
+
+      "anniversary"
+    end
+
+    def ordinal_suffix(number)
+      return "th" if (11..13).cover?(number % 100)
+
+      { 1 => "st", 2 => "nd", 3 => "rd" }.fetch(number % 10, "th")
     end
 
     def same_author?(left_names, right_names)
@@ -306,17 +320,11 @@ class DuplicateDetectionService
     end
 
     def author_name_for(person)
-      if person[:natural]
-        tokens = indexed_name_tokens(person[:name])
-        return if tokens.empty?
+      name = person[:natural] ? person[:name] : "#{person[:given]} #{person[:surname]}"
+      tokens = indexed_name_tokens(name)
+      return if tokens.empty?
 
-        AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
-      else
-        surname = surname_token(name_tokens(person[:surname]))
-        return if surname.blank?
-
-        AuthorName.new(surname: surname, given_names: given_name_tokens(name_tokens(person[:given])))
-      end
+      AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
     end
 
     def indexed_name_tokens(value)
@@ -335,10 +343,6 @@ class DuplicateDetectionService
       return tokens unless token.length >= 2 && token.match?(UNSEPARATED_NAME)
 
       [ token[1..], token[0] ]
-    end
-
-    def surname_token(tokens)
-      tokens.reject { |token| PARTICLES.include?(token) }.last || tokens.last
     end
 
     def given_name_tokens(tokens)

@@ -59,24 +59,32 @@ class RequestCreationService
         next
       end
 
+      resolved_metadata = metadata_for(input)
+      label = resolved_metadata[:title].presence || input.metadata_attrs[:title].presence || input.work_id
+
       book_types.each do |book_type|
         duplicate_check = DuplicateDetectionService.check(
           work_id: input.work_id,
           source_work_ids: input.source_work_ids,
           book_type: book_type,
-          title: input.metadata_attrs[:title],
-          author: input.metadata_attrs[:author],
+          title: resolved_metadata[:title].presence || input.metadata_attrs[:title],
+          author: resolved_metadata[:author].presence || input.metadata_attrs[:author],
           existing_books_lookup: existing_books_lookup
         )
 
         if duplicate_check.block?
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
+          errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
           next
         end
 
         warnings << duplicate_check.message if duplicate_check.warn?
 
-        book = find_or_create_book_for_source(book_type, input: input, existing_books_lookup: existing_books_lookup)
+        book = find_or_create_book_for_source(
+          book_type,
+          input: input,
+          existing_books_lookup: existing_books_lookup,
+          metadata: resolved_metadata
+        )
         request = build_request(book, input.metadata_attrs)
 
         if request.save
@@ -84,7 +92,7 @@ class RequestCreationService
           created_requests << request
           input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
         else
-          errors << "#{input.metadata_attrs[:title].presence || input.work_id} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
+          errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
         end
       end
     end
@@ -196,7 +204,16 @@ class RequestCreationService
     Result.new(created_requests: [], warnings: [], errors: [], queued: true)
   end
 
-  def find_or_create_book_for_source(book_type, input:, existing_books_lookup:)
+  def metadata_for(input)
+    return {} unless @lookup_metadata && !collection_request?
+
+    BookMetadataLookupService.call(
+      [ input.work_id, *input.source_work_ids ],
+      fallback: fallback_attrs(input.metadata_attrs)
+    )
+  end
+
+  def find_or_create_book_for_source(book_type, input:, existing_books_lookup:, metadata:)
     book = Book.find_in_lookup(existing_books_lookup, input.source_work_ids, book_type: book_type)
     book ||= Book.find_or_initialize_by_work_id(input.work_id, book_type: book_type)
     input.source_work_ids.each { |source_work_id| book.assign_work_id(source_work_id) }
@@ -205,7 +222,8 @@ class RequestCreationService
       work_id: input.work_id,
       source_work_ids: input.source_work_ids,
       fallback_attrs: fallback_attrs(input.metadata_attrs),
-      lookup_details: @lookup_metadata && !collection_request?
+      lookup_details: false,
+      metadata: metadata
     )
 
     book
