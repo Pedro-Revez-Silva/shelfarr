@@ -3,6 +3,8 @@
 require "test_helper"
 
 class UpdateCheckerServiceTest < ActiveSupport::TestCase
+  GITHUB_REPO_API = "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr"
+
   setup do
     use_release_channel("stable")
     @original_repo = SettingsService.get(:github_repo)
@@ -31,11 +33,11 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a beta server is offered the highest beta or stable build whatever order GitHub lists the tags in" do
+  test "a beta server is offered the highest beta or stable build wherever GitHub lists its tag" do
     use_release_channel("beta")
     VCR.turned_off do
       older = (1..1200).map { |number| "v2025.#{format('%02d', number % 12 + 1)}.#{format('%02d', number % 28 + 1)}.#{number}" }
-      stub_server_tags("v2026.11.23.1", *older, "v2026.11.16.1-beta", "v2026.11.30.1-rc", "v2026.12.01.1-beta-beta", "v2026.11.09.1")
+      stub_server_tags("v2026.11.16.1-beta", *older, "v2026.11.30.1-rc", "v2026.12.01.1-beta-beta", "v2026.11.09.1", "v2026.11.23.1")
       stub_release_by_tag(release("2026.11.23.1"))
 
       UpdateCheckerService.stub(:current_version, "2026.11.16.1-beta") do
@@ -45,6 +47,8 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
         assert_equal "2026.11.23.1", result.latest_version
         assert_equal "https://github.com/Pedro-Revez-Silva/shelfarr/releases/tag/v2026.11.23.1", result.release_url
       end
+      assert_requested :get, "#{GITHUB_REPO_API}/git/matching-refs/tags/v20", times: 1
+      assert_requested :get, %r{\A#{Regexp.escape(GITHUB_REPO_API)}/releases/tags/}, times: 1
     end
   end
 
@@ -63,34 +67,65 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "a beta server is not told it is up to date when the newest tag has no published release" do
+  test "a beta server skips newer tags without a published release and is offered the newest published build" do
     use_release_channel("beta")
     VCR.turned_off do
-      stub_server_tags("v2026.11.09.1", "v2026.11.12.1-beta")
-      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases/tags/v2026.11.12.1-beta")
-        .to_return(status: 404, headers: { "Content-Type" => "application/json" }, body: { message: "Not Found" }.to_json)
+      stub_server_tags("v2026.11.01.1-beta", "v2026.11.09.1", "v2026.11.12.1-beta", "v2026.11.13.1-beta", "v2026.11.14.1-beta")
+      stub_release_lookup("v2026.11.14.1-beta", status: 200, body: release("2026.11.14.1-beta", prerelease: true, draft: true))
+      stub_release_lookup("v2026.11.13.1-beta", status: 404, body: { message: "Not Found" })
+      stub_release_by_tag(release("2026.11.12.1-beta", prerelease: true))
 
       UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
         result = UpdateCheckerService.check(force: true)
 
+        assert result.update_available?
+        assert_equal "2026.11.12.1-beta", result.latest_version
+      end
+      assert_not_requested :get, "#{GITHUB_REPO_API}/releases/tags/v2026.11.09.1"
+    end
+  end
+
+  test "a beta server is up to date when only unpublished tags are newer than its own release" do
+    use_release_channel("beta")
+    VCR.turned_off do
+      stub_server_tags("v2026.11.09.1", "v2026.11.12.1-beta", "v2026.11.13.1-beta")
+      stub_release_lookup("v2026.11.13.1-beta", status: 404, body: { message: "Not Found" })
+      stub_release_by_tag(release("2026.11.12.1-beta", prerelease: true))
+
+      UpdateCheckerService.stub(:current_version, "2026.11.12.1-beta") do
+        result = UpdateCheckerService.check(force: true)
+
         assert_not result.update_available?
-        assert_nil result.latest_version
-        assert_equal "Release v2026.11.12.1-beta is not published", result.latest_message
+        assert_equal "2026.11.12.1-beta", result.latest_version
       end
     end
   end
 
-  test "a beta server reports a failed tag listing instead of an update result" do
+  test "a beta server reports discovery it could not finish instead of an update result" do
     use_release_channel("beta")
     VCR.turned_off do
-      stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/git/matching-refs/tags/v20")
-        .to_return(status: 403, headers: { "Content-Type" => "application/json" }, body: { message: "rate limited" }.to_json)
+      {
+        "Could not list release tags (HTTP 403)" => -> { stub_request(:get, "#{GITHUB_REPO_API}/git/matching-refs/tags/v20").to_return(status: 403, body: "{}") },
+        "Could not read release v2026.11.12.1-beta (HTTP 500)" => lambda {
+          stub_server_tags("v2026.11.09.1", "v2026.11.12.1-beta")
+          stub_release_lookup("v2026.11.12.1-beta", status: 500, body: { message: "Server Error" })
+        },
+        "None of the newest 20 release tags has a published release" => lambda {
+          tags = (1..21).map { |day| "v2026.12.#{format('%02d', day)}.1-beta" }
+          stub_server_tags(*tags)
+          tags.each { |tag| stub_release_lookup(tag, status: 404, body: { message: "Not Found" }) }
+        }
+      }.each do |message, stub_github|
+        WebMock.reset!
+        stub_github.call
 
-      UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
-        result = UpdateCheckerService.check(force: true)
+        UpdateCheckerService.stub(:current_version, "2026.11.01.1-beta") do
+          result = UpdateCheckerService.check(force: true)
 
-        assert_not result.update_available?
-        assert_equal "Could not list release tags (HTTP 403)", result.latest_message
+          assert_not result.update_available?, message
+          assert_nil result.latest_version, message
+          assert_equal message, result.latest_message
+        end
       end
     end
   end
@@ -349,13 +384,17 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
 
   def stub_server_tags(*tags)
     refs = tags.map { |tag| { "ref" => "refs/tags/#{tag}", "object" => { "type" => "commit", "sha" => "0" * 40 } } }
-    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/git/matching-refs/tags/v20")
+    stub_request(:get, "#{GITHUB_REPO_API}/git/matching-refs/tags/v20")
       .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: refs.to_json)
   end
 
   def stub_release_by_tag(release)
-    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases/tags/#{release.fetch('tag_name')}")
-      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: release.to_json)
+    stub_release_lookup(release.fetch("tag_name"), status: 200, body: release)
+  end
+
+  def stub_release_lookup(tag, status:, body:)
+    stub_request(:get, "#{GITHUB_REPO_API}/releases/tags/#{tag}")
+      .to_return(status: status, headers: { "Content-Type" => "application/json" }, body: body.to_json)
   end
 
   def stub_github_release(version, name: nil, date: "2026-02-15T10:00:00Z", prerelease: false)

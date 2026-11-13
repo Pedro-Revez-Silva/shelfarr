@@ -27,6 +27,8 @@ module Admin
     def update_notice
       if @update_check.update_available?
         "Update available: #{@update_check.latest_version}"
+      elsif @update_check.latest_version.blank?
+        "Couldn't check for updates: #{@update_check.latest_message}"
       else
         "You're running the latest version (#{@update_check.current_version})"
       end

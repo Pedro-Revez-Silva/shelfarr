@@ -105,4 +105,18 @@ class Admin::DashboardControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to root_path
   end
+
+  test "checking for updates says when the check could not finish" do
+    failed = UpdateCheckerService::Result.new(update_available: false, current_version: "2026.11.01.1-beta",
+      latest_version: nil, latest_message: "Could not list release tags (HTTP 403)", latest_date: nil, release_url: nil)
+    current = UpdateCheckerService::Result.new(update_available: false, current_version: "2026.11.12.1-beta",
+      latest_version: "2026.11.12.1-beta", latest_message: "v2026.11.12.1-beta", latest_date: nil, release_url: nil)
+
+    UpdateCheckerService.stub(:check, failed) { post admin_check_updates_url }
+    assert_redirected_to admin_root_path
+    assert_equal "Couldn't check for updates: Could not list release tags (HTTP 403)", flash[:notice]
+
+    UpdateCheckerService.stub(:check, current) { post admin_check_updates_url }
+    assert_equal "You're running the latest version (2026.11.12.1-beta)", flash[:notice]
+  end
 end
