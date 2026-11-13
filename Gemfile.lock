@@ -160,7 +160,7 @@ GEM
       activesupport (>= 6.1)
     hashdiff (1.2.1)
     hashery (2.1.2)
-    hashie (5.1.0)
+    hashie (6.0.0)
       logger
     i18n (1.14.8)
       concurrent-ruby (~> 1.0)
@@ -268,11 +268,11 @@ GEM
     oj (3.17.3)
       bigdecimal (>= 3.0)
       ostruct (>= 0.2)
-    omniauth (2.1.4)
-      hashie (>= 3.4.6)
+    omniauth (2.2.0)
+      hashie (>= 3.5.2)
       logger
-      rack (>= 2.2.3)
-      rack-protection
+      rack (>= 2.2.8)
+      rack-protection (>= 2.2.0)
     omniauth-rails_csrf_protection (2.0.1)
       actionpack (>= 4.2)
       omniauth (~> 2.0)
