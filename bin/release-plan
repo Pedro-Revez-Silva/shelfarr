@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/shelfarr/release_plan"
+
+begin
+  plan = Shelfarr::ReleasePlan.new(root: File.expand_path("..", __dir__), today: Time.now.utc.to_date)
+  result = plan.call
+  warn "No changes since #{result.previous_tag}; skipping release." unless result.should_release
+  print result.to_github_output
+rescue Shelfarr::ReleaseChannel::Invalid, Shelfarr::ReleasePlan::GitFailed => error
+  warn "::error::#{error.message}"
+  exit 1
+end

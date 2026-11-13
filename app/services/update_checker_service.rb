@@ -11,6 +11,7 @@ class UpdateCheckerService
 
   CACHE_KEY = "shelfarr:update_check"
   CACHE_TTL = 1.hour
+  RELEASE_LIST_SIZE = 30
 
   class << self
     def check(force: false)
@@ -37,7 +38,11 @@ class UpdateCheckerService
 
     def cache_key_for(version)
       suffix = version.presence || "unknown"
-      "#{CACHE_KEY}:#{suffix}"
+      "#{CACHE_KEY}:#{release_channel.name}:#{suffix}"
+    end
+
+    def release_channel
+      Shelfarr::ReleaseChannel.current
     end
 
     def perform_check
@@ -47,7 +52,7 @@ class UpdateCheckerService
       repo = github_repo
       return no_update_result(current, "GitHub repo not configured") if repo.blank?
 
-      latest = fetch_latest_release(repo)
+      latest = release_channel.beta? ? fetch_newest_published_release(repo) : fetch_latest_release(repo)
       return no_update_result(current, "No releases found") unless latest
 
       update = newer_version?(current, latest[:version])
@@ -93,12 +98,30 @@ class UpdateCheckerService
       return nil unless response.status == 200
 
       data = response.body
-      tag = data["tag_name"]
-      version = tag&.delete_prefix("v")
+      return nil if data["prerelease"] || Shelfarr::ReleaseChannel.beta_version?(release_version(data))
 
+      release_details(data)
+    end
+
+    def fetch_newest_published_release(repo)
+      response = connection.get("/repos/#{repo}/releases", per_page: RELEASE_LIST_SIZE)
+      return nil unless response.status == 200 && response.body.is_a?(Array)
+
+      candidates = response.body.select do |data|
+        data.is_a?(Hash) && !data["draft"] && Shelfarr::ReleaseChannel.published_version?(release_version(data))
+      end
+      newest = candidates.max_by { |data| Gem::Version.new(release_version(data)) }
+      newest && release_details(newest)
+    end
+
+    def release_version(data)
+      data["tag_name"].to_s.delete_prefix("v")
+    end
+
+    def release_details(data)
       {
-        version: version,
-        message: data["name"] || tag,
+        version: release_version(data),
+        message: data["name"] || data["tag_name"],
         date: parse_date(data["published_at"]),
         url: data["html_url"]
       }

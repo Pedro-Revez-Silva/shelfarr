@@ -114,7 +114,7 @@ Visit `http://localhost:5056` — the first user to register becomes admin.
 | `TZ` | `UTC` | IANA time zone used for displayed timestamps (e.g., `America/New_York`) |
 | `RAILS_MASTER_KEY` | Auto-generated | Encryption key for secrets. Auto-generated on first run if not set. `RAILS_MASTER_KEY_FILE` reads it from a file; see [Docker secrets](#docker-secrets) |
 | `RAILS_RELATIVE_URL_ROOT` | `/` | Base path for running behind a reverse proxy at a sub-path (e.g., `/shelfarr`) |
-| `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`) |
+| `SHELFARR_VERSION` | `latest` | Pin both Shelfarr images to one OCI image version, without a leading `v` (for a GitHub release shown as `vYYYY.MM.DD.N`, use `YYYY.MM.DD.N`). `latest` follows stable releases only; `beta` opts in to Shelfarr 1.0 Beta builds. Back up first and read [Releases and the beta channel](docs/releases.md) |
 | `LIBATION_BOOKS_PATH` | Docker named volume | Optional host path for retained Audible backup copies; useful for large libraries |
 
 Audible Backup additionally requires the audiobook output filesystem to support advisory locks, hard links within that same mount, and Unix mode changes. Keep Shelfarr's `.shelfarr-staging` directory on the audiobook output filesystem and run the documented preflight before connecting Audible. mergerfs/libfuse mounts with a `umask=` mode override need a compatible underlying bind or a coordinated mount correction; do not bypass the check. See the [Audible Backup storage requirements and filesystem preflight](docs/audible-backup.md#preflight-the-audiobook-filesystem).

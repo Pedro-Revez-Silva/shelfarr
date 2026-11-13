@@ -4,6 +4,8 @@ require "test_helper"
 
 class UpdateCheckerServiceTest < ActiveSupport::TestCase
   setup do
+    @original_channel = Shelfarr::ReleaseChannel.current
+    use_channel("stable")
     @original_repo = SettingsService.get(:github_repo)
     SettingsService.set(:github_repo, "Pedro-Revez-Silva/shelfarr")
     UpdateCheckerService.clear_cache
@@ -14,6 +16,57 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
     SettingsService.set(:github_repo, @original_repo || "Pedro-Revez-Silva/shelfarr")
     UpdateCheckerService.clear_cache
     UpdateCheckerService.instance_variable_set(:@connection, nil)
+    Shelfarr::ReleaseChannel.instance_variable_set(:@current, @original_channel)
+  end
+
+  test "a stable server is never offered a beta prerelease" do
+    VCR.turned_off do
+      stub_github_release("2026.11.16.1-beta", prerelease: true)
+
+      UpdateCheckerService.stub(:current_version, "2026.11.09.1") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert_not result.update_available?
+        assert_nil result.latest_version
+        assert_equal "No releases found", result.latest_message
+      end
+    end
+  end
+
+  test "a beta server is offered the newest beta or stable build and nothing else" do
+    use_channel("beta")
+    VCR.turned_off do
+      stub_github_releases(
+        release("2026.11.30.1-beta", draft: true),
+        { "tag_name" => "android-release-v2026.12.1.1", "name" => "Android", "prerelease" => false },
+        release("2026.11.16.1-beta", prerelease: true),
+        release("2026.11.23.1"),
+        release("2026.11.09.1")
+      )
+
+      UpdateCheckerService.stub(:current_version, "2026.11.16.1-beta") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert result.update_available?
+        assert_equal "2026.11.23.1", result.latest_version
+        assert_equal "https://github.com/Pedro-Revez-Silva/shelfarr/releases/tag/v2026.11.23.1", result.release_url
+      end
+    end
+  end
+
+  test "a beta server already on the newest build has no update" do
+    use_channel("beta")
+    VCR.turned_off do
+      stub_github_releases(release("2026.11.16.2-beta", prerelease: true), release("2026.11.16.1-beta", prerelease: true),
+        release("2026.11.09.1"))
+
+      UpdateCheckerService.stub(:current_version, "2026.11.16.2-beta") do
+        result = UpdateCheckerService.check(force: true)
+
+        assert_not result.update_available?
+        assert_equal "2026.11.16.2-beta", result.latest_version
+      end
+    end
   end
 
   test "detects update when latest version is newer" do
@@ -242,7 +295,27 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
 
   private
 
-  def stub_github_release(version, name: nil, date: "2026-02-15T10:00:00Z")
+  def use_channel(name)
+    Shelfarr::ReleaseChannel.instance_variable_set(:@current, Shelfarr::ReleaseChannel.new(name: name, series: "1.0"))
+  end
+
+  def release(version, prerelease: false, draft: false)
+    {
+      "tag_name" => "v#{version}",
+      "name" => "v#{version}",
+      "draft" => draft,
+      "prerelease" => prerelease,
+      "published_at" => "2026-11-16T10:00:00Z",
+      "html_url" => "https://github.com/Pedro-Revez-Silva/shelfarr/releases/tag/v#{version}"
+    }
+  end
+
+  def stub_github_releases(*releases)
+    stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases?per_page=30")
+      .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: releases.to_json)
+  end
+
+  def stub_github_release(version, name: nil, date: "2026-02-15T10:00:00Z", prerelease: false)
     stub_request(:get, "https://api.github.com/repos/Pedro-Revez-Silva/shelfarr/releases/latest")
       .to_return(
         status: 200,
@@ -250,6 +323,7 @@ class UpdateCheckerServiceTest < ActiveSupport::TestCase
         body: {
           "tag_name" => "v#{version}",
           "name" => name || "v#{version}",
+          "prerelease" => prerelease,
           "published_at" => date,
           "html_url" => "https://github.com/Pedro-Revez-Silva/shelfarr/releases/tag/v#{version}"
         }.to_json
