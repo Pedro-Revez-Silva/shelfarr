@@ -394,4 +394,216 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert result.block?
     assert_equal book, result.existing_book
   end
+
+  test "does not hard-block a shared surname when given names are missing or incompatible" do
+    surname_only = Book.create!(
+      title: "Selected Poems",
+      author: "Browning",
+      book_type: :ebook,
+      hardcover_id: "hc-browning-surname",
+      file_path: "/ebooks/browning-selected.epub"
+    )
+    initials = Book.create!(
+      title: "Selected Poems",
+      author: "E. B. Browning",
+      book_type: :ebook,
+      hardcover_id: "hc-eb-browning",
+      file_path: "/ebooks/eb-browning-selected.epub"
+    )
+    Book.create!(
+      title: "Dog Day Afternoon",
+      author: "Al Pacino",
+      book_type: :ebook,
+      hardcover_id: "hc-al-pacino",
+      file_path: "/ebooks/dog-day.epub"
+    )
+
+    robert = DuplicateDetectionService.check(
+      work_id: "google_books:gb-robert-browning",
+      book_type: "ebook",
+      title: "Selected Poems",
+      author: "Robert Browning"
+    )
+    surname = DuplicateDetectionService.check(
+      work_id: "google_books:gb-browning-only",
+      book_type: "ebook",
+      title: "Selected Poems",
+      author: "Browning"
+    )
+    same_initials = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_EB_BROWNING_W",
+      book_type: "ebook",
+      title: "Selected Poems",
+      author: "E.B. Browning"
+    )
+    expanded = DuplicateDetectionService.check(
+      work_id: "google_books:gb-elizabeth-barrett",
+      book_type: "ebook",
+      title: "Selected Poems",
+      author: "Elizabeth Barrett Browning"
+    )
+    other_pacino = DuplicateDetectionService.check(
+      work_id: "google_books:gb-robert-pacino",
+      book_type: "ebook",
+      title: "Dog Day Afternoon",
+      author: "Robert Pacino"
+    )
+    same_pacino = DuplicateDetectionService.check(
+      work_id: "google_books:gb-al-pacino",
+      book_type: "ebook",
+      title: "Dog Day Afternoon",
+      author: "Pacino, Al"
+    )
+
+    assert robert.allow?
+    assert surname.allow?
+    assert_equal initials, same_initials.existing_book
+    assert_equal initials, expanded.existing_book
+    assert other_pacino.allow?
+    assert same_pacino.block?
+    assert_not_equal surname_only, same_initials.existing_book
+  end
+
+  test "blocks an acquired copy whose title and author are not Latin script" do
+    three_body = Book.create!(
+      title: "三体",
+      author: "刘慈欣",
+      book_type: :ebook,
+      hardcover_id: "hc-three-body",
+      file_path: "/ebooks/three-body.epub"
+    )
+    crime = Book.create!(
+      title: "Преступление и наказание",
+      author: "Фёдор Достоевский",
+      book_type: :ebook,
+      hardcover_id: "hc-crime-punishment",
+      file_path: "/ebooks/crime-and-punishment.epub"
+    )
+    onegin = Book.create!(
+      title: "Евгений Онегин",
+      author: "Александр Сергеевич Пушкин",
+      book_type: :ebook,
+      hardcover_id: "hc-onegin",
+      file_path: "/ebooks/onegin.epub"
+    )
+    miserables = Book.create!(
+      title: "Les Misérables",
+      author: "Victor Hugo",
+      book_type: :ebook,
+      hardcover_id: "hc-miserables",
+      file_path: "/ebooks/les-miserables.epub"
+    )
+
+    chinese = DuplicateDetectionService.check(
+      work_id: "google_books:gb-three-body",
+      book_type: "ebook",
+      title: "三体",
+      author: "刘慈欣"
+    )
+    other_chinese = DuplicateDetectionService.check(
+      work_id: "google_books:gb-three-body-other",
+      book_type: "ebook",
+      title: "三体",
+      author: "叶文洁"
+    )
+    russian = DuplicateDetectionService.check(
+      work_id: "google_books:gb-crime-punishment",
+      book_type: "ebook",
+      title: "Преступление и наказание",
+      author: "Федор Достоевский"
+    )
+    other_russian = DuplicateDetectionService.check(
+      work_id: "google_books:gb-crime-other",
+      book_type: "ebook",
+      title: "Преступление и наказание",
+      author: "Лев Толстой"
+    )
+    pushkin = DuplicateDetectionService.check(
+      work_id: "google_books:gb-onegin",
+      book_type: "ebook",
+      title: "Евгений Онегин",
+      author: "А. С. Пушкин"
+    )
+    accent = DuplicateDetectionService.check(
+      work_id: "google_books:gb-miserables",
+      book_type: "ebook",
+      title: "Les Miserables",
+      author: "Victor Hugo"
+    )
+
+    assert chinese.block?
+    assert_equal three_body, chinese.existing_book
+    assert other_chinese.allow?
+    assert russian.block?
+    assert_equal crime, russian.existing_book
+    assert other_russian.allow?
+    assert pushkin.block?
+    assert_equal onegin, pushkin.existing_book
+    assert accent.block?
+    assert_equal miserables, accent.existing_book
+  end
+
+  test "normalizes acquired titles once per lookup and compares sequence markers only for that title" do
+    Book.create!(
+      title: "The Selected Poems",
+      author: "Elizabeth Barrett Browning",
+      book_type: :ebook,
+      hardcover_id: "hc-selected-poems-index",
+      file_path: "/ebooks/the-selected-poems.epub"
+    )
+    Book.create!(
+      title: "Unrelated Atlas",
+      author: "Ada Atlas",
+      book_type: :ebook,
+      hardcover_id: "hc-unrelated-atlas",
+      file_path: "/ebooks/unrelated-atlas.epub"
+    )
+    lookup = {}
+    title_calls = Hash.new(0)
+    number_calls = Hash.new(0)
+
+    count_calls(DuplicateDetectionService, :title_forms, title_calls) do
+      count_calls(SequenceMarker, :numbers, number_calls) do
+        2.times do |index|
+          result = DuplicateDetectionService.check(
+            work_id: "google_books:gb-selected-#{index}",
+            book_type: "ebook",
+            title: "Selected Poems",
+            author: "Elizabeth Barrett Browning",
+            existing_books_lookup: lookup
+          )
+
+          assert result.block?
+        end
+      end
+    end
+
+    assert_equal 1, title_calls["The Selected Poems"]
+    assert_equal 1, title_calls["Unrelated Atlas"]
+    assert_equal 2, title_calls["Selected Poems"]
+    assert_equal 0, number_calls["Unrelated Atlas"]
+    assert_equal 2, number_calls["The Selected Poems"]
+    assert_equal 2, number_calls["Selected Poems"]
+  end
+
+  private
+
+  def count_calls(object, method_name, calls)
+    singleton = object.singleton_class
+    original = singleton.instance_method(method_name)
+    private_method = singleton.private_method_defined?(method_name)
+    singleton.define_method(method_name) do |*args, **kwargs, &block|
+      calls[args.first] += 1
+      if kwargs.empty?
+        original.bind_call(self, *args, &block)
+      else
+        original.bind_call(self, *args, **kwargs, &block)
+      end
+    end
+
+    yield
+  ensure
+    singleton&.define_method(method_name, original) if original
+    singleton&.send(:private, method_name) if private_method
+  end
 end

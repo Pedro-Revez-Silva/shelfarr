@@ -18,8 +18,12 @@ class DuplicateDetectionService
   AUTHOR_SEPARATOR = /\s*(?:&|\/)\s*|\s*;\s*|\s+\b(?:and|with)\b\s+/i
   NAME_SUFFIX = /\b(?:jr|sr|ii|iii|iv|ph\.?d|m\.?d)\b\.?/i
   AuthorName = Data.define(:surname, :given_names)
+  AcquiredCopy = Data.define(:book, :names, :ordinal)
+  UNSEPARATED_NAME = /\A[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]+\z/
+  INITIAL_LETTER = /\A[\p{Latin}\p{Cyrillic}\p{Greek}]\z/
   private_constant :EDITION_WORDS, :PARTICLES, :APOSTROPHE, :PARENTHETICAL,
-    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :AuthorName
+    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :AuthorName,
+    :AcquiredCopy, :UNSEPARATED_NAME, :INITIAL_LETTER
 
   Result = Data.define(:status, :message, :existing_book, :existing_request) do
     def allow?
@@ -157,23 +161,49 @@ class DuplicateDetectionService
     def find_acquired_by_identity(title:, author:, book_type:, existing_books_lookup:)
       return if title.blank? || author.blank?
 
-      candidate_forms = title_forms(title)
-      candidate_names = author_names(author)
-      return if candidate_forms.empty? || candidate_names.empty?
+      forms = title_forms(title)
+      names = author_names(author)
+      return if forms.empty? || names.empty?
 
-      acquired_books(book_type, existing_books_lookup).find do |book|
-        same_work_title?(title, book.title, candidate_forms) &&
-          same_author?(candidate_names, author_names(book.author))
+      acquired_copies(book_type, existing_books_lookup, forms).each do |copy|
+        next if SequenceMarker.conflict?(title, copy.book.title)
+
+        return copy.book if same_author?(names, copy.names)
       end
+
+      nil
     end
 
-    # One library scan is reused by every search card that shares a lookup.
-    def acquired_books(book_type, lookup)
+    # Search cards share a lookup. Index each acquired title once, then compare
+    # authors and sequence markers only inside that normalized-title bucket.
+    def acquired_copies(book_type, lookup, forms)
+      index = acquired_title_index(book_type, lookup)
+      seen = {}
+      matches = []
+      forms.each do |form|
+        index[form]&.each do |copy|
+          next if seen[copy.ordinal]
+
+          seen[copy.ordinal] = true
+          matches << copy
+        end
+      end
+      matches.sort_by!(&:ordinal)
+    end
+
+    def acquired_title_index(book_type, lookup)
       key = book_type.to_s
       cache = acquired_book_cache(lookup)
       return cache[key] if cache.key?(key)
 
-      cache[key] = Book.acquired.where(book_type: key).to_a
+      index = {}
+      Book.acquired.where(book_type: key).order(:id).each_with_index do |book, ordinal|
+        copy = AcquiredCopy.new(book: book, names: author_names(book.author), ordinal: ordinal)
+        title_forms(book.title).each do |form|
+          (index[form] ||= []) << copy
+        end
+      end
+      cache[key] = index
     end
 
     def acquired_book_cache(lookup)
@@ -181,12 +211,6 @@ class DuplicateDetectionService
 
       lookup.instance_variable_get(:@acquired_title_cache) ||
         lookup.instance_variable_set(:@acquired_title_cache, {})
-    end
-
-    def same_work_title?(candidate_title, book_title, candidate_forms)
-      return false if SequenceMarker.conflict?(candidate_title, book_title)
-
-      candidate_forms.intersect?(title_forms(book_title))
     end
 
     def title_forms(title)
@@ -218,13 +242,26 @@ class DuplicateDetectionService
       end
     end
 
-    # A shared surname still leaves "Frank Herbert" and "Brian Herbert" apart
-    # when both sides include a given name.
+    # A shared surname is not a person. Missing given names must not block, and
+    # "E. B." is not "Robert" even when both names end in Browning.
     def same_person?(left, right)
       return false unless left.surname == right.surname
-      return true if left.given_names.empty? || right.given_names.empty?
+      return false if left.given_names.empty? || right.given_names.empty?
 
-      left.given_names.intersect?(right.given_names)
+      given_names_compatible?(left.given_names, right.given_names)
+    end
+
+    def given_names_compatible?(left, right)
+      return false unless left.size == right.size
+
+      left.zip(right).all? { |left_token, right_token| given_token_compatible?(left_token, right_token) }
+    end
+
+    def given_token_compatible?(left, right)
+      return true if left == right
+
+      short, long = left.length < right.length ? [ left, right ] : [ right, left ]
+      short.length == 1 && long.length > 1 && short.match?(INITIAL_LETTER) && long.start_with?(short)
     end
 
     def author_names(author)
@@ -270,36 +307,67 @@ class DuplicateDetectionService
 
     def author_name_for(person)
       if person[:natural]
-        tokens = significant_tokens(person[:name])
+        tokens = indexed_name_tokens(person[:name])
         return if tokens.empty?
 
         AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
       else
-        surname = significant_tokens(person[:surname]).last
+        surname = surname_token(name_tokens(person[:surname]))
         return if surname.blank?
 
-        AuthorName.new(surname: surname, given_names: significant_tokens(person[:given]))
+        AuthorName.new(surname: surname, given_names: given_name_tokens(name_tokens(person[:given])))
       end
     end
 
+    def indexed_name_tokens(value)
+      tokens = family_name_last(name_tokens(value))
+      return tokens if tokens.empty?
+
+      surname_index = tokens.rindex { |token| !PARTICLES.include?(token) } || (tokens.length - 1)
+      [ *given_name_tokens(tokens[0...surname_index]), tokens[surname_index] ]
+    end
+
+    # "刘慈欣" has no space, and the family name is the first character.
+    def family_name_last(tokens)
+      return tokens unless tokens.one?
+
+      token = tokens.first
+      return tokens unless token.length >= 2 && token.match?(UNSEPARATED_NAME)
+
+      [ token[1..], token[0] ]
+    end
+
+    def surname_token(tokens)
+      tokens.reject { |token| PARTICLES.include?(token) }.last || tokens.last
+    end
+
+    def given_name_tokens(tokens)
+      tokens.reject { |token| PARTICLES.include?(token) }.presence || tokens
+    end
+
     def significant_tokens(value)
-      tokens = normalized_text(value).split.reject { |token| token.length < 2 }
-      without_particles = tokens.reject { |token| PARTICLES.include?(token) }
-      without_particles.presence || tokens
+      tokens = name_tokens(value)
+      tokens.reject { |token| PARTICLES.include?(token) }.presence || tokens
+    end
+
+    def name_tokens(value)
+      normalized_text(value).split.reject { |token| token.length < 2 && !token.match?(/\A\p{L}\z/) }
     end
 
     def normalized_title(value)
       normalized_text(value).sub(/\A(?:the|a|an)\s+/, "")
     end
 
+    # Keep every script's letters and digits. ASCII folding deletes CJK and
+    # Cyrillic, so the same Hardcover and Google Books work never meets.
     def normalized_text(value)
       value.to_s
         .unicode_normalize(:nfkd)
         .gsub(APOSTROPHE, "")
-        .encode("ASCII", invalid: :replace, undef: :replace, replace: "")
+        .gsub(/\p{M}/, "")
         .downcase
         .gsub("&", " and ")
-        .gsub(/[^a-z0-9\s]/, " ")
+        .gsub(/[^\p{L}\p{Nd}\s]/, " ")
         .squish
     end
   end
