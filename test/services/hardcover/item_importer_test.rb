@@ -32,6 +32,26 @@ class Hardcover::ItemImporterTest < ActiveSupport::TestCase
     assert_not_requested :post, HardcoverClient::BASE_URL
   end
 
+  test "an acquired copy identified by another provider counts as already in the library" do
+    Book.create!(
+      title: "Queued 9010",
+      author: "Ada Writer",
+      book_type: :ebook,
+      open_library_work_id: "OL_QUEUED_9010",
+      file_path: "/ebooks/queued-9010.epub"
+    )
+    item = queued_item(9_010, book_types: [ "ebook" ])
+
+    assert_no_difference -> { Request.count } do
+      Hardcover::ItemImporter.call
+    end
+
+    item.reload
+    assert_equal "requested", item.state
+    assert_includes item.resolution, "ebook already in Shelfarr"
+    assert_empty item.request_ids
+  end
+
   test "formats already in the library or already requested count as done" do
     owned = Book.create!(title: "Owned", hardcover_id: "9002", book_type: :ebook, file_path: "/ebooks/owned.epub")
     item = queued_item(9_002)

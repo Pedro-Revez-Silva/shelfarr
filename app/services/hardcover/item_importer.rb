@@ -218,7 +218,12 @@ module Hardcover
       covered = []
       request_ids = []
       book_types.each do |book_type|
-        check = DuplicateDetectionService.check(work_id: item.work_id, book_type: book_type)
+        check = DuplicateDetectionService.check(
+          work_id: item.work_id,
+          book_type: book_type,
+          title: item.title,
+          author: item.author
+        )
         next unless check.block?
 
         covered << book_type

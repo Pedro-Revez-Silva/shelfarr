@@ -255,4 +255,143 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
       book_type: "ebook"
     )
   end
+
+  test "blocks an acquired book when the candidate comes from another metadata provider" do
+    book = Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-hail-mary",
+      file_path: "/ebooks/project-hail-mary.epub"
+    )
+
+    open_library = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL999001W",
+      book_type: "ebook",
+      title: "Project Hail Mary",
+      author: "Weir, Andy"
+    )
+    google_books_editions = %w[gb-hail-mary-1 gb-hail-mary-2].map do |edition_id|
+      DuplicateDetectionService.check(
+        work_id: "google_books:#{edition_id}",
+        book_type: "ebook",
+        title: "Project Hail Mary: A Novel",
+        author: "Andy Weir"
+      )
+    end
+
+    assert open_library.block?, open_library.status.to_s
+    assert_includes open_library.message, "already in your library"
+    assert_equal book, open_library.existing_book
+    google_books_editions.each do |result|
+      assert result.block?, result.status.to_s
+      assert_equal book, result.existing_book
+    end
+    refute DuplicateDetectionService.can_request?(
+      work_id: "google_books:gb-hail-mary-3",
+      book_type: "ebook",
+      title: "Project Hail Mary",
+      author: "Andy Weir"
+    )
+  end
+
+  test "does not treat another format or a different work as the acquired copy" do
+    Book.create!(
+      title: "Dune",
+      author: "Frank Herbert",
+      book_type: :ebook,
+      hardcover_id: "hc-dune",
+      file_path: "/ebooks/dune.epub"
+    )
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :audiobook,
+      hardcover_id: "hc-hail-mary-audio",
+      file_path: "/audiobooks/project-hail-mary"
+    )
+    Book.create!(
+      title: "Saga - #1",
+      author: "Brian K. Vaughan",
+      book_type: :comicbook,
+      content_kind: :graphic,
+      hardcover_id: "hc-saga-1",
+      file_path: "/comics/saga-1.cbz"
+    )
+
+    different_format = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_HAIL_MARY_AUDIO_W",
+      book_type: "ebook",
+      title: "Project Hail Mary",
+      author: "Andy Weir"
+    )
+    different_author = DuplicateDetectionService.check(
+      work_id: "google_books:gb-dune-brian",
+      book_type: "ebook",
+      title: "Dune",
+      author: "Brian Herbert"
+    )
+    sequel = DuplicateDetectionService.check(
+      work_id: "google_books:gb-dune-messiah",
+      book_type: "ebook",
+      title: "Dune Messiah",
+      author: "Frank Herbert"
+    )
+    other_subtitle = DuplicateDetectionService.check(
+      work_id: "google_books:gb-dune-caladan",
+      book_type: "ebook",
+      title: "Dune: The Duke of Caladan",
+      author: "Frank Herbert"
+    )
+    next_issue = DuplicateDetectionService.check(
+      work_id: "comic_vine:4000-saga-2",
+      book_type: "comicbook",
+      title: "Saga - #2",
+      author: "Brian K. Vaughan"
+    )
+
+    assert different_format.allow?
+    assert different_author.allow?
+    assert sequel.allow?
+    assert other_subtitle.allow?
+    assert next_issue.allow?
+  end
+
+  test "does not match an unacquired book by title and author" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-hail-mary-pending"
+    )
+
+    result = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_HAIL_MARY_PENDING_W",
+      book_type: "ebook",
+      title: "Project Hail Mary",
+      author: "Andy Weir"
+    )
+
+    assert result.allow?
+  end
+
+  test "matches an illustrated edition and an inverted author name" do
+    book = Book.create!(
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien",
+      book_type: :ebook,
+      hardcover_id: "hc-hobbit",
+      file_path: "/ebooks/the-hobbit.epub"
+    )
+
+    result = DuplicateDetectionService.check(
+      work_id: "google_books:gb-hobbit-illustrated",
+      book_type: "ebook",
+      title: "The Hobbit (Illustrated Edition)",
+      author: "Tolkien, J.R.R."
+    )
+
+    assert result.block?
+    assert_equal book, result.existing_book
+  end
 end

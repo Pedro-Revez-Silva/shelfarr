@@ -119,6 +119,55 @@ class SearchControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "results hide a request when every format is already acquired under another provider" do
+    %i[ebook audiobook].each do |book_type|
+      Book.create!(
+        title: "Project Hail Mary",
+        author: "Andy Weir",
+        book_type: book_type,
+        hardcover_id: "hc-search-hail-mary",
+        file_path: "/library/#{book_type}/project-hail-mary"
+      )
+    end
+    result = metadata_result(
+      source_id: "OL_SEARCH_HAIL_MARY",
+      title: "Project Hail Mary: A Novel",
+      author: "Weir, Andy",
+      year: 2021
+    )
+
+    MetadataService.stub(:search, [ result ]) do
+      get search_results_path, params: { q: "Project Hail Mary" }
+    end
+
+    assert_response :success
+    assert_select "span", text: "In library"
+    assert_select "a", text: "Request", count: 0
+  end
+
+  test "results still offer a request when only another format is already acquired" do
+    Book.create!(
+      title: "Cross Provider Ebook",
+      author: "Ada Writer",
+      book_type: :ebook,
+      hardcover_id: "hc-cross-ebook",
+      file_path: "/ebooks/cross-provider.epub"
+    )
+    result = metadata_result(
+      source_id: "OL_CROSS_EBOOK",
+      title: "Cross Provider Ebook",
+      author: "Ada Writer",
+      year: 2021
+    )
+
+    MetadataService.stub(:search, [ result ]) do
+      get search_results_path, params: { q: "Cross Provider Ebook" }
+    end
+
+    assert_response :success
+    assert_select "a", text: "Request"
+  end
+
   test "results keep an awaiting purchase work marked as requested" do
     source_id = "OL_SEARCH_AWAITING_PURCHASE"
     ebook = Book.create!(

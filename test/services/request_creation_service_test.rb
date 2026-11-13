@@ -121,6 +121,58 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal [ "Comics & Manga cannot be requested for book content" ], result.errors
   end
 
+  test "blocks a request for an acquired book known only by another provider" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-request-hail-mary",
+      file_path: "/ebooks/project-hail-mary.epub"
+    )
+
+    assert_no_difference [ "Book.count", "Request.count" ] do
+      result = RequestCreationService.call(
+        user: @user,
+        work_id: "openlibrary:OL_HAIL_MARY_W",
+        book_types: [ "ebook" ],
+        metadata_attrs: {
+          title: "Project Hail Mary",
+          author: "Weir, Andy"
+        },
+        lookup_metadata: false
+      )
+
+      assert_not result.success?
+      assert_includes result.errors.join, "already in your library"
+      assert_empty result.created_requests
+    end
+  end
+
+  test "still requests another format when only one format is already acquired" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-hail-mary-ebook-only",
+      file_path: "/ebooks/project-hail-mary.epub"
+    )
+
+    result = RequestCreationService.call(
+      user: @user,
+      work_id: "google_books:gb-hail-mary-audio",
+      book_types: [ "audiobook" ],
+      metadata_attrs: {
+        title: "Project Hail Mary",
+        author: "Andy Weir"
+      },
+      lookup_metadata: false
+    )
+
+    assert result.success?
+    assert_empty result.errors
+    assert_equal [ "audiobook" ], result.created_requests.map { |request| request.book.book_type }
+  end
+
   test "blocks duplicate active requests" do
     result = RequestCreationService.call(
       user: @user,
