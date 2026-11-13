@@ -1,5 +1,14 @@
 require "application_system_test_case"
 
+Capybara.register_driver :navigation_without_javascript do |app|
+  options = Selenium::WebDriver::Chrome::Options.new
+  options.add_argument("--headless=new")
+  options.add_argument("--mute-audio")
+  options.add_argument("--no-sandbox") if Process.uid.zero?
+  options.add_preference("profile.managed_default_content_settings.javascript", 2)
+  Capybara::Selenium::Driver.new(app, browser: :chrome, options: options)
+end
+
 class NavigationTest < ApplicationSystemTestCase
   setup do
     clear_settings_env!
@@ -8,6 +17,55 @@ class NavigationTest < ApplicationSystemTestCase
 
   teardown do
     restore_settings_env!
+  end
+
+  test "Turbo navigation never displays the phone menu beside desktop navigation" do
+    sign_in_as(users(:two))
+    visit requests_path
+    assert_no_selector "#main-menu", visible: true
+    page.execute_script("window.navigationDocument = 'same-navigation-document'")
+
+    within("nav[aria-label='Main']") { click_link "Admin", exact: true }
+
+    assert_selector "h1", text: "Server overview"
+    assert_equal "same-navigation-document", page.evaluate_script("window.navigationDocument")
+    assert_no_selector "#main-menu", visible: true
+    assert_no_selector "button[aria-controls='main-menu']", visible: true
+
+    within("nav[aria-label='Main']") { click_link "Discover", exact: true }
+    assert_selector "h1", text: "Discover"
+    assert_no_selector "#main-menu", visible: true
+    page.go_back
+    assert_selector "h1", text: "Server overview"
+    assert_no_selector "#main-menu", visible: true
+
+    page.current_window.resize_to(390, 844)
+    menu = find("button[aria-controls='main-menu']")
+    assert_equal "false", menu["aria-expanded"]
+    assert_no_selector "#main-menu", visible: true
+    menu.click
+    within("#main-menu") { click_link "Requests", exact: true }
+    assert_selector "h1", text: "All Requests"
+    assert_no_selector "#main-menu", visible: true
+    assert_equal "false", find("button[aria-controls='main-menu']")["aria-expanded"]
+  end
+
+  test "without JavaScript phone navigation stays usable and desktop navigation is not duplicated" do
+    Capybara.using_driver(:navigation_without_javascript) do
+      page.current_window.resize_to(390, 844)
+      sign_in_as(users(:two))
+      visit requests_path
+      assert_nil page.evaluate_script("window.Turbo")
+      assert_selector "#main-menu", visible: true
+      assert_no_selector "button[aria-controls='main-menu']", visible: true
+
+      within("#main-menu") { click_link "Admin", exact: true }
+      assert_selector "h1", text: "Server overview"
+      page.current_window.resize_to(1400, 900)
+      assert_no_selector "#main-menu", visible: true
+      assert_no_selector "button[aria-controls='main-menu']", visible: true
+      within("nav[aria-label='Main']") { assert_link "Discover", visible: true }
+    end
   end
 
   test "a health problem opens the right settings tab and section, and Back returns to the overview" do
