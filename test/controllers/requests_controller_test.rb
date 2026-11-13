@@ -542,6 +542,27 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='book_types[]'][value='ebook'][checked]", count: 0
   end
 
+  test "new blocks an ebook the library already has under another provider" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-form-hail-mary",
+      file_path: "/ebooks/project-hail-mary.epub"
+    )
+
+    get new_request_path, params: {
+      work_id: "openlibrary:OL_FORM_HAIL_MARY_W",
+      title: "Project Hail Mary",
+      author: "Weir, Andy"
+    }
+
+    assert_response :success
+    assert_select "input[name='book_types[]'][value='ebook'][disabled]"
+    assert_select "span", text: "This ebook is already in your library."
+    assert_select "input[name='book_types[]'][value='audiobook']:not([disabled])"
+  end
+
   test "new does not preselect a default format the user already has" do
     Book.create!(
       title: "Already Owned",

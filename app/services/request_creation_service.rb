@@ -64,6 +64,8 @@ class RequestCreationService
           work_id: input.work_id,
           source_work_ids: input.source_work_ids,
           book_type: book_type,
+          title: input.metadata_attrs[:title],
+          author: input.metadata_attrs[:author],
           existing_books_lookup: existing_books_lookup
         )
 

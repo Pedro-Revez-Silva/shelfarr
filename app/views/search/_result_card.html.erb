@@ -39,11 +39,16 @@
   }.compact
   navigation_params = RequestMetadataHandoff.params_for(user: Current.user, metadata: metadata_params)
   format_statuses = available_book_types.to_h do |book_type|
-    existing_book = Book.find_in_lookup(existing_books_lookup, source_work_ids, book_type: book_type)
-    status = if existing_book&.acquired?
-      :acquired
-    elsif existing_book&.requests&.open&.any?
-      :requested
+    check = DuplicateDetectionService.check(
+      work_id: result.work_id,
+      source_work_ids: source_work_ids,
+      book_type: book_type,
+      title: result.title,
+      author: result.author,
+      existing_books_lookup: existing_books_lookup
+    )
+    status = if check.block?
+      check.existing_book&.acquired? ? :acquired : :requested
     else
       :available
     end

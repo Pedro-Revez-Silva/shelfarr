@@ -2,7 +2,13 @@
   <% content_kind = ContentKinds.normalize(@content_kind, default: "book") %>
   <% requestable_book_types = RequestOptionPolicy.book_types_for(content_kind) %>
   <% format_checks = requestable_book_types.index_with do |book_type| %>
-    <% DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @source_work_ids, book_type: book_type) %>
+    <% DuplicateDetectionService.check(
+         work_id: @work_id,
+         source_work_ids: @source_work_ids,
+         book_type: book_type,
+         title: @title,
+         author: @author
+       ) %>
   <% end %>
   <h1 class="font-bold text-4xl mb-8 text-white">Request</h1>
 
