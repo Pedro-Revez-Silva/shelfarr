@@ -38,6 +38,14 @@ jobs:
             ]);
             const maintainerAdoptedLabel = "maintainer-adopted";
 
+            function isApprovedBot(author) {
+              const login = (author?.login ?? "").toLowerCase();
+              if (approvedBots.has(login)) return true;
+
+              // GraphQL Bot.login omits the [bot] suffix that REST user.login includes.
+              return author?.__typename === "Bot" && approvedBots.has(`${login}[bot]`);
+            }
+
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const repositoryName = `${owner}/${repo}`.toLowerCase();
@@ -107,6 +115,7 @@ jobs:
                       number
                       state
                       author {
+                        __typename
                         login
                       }
                       labels(first: 100) {
@@ -179,10 +188,7 @@ jobs:
 
               const author = pull.author?.login ?? "";
               const normalizedAuthor = author.toLowerCase();
-              if (
-                normalizedAuthor === owner.toLowerCase() ||
-                approvedBots.has(normalizedAuthor)
-              ) {
+              if (normalizedAuthor === owner.toLowerCase() || isApprovedBot(pull.author)) {
                 core.info(`PR #${number}: @${author} is exempt from issue assignment.`);
                 return;
               }
