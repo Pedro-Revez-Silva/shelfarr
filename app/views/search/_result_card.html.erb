@@ -1,6 +1,5 @@
 <%
   audiobookshelf_matches ||= []
-  existing_books_lookup ||= {}
   show_format_statuses ||= false
   result_sources = result.respond_to?(:sources) ? Array(result.sources) : [ { source_name: result.source_name, source_url: result.source_url, work_id: result.work_id } ]
   source_work_ids = result_sources.filter_map { |source| source[:work_id] }

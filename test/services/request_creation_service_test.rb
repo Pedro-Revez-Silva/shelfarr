@@ -121,6 +121,54 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_equal [ "Comics & Manga cannot be requested for book content" ], result.errors
   end
 
+  test "blocks an omitted-metadata request after the provider resolves an acquired book" do
+    Book.create!(
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      book_type: :ebook,
+      hardcover_id: "hc-hail-mary-resolved",
+      file_path: "/ebooks/project-hail-mary-resolved.epub"
+    )
+    details = GoogleBooksClient::BookDetails.new(
+      id: "2jiGzgEACAAJ",
+      title: "Project Hail Mary",
+      author: "Andy Weir",
+      description: "A novel about a last-ditch space mission.",
+      published_date: "2021-05-04",
+      cover_url: nil,
+      has_ebook: true,
+      language: "en",
+      page_count: 476,
+      categories: []
+    )
+    calls = 0
+    lookup = lambda do |volume_id|
+      calls += 1
+      assert_equal "2jiGzgEACAAJ", volume_id
+      details
+    end
+
+    result = GoogleBooksClient.stub(:book, lookup) do
+      RequestCreationService.call(
+        user: @user,
+        work_id: "google_books:2jiGzgEACAAJ",
+        book_types: [ "both" ],
+        metadata_attrs: {}
+      )
+    end
+
+    assert_equal 1, calls
+    assert_equal [ "audiobook" ], result.created_requests.map { |request| request.book.book_type }
+    audiobook = result.created_requests.first.book
+    assert_equal "Project Hail Mary", audiobook.title
+    assert_equal "Andy Weir", audiobook.author
+    assert_equal "A novel about a last-ditch space mission.", audiobook.description
+    assert_includes result.errors.join, "Project Hail Mary"
+    assert_includes result.errors.join, "already in your library"
+    assert_not_includes result.errors.join, "Audiobook"
+    assert_nil Book.find_by(google_books_id: "2jiGzgEACAAJ", book_type: :ebook)
+  end
+
   test "blocks a request for an acquired book known only by another provider" do
     Book.create!(
       title: "Project Hail Mary",
@@ -185,6 +233,105 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
 
     assert_not result.success?
     assert_includes result.errors.join, "already has an active request"
+  end
+
+  test "rejects an acquired exact source id without a metadata lookup" do
+    Book.create!(
+      title: "Already Owned",
+      author: "Andy Weir",
+      book_type: :ebook,
+      google_books_id: "gb-exact-owned",
+      file_path: "/ebooks/already-owned.epub"
+    )
+    calls = 0
+    lookup = lambda do |_work_ids, **_kwargs|
+      calls += 1
+      {}
+    end
+
+    result = BookMetadataLookupService.stub(:call, lookup) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        RequestCreationService.call(
+          user: @user,
+          work_id: "google_books:gb-exact-owned",
+          book_types: [ "ebook" ],
+          metadata_attrs: { title: "Already Owned", author: "Andy Weir" }
+        )
+      end
+    end
+
+    assert_equal 0, calls
+    assert_not result.success?
+    assert_includes result.errors.join, "already in your library"
+  end
+
+  test "rejects an active exact source id request without a metadata lookup" do
+    book = Book.create!(
+      title: "Already Requested",
+      author: "Andy Weir",
+      book_type: :ebook,
+      google_books_id: "gb-exact-active"
+    )
+    Request.create!(book: book, user: @user, status: :pending)
+    calls = 0
+    lookup = lambda do |_work_ids, **_kwargs|
+      calls += 1
+      {}
+    end
+
+    result = BookMetadataLookupService.stub(:call, lookup) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        RequestCreationService.call(
+          user: @user,
+          work_id: "google_books:gb-exact-active",
+          book_types: [ "ebook" ],
+          metadata_attrs: { title: "Already Requested", author: "Andy Weir" }
+        )
+      end
+    end
+
+    assert_equal 0, calls
+    assert_not result.success?
+    assert_includes result.errors.join, "already has an active request"
+  end
+
+  test "looks up metadata once for formats that are not exact source id duplicates" do
+    Book.create!(
+      title: "Exact Ebook",
+      author: "Andy Weir",
+      book_type: :ebook,
+      google_books_id: "gb-exact-mixed",
+      file_path: "/ebooks/exact-ebook.epub"
+    )
+    Book.create!(
+      title: "Cross Provider Novel",
+      author: "Andy Weir",
+      book_type: :audiobook,
+      hardcover_id: "hc-cross-provider-audio",
+      file_path: "/audiobooks/cross-provider-novel.m4b"
+    )
+    calls = 0
+    lookup = lambda do |_work_ids, **_kwargs|
+      calls += 1
+      { title: "Cross Provider Novel", author: "Andy Weir" }
+    end
+
+    result = BookMetadataLookupService.stub(:call, lookup) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        RequestCreationService.call(
+          user: @user,
+          work_id: "google_books:gb-exact-mixed",
+          book_types: [ "both" ],
+          metadata_attrs: {}
+        )
+      end
+    end
+
+    assert_equal 1, calls
+    assert_not result.success?
+    assert_empty result.created_requests
+    assert_equal 2, result.errors.size
+    assert result.errors.all? { |error| error.include?("already in your library") }
   end
 
   test "both creates the same ebook and audiobook requests as choosing each format" do

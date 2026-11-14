@@ -395,6 +395,117 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert_equal book, result.existing_book
   end
 
+  test "matches an inverted compound surname without dropping surname tokens" do
+    book = Book.create!(
+      title: "The Adventures of Sherlock Holmes",
+      author: "Conan Doyle, Arthur",
+      book_type: :ebook,
+      open_library_work_id: "OL_STORED_DOYLE",
+      file_path: "/ebooks/sherlock-holmes.epub"
+    )
+
+    natural = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL262421W",
+      book_type: "ebook",
+      title: "The Adventures of Sherlock Holmes",
+      author: "Arthur Conan Doyle"
+    )
+    initial = DuplicateDetectionService.check(
+      work_id: "google_books:gb-a-conan-doyle",
+      book_type: "ebook",
+      title: "The Adventures of Sherlock Holmes",
+      author: "A. Conan Doyle"
+    )
+    shortened = DuplicateDetectionService.check(
+      work_id: "google_books:gb-arthur-doyle",
+      book_type: "ebook",
+      title: "The Adventures of Sherlock Holmes",
+      author: "Arthur Doyle"
+    )
+
+    assert natural.block?
+    assert_equal book, natural.existing_book
+    assert initial.block?
+    assert_equal book, initial.existing_book
+    assert shortened.allow?
+  end
+
+  test "matches identical inverted authors whose surname is only a particle" do
+    book = Book.create!(
+      title: "The Boat",
+      author: "Le, Nam",
+      book_type: :ebook,
+      google_books_id: "gb-the-boat",
+      file_path: "/ebooks/the-boat.epub"
+    )
+
+    same = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_THE_BOAT_W",
+      book_type: "ebook",
+      title: "The Boat",
+      author: "Le, Nam"
+    )
+    other = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_THE_BOAT_OTHER_W",
+      book_type: "ebook",
+      title: "The Boat",
+      author: "Le, Kim"
+    )
+
+    assert same.block?
+    assert_equal book, same.existing_book
+    assert other.allow?
+  end
+
+  test "matches a numbered anniversary edition and keeps sequence numbers distinct" do
+    book = Book.create!(
+      title: "The Hobbit: 75th Anniversary Edition",
+      author: "J.R.R. Tolkien",
+      book_type: :ebook,
+      google_books_id: "zEK0ewyRMn4C",
+      file_path: "/ebooks/the-hobbit-75th.epub"
+    )
+
+    anniversary = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_HOBBIT_BASE_W",
+      book_type: "ebook",
+      title: "The Hobbit",
+      author: "J.R.R. Tolkien"
+    )
+    numbered = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_HOBBIT_BOOK_2_W",
+      book_type: "ebook",
+      title: "The Hobbit: Book 2",
+      author: "J.R.R. Tolkien"
+    )
+    second_edition = DuplicateDetectionService.check(
+      work_id: "google_books:gb-hobbit-2nd-edition",
+      book_type: "ebook",
+      title: "The Hobbit: 2nd Edition",
+      author: "J.R.R. Tolkien"
+    )
+
+    assert anniversary.block?
+    assert_equal book, anniversary.existing_book
+    assert numbered.allow?
+    assert second_edition.allow?
+  end
+
+  test "trusts a supplied empty lookup instead of querying per result" do
+    Book.stub(:preload_by_work_ids, ->(*) { raise "should not query again" }) do
+      result = DuplicateDetectionService.check(
+        work_id: "openlibrary:OL_EMPTY_LOOKUP_W",
+        book_type: "ebook",
+        title: "Unknown Work",
+        author: "Nobody In Particular",
+        existing_books_lookup: {}
+      )
+
+      assert result.allow?
+      assert_nil result.existing_book
+    end
+  end
+
   test "does not hard-block a shared surname when given names are missing or incompatible" do
     surname_only = Book.create!(
       title: "Selected Poems",

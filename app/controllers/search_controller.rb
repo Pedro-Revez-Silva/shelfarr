@@ -389,10 +389,8 @@ class SearchController < ApplicationController
   end
 
   def stream_enrichment_for(results, loading:)
-    return { audiobookshelf_matches: [], existing_books_lookup: {} } if loading
-
     {
-      audiobookshelf_matches: audiobookshelf_matches_for(results),
+      audiobookshelf_matches: loading ? [] : audiobookshelf_matches_for(results),
       existing_books_lookup: existing_books_lookup_for(results)
     }
   end
