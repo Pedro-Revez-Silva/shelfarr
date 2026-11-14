@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/safeopen"
 )
 
 type ctxReader struct {
@@ -26,7 +28,7 @@ func (r ctxReader) Read(buffer []byte) (int, error) {
 }
 
 func hashFile(ctx context.Context, path string, limit int64) (string, int64, error) {
-	file, err := os.Open(path)
+	file, err := safeopen.Regular(path)
 	if err != nil {
 		return "", 0, fail("unreadable", "")
 	}
@@ -80,20 +82,20 @@ func limitFor(b *Bundle, name string) int64 {
 func verifyFile(ctx context.Context, path, label string, entry FileEntry, limit int64) error {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return fail("missing", label)
+		return fail("missing", subject(label))
 	}
 	if !info.Mode().IsRegular() {
-		return fail("not-a-regular-file", label)
+		return fail("not-a-regular-file", subject(label))
 	}
 	if info.Size() != entry.Size {
-		return fail("size-mismatch", label)
+		return fail("size-mismatch", subject(label))
 	}
 	sum, _, err := hashFile(ctx, path, limit)
 	if err != nil {
-		return relabel(err, label)
+		return relabel(err, subject(label))
 	}
 	if sum != entry.SHA256 {
-		return fail("hash-mismatch", label)
+		return fail("hash-mismatch", subject(label))
 	}
 	return nil
 }
@@ -121,10 +123,10 @@ func (b *Bundle) verifyExtras() error {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
-			return fail("unexpected-entry", relative)
+			return fail("unexpected-entry", "")
 		}
 		if _, listed := b.Manifest.Files[relative]; !listed && relative != "manifest.json" {
-			return fail("unexpected-file", relative)
+			return fail("unexpected-file", "")
 		}
 		return nil
 	})
@@ -133,30 +135,30 @@ func (b *Bundle) verifyExtras() error {
 func verifyTree(ctx context.Context, tree Tree) error {
 	info, err := os.Lstat(tree.Root)
 	if err != nil || !info.IsDir() {
-		return fail("missing-tree", tree.Name)
+		return fail("missing-tree", "")
 	}
 	for name, entry := range tree.Files {
-		if err := verifyFile(ctx, filepath.Join(tree.Root, filepath.FromSlash(name)), tree.Name+"/"+name, entry, MaxFileBytes); err != nil {
+		if err := verifyFile(ctx, filepath.Join(tree.Root, filepath.FromSlash(name)), "", entry, MaxFileBytes); err != nil {
 			return err
 		}
 	}
 	for name, target := range tree.Symlinks {
 		actual, err := os.Readlink(filepath.Join(tree.Root, filepath.FromSlash(name)))
 		if err != nil || actual != target {
-			return fail("symlink-mismatch", tree.Name+"/"+name)
+			return fail("symlink-mismatch", "")
 		}
 	}
 	count := 0
 	return filepath.WalkDir(tree.Root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return fail("unreadable", tree.Name)
+			return fail("unreadable", "")
 		}
 		if path == tree.Root {
 			return nil
 		}
 		count++
 		if count > MaxEntries {
-			return fail("too-many-entries", tree.Name)
+			return fail("too-many-entries", "")
 		}
 		relative, _ := filepath.Rel(tree.Root, path)
 		relative = filepath.ToSlash(relative)
@@ -165,14 +167,14 @@ func verifyTree(ctx context.Context, tree Tree) error {
 			return nil
 		case entry.Type()&fs.ModeSymlink != 0:
 			if _, listed := tree.Symlinks[relative]; !listed {
-				return fail("unexpected-symlink", tree.Name+"/"+relative)
+				return fail("unexpected-symlink", "")
 			}
 		case entry.Type().IsRegular():
 			if _, listed := tree.Files[relative]; !listed {
-				return fail("unexpected-file", tree.Name+"/"+relative)
+				return fail("unexpected-file", "")
 			}
 		default:
-			return fail("unexpected-entry", tree.Name+"/"+relative)
+			return fail("unexpected-entry", "")
 		}
 		return nil
 	})

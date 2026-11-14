@@ -96,10 +96,16 @@ change times, so media cannot be copied: a variant bundle may copy `db/`, `expec
   file (including any `-wal`, `-shm` or `-journal` sidecar) exists in the bundle or its media trees;
 - no symbolic link exists inside the bundle, and each media symbolic link has its recorded target;
 - `secrets/` is not accessible to group or others;
+- every file is opened without following symbolic links and without blocking, then required to be a
+  regular file, so a FIFO, device or symbolic link where a file belongs is refused immediately;
 - limits while reading: manifest 1 MiB, expected documents 16 MiB, credentials 64 KiB, database
   256 MiB, any hashed file 512 MiB, 4096 entries per tree, an encrypted envelope 1 MiB, a decrypted
   or inflated value 1 MiB, the whole run 60 seconds by default (10 minutes at most);
-- JSON documents reject unknown fields and trailing data.
+- JSON documents reject unknown fields and any data after the first value (including a stray closing
+  bracket);
+- bcrypt digests with a cost above 14 are refused before any work (`bcrypt-cost-unsupported`), and the
+  deadline is checked between every password, asset, response and envelope case. One bcrypt
+  verification of at most cost 14 is the longest uninterruptible step.
 
 ## Producer isolation
 
@@ -115,6 +121,11 @@ in the existing `test` environment, with everything redirected before boot:
   `XDG_CACHE_HOME` all point inside `--out`; after boot the resolved database paths are checked
   against that list;
 - `SECRET_KEY_BASE` is a random synthetic value, so Rails does not write `tmp/local_secret.txt`;
+- `config.credentials.content_path` and `key_path` are redirected to files that do not exist under
+  `--out` before the application initialises (Active Record's railtie evaluates
+  `Rails.application.credentials` during boot), and the producer refuses to continue unless both
+  resolve inside `--out`; a test boots the real producer with every file read of credentials, key
+  files, `storage/` and SQLite databases trapped and requires none;
 - it never reads `storage/`, existing databases, key files or credentials, and never runs
   migrations or dumps `db/schema.rb`; it loads `db/schema.rb` into the isolated database;
 - Active Record Encryption keys are generated per bundle and exist only in
@@ -134,8 +145,10 @@ shelfarr-compat compat-check --bundle DIRECTORY [--timeout 60s] [--legacy-sha1]
 
 Exit codes: `0` every check passed, `1` a check failed (the JSON report is printed), `2` the
 bundle or arguments were refused (nothing but a one-line reason on stderr). The report lists check
-names, case counts and case labels such as `users.otp_secret#2:decryption`. It never prints
-plaintext, keys, passwords, tokens, digests, bundle paths or media paths.
+names, case counts and index labels such as `column[2]:decryption` or `response[17]:body-mismatch`
+(the index is the position in the corresponding `expected/*.json` list). Nothing taken from a bundle
+(file names, tree names, case names) is echoed, so a hostile bundle cannot smuggle text into the
+output. It never prints plaintext, keys, passwords, tokens, digests, bundle paths or media paths.
 
 `--legacy-sha1` is explicit. Active Record derives keys with SHA-256 under the application's
 `load_defaults 8.1`; legacy SHA-1 derivation is only readable where an instance still has that
@@ -285,21 +298,23 @@ RAM-backed `/tmp` or `/dev/shm`; the script refuses those and removes its own di
 
 `e2e` proves the checks reject wrong implementations, not only that the right one passes:
 
-- **Corrupted bundles** (24 sealed cases, 8 unsealed or structural cases, bounds and leakage controls): wrong key or salt, tampered ciphertext, swapped password digests,
+- **Corrupted bundles** (24 sealed cases, 8 unsealed or structural cases, plus controls for FIFO and
+  symbolic-link manifests, bcrypt cost 31, a 300 ms deadline, hostile labels, and bounds and leakage): wrong key or salt, tampered ciphertext, swapped password digests,
   a revived deleted account, changed progress, progress moved to another account, unknown observation
   time turned into `null`, malformed timestamps, reading status, titles, revoked/expired/widened
   tokens, a cleared adoption pointer, removed or redirected output roots, altered expectations, a
   disagreeing schema revision, truncated, emptied and garbage-header databases; each must fail
   exactly the intended checks (or be refused before any check), and unsealed tampering, sidecars,
   extra files and loose permissions must be refused with no report;
-- **Mutants** (41): source mutations of the Go implementation (a different identity separator,
+- **Mutants** (44): source mutations of the Go implementation (a different identity separator,
   dropped fractions, signed inode or device, omitted change time, decimal timestamps, stored path
   replaced by the canonical one, SHA-1 primary derivation, ignored compression, unbounded inflation,
   unbounded envelopes, always-on legacy derivation, newline-tolerant base64, any password accepted,
   trimmed passwords, ignored revocation, expiry or deleted accounts, silently ignored adoption,
   skipped scope check, comics listed, byte-truncated descriptions, insecure or credentialed covers,
   lost status precedence, null-to-empty and null-to-zero, unscoped progress or status, a writable
-  journal-mode database, a checker that writes a journal, blank paths counted as acquired, rounded
+  journal-mode database, a checker that writes a journal, a removed bcrypt cost ceiling, a manifest opened without refusing
+  non-regular files, trailing JSON accepted, blank paths counted as acquired, rounded
   timestamps, plain string ordering, prefix-sibling containment, unresolved symbolic links, hidden
   files, case-sensitive extensions and a book at the library root). Each mutant is compiled and run
   against the same bundle as the real build and must produce a different report;

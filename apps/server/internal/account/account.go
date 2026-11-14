@@ -14,7 +14,10 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
+const MaxBcryptCost = 14
+
 var (
+	ErrUnsupportedCost     = errors.New("bcrypt cost is above the supported ceiling")
 	ErrUnsupportedScopes   = errors.New("unsupported scope encoding")
 	ErrUnsupportedAdoption = errors.New("token adoption is not supported")
 )
@@ -24,8 +27,15 @@ type Directory interface {
 	UserByID(ctx context.Context, id int64) (*store.User, error)
 }
 
-func PasswordMatches(digest, candidate string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil
+func PasswordMatches(digest, candidate string) (bool, error) {
+	cost, err := bcrypt.Cost([]byte(digest))
+	if err != nil {
+		return false, nil
+	}
+	if cost > MaxBcryptCost {
+		return false, ErrUnsupportedCost
+	}
+	return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil, nil
 }
 
 func TokenDigest(raw string) string {

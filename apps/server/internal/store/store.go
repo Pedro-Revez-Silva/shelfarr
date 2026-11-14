@@ -6,9 +6,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/safeopen"
 	"io"
 	"net/url"
-	"os"
 
 	_ "modernc.org/sqlite"
 )
@@ -53,9 +53,9 @@ func Open(ctx context.Context, path string) (*DB, error) {
 }
 
 func checkMagic(path string) error {
-	file, err := os.Open(path)
+	file, err := safeopen.Regular(path)
 	if err != nil {
-		return fmt.Errorf("open database file: %w", errors.Unwrap(err))
+		return ErrNotSQLite
 	}
 	defer file.Close()
 	header := make([]byte, len(sqliteMagic))

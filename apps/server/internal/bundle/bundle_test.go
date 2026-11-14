@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -177,6 +178,21 @@ func TestOpenRejects(t *testing.T) {
 		"oversized manifest": {"too-large", func(t *testing.T, s *scenario) {
 			writeFile(t, filepath.Join(s.dir, "manifest.json"), []byte(`{"origin":"`+strings.Repeat("a", MaxManifestBytes)+`"}`), 0o640)
 		}},
+		"closing bracket after manifest": {"malformed", func(t *testing.T, s *scenario) {
+			encoded, _ := json.Marshal(s.manifest)
+			writeFile(t, filepath.Join(s.dir, "manifest.json"), append(encoded, ']'), 0o640)
+		}},
+		"manifest is a fifo": {"unreadable", func(t *testing.T, s *scenario) {
+			os.Remove(filepath.Join(s.dir, "manifest.json"))
+			if err := syscall.Mkfifo(filepath.Join(s.dir, "manifest.json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		"manifest is a symlink": {"unreadable", func(t *testing.T, s *scenario) {
+			target := filepath.Join(s.dir, "manifest.real")
+			os.Rename(filepath.Join(s.dir, "manifest.json"), target)
+			os.Symlink(target, filepath.Join(s.dir, "manifest.json"))
+		}},
 		"trailing data after manifest": {"malformed", func(t *testing.T, s *scenario) {
 			encoded, _ := json.Marshal(s.manifest)
 			writeFile(t, filepath.Join(s.dir, "manifest.json"), append(encoded, []byte(` {}`)...), 0o640)
@@ -226,5 +242,22 @@ func TestSnapshotReportsEveryKindOfChange(t *testing.T) {
 	}
 	if !IsSidecar("primary.sqlite3-wal") || !IsSidecar("x-shm") || !IsSidecar("x-journal") || IsSidecar("primary.sqlite3") {
 		t.Error("sidecar detection")
+	}
+}
+
+func TestErrorsDoNotEchoBundleControlledText(t *testing.T) {
+	hostile := "/private/synthetic-sensitive-library"
+	scenario := newScenario(t)
+	scenario.manifest.ExternalTrees[0].Name = hostile
+	scenario.manifest.ExternalTrees[0].Root = filepath.Join(filepath.Dir(scenario.dir), "absent-tree")
+	scenario.save(t)
+	_, err := Open(context.Background(), scenario.dir)
+	if err == nil || strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "absent-tree") {
+		t.Fatalf("error = %v", err)
+	}
+	other := newScenario(t)
+	writeFile(t, filepath.Join(other.dir, "db", "hostile-\x1b[31m-name.bin"), []byte("x"), 0o640)
+	if _, err := Open(context.Background(), other.dir); err == nil || strings.Contains(err.Error(), "hostile") {
+		t.Fatalf("error = %v", err)
 	}
 }

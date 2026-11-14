@@ -28,6 +28,7 @@ produce() {
 
 step "ruby: isolation guard tests and style"
 (cd "$root" && bundle exec ruby -Itest tools/migration/test/fixture_isolation_test.rb)
+(cd "$root" && bundle exec ruby -Itest tools/migration/test/produce_isolation_test.rb)
 (cd "$root" && bin/rubocop --force-exclusion tools/migration)
 
 step "ruby: produce fixture bundles from the real Rails code (twice)"

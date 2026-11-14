@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/safeopen"
 )
 
 const (
@@ -30,6 +32,18 @@ func (e *Error) Error() string {
 		return "bundle: " + e.Code
 	}
 	return "bundle: " + e.Code + ": " + e.Subject
+}
+
+var knownFiles = map[string]bool{
+	"manifest.json": true, "db/primary.sqlite3": true, "expected/identity-vectors.json": true, "expected/library-assets.json": true,
+	"expected/accounts.json": true, "expected/encryption.json": true, "expected/responses.json": true, "secrets/credentials.json": true,
+}
+
+func subject(name string) string {
+	if knownFiles[name] {
+		return name
+	}
+	return ""
 }
 
 func fail(code, subject string) error {
@@ -90,7 +104,7 @@ func relabel(err error, label string) error {
 }
 
 func readJSON(path string, limit int64, target any) error {
-	file, err := os.Open(path)
+	file, err := safeopen.Regular(path)
 	if err != nil {
 		return fail("unreadable", "")
 	}
@@ -107,7 +121,7 @@ func readJSON(path string, limit int64, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return fail("malformed", "")
 	}
-	if decoder.More() {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fail("malformed", "")
 	}
 	return nil

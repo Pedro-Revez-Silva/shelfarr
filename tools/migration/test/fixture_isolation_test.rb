@@ -100,6 +100,18 @@ class FixtureIsolationTest < Minitest::Test
     assert_raises(Isolation::Refused) { Isolation.verify_databases!(FakeConfigurations.new([]), paths) }
   end
 
+  def test_credentials_are_redirected_inside_the_bundle_and_verified
+    paths = prepare
+    config = Struct.new(:credentials).new(Struct.new(:content_path, :key_path).new(Pathname.new("#{@repo}/config/credentials.yml.enc"), Pathname.new("#{@repo}/config/master.key")))
+    assert_raises(Isolation::Refused) { Isolation.verify_credentials!(config, paths) }
+    Isolation.redirect_credentials(config, paths)
+    Isolation.verify_credentials!(config, paths)
+    assert config.credentials.content_path.to_s.start_with?(paths.out)
+    assert config.credentials.key_path.to_s.start_with?(paths.out)
+    config.credentials.key_path = Pathname.new("#{@repo}/config/master.key")
+    assert_raises(Isolation::Refused) { Isolation.verify_credentials!(config, paths) }
+  end
+
   private
 
   def assert_refused(message = nil, &block)

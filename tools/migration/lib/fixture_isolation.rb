@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "pathname"
 require "securerandom"
 
 module Migration
@@ -100,6 +101,17 @@ module Migration
 
     def sqlite_url(path)
       "sqlite3://#{path}"
+    end
+
+    def redirect_credentials(config, paths)
+      config.credentials.content_path = Pathname.new(File.join(paths.tmp, "credentials.yml.enc"))
+      config.credentials.key_path = Pathname.new(File.join(paths.tmp, "master.key"))
+    end
+
+    def verify_credentials!(config, paths)
+      [ config.credentials.content_path, config.credentials.key_path ].each do |path|
+        raise Refused, "Rails credential paths are not isolated" unless inside?(File.expand_path(path.to_s), paths.out)
+      end
     end
 
     def verify_databases!(configurations, paths)

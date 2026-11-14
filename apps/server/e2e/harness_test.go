@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/pbkdf2"
@@ -23,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -116,7 +118,9 @@ func (o outcome) check(name string) (checkReport, bool) {
 func execute(t *testing.T, executable, bundle string, arguments ...string) outcome {
 	t.Helper()
 	full := append([]string{"compat-check", "--bundle", bundle}, arguments...)
-	command := exec.Command(executable, full...)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, full...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()

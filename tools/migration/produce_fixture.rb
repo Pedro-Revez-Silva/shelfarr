@@ -20,6 +20,15 @@ end
 
 require File.join(REPO_ROOT, "config", "application")
 Rails.application.config.paths.add("log", with: paths.log)
+Migration::FixtureIsolation.redirect_credentials(Rails.application.config, paths)
+
+begin
+  Migration::FixtureIsolation.verify_credentials!(Rails.application.config, paths)
+rescue Migration::FixtureIsolation::Refused => error
+  warn "refused: #{error.message}"
+  exit 2
+end
+
 Rails.application.initialize!
 
 begin

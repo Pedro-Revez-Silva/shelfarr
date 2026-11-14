@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/big"
 	"strconv"
 	"time"
@@ -82,6 +83,9 @@ func Run(ctx context.Context, directory string, options Options) (Report, error)
 	current := &runner{bundle: opened, db: database, decryptor: decryptor, options: options}
 	current.run(ctx)
 	closeErr := database.Close()
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
 	current.checkReadOnly(ctx, before, closeErr)
 	return current.report(), nil
 }
@@ -149,14 +153,15 @@ func vectorInput(vector bundle.IdentityVector) (assetid.Input, bool) {
 
 func (r *runner) checkIdentityVectors() {
 	var failures []string
-	for _, vector := range r.bundle.Identity.Vectors {
+	for index, vector := range r.bundle.Identity.Vectors {
+		label := indexed("vector", index)
 		input, ok := vectorInput(vector)
 		if !ok {
-			failures = append(failures, vector.Name+":malformed")
+			failures = append(failures, label+":malformed")
 			continue
 		}
 		if assetid.ID(input) != vector.ID {
-			failures = append(failures, vector.Name+":id-mismatch")
+			failures = append(failures, label+":id-mismatch")
 		}
 	}
 	r.record("identity-vectors", len(r.bundle.Identity.Vectors), failures)
@@ -170,23 +175,28 @@ func (r *runner) checkLibraryAssets(ctx context.Context) {
 		return
 	}
 	lister := library.Lister{Roots: roots}
-	for _, expected := range r.bundle.Assets.Books {
+	books, err := r.db.AcquiredBooks(ctx, []int{store.BookTypeAudiobook, store.BookTypeEbook, store.BookTypeComicbook})
+	if err != nil {
+		r.record("library-assets", 0, []string{"database"})
+		return
+	}
+	for index, expected := range r.bundle.Assets.Books {
+		if expired(ctx) {
+			failures = append(failures, "deadline")
+			break
+		}
+		label := indexed("book", index)
 		id, err := strconv.ParseInt(expected.BookID, 10, 64)
 		if err != nil {
-			failures = append(failures, expected.Key+":malformed")
+			failures = append(failures, label+":malformed")
 			continue
 		}
-		books, err := r.db.AcquiredBooks(ctx, []int{store.BookTypeAudiobook, store.BookTypeEbook, store.BookTypeComicbook})
-		if err != nil {
-			failures = append(failures, expected.Key+":database")
-			continue
-		}
-		failures = append(failures, compareBook(lister, books, id, expected)...)
+		failures = append(failures, compareBook(lister, books, id, label, expected)...)
 	}
 	r.record("library-assets", len(r.bundle.Assets.Books), failures)
 }
 
-func compareBook(lister library.Lister, books []store.Book, id int64, expected bundle.BookAssets) []string {
+func compareBook(lister library.Lister, books []store.Book, id int64, label string, expected bundle.BookAssets) []string {
 	var book *store.Book
 	for index := range books {
 		if books[index].ID == id {
@@ -197,21 +207,21 @@ func compareBook(lister library.Lister, books []store.Book, id int64, expected b
 		if len(expected.Assets) == 0 {
 			return nil
 		}
-		return []string{expected.Key + ":book-missing"}
+		return []string{label + ":book-missing"}
 	}
 	if book.BookType == store.BookTypeComicbook {
 		return nil
 	}
 	listing, err := lister.List(*book, book.FilePath.String)
 	if err != nil {
-		return []string{expected.Key + ":" + reason(err)}
+		return []string{label + ":" + reason(err)}
 	}
 	if listing.Unavailable != expected.Unavailable || len(listing.Assets) != len(expected.Assets) {
-		return []string{expected.Key + ":listing-mismatch"}
+		return []string{label + ":listing-mismatch"}
 	}
 	var failures []string
 	for index, asset := range listing.Assets {
-		failures = append(failures, compareAsset(expected.Key, asset, expected.Assets[index])...)
+		failures = append(failures, compareAsset(label, asset, expected.Assets[index])...)
 	}
 	return failures
 }
@@ -244,6 +254,8 @@ func statMatches(stat assetid.Stat, expected bundle.AssetRecord) bool {
 
 func reason(err error) string {
 	switch {
+	case errors.Is(err, account.ErrUnsupportedCost):
+		return "bcrypt-cost-unsupported"
 	case errors.Is(err, library.ErrReference):
 		return "reference-import-unsupported"
 	case errors.Is(err, library.ErrUnsupportedPath):
@@ -268,25 +280,35 @@ func reason(err error) string {
 func (r *runner) checkPasswords(ctx context.Context) {
 	var failures []string
 	cases := 0
-	for _, record := range r.bundle.Accounts.Accounts {
+	for index, record := range r.bundle.Accounts.Accounts {
+		label := indexed("account", index)
 		user, err := r.db.UserByUsername(ctx, record.Username)
 		if err != nil || user == nil {
-			failures = append(failures, record.Username+":user-missing")
+			failures = append(failures, label+":user-missing")
 			continue
 		}
 		if strconv.FormatInt(user.ID, 10) != record.ID || user.Name != record.Name || user.Deleted != record.Deleted || len(user.PasswordDigest) < 4 || user.PasswordDigest[:4] != record.DigestPrefix {
-			failures = append(failures, record.Username+":account-mismatch")
+			failures = append(failures, label+":account-mismatch")
 		}
 		credentials, known := r.bundle.Credentials.Users[record.Username]
 		if !known {
-			failures = append(failures, record.Username+":credentials-missing")
+			failures = append(failures, label+":credentials-missing")
 			continue
 		}
-		for _, candidate := range credentials.Candidates {
+		for position, candidate := range credentials.Candidates {
+			if expired(ctx) {
+				failures = append(failures, "deadline")
+				r.record("passwords", cases, failures)
+				return
+			}
 			cases++
+			caseLabel := label + "." + indexed("candidate", position)
 			expected, listed := record.Authenticate[candidate.Label]
-			if !listed || account.PasswordMatches(user.PasswordDigest, candidate.Value) != expected {
-				failures = append(failures, record.Username+":"+candidate.Label+":verdict-mismatch")
+			matches, err := account.PasswordMatches(user.PasswordDigest, candidate.Value)
+			if err != nil {
+				failures = append(failures, caseLabel+":"+reason(err))
+			} else if !listed || matches != expected {
+				failures = append(failures, caseLabel+":verdict-mismatch")
 			}
 		}
 	}
@@ -295,8 +317,8 @@ func (r *runner) checkPasswords(ctx context.Context) {
 
 func (r *runner) checkEncryptedColumns(ctx context.Context) {
 	var failures []string
-	for _, column := range r.bundle.Encryption.Columns {
-		label := column.Table + "." + column.Column + "#" + column.ID
+	for index, column := range r.bundle.Encryption.Columns {
+		label := indexed("column", index)
 		id, err := strconv.ParseInt(column.ID, 10, 64)
 		if err != nil {
 			failures = append(failures, label+":malformed")
@@ -325,6 +347,14 @@ func (r *runner) checkEncryptedColumns(ctx context.Context) {
 	r.record("encrypted-columns", len(r.bundle.Encryption.Columns), failures)
 }
 
+func indexed(kind string, index int) string {
+	return kind + "[" + strconv.Itoa(index) + "]"
+}
+
+func expired(ctx context.Context) bool {
+	return ctx.Err() != nil
+}
+
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -332,21 +362,22 @@ func digest(data []byte) string {
 
 func (r *runner) checkTamperedEnvelopes() {
 	var failures []string
-	for _, entry := range r.bundle.Encryption.Tampered {
+	for index, entry := range r.bundle.Encryption.Tampered {
+		label := indexed("tamper", index)
 		plaintext, err := r.decryptor.Decrypt([]byte(entry.Envelope))
 		switch entry.Outcome {
 		case "ok":
 			if err != nil || digest(plaintext) != entry.PlaintextSHA256 {
-				failures = append(failures, entry.Name+":expected-success")
+				failures = append(failures, label+":expected-success")
 			}
 		case "error":
 			if err == nil {
-				failures = append(failures, entry.Name+":accepted")
+				failures = append(failures, label+":accepted")
 			} else if string(arcrypt.KindOf(err)) != entry.Category {
-				failures = append(failures, entry.Name+":category-mismatch")
+				failures = append(failures, label+":category-mismatch")
 			}
 		default:
-			failures = append(failures, entry.Name+":malformed")
+			failures = append(failures, label+":malformed")
 		}
 	}
 	r.record("tampered-envelopes", len(r.bundle.Encryption.Tampered), failures)
@@ -355,51 +386,55 @@ func (r *runner) checkTamperedEnvelopes() {
 func (r *runner) checkConsumerProjection(ctx context.Context) {
 	service := consumer.Service{Source: r.db, Now: r.options.Now}
 	var failures []string
-	for _, expected := range r.bundle.Responses.Cases {
-		failures = append(failures, r.compareResponse(ctx, service, expected)...)
+	for index, expected := range r.bundle.Responses.Cases {
+		if expired(ctx) {
+			failures = append(failures, "deadline")
+			break
+		}
+		failures = append(failures, r.compareResponse(ctx, service, indexed("response", index), expected)...)
 	}
-	for _, refusal := range r.bundle.Responses.Refusals {
+	for index, refusal := range r.bundle.Responses.Refusals {
 		_, err := service.Respond(ctx, consumer.Request{Path: refusal.Path, Authorization: "Bearer " + r.bundle.Credentials.Tokens[refusal.Token]})
 		if refusal.GoOutcome != "unsupported_token_adoption" || !errors.Is(err, account.ErrUnsupportedAdoption) {
-			failures = append(failures, refusal.Name+":not-refused")
+			failures = append(failures, indexed("refusal", index)+":not-refused")
 		}
 	}
 	r.record("consumer-projection", len(r.bundle.Responses.Cases)+len(r.bundle.Responses.Refusals), failures)
 }
 
-func (r *runner) compareResponse(ctx context.Context, service consumer.Service, expected bundle.ResponseCase) []string {
+func (r *runner) compareResponse(ctx context.Context, service consumer.Service, label string, expected bundle.ResponseCase) []string {
 	authorization := ""
 	if expected.Token != nil {
 		raw, known := r.bundle.Credentials.Tokens[*expected.Token]
 		if !known {
-			return []string{expected.Name + ":token-missing"}
+			return []string{label + ":token-missing"}
 		}
 		authorization = "Bearer " + raw
 	}
 	actual, err := service.Respond(ctx, consumer.Request{Path: expected.Path, Authorization: authorization})
 	if err != nil {
-		return []string{expected.Name + ":" + reason(err)}
+		return []string{label + ":" + reason(err)}
 	}
 	var failures []string
 	if actual.Status != expected.Status {
-		return []string{expected.Name + ":status-mismatch"}
+		return []string{label + ":status-mismatch"}
 	}
 	if expected.CacheControl != nil && actual.CacheControl != *expected.CacheControl {
-		failures = append(failures, expected.Name+":cache-control-mismatch")
+		failures = append(failures, label+":cache-control-mismatch")
 	}
 	switch expected.Compare {
 	case "status":
 	case "empty":
 		if len(actual.Body) != 0 {
-			failures = append(failures, expected.Name+":body-not-empty")
+			failures = append(failures, label+":body-not-empty")
 		}
 	case "json":
 		equal, err := JSONEqual(actual.Body, expected.Body)
 		if err != nil || !equal {
-			failures = append(failures, expected.Name+":body-mismatch")
+			failures = append(failures, label+":body-mismatch")
 		}
 	default:
-		failures = append(failures, expected.Name+":malformed")
+		failures = append(failures, label+":malformed")
 	}
 	return failures
 }
@@ -414,13 +449,16 @@ func (r *runner) checkReadOnly(ctx context.Context, before bundle.Snapshot, clos
 		r.record("read-only", 1, append(failures, "snapshot-unavailable"))
 		return
 	}
-	failures = append(failures, before.Differences(after)...)
+	if changes := before.Differences(after); len(changes) > 0 {
+		failures = append(failures, "snapshot-changed:"+strconv.Itoa(len(changes)))
+	}
 	if err := r.bundle.Verify(ctx); err != nil {
 		failures = append(failures, "integrity-after-run")
 	}
 	for name := range after {
 		if bundle.IsSidecar(name) {
-			failures = append(failures, "sidecar:"+name)
+			failures = append(failures, "sidecar-present")
+			break
 		}
 	}
 	r.record("read-only", len(after), failures)
@@ -443,7 +481,7 @@ func decodeNumbers(data []byte, target *any) error {
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
-	if decoder.More() {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("trailing data")
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -53,9 +54,15 @@ var mutations = []mutation{
 	{name: "crypto: envelope size unbounded", file: "internal/arcrypt/arcrypt.go", setup: addBoundsCases, edits: one(`if len(data) > MaxEnvelopeBytes {`, `if false {`)},
 	{name: "crypto: legacy derivation always on", file: "internal/arcrypt/arcrypt.go", args: []string{}, edits: one(`if options.LegacySHA1 {`, `if true {`)},
 	{name: "crypto: newline tolerated in base64", file: "internal/arcrypt/arcrypt.go", edits: one(`strings.ContainsAny(value, "\r\n")`, `false`)},
-	{name: "password: any password accepted", file: "internal/account/account.go", edits: one(`return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil`, `return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil || true`)},
-	{name: "password: candidate trimmed", file: "internal/account/account.go", edits: one(`[]byte(candidate)) == nil`, `[]byte(strings.TrimSpace(candidate))) == nil`)},
-	{name: "password: empty password accepted and candidate lower-cased", file: "internal/account/account.go", edits: one(`[]byte(candidate)) == nil`, `[]byte(strings.ToLower(candidate))) == nil || candidate == ""`)},
+	{name: "password: any password accepted", file: "internal/account/account.go", edits: one(`return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil, nil`, `return bcrypt.CompareHashAndPassword([]byte(digest), []byte(candidate)) == nil || true, nil`)},
+	{name: "password: candidate trimmed", file: "internal/account/account.go", edits: one(`[]byte(candidate)) == nil, nil`, `[]byte(strings.TrimSpace(candidate))) == nil, nil`)},
+	{name: "password: empty password accepted and candidate lower-cased", file: "internal/account/account.go", edits: one(`[]byte(candidate)) == nil, nil`, `[]byte(strings.ToLower(candidate))) == nil || candidate == "", nil`)},
+	{name: "password: cost ceiling removed", file: "internal/account/account.go", setup: costBomb, edits: one(`if cost > MaxBcryptCost {`, `if false {`)},
+	{name: "bundle: manifest opened without refusing non-regular files", file: "internal/safeopen/safeopen.go", setup: fifoManifest, edits: []edit{
+		{`os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC`, `os.O_RDONLY`, 1},
+		{`!info.Mode().IsRegular()`, `false`, 1},
+	}},
+	{name: "bundle: trailing data after the first document accepted", file: "internal/bundle/open.go", setup: trailingBracket, edits: one(`!errors.Is(err, io.EOF)`, `false`)},
 	{name: "token: revocation ignored", file: "internal/account/account.go", edits: one(`if token.RevokedAt.Valid {`, `if false {`)},
 	{name: "token: expiry ignored", file: "internal/account/account.go", edits: one(`if !expiry.After(now) {`, `if !expiry.After(now) && false {`)},
 	{name: "token: deleted account allowed", file: "internal/account/account.go", edits: one(`user == nil || user.Deleted`, `user == nil`)},
@@ -184,4 +191,21 @@ func TestMutantsAreKilled(t *testing.T) {
 	if len(survivors) > 0 {
 		t.Fatalf("%d mutants survived:\n%s", len(survivors), strings.Join(survivors, "\n"))
 	}
+}
+
+func costBomb(v *variant) {
+	v.editDatabase("UPDATE users SET password_digest = '$2a$31$' || substr(password_digest, 8) WHERE username = 'alice'")
+	v.seal()
+}
+
+func fifoManifest(v *variant) {
+	os.Remove(v.path("manifest.json"))
+	if err := syscall.Mkfifo(v.path("manifest.json"), 0o600); err != nil {
+		v.t.Fatal(err)
+	}
+}
+
+func trailingBracket(v *variant) {
+	data := readFile(v.t, v.path("manifest.json"))
+	writeFile(v.t, v.path("manifest.json"), append(data, ']'), 0o640)
 }

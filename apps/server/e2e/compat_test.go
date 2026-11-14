@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 var allChecks = []string{"consumer-projection", "encrypted-columns", "identity-vectors", "library-assets", "passwords", "read-only", "schema-revision", "tampered-envelopes"}
@@ -158,8 +159,92 @@ func TestLegacySHA1IsOptIn(t *testing.T) {
 		t.Fatalf("exit %d, failed %v", result.code, result.failed())
 	}
 	check, _ := result.check("encrypted-columns")
-	want := []string{"users.otp_secret#2:decryption", "users.backup_codes#2:decryption"}
+	want := []string{"column[2]:decryption", "column[3]:decryption"}
 	if !reflect.DeepEqual(check.Failures, want) {
 		t.Fatalf("failures = %v, want %v", check.Failures, want)
+	}
+}
+
+func TestHostileBundleTextIsNeverEchoed(t *testing.T) {
+	hostile := "/private/hostile-label-with-secret"
+	current := newVariant(t)
+	current.editJSON("expected/responses.json", func(d map[string]any) {
+		for _, entry := range d["cases"].([]any) {
+			entry.(map[string]any)["name"] = hostile
+		}
+		d["cases"].([]any)[0].(map[string]any)["status"] = 500
+	})
+	current.editJSON("expected/encryption.json", func(d map[string]any) {
+		for _, entry := range d["tampered"].([]any) {
+			entry.(map[string]any)["name"] = hostile
+		}
+		d["tampered"].([]any)[0].(map[string]any)["outcome"] = "ok"
+	})
+	current.editJSON("expected/library-assets.json", func(d map[string]any) {
+		for _, entry := range d["books"].([]any) {
+			entry.(map[string]any)["key"] = hostile
+		}
+		d["books"].([]any)[0].(map[string]any)["unavailable"] = true
+	})
+	current.seal()
+	result := execute(t, binary, current.dir, "--legacy-sha1")
+	if result.code != 1 {
+		t.Fatalf("exit %d", result.code)
+	}
+	if strings.Contains(result.stdout+result.stderr, "hostile") || strings.Contains(result.stdout+result.stderr, "private") {
+		t.Fatal("bundle-controlled text was echoed")
+	}
+	tree := newVariant(t)
+	tree.manifest["external_trees"].([]any)[0].(map[string]any)["name"] = hostile
+	tree.manifest["external_trees"].([]any)[0].(map[string]any)["root"] = tree.dir + "/absent-hostile-tree"
+	tree.seal()
+	refused := execute(t, binary, tree.dir, "--legacy-sha1")
+	if refused.code != 2 || strings.Contains(refused.stderr, "hostile") || strings.Contains(refused.stderr, "private") {
+		t.Fatalf("exit %d stderr %q", refused.code, refused.stderr)
+	}
+}
+
+func TestNonRegularManifestsAreRefusedWithoutBlocking(t *testing.T) {
+	for name, prepare := range map[string]func(*variant){
+		"fifo": func(v *variant) {
+			os.Remove(v.path("manifest.json"))
+			if err := syscall.Mkfifo(v.path("manifest.json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink": func(v *variant) {
+			os.Rename(v.path("manifest.json"), v.path("manifest.real"))
+			os.Symlink(v.path("manifest.real"), v.path("manifest.json"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			current := newVariant(t)
+			prepare(current)
+			started := time.Now()
+			result := execute(t, binary, current.dir, "--legacy-sha1", "--timeout", "100ms")
+			if result.code != 2 || time.Since(started) > 5*time.Second {
+				t.Fatalf("exit %d after %s", result.code, time.Since(started))
+			}
+		})
+	}
+}
+
+func TestPasswordCostAboveTheCeilingIsRefusedQuickly(t *testing.T) {
+	current := newVariant(t)
+	current.editDatabase("UPDATE users SET password_digest = '$2a$31$' || substr(password_digest, 8) WHERE username = 'alice'")
+	current.seal()
+	started := time.Now()
+	result := execute(t, binary, current.dir, "--legacy-sha1")
+	check, _ := result.check("passwords")
+	if result.code != 1 || time.Since(started) > 20*time.Second || len(check.Failures) == 0 || !strings.Contains(check.Failures[0], "bcrypt-cost-unsupported") {
+		t.Fatalf("exit %d after %s: %+v", result.code, time.Since(started), check)
+	}
+}
+
+func TestDeadlineStopsTheRunBetweenExpensiveSteps(t *testing.T) {
+	started := time.Now()
+	result := execute(t, binary, pristine, "--legacy-sha1", "--timeout", "300ms")
+	if result.code != 2 || !strings.Contains(result.stderr, "time limit exceeded") || time.Since(started) > 10*time.Second {
+		t.Fatalf("exit %d stderr %q after %s", result.code, result.stderr, time.Since(started))
 	}
 }

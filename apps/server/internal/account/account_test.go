@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,15 +134,28 @@ func TestPasswordMatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !PasswordMatches(string(digest), "Correct-Horse-1") {
-		t.Error("correct password rejected")
+	if matches, err := PasswordMatches(string(digest), "Correct-Horse-1"); !matches || err != nil {
+		t.Errorf("correct password: %v, %v", matches, err)
 	}
 	for _, candidate := range []string{"", "correct-horse-1", "Correct-Horse-1 "} {
-		if PasswordMatches(string(digest), candidate) {
-			t.Errorf("%q accepted", candidate)
+		if matches, err := PasswordMatches(string(digest), candidate); matches || err != nil {
+			t.Errorf("%q: %v, %v", candidate, matches, err)
 		}
 	}
-	if PasswordMatches("not a digest", "Correct-Horse-1") {
-		t.Error("malformed digest accepted")
+	if matches, err := PasswordMatches("not a digest", "Correct-Horse-1"); matches || err != nil {
+		t.Errorf("malformed digest: %v, %v", matches, err)
+	}
+}
+
+func TestPasswordMatchesRefusesCostsAboveTheCeilingWithoutDoingTheWork(t *testing.T) {
+	started := time.Now()
+	for _, cost := range []string{"15", "20", "31"} {
+		digest := "$2a$" + cost + "$" + strings.Repeat("a", 53)
+		if matches, err := PasswordMatches(digest, "x"); matches || !errors.Is(err, ErrUnsupportedCost) {
+			t.Errorf("cost %s: %v, %v", cost, matches, err)
+		}
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("refusal took bcrypt time")
 	}
 }
