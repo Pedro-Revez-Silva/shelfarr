@@ -320,19 +320,28 @@ class DuplicateDetectionService
     end
 
     def author_name_for(person)
+      surname_tokens = person[:natural] ? nil : name_tokens(person[:surname])
       name = person[:natural] ? person[:name] : "#{person[:given]} #{person[:surname]}"
-      tokens = indexed_name_tokens(name)
+      tokens = indexed_name_tokens(name, surname_tokens: surname_tokens)
       return if tokens.empty?
 
       AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
     end
 
-    def indexed_name_tokens(value)
+    def indexed_name_tokens(value, surname_tokens: nil)
       tokens = family_name_last(name_tokens(value))
       return tokens if tokens.empty?
 
-      surname_index = tokens.rindex { |token| !PARTICLES.include?(token) } || (tokens.length - 1)
+      surname_index = if particle_only?(surname_tokens)
+        tokens.length - 1
+      else
+        tokens.rindex { |token| !PARTICLES.include?(token) } || (tokens.length - 1)
+      end
       [ *given_name_tokens(tokens[0...surname_index]), tokens[surname_index] ]
+    end
+
+    def particle_only?(tokens)
+      tokens.present? && tokens.all? { |token| PARTICLES.include?(token) }
     end
 
     # "刘慈欣" has no space, and the family name is the first character.
