@@ -10,7 +10,8 @@ class BookMetadataBackfillService
       source_work_ids: [],
       fallback_attrs: {},
       lookup_details: true,
-      raise_lookup_errors: false
+      raise_lookup_errors: false,
+      metadata: nil
     )
       metadata = if lookup_details
         BookMetadataLookupService.call(
@@ -19,7 +20,7 @@ class BookMetadataBackfillService
           raise_lookup_errors: raise_lookup_errors
         )
       else
-        {}
+        metadata || {}
       end
       attrs = attributes_for(book, work_id, metadata, fallback_attrs)
       book.assign_attributes(attrs) unless attrs.empty?
