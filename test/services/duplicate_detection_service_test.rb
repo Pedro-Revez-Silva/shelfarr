@@ -430,6 +430,33 @@ class DuplicateDetectionServiceTest < ActiveSupport::TestCase
     assert shortened.allow?
   end
 
+  test "matches identical inverted authors whose surname is only a particle" do
+    book = Book.create!(
+      title: "The Boat",
+      author: "Le, Nam",
+      book_type: :ebook,
+      google_books_id: "gb-the-boat",
+      file_path: "/ebooks/the-boat.epub"
+    )
+
+    same = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_THE_BOAT_W",
+      book_type: "ebook",
+      title: "The Boat",
+      author: "Le, Nam"
+    )
+    other = DuplicateDetectionService.check(
+      work_id: "openlibrary:OL_THE_BOAT_OTHER_W",
+      book_type: "ebook",
+      title: "The Boat",
+      author: "Le, Kim"
+    )
+
+    assert same.block?
+    assert_equal book, same.existing_book
+    assert other.allow?
+  end
+
   test "matches a numbered anniversary edition and keeps sequence numbers distinct" do
     book = Book.create!(
       title: "The Hobbit: 75th Anniversary Edition",

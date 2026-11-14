@@ -25,6 +25,39 @@ class SearchControllerRenderingTest < ActionController::TestCase
     assert_includes html, "Waiting for Open Library and Google Books"
   end
 
+  test "a loading result keeps a pending request marked as requested" do
+    work_id = "openlibrary:OL_LOADING_PENDING_W"
+    %i[ebook audiobook].each do |book_type|
+      book = Book.create!(
+        title: "Pending While Loading",
+        author: "Ada Writer",
+        book_type: book_type,
+        open_library_work_id: "OL_LOADING_PENDING_W"
+      )
+      Request.create!(book: book, user: users(:one), status: :pending)
+    end
+    enriched = false
+    @controller.define_singleton_method(:audiobookshelf_matches_for) do |*|
+      enriched = true
+      []
+    end
+    @controller.instance_variable_set(:@query, "pending")
+
+    html = @controller.send(
+      :render_search_results_stream,
+      results: [ candidate(work_id: work_id, title: "Pending While Loading", author: "Ada Writer") ],
+      loading: true,
+      pending_providers: %w[google_books],
+      completed_providers: %w[openlibrary],
+      error: nil
+    )
+
+    fragment = Nokogiri::HTML.fragment(html)
+    assert fragment.css("span").any? { |node| node.text.strip == "Requested" }
+    assert_empty fragment.css("a").select { |node| node.text.strip == "Request" }
+    assert_not enriched
+  end
+
   test "render_search_results_stream renders result update state" do
     @controller.instance_variable_set(:@query, "dune")
 
@@ -148,11 +181,12 @@ class SearchControllerRenderingTest < ActionController::TestCase
 
   private
 
-  def candidate
+  def candidate(work_id: "openlibrary:OL_DUNE_W", title: "Dune", author: "Frank Herbert")
+    source_id = work_id.split(":", 2).last
     MetadataSearch::Candidate.new(
-      canonical_key: "openlibrary:OL_DUNE_W",
-      title: "Dune",
-      author: "Frank Herbert",
+      canonical_key: work_id,
+      title: title,
+      author: author,
       year: 1965,
       description: nil,
       cover_url: nil,
@@ -163,10 +197,10 @@ class SearchControllerRenderingTest < ActionController::TestCase
       sources: [
         {
           source: "openlibrary",
-          source_id: "OL_DUNE_W",
+          source_id: source_id,
           source_name: "Open Library",
-          source_url: "https://openlibrary.org/works/OL_DUNE_W",
-          work_id: "openlibrary:OL_DUNE_W"
+          source_url: "https://openlibrary.org/works/#{source_id}",
+          work_id: work_id
         }
       ],
       editions: [],
