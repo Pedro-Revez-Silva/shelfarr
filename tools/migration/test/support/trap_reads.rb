@@ -4,7 +4,7 @@ require "pathname"
 
 module TrapReads
   PROTECTED = [
-    %r{/config/credentials}, %r{/config/master\.key}, %r{/config/[^/]*\.key\z}, %r{/storage/}, %r{\.sqlite3(-wal|-shm)?\z}, %r{\.encryption_keys}
+    %r{/config/credentials}, %r{/config/master\.key}, %r{/config/[^/]*\.key\z}, %r{/storage/}, %r{\.sqlite3(-wal|-shm)?\z}, %r{\.encryption_keys}, %r{/\.env(?:\.[^/]*)?\z}
   ].freeze
   METHODS = %i[open read binread readlines foreach new].freeze
 
@@ -25,7 +25,7 @@ module TrapReads
     hook = Module.new do
       METHODS.each do |name|
         define_method(name) do |path, *arguments, **options, &block|
-          TrapReads.record(path, log, allowed)
+          raise Errno::ENOENT if TrapReads.record(path, log, allowed)
           super(path, *arguments, **options, &block)
         end
       end

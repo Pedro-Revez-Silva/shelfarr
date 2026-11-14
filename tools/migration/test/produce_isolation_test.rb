@@ -27,7 +27,7 @@ class ProduceIsolationTest < Minitest::Test
   end
 
   def test_the_trap_sees_reads_of_credentials_keys_and_databases
-    protected_reads = [ "config/credentials.yml.enc", "config/master.key", "config/credentials/test.key", "storage/test.sqlite3", "db/development.sqlite3", "storage/.encryption_keys" ]
+    protected_reads = [ "config/credentials.yml.enc", "config/master.key", "config/credentials/test.key", "storage/test.sqlite3", "db/development.sqlite3", "storage/.encryption_keys", ".env", ".env.test", ".env.test.local" ]
     script = protected_reads.map { |path| "begin; File.binread(File.join(#{REPO.inspect}, #{path.inspect})); rescue SystemCallError; end" }.join("\n")
     _, status = Open3.capture2e(environment(@scratch), "ruby", "-e", script, unsetenv_others: true)
     assert status.success?
