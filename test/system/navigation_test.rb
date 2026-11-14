@@ -68,6 +68,31 @@ class NavigationTest < ApplicationSystemTestCase
     end
   end
 
+  test "a phone menu stays usable after automatic morph refreshes" do
+    sign_in_as(users(:one))
+    page.current_window.resize_to(390, 844)
+    visit request_path(requests(:pending_request))
+    assert_selector "meta[name='turbo-refresh-method'][content='morph']", visible: :all
+    assert_selector "button[aria-controls='main-menu']", visible: true
+    page.execute_script("window.navigationDocument = 'same-morph-document'")
+
+    2.times do
+      page.execute_script(<<~JAVASCRIPT)
+        document.documentElement.dataset.navigationMorphed = "false"
+        document.addEventListener("turbo:morph", () => document.documentElement.dataset.navigationMorphed = "true", { once: true })
+        Turbo.session.refresh(location.href)
+      JAVASCRIPT
+      assert_selector "html[data-navigation-morphed='true']", visible: :all
+      assert_equal "same-morph-document", page.evaluate_script("window.navigationDocument")
+      assert_no_selector "#main-menu", visible: true
+      menu = find("button[aria-controls='main-menu']")
+      assert_equal "false", menu["aria-expanded"]
+      menu.click
+      assert_selector "#main-menu", visible: true
+      assert_equal "true", menu["aria-expanded"]
+    end
+  end
+
   test "a health problem opens the right settings tab and section, and Back returns to the overview" do
     SystemHealth.for_service("indexer").check_failed!(message: "Failed to connect to Prowlarr")
     sign_in_as(users(:two))
