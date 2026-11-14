@@ -16,6 +16,12 @@ marker="$work/start-marker"
 touch "$marker"
 sleep 1
 
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+
 step() { printf '\n== %s\n' "$*"; }
 
 clean_env() {
