@@ -313,6 +313,7 @@ module Migration
         "compression-flag-forced-on-plain-payload" => mutate(plain) { |m| m["h"]["c"] = true },
         "compression-flag-removed-from-compressed-payload" => mutate(compressed) { |m| m["h"].delete("c") },
         "invalid-base64-payload" => mutate(plain) { |m| m["p"] = "!!!not-base64!!!" },
+        "payload-with-newline" => mutate(plain) { |m| m["p"] = "#{m['p'][0, 8]}\n#{m['p'][8..]}" },
         "envelope-truncated-json" => JSON.generate(plain)[0, 40],
         "not-an-envelope" => "plain text in an encrypted column",
         "json-without-payload" => '{"h":{}}',
@@ -474,7 +475,7 @@ module Migration
     end
 
     def external_roots
-      [ @paths.media, File.join(@paths.out, "outside") ]
+      [ @paths.media, File.join(@paths.out, "media-outside") ]
     end
 
     def external_trees

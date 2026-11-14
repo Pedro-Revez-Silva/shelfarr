@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/shelfarr-migration.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+cleanup() { [ -n "$keep" ] || rm -rf "$work"; }
+trap cleanup EXIT
+
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+step() { printf '\n== %s\n' "$*"; }
+
+clean_env() {
+  env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 "$@"
+}
+
+produce() {
+  (cd "$root" && clean_env bundle exec ruby tools/migration/produce_fixture.rb --out "$1")
+}
+
+step "ruby: isolation guard tests and style"
+(cd "$root" && bundle exec ruby -Itest tools/migration/test/fixture_isolation_test.rb)
+(cd "$root" && bin/rubocop --force-exclusion tools/migration)
+
+step "ruby: produce fixture bundles from the real Rails code (twice)"
+produce "$work/bundle-a"
+produce "$work/bundle-b"
+
+step "ruby: producing touched nothing in the repository"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed while producing fixtures:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+
+step "reproducibility: independent runs agree on schema, coverage and layout"
+python3 - "$work/bundle-a/manifest.json" "$work/bundle-b/manifest.json" <<'PY'
+import json, sys
+first, second = (json.load(open(path)) for path in sys.argv[1:3])
+def shape(manifest):
+    return {
+        "format": manifest["fixture_format"], "origin": manifest["origin"], "schema": manifest["schema"],
+        "digest": manifest["coverage"]["digest"], "cases": manifest["coverage"]["cases"], "gaps": manifest["coverage"]["gaps"],
+        "files": sorted(manifest["files"]),
+        "trees": [(tree["name"], sorted(tree["files"]), tree["symlinks"] and sorted(tree["symlinks"])) for tree in manifest["external_trees"]],
+        "producer": {key: value for key, value in manifest["producer"].items()},
+    }
+if shape(first) != shape(second):
+    raise SystemExit("fixture shape differs between independent runs")
+print("coverage digest", first["coverage"]["digest"], "cases", len(first["coverage"]["cases"]))
+PY
+
+cd "$root/apps/server"
+step "go: format, vet, unit tests with the race detector"
+test -z "$(gofmt -l .)"
+go vet ./...
+go vet -tags e2e ./...
+go test -race -count=1 ./...
+
+step "go: end-to-end executable tests, negative controls and mutants"
+SHELFARR_COMPAT_BUNDLE="$work/bundle-a" go test -tags e2e -count=1 -timeout 20m -parallel 4 -v ./e2e/ | tee "$work/e2e.log" | grep -E '^(=== RUN|--- (PASS|FAIL)|PASS|FAIL|ok)' | grep -vE '^=== RUN' | grep -E 'FAIL|^ok|^PASS' || true
+grep -q '^ok' "$work/e2e.log" || { cat "$work/e2e.log" >&2; exit 1; }
+
+step "go: race-instrumented executable against both independent bundles"
+CGO_ENABLED=1 go build -race -trimpath -o "$work/compat-race" ./cmd/shelfarr-compat
+for bundle in bundle-a bundle-b; do
+  "$work/compat-race" compat-check --bundle "$work/$bundle" --legacy-sha1 | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["passed"], r; print("passed", [c["name"] for c in r["checks"]])'
+done
+
+step "go: clean cross-builds for the architectures the image supports"
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/compat-$arch" ./cmd/shelfarr-compat
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/compat-$arch.again" ./cmd/shelfarr-compat
+  cmp "$work/compat-$arch" "$work/compat-$arch.again"
+  printf '%s %s\n' "$arch" "$(sha256sum "$work/compat-$arch" | cut -d' ' -f1)"
+done
+
+step "repository untouched after the whole run"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

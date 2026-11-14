@@ -88,7 +88,7 @@ module Migration
     end
 
     def build_outside_root
-      outside = File.join(@paths.out, "outside")
+      outside = File.join(@paths.out, "media-outside")
       FileUtils.mkdir_p(outside)
       write_plain_epub("outside", File.join(outside, "Elsewhere.epub"), WHOLE_SECOND_MTIME)
     end
