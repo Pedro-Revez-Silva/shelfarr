@@ -112,6 +112,10 @@ change times, so media cannot be copied: a variant bundle may copy `db/`, `expec
 `tools/migration/produce_fixture.rb --out ABSOLUTE_NEW_DIRECTORY` boots the real Rails application
 in the existing `test` environment, with everything redirected before boot:
 
+Dotenv loads only the private bundle's temporary `.env` path. Checkout `.env`, `.env.test`
+and `.env.test.local` files are never loaded. The isolation probe blocks protected file reads
+outside the bundle before they can return any bytes.
+
 - `--out` must be absolute, not exist, and its parent must resolve outside the repository;
 - it refuses to run when `RAILS_ENV` is not `test`, or when the environment carries `DATABASE_URL`,
   any `*_DATABASE_URL`, `SECRET_KEY_BASE*`, `RAILS_MASTER_KEY`, `ACTIVE_RECORD_ENCRYPTION_*`,

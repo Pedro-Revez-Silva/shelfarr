@@ -18,6 +18,12 @@ rescue Migration::FixtureIsolation::Refused => error
   exit 2
 end
 
+require File.join(REPO_ROOT, "config", "boot")
+require "rails"
+require "dotenv"
+require "dotenv/rails"
+Dotenv::Rails.files = [ File.join(paths.tmp, ".env") ]
+
 require File.join(REPO_ROOT, "config", "application")
 Rails.application.config.paths.add("log", with: paths.log)
 Migration::FixtureIsolation.redirect_credentials(Rails.application.config, paths)
