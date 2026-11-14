@@ -59,11 +59,16 @@ class RequestCreationService
         next
       end
 
-      resolved_metadata = metadata_for(input)
+      exact_blocks = exact_source_blocks(input, existing_books_lookup)
+      resolved_metadata = if book_types.any? { |book_type| !exact_blocks.key?(book_type) }
+        metadata_for(input)
+      else
+        {}
+      end
       label = resolved_metadata[:title].presence || input.metadata_attrs[:title].presence || input.work_id
 
       book_types.each do |book_type|
-        duplicate_check = DuplicateDetectionService.check(
+        duplicate_check = exact_blocks[book_type] || DuplicateDetectionService.check(
           work_id: input.work_id,
           source_work_ids: input.source_work_ids,
           book_type: book_type,
@@ -202,6 +207,18 @@ class RequestCreationService
     )
 
     Result.new(created_requests: [], warnings: [], errors: [], queued: true)
+  end
+
+  def exact_source_blocks(input, existing_books_lookup)
+    book_types.each_with_object({}) do |book_type, blocks|
+      duplicate_check = DuplicateDetectionService.check(
+        work_id: input.work_id,
+        source_work_ids: input.source_work_ids,
+        book_type: book_type,
+        existing_books_lookup: existing_books_lookup
+      )
+      blocks[book_type] = duplicate_check if duplicate_check.block?
+    end
   end
 
   def metadata_for(input)
