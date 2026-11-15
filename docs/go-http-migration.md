@@ -746,7 +746,7 @@ stable-upgrade bundles with the real Rails code, records real Rails responses ov
 both with `tools/migration/http/capture_http_cases.rb`, and then runs, against the race-instrumented
 executable:
 
-* a differential replay of ~920 requests per fixture in recorded order (status, headers, JSON, asset
+* a differential replay of ~1 940 requests per fixture in recorded order (status, headers, JSON, asset
   bytes by hash and length, `HEAD`, ranges, conditional and `If-Range` requests, cursors issued by
   Rails and compared with the ones Go issues, bearer matrix, all four adoption refusals, a successful
   adoption and the final `api_tokens` rows). The ~350 progress and status requests carry their real
@@ -763,24 +763,25 @@ executable:
   startup refusals, single ownership, cursor and secret mismatch, 24 concurrent adoptions, request
   limits, absence of sensitive values from every output;
 * the real Rails models and controllers reading, projecting, isolating per account and continuing every
-  row Go wrote (`verify_go_rows.rb`, 264 checks per fixture);
+  row Go wrote (`verify_go_rows.rb`, 452 checks per fixture, including Rails writing the next PDF or CBZ page on top of every Go-written fixed-layout place);
 * progress faults over real sockets and processes: generated EPUB and synthetic audio round trips and
   a restart, 24 concurrent first writes (one wins) and 12 concurrent updaters (none lost), a SIGKILL
   before and after the commit followed by a retry, a client that leaves while holding the write
   lock, an externally held write lock, declared, chunked, stalled and abandoned bodies;
 * fixed-layout: the library, continue, publication, asset and `reading_order` routes under every capability subset
-  (about 1 000 further requests per fixture), the CBZ metadata of synthetic archives built with a raw ZIP writer (natural
+  (about 1 000 of those requests), the CBZ metadata of synthetic archives built with a raw ZIP writer (natural
   order and Unicode names, hidden entries, a 10 000 page archive and about 90 malformed archives, each refused for the same
   reason by Rails and Go), ranges and conditional requests on a PDF and a CBZ, page writes for PDF and CBZ with their
   rejected variants, status on comic records, and the Go preview JSON for the same books; `go test -fuzz` targets
   `zipdirectory.Entries`;
-* 53 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
+* 117 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
   check, cursor binding and signature, symbolic links, identity re-check, root allow-list, ranges,
   `HEAD`, conditional requests, stream capacity, unknown schema, missing key, WAL, logging, and for
   progress: scope, version, mutation id, retry data, chronological and resolution rules, unknown
   times, isolation, locator comparison, status independence, future tolerance, traversal, version
-  range, asset identity, body size, body deadline, content type, comics, PDF pages, conflict and
-  malformed-body answers), each of which must fail an assertion, and each must compile.
+  range, asset identity, body size, body deadline, content type, conflict and malformed-body answers, and for fixed-layout
+  files: format negotiation and cursor identity, attachment and document policy, PDF header and size boundaries, identity
+  re-checks, every ZIP refusal, page limits, natural order and Unicode folding, reading-order guards and page-place validation), each of which must fail an assertion, and each must compile.
 
 It also checks that the source bundles keep their digests, that the unchanged M0 checker still
 accepts both, that the `linux/amd64` and `linux/arm64` builds are byte-reproducible and that the
