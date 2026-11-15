@@ -9,9 +9,9 @@ module Migration
       def to_s = "#{area}:#{subject}:#{reason}"
     end
 
-    Allowances = Data.define(:mutable_columns, :new_row_tables, :new_tables, :added_columns, :new_tables_empty, :volatile_files) do
+    Allowances = Data.define(:mutable_columns, :new_row_tables, :new_tables, :added_columns, :new_tables_empty, :volatile_files, :definitions_after) do
       def self.none
-        new(mutable_columns: {}, new_row_tables: [], new_tables: false, added_columns: {}, new_tables_empty: false, volatile_files: [])
+        new(mutable_columns: {}, new_row_tables: [], new_tables: false, added_columns: {}, new_tables_empty: false, volatile_files: [], definitions_after: {})
       end
 
       def merge(**changes) = with(**changes)
@@ -104,14 +104,10 @@ module Migration
       end
 
       def compare_definition(database, table, before, after)
-        return add(database, table, "definition-changed") if !@allowances.added_columns.key?(table) && before.definition != after.definition
-        return unless @allowances.added_columns.key?(table)
+        return if before.definition == after.definition
+        return if @allowances.definitions_after[table] == after.definition
 
-        after.columns.each do |column|
-          earlier = before.columns.find { |candidate| candidate["name"] == column["name"] }
-          add(database, "#{table}.#{column['name']}", "column-definition-changed") if earlier && earlier != column
-        end
-        add(database, table, "foreign-keys-changed") unless before.foreign_keys == after.foreign_keys
+        add(database, table, "definition-changed")
       end
 
       def sequences(database, earlier, later)

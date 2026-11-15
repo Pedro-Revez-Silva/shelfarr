@@ -67,36 +67,25 @@ module Migration
         assert_includes found, "production.sqlite3:tokens:definition-changed"
       end
 
-      def test_added_columns_are_allowed_for_a_declared_table_and_smuggled_ones_are_not
-        allowed = Allowances.none.merge(added_columns: { "users" => [ "locale" ] })
-        [ "`locale` TEXT", "[locale] TEXT", "locale VARCHAR(255)", "locale TEXT DEFAULT ('x')" ].each do |clause|
-          found = mutate(allowances: allowed) { |copy| copy.primary { |database| database.execute("ALTER TABLE users ADD COLUMN #{clause}") } }
-          assert_empty found, clause
+      def test_a_table_definition_may_change_only_to_the_one_pinned_text
+        pinned = Allowances.none.merge(added_columns: { "users" => [ "locale" ] })
+        expected = nil
+        found = mutate(allowances: pinned) do |copy|
+          copy.primary { |database| database.execute("ALTER TABLE users ADD COLUMN locale varchar") }
+          expected = copy.capture(@scratch).databases.fetch(Layout::PRIMARY).tables.fetch("users").definition
         end
-        smuggled = mutate(allowances: allowed) do |copy|
+        assert_includes found, "production.sqlite3:users:definition-changed"
+        accepted = mutate(allowances: pinned.merge(definitions_after: { "users" => expected })) do |copy|
+          copy.primary { |database| database.execute("ALTER TABLE users ADD COLUMN locale varchar") }
+        end
+        assert_empty accepted
+        other = mutate(allowances: pinned.merge(definitions_after: { "users" => expected })) do |copy|
           copy.primary do |database|
             database.execute("ALTER TABLE users ADD COLUMN locale varchar")
-            database.execute("ALTER TABLE users ADD COLUMN extra varchar")
+            database.execute("ALTER TABLE users ADD COLUMN extra TEXT GENERATED ALWAYS AS (name || 'x') VIRTUAL")
           end
         end
-        assert_includes smuggled, "production.sqlite3:users.extra:column-added"
-      end
-
-      def test_a_declared_table_still_reports_changed_existing_columns
-        allowed = Allowances.none.merge(added_columns: { "children" => [ "locale" ] })
-        base = @volume.copy_to(File.join(@scratch, "declared"))
-        base.primary do |database|
-          database.execute("CREATE TABLE children (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'a', user_id INTEGER, CONSTRAINT fk_children FOREIGN KEY (user_id) REFERENCES users (id))")
-        end
-        before = base.capture(@scratch)
-        base.primary do |database|
-          database.execute("CREATE TABLE children_rebuilt (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'b' NOT NULL, user_id INTEGER, locale varchar)")
-          database.execute("DROP TABLE children")
-          database.execute("ALTER TABLE children_rebuilt RENAME TO children")
-        end
-        found = Comparison.call(before, base.capture(@scratch), allowances: allowed).map(&:to_s)
-        assert_includes found, "production.sqlite3:children.note:column-definition-changed"
-        assert_includes found, "production.sqlite3:children:foreign-keys-changed"
+        assert_includes other, "production.sqlite3:users:definition-changed"
       end
 
       def test_a_redefined_index_and_a_redefined_column_are_reported_even_when_names_match
