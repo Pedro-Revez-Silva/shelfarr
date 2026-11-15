@@ -87,6 +87,7 @@ module Migration
         prepare_primary
         valid = JSON.generate(@manifest)
         [ nil, [], "invalid", { "artifact" => nil }, { "artifact" => {} }, { "artifact" => { "kind" => "file", "mode" => 0o600, "digest" => nil } },
+          { "artifact" => { "kind" => "file", "mode" => 0o600, "digest" => "invalid" } }, { "artifact" => { "kind" => "directory", "mode" => 0o755 } },
           { "artifact" => { "kind" => "unknown", "mode" => 0o600, "digest" => nil } }, { "artifact" => { "kind" => "directory", "mode" => "0755", "digest" => nil } } ].each do |files|
           @manifest = JSON.parse(valid)
           @manifest["files"] = files
@@ -107,7 +108,7 @@ module Migration
 
       def test_invalid_json_and_archive_metadata_are_refused
         prepare_primary
-        [ "{broken", "[]", "null", "42" ].each do |text|
+        [ "", "{broken", "[]", "null", "42" ].each do |text|
           File.write(File.join(@directory, VolumeBackup::MANIFEST), text)
           assert_raises(BackupRefused) { @backup.verify_snapshot(@directory) }
         end
@@ -135,6 +136,7 @@ module Migration
         assert_equal 3, status.exitstatus, error
         assert_empty output
         assert_equal 1, error.lines.size
+        assert_equal "refusing: snapshot restore metadata is invalid\n", error
       end
 
       def test_oversized_manifests_are_refused_before_json_parsing

@@ -61,7 +61,7 @@ module Migration
         path = File.join(snapshot, MANIFEST)
         raise BackupRefused, "refusing: #{snapshot} has no #{MANIFEST}; the snapshot is incomplete" unless File.file?(path)
 
-        content = File.binread(path, MAX_MANIFEST_BYTES + 1)
+        content = File.binread(path, MAX_MANIFEST_BYTES + 1) || ""
         assert_manifest_size!(content.bytesize)
         manifest = JSON.parse(content)
         raise BackupRefused, "refusing: unsupported snapshot format" unless manifest.is_a?(Hash) && manifest["format"] == FORMAT
