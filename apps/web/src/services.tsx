@@ -11,7 +11,7 @@ export type Services = {
   api: ApiClient;
   queryClient: QueryClient;
   keys: QueryKeys;
-  revalidate: () => Promise<void>;
+  revalidate: () => Promise<boolean>;
 };
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
@@ -29,13 +29,17 @@ export function createQueryKeys(account: string) {
   };
 }
 
+const COALESCE_MS = 500;
+const VALIDATION_TIMEOUT_MS = 8000;
+
 export type ServiceInputs = {
+  validationTimeoutMs?: number;
   boot: Boot;
   csrfToken: () => string | null;
   fetcher?: typeof fetch;
 };
 
-export function createServices({ boot, csrfToken, fetcher }: ServiceInputs): Services {
+export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs = VALIDATION_TIMEOUT_MS }: ServiceInputs): Services {
   const guard = new AccountGuard(boot.account);
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -56,12 +60,22 @@ export function createServices({ boot, csrfToken, fetcher }: ServiceInputs): Ser
   const deps = fetcher ? { boot, guard, csrfToken, fetcher } : { boot, guard, csrfToken };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
+  const verify = async (): Promise<boolean> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
+    try {
+      queryClient.setQueryData(keys.session, await api.session(controller.signal));
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const revalidate = () => {
-    if (!guard.isActive() || guard.hasPendingValidation()) return guard.settled();
-    const check = queryClient
-      .fetchQuery({ queryKey: keys.session, queryFn: ({ signal }) => api.session(signal), staleTime: 0 })
-      .then(() => undefined, () => undefined);
-    return guard.track(check);
+    if (!guard.isActive()) return Promise.resolve(false);
+    if (guard.recentValidationPending(COALESCE_MS)) return guard.confirmed();
+    return guard.track(verify());
   };
   return { boot, guard, api, queryClient, keys, revalidate };
 }

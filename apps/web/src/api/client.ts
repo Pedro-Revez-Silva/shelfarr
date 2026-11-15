@@ -116,10 +116,15 @@ export class ApiClient {
     }
 
     const payload = await readJson(response);
-    if (!options.validatesAccount) await guard.settled();
     guard.assertActive();
 
     if (!response.ok) throw this.failure(response.status, payload);
+
+    if (!options.validatesAccount) {
+      const confirmed = await untilAborted(guard.confirmed(), options.signal);
+      guard.assertActive();
+      if (!confirmed) throw new ApiError("network", "The account could not be confirmed; try again");
+    }
 
     const parsed = options.schema.safeParse(payload);
     if (!parsed.success) throw new ApiError("contract", "The server answered with an unexpected shape", response.status);
@@ -137,6 +142,25 @@ export class ApiClient {
     if (kind) return new ApiError(kind, envelope.success ? (envelope.data.message ?? envelope.data.error) : "", status);
     return new ApiError(status >= 500 ? "server" : "contract", `The server answered ${status}`, status);
   }
+}
+
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 async function readJson(response: Response): Promise<unknown> {

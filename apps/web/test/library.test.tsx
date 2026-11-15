@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ACCOUNT, deferred, FakeServer, page, renderApp, session, standardServer, summary } from "./helpers";
+import { createServices } from "../src/services";
+import { ACCOUNT, boot, deferred, FakeServer, page, renderApp, session, standardServer, summary } from "./helpers";
 
 function libraryServer(pages: Record<string, ReturnType<typeof page>>) {
   return standardServer().on("GET", /\/api\/v1\/library(\?|$)/, (request) => {
@@ -306,7 +307,7 @@ describe("account revalidation", () => {
     await user.click(screen.getByRole("radio", { name: "Audiobooks" }));
     await waitFor(() => expect(server.called("GET", /type=audiobook/).length).toBeGreaterThan(0));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(services.guard.hasPendingValidation()).toBe(true));
+    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
     libraryGate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(screen.queryByText("A private book after the switch")).toBeNull();
@@ -332,11 +333,103 @@ describe("account revalidation", () => {
     });
     await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(services.guard.hasPendingValidation()).toBe(true));
+    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
     libraryGate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByText("Still Ada's book")).toBeNull();
     sessionGate.resolve();
     await screen.findByRole("link", { name: "Still Ada's book" });
+  });
+
+  test("a check that fails to settle never releases a held response and the retry meets the new account", async () => {
+    const libraryGate = deferred<void>();
+    const sessionGate = deferred<void>();
+    const server = standardServer();
+    const { services } = renderApp({ server });
+    await screen.findByText("Ada Reader");
+    let libraryCalls = 0;
+    server.on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+      libraryCalls += 1;
+      if (libraryCalls > 1) return { status: 401, body: { error: "account_changed" } };
+      await libraryGate.promise;
+      return { body: page([summary({ title: "A private book after the switch" })]) };
+    });
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      await sessionGate.promise;
+      return { status: 500, body: { error: "internal" } };
+    });
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
+    libraryGate.resolve();
+    sessionGate.resolve();
+    await screen.findByRole("heading", { name: "The signed-in account changed" }, { timeout: 8000 });
+    expect(screen.queryByText("A private book after the switch")).toBeNull();
+    expect(libraryCalls).toBe(2);
+  }, 15000);
+
+  test("a stalled check does not delay an authoritative account_changed answer", async () => {
+    const sessionGate = deferred<void>();
+    const server = standardServer();
+    renderApp({ server });
+    await screen.findByText("Ada Reader");
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      await sessionGate.promise;
+      return { body: session() };
+    });
+    server.on("GET", /\/api\/v1\/library(\?|$)/, () => ({ status: 401, body: { error: "account_changed" } }));
+    window.dispatchEvent(new Event("focus"));
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
+    await screen.findByRole("heading", { name: "The signed-in account changed" }, { timeout: 2000 });
+    sessionGate.resolve();
+  });
+
+  test("an unanswered check times out so the held request can fail and be retried", async () => {
+    const server = standardServer();
+    const services = createServices({ boot, csrfToken: () => null, fetcher: server.fetcher, validationTimeoutMs: 50 });
+    server.on("GET", /\/api\/v1\/session$/, (request) => new Promise(() => {
+      void request;
+    }));
+    server.on("GET", /\/api\/v1\/library(\?|$)/, () => ({ body: page([summary()]) }));
+    const verified = services.revalidate();
+    const outcome = await Promise.race([
+      services.api.library({}, undefined).catch((error: unknown) => error),
+      new Promise((resolve) => setTimeout(() => resolve("still held"), 1500)),
+    ]);
+    expect(outcome).toMatchObject({ kind: "network" });
+    expect(await verified).toBe(false);
+    expect(services.guard.isActive()).toBe(true);
+  });
+
+  test("a held request can still be aborted", async () => {
+    const server = standardServer();
+    const services = createServices({ boot, csrfToken: () => null, fetcher: server.fetcher, validationTimeoutMs: 5000 });
+    server.on("GET", /\/api\/v1\/session$/, () => new Promise(() => undefined));
+    void services.revalidate();
+    const controller = new AbortController();
+    const held = services.api.library({}, undefined, controller.signal).catch((error: unknown) => error);
+    setTimeout(() => controller.abort(), 20);
+    expect(await held).toMatchObject({ name: "AbortError" });
+  });
+
+  test("the focus check is a fresh request, not the answer to an older session request", async () => {
+    const oldSession = deferred<void>();
+    let sessionCalls = 0;
+    const server = standardServer().on("GET", /\/api\/v1\/session$/, async () => {
+      sessionCalls += 1;
+      if (sessionCalls === 1) {
+        await oldSession.promise;
+        return { body: session() };
+      }
+      return { status: 401, body: { error: "account_changed" } };
+    });
+    renderApp({ server });
+    await screen.findByRole("link", { name: "The Quiet Library" });
+    window.dispatchEvent(new Event("focus"));
+    await screen.findByRole("heading", { name: "The signed-in account changed" });
+    expect(sessionCalls).toBe(2);
+    oldSession.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("link", { name: "The Quiet Library" })).toBeNull();
   });
 });

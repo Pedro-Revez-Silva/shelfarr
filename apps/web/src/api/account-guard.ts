@@ -8,7 +8,8 @@ export class AccountGuard {
   readonly account: string;
   private state: GuardState = { status: "active" };
   private readonly listeners = new Set<Listener>();
-  private readonly validations = new Set<Promise<void>>();
+  private readonly validations = new Set<Promise<boolean>>();
+  private lastValidationStartedAt = 0;
 
   constructor(account: string) {
     this.account = account;
@@ -33,20 +34,26 @@ export class AccountGuard {
     for (const listener of [...this.listeners]) listener();
   }
 
-  track(validation: Promise<void>): Promise<void> {
+  track(validation: Promise<boolean>): Promise<boolean> {
     const tracked = validation.finally(() => {
       this.validations.delete(tracked);
     });
     this.validations.add(tracked);
+    this.lastValidationStartedAt = Date.now();
     return tracked;
   }
 
-  hasPendingValidation(): boolean {
-    return this.validations.size > 0;
+  recentValidationPending(withinMs: number): boolean {
+    return this.validations.size > 0 && Date.now() - this.lastValidationStartedAt < withinMs;
   }
 
-  async settled(): Promise<void> {
-    while (this.validations.size > 0) await Promise.all([...this.validations]);
+  async confirmed(): Promise<boolean> {
+    let confirmed = true;
+    while (this.validations.size > 0) {
+      const results = await Promise.all([...this.validations]);
+      if (results.includes(false)) confirmed = false;
+    }
+    return confirmed;
   }
 
   assertActive(): void {

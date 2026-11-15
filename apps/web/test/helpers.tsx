@@ -79,7 +79,11 @@ export class FakeServer {
       this.requests.push(request);
       const match = this.handlers.find((entry) => entry.method === request.method && entry.pattern.test(request.path));
       if (!match) return new Response(JSON.stringify({ error: "not_found" }), { status: 404, headers: { "content-type": "application/json" } });
-      const result = await match.handler(request);
+      const aborted = new Promise<never>((_, reject) => {
+        if (request.signal?.aborted) reject(new DOMException("Aborted", "AbortError"));
+        request.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+      const result = await Promise.race([Promise.resolve(match.handler(request)), aborted]);
       if (request.signal?.aborted) throw new DOMException("Aborted", "AbortError");
       return new Response(result.body === undefined ? null : JSON.stringify(result.body), {
         status: result.status ?? 200,
