@@ -336,6 +336,12 @@ func TestBrowserRefusesUnportedSignInModesWithoutCreatingASession(t *testing.T) 
 		if response := client.login("browser_member", f.personas.Passwords["browser_member"], token, nil); response.status != http.StatusNotImplemented || response.code(t) != "sign_in_unsupported" {
 			t.Fatalf("a passwordless deployment answered %d %s", response.status, response.body)
 		}
+		if response := client.login("browser_member", "Wrong-On-Passwordless-1x", token, nil); response.status != http.StatusNotImplemented || response.code(t) != "sign_in_unsupported" {
+			t.Fatalf("a wrong password on a passwordless deployment answered %d %s", response.status, response.body)
+		}
+		if count(t, copied.database, `SELECT COUNT(*) FROM users WHERE username = 'browser_member' AND failed_login_count <> 0`) != 0 {
+			t.Fatal("a passwordless deployment counted a password failure")
+		}
 		exec1(t, copied.database, `UPDATE settings SET value = 'false' WHERE key = 'auth_disabled'`)
 		instance.stop()
 		environment := startServer(t, f, copied, serverOptions{env: []string{"DISABLE_AUTH=true"}})
