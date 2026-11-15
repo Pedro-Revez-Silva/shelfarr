@@ -73,6 +73,20 @@ class ReleaseSourceTest < Minitest::Test
     assert_match(/not newer than the release schema/, error.message)
   end
 
+  def test_a_replacement_ref_cannot_substitute_the_pinned_schema
+    replica = File.join(@scratch, "replica")
+    _, status = Open3.capture2("git", "init", "--quiet", replica)
+    assert status.success?
+    common, = Open3.capture2("git", "-C", REPO, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    File.write(File.join(replica, ".git", "objects", "info", "alternates"), "#{File.join(common.strip, 'objects')}\n")
+    forged, = Open3.capture2("git", "-C", replica, "hash-object", "-w", "--stdin", stdin_data: "raise 'forged schema'\n")
+    _, status = Open3.capture2("git", "-C", replica, "update-ref", "refs/replace/ac0c524fecaf0552a2721d1817c792448fd338f8", forged.strip)
+    assert status.success?
+    release = Migration::ReleaseSource.new(replica).resolve!
+    refute_includes release.schema_ruby, "forged"
+    assert_includes release.schema_ruby, "ActiveRecord::Schema[8.1].define"
+  end
+
   private
 
   def copy_migrations

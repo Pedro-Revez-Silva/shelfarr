@@ -30,7 +30,9 @@ module Migration
     end
 
     def schema_ruby
-      git("cat-file", "blob", SCHEMA_BLOB)
+      @schema_ruby ||= git("cat-file", "blob", SCHEMA_BLOB).tap do |content|
+        raise Unavailable, "release schema bytes differ from the pinned blob" unless blob_id_of(content) == SCHEMA_BLOB
+      end
     end
 
     def migrations
@@ -75,8 +77,12 @@ module Migration
     end
 
     def blob_id(path)
-      content = File.binread(path)
-      Digest::SHA1.hexdigest("blob #{content.bytesize}\0#{content}")
+      blob_id_of(File.binread(path))
+    end
+
+    def blob_id_of(content)
+      bytes = content.b
+      Digest::SHA1.hexdigest("blob #{bytes.bytesize}\0#{bytes}")
     end
 
     private
@@ -96,7 +102,7 @@ module Migration
 
     def capture(*arguments)
       environment = { "PATH" => ENV.fetch("PATH"), "LANG" => "C.UTF-8", "GIT_NO_LAZY_FETCH" => "1", "GIT_TERMINAL_PROMPT" => "0",
-                      "GIT_OPTIONAL_LOCKS" => "0", "GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1" }
+                      "GIT_OPTIONAL_LOCKS" => "0", "GIT_NO_REPLACE_OBJECTS" => "1", "GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1" }
       output, _error, status = Open3.capture3(environment, "git", "-C", @repo_root, *arguments, unsetenv_others: true, binmode: true)
       [ output.force_encoding(Encoding::UTF_8), status ]
     end

@@ -102,15 +102,17 @@ module Migration
         context = migration_context
         applied = []
         started = clock
-        pending_versions(context).each do |version|
-          raise Failed.new("migration", "deadline of #{budget} seconds exceeded", applied: applied) if clock - started > budget
+        with_watchdog(budget) do
+          pending_versions(context).each do |version|
+            raise Failed.new("migration", "deadline of #{budget} seconds exceeded", applied: applied) if clock - started > budget
 
-          begin
-            context.up(version)
-          rescue StandardError => error
-            raise Failed.new("migration", "#{version} raised #{error.class.name}; #{applied.size} of #{applied.size + pending_versions(context).size} applied", applied: applied, version: version.to_s)
+            begin
+              context.up(version)
+            rescue StandardError => error
+              raise Failed.new("migration", "#{version} raised #{error.class.name}; #{applied.size} of #{applied.size + pending_versions(context).size} applied", applied: applied, version: version.to_s)
+            end
+            applied << version.to_s
           end
-          applied << version.to_s
         end
         applied
       end
@@ -157,6 +159,34 @@ module Migration
 
       def clock
         Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      WATCHDOG = <<~SH
+        end=$(( $(date +%s) + $1 ))
+        while kill -0 "$2" 2>/dev/null; do
+          if [ "$(date +%s)" -ge "$end" ]; then
+            printf '%s\\n' "upgrade failed: migration: deadline of $1 seconds exceeded; the database is left for SQLite to recover" >&2
+            kill -KILL "$2"
+            exit 0
+          fi
+          sleep 0.2
+        done
+      SH
+
+      def with_watchdog(budget)
+        watchdog = budget.positive? ? Process.spawn("sh", "-c", WATCHDOG, "watchdog", budget.ceil.to_s, Process.pid.to_s, pgroup: true, in: :close, out: :close) : nil
+        yield
+      ensure
+        stop_watchdog(watchdog)
+      end
+
+      def stop_watchdog(watchdog)
+        return unless watchdog
+
+        Process.kill("TERM", -watchdog)
+        Process.wait(watchdog)
+      rescue Errno::ESRCH, Errno::ECHILD
+        nil
       end
 
       def migration_context

@@ -74,6 +74,21 @@ facts =
     end
     _, status = Process.wait2(pid)
     { "signaled" => status.signaled?, "signal" => status.termsig, "middle" => mid_state(run), "resumed" => finish(run, run.migrate) }
+  when "hang"
+    run.release_database
+    reader, writer = IO.pipe
+    pid = fork do
+      reader.close
+      $stderr.reopen(writer)
+      ActiveSupport::Notifications.subscribe("sql.active_record") do |*, payload|
+        sleep if payload[:sql].include?('CREATE TABLE "kobo_tags"')
+      end
+      run.migrate(budget: 3)
+      exit!(0)
+    end
+    writer.close
+    _, status = Process.wait2(pid)
+    { "signaled" => status.signaled?, "signal" => status.termsig, "stderr" => reader.read.lines.last.to_s.strip, "middle" => mid_state(run), "resumed" => finish(run, run.migrate) }
   when "reload-current-schema"
     ActiveRecord::Migration.verbose = false
     ActiveRecord::Base.with_connection { |connection| connection.disable_referential_integrity { load File.join(REPO_ROOT, "db", "schema.rb") } }

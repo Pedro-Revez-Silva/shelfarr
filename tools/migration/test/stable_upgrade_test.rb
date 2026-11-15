@@ -75,6 +75,19 @@ class StableUpgradeTest < Minitest::Test
     assert_equal 1, facts.dig("resumed", "applied")
   end
 
+  def test_a_migration_that_never_returns_is_stopped_at_the_deadline_and_the_upgrade_resumes
+    facts = drive("hang")
+    assert facts.fetch("signaled")
+    assert_equal 9, facts.fetch("signal")
+    assert_equal "upgrade failed: migration: deadline of 3 seconds exceeded; the database is left for SQLite to recover", facts.fetch("stderr")
+    middle = facts.fetch("middle")
+    assert_equal "20261110120000", middle.fetch("highest_version")
+    assert_empty middle.fetch("released_findings")
+    refute_includes middle.fetch("tables"), "kobo_tags"
+    assert facts.dig("resumed", "verified")
+    assert_equal 1, facts.dig("resumed", "applied")
+  end
+
   def test_an_exhausted_deadline_stops_before_any_migration_and_leaves_the_released_database_untouched
     facts = drive("deadline")
     failure = facts.fetch("failure")

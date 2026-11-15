@@ -298,8 +298,8 @@ name: commit `96333c6674a21701f7229c1a51038dc3b117c1a0` (tag `v2026.11.05.1`), t
 `c9a17fcfa4591898ac47a299e8fab09ecd2c15c1`, `db/schema.rb` blob
 `ac0c524fecaf0552a2721d1817c792448fd338f8`, `db/migrate` tree
 `65596153c4eb018fcc57fa563302af6ce94c52f4` (100 migrations, schema revision `20261102120000`). The
-objects are read from the repository's own history with `git` under a scrubbed environment and
-`GIT_NO_LAZY_FETCH`. The tool never fetches; a missing object is a refusal. No release code is
+objects are read from the repository's own history with `git` under a scrubbed environment with `GIT_NO_LAZY_FETCH` and
+`GIT_NO_REPLACE_OBJECTS`, and the schema bytes are re-hashed to the pinned blob before they are loaded. The tool never fetches; a missing object is a refusal. No release code is
 executed except its `db/schema.rb`, whose blob identity is verified first. The tool also requires every
 shipped release migration in the checkout to be byte-identical (Git blob identity) to the release and
 every other migration to be newer than the release schema.
@@ -322,7 +322,7 @@ every other migration to be newer than the release schema.
    (`db/released-source.sqlite3`, mode 0440) is made with the SQLite backup API. Its snapshot must equal
    the working database's.
 4. The shipped migrations run one at a time with `MigrationContext#up` inside the private database, under
-   a deadline (120 seconds by default), and never dump `db/schema.rb`.
+   an enforced wall-clock deadline (120 seconds by default), and never dump `db/schema.rb`.
 5. The upgraded database is dumped and must equal the checkout's `db/schema.rb`, then compared with the
    source (below), then probed for required defaults, then migrated a second time, which must change
    nothing.
@@ -367,15 +367,20 @@ Rails authenticated while recording responses; nothing else may change.
 
 ### Failure and interruption
 
-A migration failure, an exhausted deadline or a verification failure ends the producer with exit code 3,
-one line naming the stage (`release`, `source`, `migration`, `verification`, `repeat`), the failing
-version and the exception class, no manifest (so the checker refuses the directory) and no values. SQLite
-DDL is transactional, so a failing migration rolls back by itself; the tests prove it for a real conflict
-(an existing `kobo_account_shares` table makes `20261109020000` fail: the 12 earlier versions stay, the
-failing migration leaves no column behind, released rows are untouched, and removing the conflict lets the
-remaining 5 apply) and for a process killed with `SIGKILL` at the `CREATE TABLE "kobo_tags"` statement of
-the last migration (the database recovers, 16 of the 17 new versions are recorded and the last is applied on resume). The
-deadline check runs between migrations; a migration that is already running is not interrupted.
+A migration failure, an exhausted deadline or a verification failure ends the producer with one line
+naming the stage (`release`, `source`, `migration`, `verification`, `repeat`), the failing version and the
+exception class, and no manifest (so the checker refuses the directory), and no values. Failures the producer
+detects exit with code 3. The deadline is enforced from outside the Ruby process: a watchdog shell, started
+before the first migration and stopped after the last, prints `upgrade failed: migration: deadline of N
+seconds exceeded` and sends `SIGKILL` to the producer, so a migration that never returns is bounded and the
+exit status is the signal. It exits by itself when the producer disappears. SQLite DDL is transactional, so
+the database is left for SQLite to recover and the interrupted migration rolls back; the tests prove it for
+a real conflict (an existing `kobo_account_shares` table makes `20261109020000` fail: the 12 earlier
+versions stay, the failing migration leaves no column behind, released rows are untouched, and removing the
+conflict lets the remaining 5 apply), for a process killed with `SIGKILL` at the `CREATE TABLE "kobo_tags"`
+statement of the last migration, and for the same statement blocking forever until the watchdog fires (in
+both, 16 of the 17 new versions are recorded and the last is applied on resume). Between migrations the
+deadline is also checked in process.
 
 ### Evidence kept in the bundle
 
