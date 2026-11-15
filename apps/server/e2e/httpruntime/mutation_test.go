@@ -25,9 +25,12 @@ type mutant struct {
 	edit     edit
 	scenario string
 	unit     string
+	unitRun  string
 }
 
 var differential = "TestDifferentialAgainstRails"
+
+const transferUnitTests = "Grant|Transfer|Minted|Minting|OnlyGet|Rechecks|RemovedAndReplaced|OnlyTheLiteral"
 
 var mutants = []mutant{
 	{name: "auth: a revoked credential still authenticates", file: "internal/live/queries.go", edit: edit{"AND revoked_at IS NULL AND (expires_at", "AND (1 OR revoked_at IS NULL) AND (expires_at"}, unit: "./internal/live/", scenario: differential},
@@ -159,24 +162,24 @@ var mutants = []mutant{
 	{name: "transfer: the grant query accepts other characters", file: "internal/transfergrant/transfergrant.go", edit: edit{"|| character == '_' || character == '-') {", "|| character == '_' || character == '-' || character == '%' || character == '+' || character == '=') {"}, unit: "./internal/transfergrant/", scenario: differential},
 	{name: "transfer: a one character shorter grant is accepted", file: "internal/transfergrant/transfergrant.go", edit: edit{"len(value) < minGrantLength", "len(value) < minGrantLength-1"}, unit: "./internal/transfergrant/"},
 	{name: "transfer: the grant query may carry other parameters", file: "internal/transfergrant/transfergrant.go", edit: edit{"value, found := strings.CutPrefix(rawQuery, queryKey)", "_, value, found := strings.Cut(rawQuery, queryKey)"}, unit: "./internal/transfergrant/", scenario: differential},
-	{name: "transfer: a grant opens another book", file: "internal/gohttp/transfer.go", edit: edit{"!ok || claims.BookID != found.id ||", "!ok ||"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a grant opens another asset", file: "internal/gohttp/transfer.go", edit: edit{"|| claims.AssetID != found.assetID {", "{"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: an unreadable scope encoding is an error instead of a refusal", file: "internal/bearer/bearer.go", edit: edit{"if errors.Is(err, account.ErrUnsupportedScopes) {", "if false && errors.Is(err, account.ErrUnsupportedScopes) {"}, unit: "./internal/gohttp/"},
-	{name: "transfer: a refused media pool answers a grant in the open", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeTransfer {\n\t\tsetTransferPrivacy(w.Header())\n\t}\n", ""}, unit: "./internal/gohttp/"},
+	{name: "transfer: a grant opens another book", file: "internal/gohttp/transfer.go", edit: edit{"!ok || claims.BookID != found.id ||", "!ok ||"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a grant opens another asset", file: "internal/gohttp/transfer.go", edit: edit{"|| claims.AssetID != found.assetID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: an unreadable scope encoding is an error instead of a refusal", file: "internal/bearer/bearer.go", edit: edit{"if errors.Is(err, account.ErrUnsupportedScopes) {", "if false && errors.Is(err, account.ErrUnsupportedScopes) {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
+	{name: "transfer: a refused media pool answers a grant in the open", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeTransfer {\n\t\tsetTransferPrivacy(w.Header())\n\t}\n", ""}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: a mint does not check that the asset is current when it opens it", file: "internal/gohttp/transfer.go", edit: edit{"\tfile, ok := a.openAsset(w, result, *book, *chosen)\n\tif !ok {\n\t\treturn\n\t}\n\tfile.Close()\n", ""}, scenario: "TestAMintRechecks"},
-	{name: "transfer: a grant opens for a token that changed owner", file: "internal/bearer/bearer.go", edit: edit{"|| token.UserID.Int64 != claims.UserID {", "{"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a deleted account's grant still opens", file: "internal/bearer/bearer.go", edit: edit{"user == nil || user.Deleted {\n\t\treturn false, err\n\t}\n\tscopes", "user == nil {\n\t\treturn false, err\n\t}\n\tscopes"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a grant outlives the loss of library:read", file: "internal/bearer/bearer.go", edit: edit{"return principal.HasScope(transfergrant.Scope), nil", "return len(principal.Scopes) >= 0, nil"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a use records the credential as used", file: "internal/bearer/bearer.go", edit: edit{"principal := account.Principal{Scopes: scopes}", "a.DB.TouchToken(ctx, token.ID, a.Now())\n\tprincipal := account.Principal{Scopes: scopes}"}, unit: "./internal/gohttp/", scenario: differential},
+	{name: "transfer: a grant opens for a token that changed owner", file: "internal/bearer/bearer.go", edit: edit{"|| token.UserID.Int64 != claims.UserID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a deleted account's grant still opens", file: "internal/bearer/bearer.go", edit: edit{"user == nil || user.Deleted {\n\t\treturn false, err\n\t}\n\tscopes", "user == nil {\n\t\treturn false, err\n\t}\n\tscopes"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a grant outlives the loss of library:read", file: "internal/bearer/bearer.go", edit: edit{"return principal.HasScope(transfergrant.Scope), nil", "return len(principal.Scopes) >= 0, nil"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a use records the credential as used", file: "internal/bearer/bearer.go", edit: edit{"principal := account.Principal{Scopes: scopes}", "a.DB.TouchToken(ctx, token.ID, a.Now())\n\tprincipal := account.Principal{Scopes: scopes}"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 	{name: "transfer: a use adopts the replacement credential", file: "internal/bearer/bearer.go", edit: edit{"principal := account.Principal{Scopes: scopes}", "a.DB.RetireReplaced(ctx, *token, a.Now)\n\tprincipal := account.Principal{Scopes: scopes}"}, scenario: differential},
-	{name: "transfer: the route answers POST", file: "internal/gohttp/routes.go", edit: edit{"if method != http.MethodGet && method != http.MethodHead {\n\t\treturn route{kind: routeNone}", "if method != http.MethodGet && method != http.MethodHead && method != http.MethodPost {\n\t\treturn route{kind: routeNone}"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a transfer is not admitted as a media stream", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeAsset || found.kind == routeTransfer {", "if found.kind == routeAsset {"}, unit: "./internal/gohttp/"},
-	{name: "transfer: an answer is cacheable", file: "internal/gohttp/transfer.go", edit: edit{`header.Set("Cache-Control", "private, no-store")`, `header.Set("Cache-Control", "private")`}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: an answer carries a referrer", file: "internal/gohttp/transfer.go", edit: edit{`header.Set("Referrer-Policy", "no-referrer")`, `header.Set("Referrer-Policy", "same-origin")`}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a mint request body is not bounded", file: "internal/gohttp/transfer.go", edit: edit{"const grantBodyLimit = 64 << 10", "const grantBodyLimit = 64 << 30"}, unit: "./internal/gohttp/", scenario: differential},
-	{name: "transfer: a malformed JSON mint body is accepted", file: "internal/gohttp/transfer.go", edit: edit{"len(body) > 0 && !json.Valid(body)", "len(body) > 0 && !json.Valid(body) && false"}, unit: "./internal/gohttp/", scenario: differential},
+	{name: "transfer: the route answers POST", file: "internal/gohttp/routes.go", edit: edit{"if method != http.MethodGet && method != http.MethodHead {\n\t\treturn route{kind: routeNone}", "if method != http.MethodGet && method != http.MethodHead && method != http.MethodPost {\n\t\treturn route{kind: routeNone}"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a transfer is not admitted as a media stream", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeAsset || found.kind == routeTransfer {", "if found.kind == routeAsset {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
+	{name: "transfer: an answer is cacheable", file: "internal/gohttp/transfer.go", edit: edit{`header.Set("Cache-Control", "private, no-store")`, `header.Set("Cache-Control", "private")`}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: an answer carries a referrer", file: "internal/gohttp/transfer.go", edit: edit{`header.Set("Referrer-Policy", "no-referrer")`, `header.Set("Referrer-Policy", "same-origin")`}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a mint request body is not bounded", file: "internal/gohttp/transfer.go", edit: edit{"const grantBodyLimit = 64 << 10", "const grantBodyLimit = 64 << 30"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a malformed JSON mint body is accepted", file: "internal/gohttp/transfer.go", edit: edit{"len(body) > 0 && !json.Valid(body)", "len(body) > 0 && !json.Valid(body) && false"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 	{name: "transfer: the grant carries the user instead of the token", file: "internal/gohttp/transfer.go", edit: edit{"TokenID: principal.TokenID,", "TokenID: principal.UserID,"}, scenario: differential},
-	{name: "transfer: the mint answers an absolute expiry with fractions", file: "internal/gohttp/transfer.go", edit: edit{`expires.UTC().Format("2006-01-02T15:04:05Z")`, `expires.UTC().Format("2006-01-02T15:04:05.000Z")`}, unit: "./internal/gohttp/", scenario: differential},
+	{name: "transfer: the mint answers an absolute expiry with fractions", file: "internal/gohttp/transfer.go", edit: edit{`expires.UTC().Format("2006-01-02T15:04:05Z")`, `expires.UTC().Format("2006-01-02T15:04:05.000Z")`}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 }
 
 func copyModule(t *testing.T, destination string) {
@@ -240,7 +243,7 @@ func TestMutantsAreDetected(t *testing.T) {
 			}
 			var detections []string
 			if candidate.unit != "" {
-				detections = append(detections, runMutantTests(t, directory, "./"+strings.TrimPrefix(candidate.unit, "./"), "", false))
+				detections = append(detections, runMutantTests(t, directory, "./"+strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false))
 			}
 			if candidate.scenario != "" {
 				detections = append(detections, runMutantTests(t, directory, "./e2e/httpruntime/", candidate.scenario, true))
@@ -259,7 +262,10 @@ func runMutantTests(t *testing.T, directory, packagePath, scenario string, tagge
 	t.Helper()
 	arguments := []string{"test", "-count=1"}
 	if tagged {
-		arguments = append(arguments, "-tags", "e2e", "-run", scenario)
+		arguments = append(arguments, "-tags", "e2e")
+	}
+	if scenario != "" {
+		arguments = append(arguments, "-run", scenario)
 	}
 	arguments = append(arguments, packagePath)
 	context, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
