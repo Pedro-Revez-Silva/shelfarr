@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -27,6 +28,7 @@ import (
 )
 
 var binaryPath, seamBinaryPath string
+var browserFlags bool
 
 func TestMain(m *testing.M) {
 	directory, err := os.MkdirTemp("", "shelfarr-browser-bin-")
@@ -52,6 +54,8 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 	}
+	help, _ := exec.Command(binaryPath, "-help").CombinedOutput()
+	browserFlags = strings.Contains(string(help), "preview-user-ids")
 	code := m.Run()
 	os.RemoveAll(directory)
 	os.Exit(code)
@@ -251,10 +255,10 @@ func startServer(t testing.TB, f fixture, copied runtimeCopy, options serverOpti
 	origin := "http://127.0.0.1:" + port
 	arguments := []string{"-experimental", "-database", database, "-lock-file", lock, "-listen", "127.0.0.1:" + port, "-server-version", f.doc.ServerVersion,
 		"-library-root", f.doc.BundleMediaRoot, "-library-root", f.doc.ExtraMediaRoot}
-	if !options.noOrigin {
+	if !options.noOrigin && browserFlags {
 		arguments = append(arguments, "-browser-origin", origin)
 	}
-	if !options.noUsers {
+	if !options.noUsers && browserFlags {
 		users := options.users
 		if users == "" {
 			users = f.doc.PreviewUserIDs
