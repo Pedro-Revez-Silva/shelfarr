@@ -225,7 +225,8 @@ func (a *App) readingStatus(w http.ResponseWriter, r *http.Request, principal *a
 		mapFailure(w, result, err)
 		return
 	}
-	if _, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats.Declared, roots); err != nil {
+	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats.Declared, roots)
+	if err != nil {
 		mapFailure(w, result, err)
 		return
 	}
@@ -233,11 +234,7 @@ func (a *App) readingStatus(w http.ResponseWriter, r *http.Request, principal *a
 		mapFailure(w, result, err)
 		return
 	}
-	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats.Declared, roots)
-	if err != nil {
-		mapFailure(w, result, err)
-		return
-	}
+	items[0].ReadingStatus = name
 	result.set(http.StatusOK, "")
 	writeJSON(w, http.StatusOK, items[0])
 }

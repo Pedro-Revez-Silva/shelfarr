@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
@@ -460,6 +461,27 @@ func TestStatusIsSeparateFromProgressAndImmediatelyVisibleEverywhere(t *testing.
 	}
 	if got := decodeObject(t, lib.h.do(http.MethodGet, "/api/consumer/v1/continue", jsonHeaders(progressToken)), http.StatusOK)["items"].([]any); len(got) != 1 {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestAStatusWriteThatCommitsIsNeverRefusedByALaterListingFailure(t *testing.T) {
+	lib := newHarness(t, nil).shelf()
+	path := lib.h.root + "/Listen.mp3"
+	var swapped atomic.Bool
+	lib.h.app.now = func() time.Time {
+		if swapped.CompareAndSwap(false, true) {
+			os.Rename(path, path+".moved")
+			os.Symlink(path+".moved", path)
+		}
+		return time.Now()
+	}
+	recorder := lib.h.send(http.MethodPut, "/api/consumer/v1/library/2/reading_status", jsonHeaders(progressToken), `{"status":"finished"}`)
+	parsed := decodeObject(t, recorder, http.StatusOK)
+	if parsed["reading_status"] != "finished" {
+		t.Fatalf("%v", parsed)
+	}
+	if rows := livetest.Query(t, lib.h.path, `SELECT status FROM consumer_reading_states`); fmt.Sprint(rows) != "[[2]]" {
+		t.Fatalf("%v", rows)
 	}
 }
 
