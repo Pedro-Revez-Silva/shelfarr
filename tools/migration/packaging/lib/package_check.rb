@@ -104,12 +104,22 @@ module Migration
         http = container(image, architecture, "/usr/local/bin/shelfarr-http 2>&1")
         disabled = http.status.exitstatus == 2 && http.output == "refused: this runtime is experimental and default-off; pass -experimental\n"
         record("shelfarr-http-refuses-without-opt-in", architecture, mode, disabled, "exit=#{http.status.exitstatus}")
+        check_web_assets(image, architecture, mode)
         encoded = container(image, architecture, SYNTHETIC_ENCODE)
         record("ffmpeg-synthetic-aac-encode", architecture, mode, encoded.success? && encoded.output.strip.to_f.between?(0.9, 1.2), "duration=#{encoded.output.strip[0, 12]}")
         vips = container(image, architecture, "ldconfig -p | grep -c 'libvips.so'")
         record("libvips-installed", architecture, mode, vips.success? && vips.output.strip.to_i.positive?, "ldconfig entries=#{vips.output.strip[0, 6]}")
         jemalloc = container(image, architecture, "ls /usr/local/lib/libjemalloc.so")
         record("jemalloc-preload-target", architecture, mode, jemalloc.success?, jemalloc.output.strip)
+      end
+
+      def check_web_assets(image, architecture, mode)
+        directory = Volume::Pins::WEB_ASSETS_DIRECTORY
+        listed = JSON.parse(container(image, architecture, "cat #{directory}/manifest.json").output).fetch("files").transform_values { |entry| entry.fetch("sha256") }
+        found = container(image, architecture, "cd #{directory} && sha256sum $(ls | grep -v '^manifest.json$')").output.lines.to_h { |line| line.split.then { |digest, name| [ name, digest ] } }
+        record("web-assets-match-their-manifest", architecture, mode, !listed.empty? && listed == found, "#{found.size} files")
+        refused = container(image, architecture, "/usr/local/bin/shelfarr-http -experimental -database /nonexistent -lock-file /nonexistent -library-root /usr/local -web-assets-dir /nonexistent 2>&1; echo exit=$?")
+        record("shelfarr-http-refuses-a-missing-assets-folder", architecture, mode, refused.output.include?("refused:") && refused.output.include?("exit=2"), refused.output.lines.last.to_s.strip[0, 80])
       end
 
       def image_config(image)
@@ -141,7 +151,7 @@ module Migration
         return unless build.success?
 
         overlay = Volume::Command.capture("docker", "build", "--pull=false", "--platform", "linux/#{architecture}", "--tag", packaged, "--build-arg", "RAILS_IMAGE=#{base}",
-                                          "--build-arg", "GO_IMAGE=#{Volume::Pins::GO_IMAGE}", "--file", File.join(context, "tools/migration/packaging/Dockerfile"), context, timeout: 1800)
+                                          "--build-arg", "GO_IMAGE=#{Volume::Pins::GO_IMAGE}", "--build-arg", "BUN_IMAGE=#{Volume::Pins::BUN_IMAGE}", "--file", File.join(context, "tools/migration/packaging/Dockerfile"), context, timeout: 1800)
         record("go-binaries-layer-builds", architecture, CROSS, overlay.success?, "Go cross-compiled on the build platform, no emulated compiler")
         return unless overlay.success?
 

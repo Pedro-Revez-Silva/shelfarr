@@ -49,6 +49,8 @@ export const artifacts = {
   },
 };
 
+const IMAGE_ASSETS = "/usr/local/share/shelfarr/web";
+
 export type ServerOptions = {
   fixture: Fixture;
   users?: string;
@@ -64,8 +66,10 @@ export class RunningServer {
   readonly database: string;
   readonly logs: string[] = [];
   private readonly process: Bun.Subprocess;
+  private readonly container: string | null;
 
-  constructor(origin: string, directory: string, database: string, child: Bun.Subprocess) {
+  constructor(origin: string, directory: string, database: string, child: Bun.Subprocess, container: string | null = null) {
+    this.container = container;
     this.origin = origin;
     this.directory = directory;
     this.database = database;
@@ -92,7 +96,8 @@ export class RunningServer {
   }
 
   async stop(): Promise<void> {
-    this.process.kill("SIGTERM");
+    if (this.container) Bun.spawnSync(["docker", "kill", this.container]);
+    else this.process.kill("SIGTERM");
     await this.process.exited;
     rmSync(this.directory, { recursive: true, force: true });
   }
@@ -109,6 +114,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   const { fixture } = options;
   const directory = mkdtempSync(join(required("TMPDIR"), "srv-"));
   const database = join(directory, "primary.sqlite3");
+  const image = process.env["SHELFARR_E2E_IMAGE"];
   copyFileSync(fixture.database, database);
   const handle = new Database(database);
   handle.exec("PRAGMA journal_mode=WAL");
@@ -124,13 +130,21 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     "-browser-origin", origin,
     "-preview-user-ids", options.users ?? fixture.previewUsers,
     ...fixture.libraryRoots.flatMap((root) => ["-library-root", root]),
-    ...(options.withAssets === false ? [] : ["-web-assets-dir", artifacts.assets()]),
+    ...(options.withAssets === false ? [] : ["-web-assets-dir", image ? IMAGE_ASSETS : artifacts.assets()]),
     ...(options.extraArguments ?? []),
   ];
   const environment: Record<string, string> = { PATH: process.env["PATH"] ?? "", SECRET_KEY_BASE_FILE: fixture.secretFile };
   if (options.clock) environment["SHELFARR_E2E_CLOCK_FILE"] = options.clock;
-  const child = Bun.spawn([options.seamBinary ?? artifacts.binary(), ...argumentsList], { env: environment, stdout: "ignore", stderr: "pipe" });
-  const server = new RunningServer(origin, directory, database, child);
+  const container = image ? `shelfarr-go-web-${process.pid}-${port}` : null;
+  const command = image
+    ? [
+        "docker", "run", "--rm", "--name", container ?? "", "--network", "host", "-u", `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`,
+        "-v", `${directory}:${directory}`, "-v", `${fixture.secretFile}:${fixture.secretFile}:ro`, ...fixture.libraryRoots.flatMap((root) => ["-v", `${root}:${root}:ro`]),
+        "-e", `SECRET_KEY_BASE_FILE=${fixture.secretFile}`, image, "/usr/local/bin/shelfarr-http", ...argumentsList,
+      ]
+    : [options.seamBinary ?? artifacts.binary(), ...argumentsList];
+  const child = Bun.spawn(command, { env: image ? { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "" } : environment, stdout: "ignore", stderr: "pipe" });
+  const server = new RunningServer(origin, directory, database, child, container);
   const reader = child.stderr.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -165,7 +179,7 @@ export async function launchBrowser(): Promise<Browser> {
   const sink = process.env["PULSE_SINK"];
   if (!sink) throw new Error("PULSE_SINK must name the owned null sink before any test browser starts");
   return chromium.launch({
-    executablePath: process.env["SHELFARR_E2E_CHROMIUM"] ?? "/usr/bin/chromium",
+    ...(process.env["SHELFARR_E2E_CHROMIUM"] ? { executablePath: process.env["SHELFARR_E2E_CHROMIUM"] } : {}),
     headless: true,
     args: ["--mute-audio", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync", "--disable-background-networking", "--disable-gpu", "--use-fake-ui-for-media-stream", "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"],
     env: { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", TMPDIR: required("TMPDIR"), PULSE_SINK: sink, XDG_RUNTIME_DIR: process.env["XDG_RUNTIME_DIR"] ?? "", LANG: "C.UTF-8" },

@@ -123,9 +123,6 @@ func Load(directory string) (*Bundle, error) {
 }
 
 func readRegular(directory, name string, limit int64) ([]byte, error) {
-	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
-		return nil, ErrInvalid
-	}
 	opened, err := safeopen.Regular(filepath.Join(directory, name))
 	if err != nil {
 		return nil, ErrInvalid

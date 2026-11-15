@@ -155,6 +155,15 @@ func TestLoadRefusesUnsafeOrInconsistentDirectories(t *testing.T) {
 		})},
 		{"entry not listed", rewrite(func(m *webassetstest.Manifest) { m.Entry.Script = "other.0000000000000000.js" })},
 		{"entry has the wrong type", rewrite(func(m *webassetstest.Manifest) { m.Entry.Script, m.Entry.Style = m.Entry.Style, m.Entry.Script })},
+		{"files together exceed the total", func(t *testing.T, directory string, listed webassetstest.Manifest) {
+			for index := 0; index < totalLimit/fileLimit+1; index++ {
+				body := bytes.Repeat([]byte{byte('a' + index)}, fileLimit)
+				name := webassetstest.Name("big", body, ".js")
+				os.WriteFile(filepath.Join(directory, name), body, 0o600)
+				listed.Files[name] = webassetstest.Describe(body)
+			}
+			webassetstest.WriteManifest(t, directory, listed)
+		}},
 		{"no files", rewrite(func(m *webassetstest.Manifest) { m.Files = map[string]webassetstest.Entry{} })},
 		{"too many files", rewrite(func(m *webassetstest.Manifest) {
 			for index := 0; index <= maxFiles; index++ {

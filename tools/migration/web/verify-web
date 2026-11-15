@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/gw.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+sink_module=""
+cleanup() {
+  [ -z "$sink_module" ] || pactl unload-module "$sink_module" >/dev/null 2>&1 || true
+  [ -n "$keep" ] || rm -rf "$work"
+}
+trap cleanup EXIT
+mkdir -p "$work/t"
+export TMPDIR="$work/t"
+
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+
+step() { printf '\n== %s\n' "$*"; }
+
+clean_env() {
+  env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 TMPDIR="$work/t" "$@"
+}
+
+bundle_digest() {
+  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+}
+
+step "web: a private copy of the sources, so no build output lands in the repository"
+mkdir -p "$work/repo/apps/design/assets"
+cp -R "$root/apps/web" "$work/repo/apps/web"
+cp -R "$root/apps/design/assets/fonts" "$work/repo/apps/design/assets/fonts"
+web="$work/repo/apps/web"
+
+step "web: install from the lockfile, typecheck, unit tests, audit and both production builds"
+(cd "$web" && bun install --frozen-lockfile && bun run typecheck && bun test && bun audit && bun run build)
+
+step "web: the Go-served build is byte-for-byte reproducible and ships only the manifest's files"
+(cd "$web" && bun run build:go --out "$work/assets-a" && bun run build:go --out "$work/assets-b")
+diff -r "$work/assets-a" "$work/assets-b"
+test "$(find "$work/assets-a" -type f | wc -l)" -le 33
+! find "$work/assets-a" -name '*.map' | grep -q .
+echo "assets reproducible: $(cd "$work/assets-a" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+
+cd "$root/apps/server"
+step "go: format, vet (shipped and e2e builds) and unit tests with the race detector"
+test -z "$(gofmt -l .)"
+go vet ./...
+go vet -tags e2e ./...
+go test -race -count=1 ./internal/gohttp/ ./internal/webassets/... ./internal/webpreview/
+
+step "go: the production binary and its clock-seam twin, built twice to prove the build is reproducible"
+mkdir -p "$work/bin-a" "$work/bin-b"
+build() { CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" "$@"; }
+build -o "$work/bin-a/shelfarr-http" ./cmd/shelfarr-http
+build -o "$work/bin-b/shelfarr-http" ./cmd/shelfarr-http
+cmp "$work/bin-a/shelfarr-http" "$work/bin-b/shelfarr-http"
+build -tags e2eclock -o "$work/bin-a/shelfarr-http-seam" ./cmd/shelfarr-http
+
+cd "$root"
+step "ruby: the real Rails plain-text conversion over the committed corpus must equal the committed answers"
+clean_env bundle exec ruby tools/migration/plain_text_oracle.rb apps/server/internal/webpreview/testdata/plain-text-corpus.json > "$work/plain-text-expected.json"
+diff "$work/plain-text-expected.json" apps/server/internal/webpreview/testdata/plain-text-expected.json
+
+step "ruby: produce the synthetic fixture and the Rails browser cases with the real Rails code"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$work/bundle-current")
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/capture_browser_cases.rb --bundle "$work/bundle-current" --out "$work/browser-current")
+current_before="$(bundle_digest "$work/bundle-current")"
+
+step "audio: every test browser runs muted and with an owned null sink, never the default output"
+if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+  sink="shelfarr_go_web_$$"
+  sink_module="$(pactl load-module module-null-sink "sink_name=$sink")"
+  export PULSE_SINK="$sink"
+else
+  export PULSE_SINK="no-audio-server"
+fi
+echo "PULSE_SINK=$PULSE_SINK"
+
+step "browser: a real headless Chromium against the production Go binary, the production static build and real SQLite"
+out="${SHELFARR_WEB_REPORT_DIR:-$work/report}"
+mkdir -p "$out"
+(
+  cd "$web/e2e"
+  env SHELFARR_E2E_FIXTURE="$work/browser-current" SHELFARR_E2E_BINARY="$work/bin-a/shelfarr-http" SHELFARR_E2E_SEAM_BINARY="$work/bin-a/shelfarr-http-seam" \
+    SHELFARR_E2E_ASSETS="$work/assets-a" SHELFARR_E2E_OUT="$out" PULSE_SINK="$PULSE_SINK" TMPDIR="$work/t" ${SHELFARR_E2E_CHROMIUM:+SHELFARR_E2E_CHROMIUM="$SHELFARR_E2E_CHROMIUM"} \
+    bun test --timeout 120000
+)
+
+step "the source bundle was not modified by the browser run, and the repository is untouched"
+test "$current_before" = "$(bundle_digest "$work/bundle-current")" || { echo "bundle-current changed" >&2; exit 1; }
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

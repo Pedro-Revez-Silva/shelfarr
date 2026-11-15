@@ -30,7 +30,7 @@ progress writes, which answer `PUT`.
 ### Explicitly refused (HTTP 501, `not_implemented_in_go_runtime`, before authentication, no side effects)
 
 `discover`, `requests` (list, show, create, delete), `assets/:id/reading_order`, `read_along`
-(manifest, resources, audio), `transfer_grant` and `transfer`. Kobo and the browser HTML shell stay with Rails; the browser session and `/preview/api/v1` JSON are described in
+(manifest, resources, audio), `transfer_grant` and `transfer`. Kobo stays with Rails; the browser session and `/preview/api/v1` JSON are described in
 [Browser sessions and the preview JSON](#browser-sessions-and-the-preview-json). Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
 (`GET, HEAD`; `GET, HEAD, PUT` for progress; `PUT` for reading status), before authentication and without
 touching the credential.
@@ -123,7 +123,7 @@ The write domain added by this slice is exactly `consumer_progresses` and `consu
 
 ## Browser sessions and the preview JSON
 
-Status: experimental, default-off, backend only. No page, script or style is served, no UI changed, Rails stays
+Status: experimental, default-off, JSON only unless the browser screens below are also switched on. Rails stays
 the production server. This slice lets the runtime resume the browser session Rails issued, sign a local
 account in and out, and answer the session-authenticated JSON the static TypeScript preview already calls. It is
 not a login handover: only local password sign-in for accounts that need nothing else is ported.
@@ -380,6 +380,117 @@ plaintext secrets. 58 mutants of the critical invariants (codes, scopes, boundar
 
 Not proven: a real browser, the HTML consent page, a real app or device, TLS or proxy behaviour, production data, requests and acquisition, transfer grants, the legacy
 global-admin API, Rails and Go writing the same rows at once, power loss, clock zones other than UTC, and a deployment under a sub-path.
+
+## Browser screens: sign-in, native connection consent and Library (opt-in)
+
+Status: **experimental, default-off.** With one extra explicit option the Go runtime also serves the static
+TypeScript/React screens the pilot needs, so a browser can sign in, deliberately approve or decline a native app
+connection and browse the existing Library and details without Rails. Nothing else is ported: reading, listening,
+downloads, offline, PWA, Discover, requests and administration stay with Rails and are shown as unavailable, never as
+dead links. No JavaScript runtime is involved at serving time.
+
+### Switching it on
+
+All four must hold, otherwise every route below answers the same JSON `404 not_found` as before and nothing
+about the existing commands changes: `-experimental`, a well-formed per-user allowlist (`-preview-user-ids` or
+`SHELFARR_WEB_PREVIEW_USER_IDS`; unset or malformed stays off even for a signed-out visitor), the canonical
+`-browser-origin` (sign-in and every write need it; without it the sign-in screen says so) and
+`-web-assets-dir ABSOLUTE_DIRECTORY`, the output of `bun run build:go --out DIRECTORY` in `apps/web`. A relative or
+unclean path is refused before the file system is touched, a missing, symbolic-linked, FIFO, oversized, tampered or
+inconsistent directory is `refused: web-assets` (exit `2`) and nothing listens; the working directory is never read and
+no catch-all is ever served. Packaging: the experimental overlay image carries the same build in
+`/usr/local/share/shelfarr/web`; the Rails `ENTRYPOINT` and `CMD` are unchanged.
+
+### What is served (root mount only)
+
+| Route | Answer |
+| --- | --- |
+| `GET`, `HEAD /preview` | `303` to `/preview/library`. |
+| `GET`, `HEAD /preview/library`, `/preview/library/{id}` | The HTML shell (`id` is `[1-9][0-9]{0,18}`). One static document per view, identical signed in or out; direct loads, reloads and Back/Forward work. |
+| `GET`, `HEAD /consumer/connect` | The shell for the consent screen. The path is exactly the native `verification_uri`, and `?user_code=` the `verification_uri_complete`. |
+| `GET`, `HEAD /preview/assets/{name}` | A file listed in the verified manifest. |
+| any other method on those paths | `405`, `Allow: GET, HEAD`, no side effect (a `POST /consumer/connect` approves nothing). |
+| everything else, including `/preview/api/*`, `/admin` and unknown paths | JSON `404`; never the shell. |
+
+The shell is `private, no-store`, `lang="en"`, carries no account, token or cookie and sets the policy
+`default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self';
+manifest-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; object-src 'none'` (stricter than the
+Rails preview: no `data:` images, no manifest, no form action). The consent shell also sends `Referrer-Policy:
+no-referrer`. The only inline element is the non-executable `application/json` boot block. Assets are public,
+content-addressed (`name.<first 16 hex of sha256>.ext`), served from memory with a strong `ETag`,
+`Cache-Control: public, max-age=31536000, immutable`, `X-Content-Type-Options: nosniff`, the right type and
+`Cross-Origin-Resource-Policy: same-origin`; `HEAD`, conditional and range requests are answered. At most 32 files,
+2 MiB each and 8 MiB in total are accepted; extensions are limited to `js`, `css`, `ttf`, `woff2` and `png`; no source
+maps, no listing, no manifest download.
+
+### Sign-in, consent and Library behaviour
+
+* The browser calls the existing JSON (`auth/bootstrap`, `auth/login`, `auth/logout`, `connect`, `session`,
+  `library`, `continue`, `reading_status`) with the Go CSRF mechanism and `X-Shelfarr-Account`. Native bearer
+  credentials are never minted into the page, and the session token lives only in memory; nothing is stored in
+  `localStorage`, `sessionStorage` or a URL. A rejected or expired token is refreshed with a safe `GET`, the page says
+  so, and the mutation is never resent by itself.
+* Sign-in happens in place at the requested address, so the return to the intended screen cannot be an open redirect.
+  Invalid credentials, lockouts (indistinguishable from invalid credentials, as in Rails), rate limits, a busy
+  server, a second factor, an OIDC account and a passwordless deployment each have an explicit message; none has a
+  bypass or a recovery link.
+* Consent shows the signed-in account, the bounded app name, the displayed code and exactly the scopes the server
+  returned, with fresh-base, requesting-bundle and upgrade wording. Loading or reloading never approves. One click or
+  Enter sends one decision; after an uncertain answer nothing is resent and only the read-only status check is offered.
+  A code that belongs to another account reveals nothing (the JSON already redacts it) and offers a safe sign-out and
+  switch. Expired, used and invalid codes and both outcomes have terminal states.
+* Library, details and manual reading status reuse the existing screens and the generation-based account trust,
+  request cancellation, query-cache clearing and per-request `X-Shelfarr-Account`. A sign-out, an account change
+  elsewhere or a late response can neither show nor change another account's data.
+* Markup in a book description is converted to plain text with the HTML5 tokenizer and parser from
+  `golang.org/x/net`, following the Rails `PublicationJson#plain_text` steps (closed `script`/`style` removal, block
+  tags to line breaks, all remaining tags removed, entities decoded, `U+00A0` shown as the literal `&nbsp;` exactly as
+  Rails does, whitespace normalised) and rendered as text only. 800 inputs, including XSS payloads, are replayed
+  against the real Rails conversion (`tools/migration/plain_text_oracle.rb`); input Rails cannot convert (nesting
+  deeper than its parser accepts) and CDATA inside `svg`/`math` are refused with `501 unsupported_stored_value`, and
+  Go refuses nesting beyond 256 levels. PDF, CBZ, comic and read-along refusals are unchanged and are explained on
+  screen.
+
+### Deliberate limits of this pilot
+
+* JavaScript is required. There is no native form fallback: the JSON API keeps its CSRF and origin rules and
+  `form-action 'none'` blocks a native submission, so the pages show a plain `noscript` message instead.
+* Root mount only: no sub-path, proxy-prefix or Safari support is claimed or tested; only headless Chromium and a
+  real SQLite file were exercised.
+* Reading, listening, downloads, offline use, the PWA and its `/read` worker, Discover, requests and administration are
+  later slices and appear as unavailable.
+
+### Contract before and after
+
+* New (all additive): the option `-web-assets-dir`; the exit-`2` code `refused: web-assets`; the routes in the table
+  above; the manifest format `{version:1, entry:{script,style}, files:{name:{sha256,size}}}`; the boot block
+  `{"version":1,"runtime":"go","view":"library|details|connect","mount":"/preview","api":"/preview/api/v1"}`.
+* Unchanged: every native `/api/consumer/v1` route and answer, every `/preview/api/v1` JSON shape, the cookies, the
+  CSRF tokens, the Rails preview shell and its boot block `{version, account, mount, api, classic_library}` (the
+  client reads either; a boot block without `runtime` is Rails'), and `verification_uri`/`verification_uri_complete`.
+  A description with markup no longer answers `501 unsupported_stored_value`; it answers `200` with plain text.
+* Sessions and consent rows created by the Go screens are the same rows Rails writes, so Rails reads them.
+
+### Verification
+
+`tools/migration/web/verify-web` (CI job `go-web`) installs from the lockfile, type-checks, runs the Bun unit tests
+and `bun audit`, builds the Rails and the Go-served assets (the latter twice, byte-compared), runs the Go tests with
+the race detector, builds the production binary twice and compares it, replays the plain-text corpus through real
+Rails, produces the synthetic fixture with real Rails and then drives a real headless Chromium (muted, with an owned
+null audio sink) against the production binary, the production static build and a real SQLite copy: sign-in and
+failures, revocation, a Rails-issued session, stale accounts across tabs, CSRF failures, the whole native workflow
+(request, open `verification_uri_complete`, sign in, inspect, Allow or Not now, poll, authenticate, save and read a
+checkpoint, upgrade, wrong account, expiry, duplicate click, uncertain answer), Library, details, manual status,
+account isolation, plain-text descriptions, static serving, the opt-in and failure cases, zero CSP violations, axe,
+keyboard, light/dark, phone/desktop and 200% text. `tools/migration/packaging/verify-packages` additionally checks the
+assets inside the overlay image against their manifest.
+
+### Rollback
+
+Stop passing `-web-assets-dir` (or the allowlist): every route above returns to a JSON `404` and no state needs
+migrating. Reverting the commits removes `internal/webassets`, `internal/gohttp/web.go`, `apps/web/src/go`, the
+Go-mode components and the verifier; the `golang.org/x/net` dependency goes with them. Existing Go sessions stay valid
+for Rails and for the previous Go build.
 
 ## Database access
 

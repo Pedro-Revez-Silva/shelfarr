@@ -32,6 +32,11 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 	if err != nil {
 		return start("library-roots")
 	}
+	if config.WebAssetsDir != "" {
+		if _, err := webassets.Load(config.WebAssetsDir); err != nil {
+			return start("web-assets")
+		}
+	}
 	if !media.ConfinedOpenSupported() {
 		return start("confined-open")
 	}

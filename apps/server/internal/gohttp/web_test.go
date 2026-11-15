@@ -43,7 +43,7 @@ func TestTheShellRoutesServeOneStaticDocumentPerViewWithAStrictPolicy(t *testing
 		if recorder.Code != http.StatusOK || header.Get("Content-Type") != "text/html; charset=utf-8" || header.Get("Cache-Control") != "private, no-store" {
 			t.Fatalf("%s: %d %v", path, recorder.Code, header)
 		}
-		if header.Get("Content-Security-Policy") != webContentPolicy || header.Get("X-Content-Type-Options") != "nosniff" || header.Get("X-Frame-Options") != "SAMEORIGIN" {
+		if header.Get("Content-Security-Policy") != "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self'; manifest-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; object-src 'none'" || header.Get("X-Content-Type-Options") != "nosniff" || header.Get("X-Frame-Options") != "SAMEORIGIN" {
 			t.Errorf("%s: headers %v", path, header)
 		}
 		if (view == "connect") != (header.Get("Referrer-Policy") == "no-referrer") {

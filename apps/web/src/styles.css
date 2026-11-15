@@ -438,6 +438,7 @@ h2 {
 
 .controls {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -516,7 +517,7 @@ select {
 }
 .selects {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   gap: 12px;
 }
 

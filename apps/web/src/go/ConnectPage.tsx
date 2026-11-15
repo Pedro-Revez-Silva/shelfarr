@@ -336,7 +336,6 @@ function Consent({ state, name, onDecide, onCheck }: { state: Extract<ConnectSta
   const allowLabel = grant.upgrade ? "Allow requesting" : grant.requesting ? "Connect and allow requesting" : "Connect app";
   const denyLabel = grant.upgrade ? "Not now" : "Deny";
   const title = grant.upgrade ? "Allow requesting from your app" : "Connect your Shelfarr app";
-  const scopes = grant.scopes.length > 0 ? grant.scopes : [];
   return (
     <section className="auth-card" aria-labelledby="connect-heading" aria-busy={busy}>
       <Heading>{title}</Heading>
@@ -356,7 +355,7 @@ function Consent({ state, name, onDecide, onCheck }: { state: Extract<ConnectSta
       <div className="permissions" data-consumer-approval={grant.requesting ? "requesting" : "base"}>
         <p className="permissions-title">If you allow it, the app can:</p>
         <ul>
-          {scopes.map((scope) => (
+          {grant.scopes.map((scope) => (
             <li key={scope}>{SCOPE_TEXT[scope] ?? `Use the “${scope}” permission.`}</li>
           ))}
         </ul>

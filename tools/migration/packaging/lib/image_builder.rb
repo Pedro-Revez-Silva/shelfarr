@@ -30,7 +30,7 @@ module Migration
         rails = build_rails("candidate-rails", commit, tree, "candidate")
         context = export(commit, "candidate-#{commit[0, 12]}")
         packaged = Volume::Pins.image("candidate", commit)
-        docker_build(packaged, context, "tools/migration/packaging/Dockerfile", "RAILS_IMAGE" => rails.image, "GO_IMAGE" => Volume::Pins::GO_IMAGE)
+        docker_build(packaged, context, "tools/migration/packaging/Dockerfile", "RAILS_IMAGE" => rails.image, "GO_IMAGE" => Volume::Pins::GO_IMAGE, "BUN_IMAGE" => Volume::Pins::BUN_IMAGE)
         Result.new(role: "candidate", commit: commit, tree: tree, image: packaged, image_id: image_id(packaged), built: true)
       end
 

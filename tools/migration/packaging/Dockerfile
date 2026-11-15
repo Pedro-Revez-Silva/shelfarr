@@ -2,6 +2,15 @@
 
 ARG RAILS_IMAGE
 ARG GO_IMAGE=docker.io/library/golang:1.27.4
+ARG BUN_IMAGE=docker.io/oven/bun:1.4.4
+
+FROM --platform=$BUILDPLATFORM ${BUN_IMAGE} AS web-build
+WORKDIR /source/apps/web
+COPY apps/web/package.json apps/web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY apps/web ./
+COPY apps/design/assets/fonts /source/apps/design/assets/fonts
+RUN bun run build:go --out /out/web
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS go-build
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
@@ -14,4 +23,5 @@ RUN GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -ldflags=
 
 FROM ${RAILS_IMAGE}
 COPY --from=go-build /out/shelfarr-compat /out/shelfarr-workflows /out/shelfarr-http /usr/local/bin/
-LABEL org.shelfarr.packaging="experimental: Rails image plus Go checker, workflow and HTTP binaries; the entrypoint and command are the production ones"
+COPY --from=web-build /out/web /usr/local/share/shelfarr/web
+LABEL org.shelfarr.packaging="experimental: Rails image plus Go checker, workflow and HTTP binaries and the static web build; the entrypoint and command are the production ones"
