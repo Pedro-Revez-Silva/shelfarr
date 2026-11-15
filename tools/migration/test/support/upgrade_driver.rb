@@ -106,6 +106,18 @@ facts =
     sleep(0.01) until Time.now.subsec >= 0.9
     run.define_singleton_method(:migration_context) { fake_context(0.5) }
     { "applied" => run.migrate(budget: 1), "refused" => [ Float::NAN, Float::INFINITY, "1" ].map { |budget| attempt { run.migrate(budget: budget) }&.fetch("message") } }
+  when "watchdog-arguments"
+    recorded = []
+    spy = Module.new do
+      define_method(:spawn) do |*arguments, **options|
+        recorded << arguments.fetch(4)
+        super(*arguments, **options)
+      end
+    end
+    Process.singleton_class.prepend(spy)
+    run.define_singleton_method(:migration_context) { fake_context(0) }
+    [ Rational(1, 2), 0.5, 120, Rational(100, 3), 2**80 ].each { |budget| run.migrate(budget: budget) }
+    { "budgets" => recorded }
   when "fractional-budget-overrun"
     run.define_singleton_method(:migration_context) { fake_context(30) }
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)

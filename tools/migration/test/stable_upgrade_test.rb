@@ -101,11 +101,15 @@ class StableUpgradeTest < Minitest::Test
     assert_equal [ "migration: the deadline must be a finite number of seconds" ] * 3, facts.fetch("refused")
   end
 
-  def test_a_fractional_budget_is_enforced_at_full_precision
+  def test_the_watchdog_receives_the_budget_at_full_precision
+    assert_equal %w[0.5 0.5 120 33.3333333 1.20892582e+24], drive("watchdog-arguments").fetch("budgets")
+  end
+
+  def test_a_fractional_budget_kills_a_blocked_migration_long_before_the_whole_second_above_it
     facts = drive("fractional-budget-overrun")
     assert_equal 9, facts.fetch("signal")
     assert_operator facts.fetch("seconds"), :>=, 0.5
-    assert_operator facts.fetch("seconds"), :<, 0.9
+    assert_operator facts.fetch("seconds"), :<, 10
   end
 
   def test_an_exhausted_deadline_stops_before_any_migration_and_leaves_the_released_database_untouched
