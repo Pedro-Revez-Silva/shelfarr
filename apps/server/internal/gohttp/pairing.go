@@ -11,6 +11,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/checkpoint"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/devicegrant"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/fault"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/loginlimit"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
@@ -120,6 +121,10 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, result *outcome) {
 			return
 		}
 		upgrade = &live.Upgrade{TokenID: principal.TokenID, UserID: principal.UserID}
+		if err := fault.Hit(r.Context(), "device.authenticated"); err != nil {
+			mapFailure(w, result, err)
+			return
+		}
 	}
 	requested, present := object.Member("scope")
 	scopes, err := devicegrant.RequestedScopes(present, requested)

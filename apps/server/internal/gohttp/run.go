@@ -15,6 +15,8 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/ownership"
 )
 
+const responseGrace = 2 * time.Second
+
 type StartError struct{ Code string }
 
 func (e StartError) Error() string { return e.Code }
@@ -86,7 +88,7 @@ func newServer(handler http.Handler, config Config) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: config.ReadHeaderTimeout,
 		ReadTimeout:       config.ReadTimeout,
-		WriteTimeout:      config.RequestTimeout,
+		WriteTimeout:      config.RequestTimeout + responseGrace,
 		IdleTimeout:       config.IdleTimeout,
 		MaxHeaderBytes:    config.MaxHeaderBytes,
 		BaseContext:       func(net.Listener) context.Context { return context.Background() },

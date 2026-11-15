@@ -521,6 +521,7 @@ func openDatabase(t testing.TB, path string) *sql.DB {
 func rows(t testing.TB, path, statement string, arguments ...any) []map[string]any {
 	t.Helper()
 	database := openDatabase(t, path)
+	defer database.Close()
 	cursor, err := database.Query(statement, arguments...)
 	if err != nil {
 		t.Fatalf("query: %v", err)
@@ -552,6 +553,7 @@ func rows(t testing.TB, path, statement string, arguments ...any) []map[string]a
 func exec1(t testing.TB, path, statement string, arguments ...any) {
 	t.Helper()
 	database := openDatabase(t, path)
+	defer database.Close()
 	if _, err := database.Exec(statement, arguments...); err != nil {
 		t.Fatalf("exec: %v", err)
 	}

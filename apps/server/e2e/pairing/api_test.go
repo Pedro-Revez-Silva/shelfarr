@@ -32,6 +32,20 @@ func (a api) post(path string, headers map[string]string, body string) result {
 	return a.instance.bare().do("POST", path, merged, payload)
 }
 
+func (a api) fire(path string, headers map[string]string, body string) {
+	request, err := http.NewRequest("POST", a.instance.base+path, strings.NewReader(body))
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	if response, err := http.DefaultClient.Do(request); err == nil {
+		response.Body.Close()
+	}
+}
+
 func (a api) device(body string, bearer string) (result, map[string]any) {
 	a.t.Helper()
 	headers := map[string]string{}
@@ -106,4 +120,15 @@ func contains(text string, parts ...string) bool {
 	return true
 }
 
-var _ = http.StatusOK
+func (c consenter) fireDecision(userCode, decision string) {
+	token, _ := c.client.bootstrap()
+	payload, _ := json.Marshal(map[string]string{"user_code": userCode, "decision": decision})
+	request, _ := http.NewRequest("POST", c.client.server.base+"/preview/api/v1/connect", strings.NewReader(string(payload)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Shelfarr-Account", c.account)
+	request.Header.Set("Origin", c.origin)
+	request.Header.Set("X-CSRF-Token", token)
+	if response, err := c.client.client.Do(request); err == nil {
+		response.Body.Close()
+	}
+}
