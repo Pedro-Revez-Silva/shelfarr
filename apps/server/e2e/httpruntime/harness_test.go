@@ -26,7 +26,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var binaryPath string
+var binaryPath, seamBinaryPath string
 
 func TestMain(m *testing.M) {
 	directory, err := os.MkdirTemp("", "shelfarr-http-bin-")
@@ -35,16 +35,22 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binaryPath = filepath.Join(directory, "shelfarr-http")
-	arguments := []string{"build", "-o", binaryPath}
-	if os.Getenv("SHELFARR_HTTP_RACE") == "1" {
-		arguments = append(arguments, "-race")
-	}
-	arguments = append(arguments, "../../cmd/shelfarr-http")
-	build := exec.Command("go", arguments...)
-	build.Stderr = os.Stderr
-	if err := build.Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "build failed")
-		os.Exit(1)
+	seamBinaryPath = filepath.Join(directory, "shelfarr-http-seams")
+	for target, tags := range map[string]string{binaryPath: "", seamBinaryPath: "e2eclock,faultinject"} {
+		arguments := []string{"build", "-o", target}
+		if tags != "" {
+			arguments = append(arguments, "-tags", tags)
+		}
+		if os.Getenv("SHELFARR_HTTP_RACE") == "1" {
+			arguments = append(arguments, "-race")
+		}
+		arguments = append(arguments, "../../cmd/shelfarr-http")
+		build := exec.Command("go", arguments...)
+		build.Stderr = os.Stderr
+		if err := build.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, "build failed")
+			os.Exit(1)
+		}
 	}
 	code := m.Run()
 	os.RemoveAll(directory)
@@ -67,6 +73,18 @@ type caseEntry struct {
 		Status int    `json:"status"`
 		Code   string `json:"code"`
 	} `json:"go"`
+	Body          *string                   `json:"body"`
+	BodyBase64    *string                   `json:"body_base64"`
+	At            *string                   `json:"at"`
+	TrackedBook   *int64                    `json:"tracked_book"`
+	StateBefore   *caseState                `json:"state_before"`
+	State         *caseState                `json:"state"`
+	TokensChanged map[string]map[string]any `json:"tokens_changed"`
+}
+
+type caseState struct {
+	Progress []map[string]any `json:"progress"`
+	Reading  []map[string]any `json:"reading"`
 }
 
 type tokenRow struct {
@@ -82,14 +100,16 @@ type tokenRow struct {
 }
 
 type casesDocument struct {
-	BundleMediaRoot string      `json:"bundle_media_root"`
-	ExtraMediaRoot  string      `json:"extra_media_root"`
-	Database        string      `json:"database"`
-	ServerVersion   string      `json:"server_version"`
-	Origin          string      `json:"origin"`
-	Before          []tokenRow  `json:"token_state_before"`
-	After           []tokenRow  `json:"token_state_after"`
-	Cases           []caseEntry `json:"cases"`
+	BundleMediaRoot string           `json:"bundle_media_root"`
+	ExtraMediaRoot  string           `json:"extra_media_root"`
+	Database        string           `json:"database"`
+	ServerVersion   string           `json:"server_version"`
+	Origin          string           `json:"origin"`
+	Before          []tokenRow       `json:"token_state_before"`
+	After           []tokenRow       `json:"token_state_after"`
+	ProgressRows    []map[string]any `json:"progress_rows_after"`
+	ReadingRows     []map[string]any `json:"reading_rows_after"`
+	Cases           []caseEntry      `json:"cases"`
 }
 
 type fixture struct {
@@ -118,7 +138,9 @@ func readJSON(t *testing.T, path string, into any) {
 	if err != nil {
 		t.Fatalf("cannot read %s", filepath.Base(path))
 	}
-	if err := json.Unmarshal(data, into); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(into); err != nil {
 		t.Fatalf("cannot decode %s", filepath.Base(path))
 	}
 }
@@ -194,6 +216,10 @@ type serverOptions struct {
 	database  string
 	lock      string
 	noSecret  bool
+	seam      bool
+	clockFile string
+	faults    string
+	faultDir  string
 }
 
 var listening = regexp.MustCompile(`"address":"([^"]+)"`)
@@ -223,7 +249,17 @@ func startServer(t *testing.T, f fixture, copied runtimeCopy, options serverOpti
 		environment = append(environment, "SECRET_KEY_BASE_FILE="+f.secretFile())
 	}
 	environment = append(environment, options.env...)
-	command := exec.Command(binaryPath, arguments...)
+	executable := binaryPath
+	if options.seam {
+		executable = seamBinaryPath
+	}
+	if options.clockFile != "" {
+		environment = append(environment, "SHELFARR_E2E_CLOCK_FILE="+options.clockFile)
+	}
+	if options.faults != "" {
+		environment = append(environment, "SHELFARR_FAULT_POINTS="+options.faults, "SHELFARR_FAULT_DIR="+options.faultDir)
+	}
+	command := exec.Command(executable, arguments...)
 	command.Env = environment
 	buffer := &lockedBuffer{}
 	pipe, err := command.StderrPipe()
@@ -323,8 +359,16 @@ func (s *server) do(method, path string, headers map[string]string) result {
 }
 
 func (s *server) doWith(ctx context.Context, method, path string, headers map[string]string) result {
+	return s.doBody(ctx, method, path, headers, nil)
+}
+
+func (s *server) doBody(ctx context.Context, method, path string, headers map[string]string, body []byte) result {
 	s.t.Helper()
-	request, err := http.NewRequestWithContext(ctx, method, s.base+path, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, s.base+path, reader)
 	if err != nil {
 		s.t.Fatalf("bad request %q: %v", path, err)
 	}
@@ -337,11 +381,11 @@ func (s *server) doWith(ctx context.Context, method, path string, headers map[st
 		s.t.Fatalf("request failed: %v\n%s", err, s.log.String())
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	received, err := io.ReadAll(response.Body)
 	if err != nil {
 		s.t.Fatalf("body failed: %v", err)
 	}
-	return result{status: response.StatusCode, headers: response.Header, body: body}
+	return result{status: response.StatusCode, headers: response.Header, body: received}
 }
 
 func bearer(f fixture, label string) map[string]string {

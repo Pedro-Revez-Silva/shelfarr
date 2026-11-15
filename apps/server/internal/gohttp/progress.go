@@ -80,6 +80,7 @@ func (a *App) decode(w http.ResponseWriter, r *http.Request, result *outcome) (c
 	}
 	document, err := checkpoint.Decode(body)
 	if err != nil {
+		declareVary(w, "Accept", "X-Requested-With")
 		problem(w, result, http.StatusBadRequest, "invalid_json")
 		return checkpoint.Document{}, false
 	}

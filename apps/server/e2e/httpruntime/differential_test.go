@@ -3,6 +3,7 @@
 package httpruntime
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -163,11 +165,18 @@ func TestDifferentialAgainstRails(t *testing.T) {
 	for _, f := range fixtures(t) {
 		t.Run(f.name, func(t *testing.T) {
 			copied := newRuntimeCopy(t, f)
-			instance := startServer(t, f, copied, serverOptions{})
+			clock := filepath.Join(copied.dir, "clock")
+			instance := startServer(t, f, copied, serverOptions{seam: true, clockFile: clock})
+			observed := openMirror(t, copied.database)
 			var failures []string
 			for _, entry := range f.doc.Cases {
-				got := instance.do(entry.Method, entry.Path, requestHeaders(f, entry))
+				setClock(t, clock, entry)
+				before := observed.tokenMarks(t)
+				got := instance.doBody(context.Background(), entry.Method, entry.Path, requestHeaders(f, entry), requestBody(entry))
 				for _, problem := range compareEntry(f, entry, got) {
+					failures = append(failures, entry.Name+": "+problem)
+				}
+				for _, problem := range compareEffects(t, observed, entry, before) {
 					failures = append(failures, entry.Name+": "+problem)
 				}
 			}
@@ -182,6 +191,7 @@ func TestDifferentialAgainstRails(t *testing.T) {
 				t.Errorf("server exit code %d", code)
 			}
 			compareTokenState(t, f, copied)
+			compareFinalRows(t, f, observed)
 		})
 	}
 }
