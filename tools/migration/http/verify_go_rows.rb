@@ -140,7 +140,11 @@ class Verifier
       next unless label && !row.book.audiobook?
 
       assets = Consumer::LibraryAssets.new(row.book, formats: Consumer::ReaderFormats::SUPPORTED)
-      asset = assets.find(row.asset_id)
+      asset = begin
+        assets.find(row.asset_id)
+      rescue Consumer::LibraryAssets::Unavailable
+        nil
+      end
       next unless asset && %w[pdf cbz].include?(asset.format)
 
       locator = if asset.format == "pdf"
