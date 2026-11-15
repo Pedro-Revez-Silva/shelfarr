@@ -419,5 +419,23 @@
   "raw": {
    "id": "li_36"
   }
+ },
+ {
+  "name": "author-and-authorname-both",
+  "raw": {
+   "id": "li_37",
+   "author": "Primary Author",
+   "authorName": "Secondary Name",
+   "title": "Both"
+  }
+ },
+ {
+  "name": "narrator-and-narratorname-both",
+  "raw": {
+   "id": "li_38",
+   "narrator": "Primary Narrator",
+   "narratorName": "Secondary Narrator",
+   "title": "Both2"
+  }
  }
 ]

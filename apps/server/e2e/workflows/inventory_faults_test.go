@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -73,10 +74,10 @@ func TestEmptyWithoutAnExplicitTotalIsNotAuthoritative(t *testing.T) {
 	fixture := newInventoryFixture(t, libraryOf("lib-a", "One"))
 	fixture.seedLive(t)
 	before := digests(t, fixture.db)
-	fixture.peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+	fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
 		w.Write([]byte(`{"results":[],"page":0}`))
 		return true
-	}
+	})
 	outcome := fixture.work.runOnce(faults{}, inventoryOnly...)
 	if outcome.code != 1 {
 		t.Fatalf("exit %d", outcome.code)
@@ -88,13 +89,13 @@ func TestPartialFailurePublishesOnlyCompleteLibrariesAndSkipsOutOfScopePruning(t
 	fixture := newInventoryFixture(t, libraryOf("lib-a", "One", "Two"), libraryOf("lib-b", "Uno"))
 	fixture.seedLive(t)
 	seedItem(t, fixture.db, "audiobookshelf", "lib-old", "old", "Out of scope", "2025-06-01 00:00:00.000000")
-	fixture.peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+	fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
 		if id == "lib-b" {
 			w.WriteHeader(500)
 			return true
 		}
 		return false
-	}
+	})
 	outcome := fixture.work.runOnce(faults{}, inventoryOnly...)
 	if outcome.code != 1 || !contains(outcome.codes, "http-status-500") {
 		t.Fatalf("exit %d codes %v", outcome.code, outcome.codes)
@@ -125,16 +126,15 @@ func TestConfigurationChangedDuringFetchPublishesNothing(t *testing.T) {
 			fixture := newInventoryFixture(t, libraryOf("lib-a", "One", "Two", "Three"), libraryOf("lib-b", "Uno"))
 			fixture.seedLive(t)
 			before := digests(t, fixture.db, "settings")
-			changed := false
-			fixture.peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
-				if !changed && page == 1 {
-					changed = true
+			var changed atomic.Bool
+			fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+				if page == 1 && changed.CompareAndSwap(false, true) {
 					setSettings(t, fixture.db, change)
 				}
 				return false
-			}
+			})
 			outcome := fixture.work.runOnce(faults{}, inventoryOnly...)
-			if !changed {
+			if !changed.Load() {
 				t.Fatal("the change never happened during a fetch")
 			}
 			if outcome.code != 0 {
@@ -180,15 +180,16 @@ func TestCancellationIsPersistedAbortsTheFetchAndIsNeverResurrected(t *testing.T
 	fixture.seedLive(t)
 	before := digests(t, fixture.db)
 	reached := make(chan struct{}, 1)
-	blocking := true
-	fixture.peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
-		if !blocking {
+	var blocking atomic.Bool
+	blocking.Store(true)
+	fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+		if !blocking.Load() {
 			return false
 		}
 		reached <- struct{}{}
 		<-r.Context().Done()
 		return true
-	}
+	})
 	run := fixture.work.command(faults{}, append([]string{"run", "--once"}, inventoryOnly...)...)
 	<-reached
 	if code := fixture.work.control("cancel", "inventory"); code != 0 {
@@ -197,7 +198,7 @@ func TestCancellationIsPersistedAbortsTheFetchAndIsNeverResurrected(t *testing.T
 	if code := run.wait(); code != 0 {
 		t.Fatalf("exit %d: %s", code, run.output())
 	}
-	blocking = false
+	blocking.Store(false)
 	requireSame(t, before, digests(t, fixture.db))
 	if runs := fixture.runs(t); !reflect.DeepEqual(runs, [][]string{{"int64:1", "string:cancelled"}}) {
 		t.Fatalf("runs %v", runs)
@@ -346,15 +347,16 @@ func TestShutdownDuringAFetchLeavesTheRunToResume(t *testing.T) {
 	fixture.seedLive(t)
 	before := digests(t, fixture.db)
 	reached := make(chan struct{}, 1)
-	blocking := true
-	fixture.peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
-		if !blocking {
+	var blocking atomic.Bool
+	blocking.Store(true)
+	fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+		if !blocking.Load() {
 			return false
 		}
 		reached <- struct{}{}
 		<-r.Context().Done()
 		return true
-	}
+	})
 	run := fixture.work.command(faults{}, append([]string{"run", "--tick", "20ms"}, inventoryOnly...)...)
 	<-reached
 	if code := run.terminate(); code != 0 {
@@ -364,7 +366,7 @@ func TestShutdownDuringAFetchLeavesTheRunToResume(t *testing.T) {
 	if runs := fixture.runs(t); !reflect.DeepEqual(runs, [][]string{{"int64:1", "string:fetching"}}) {
 		t.Fatalf("runs %v", runs)
 	}
-	blocking = false
+	blocking.Store(false)
 	resumed := fixture.work.runOnce(faults{}, inventoryOnly...)
 	if resumed.code != 0 {
 		t.Fatalf("exit %d: %s", resumed.code, resumed.output)
@@ -432,5 +434,26 @@ func TestSchedulingNeverCreatesASecondChain(t *testing.T) {
 	}
 	if runs := fixture.runs(t); len(runs) != 3 {
 		t.Fatalf("two triggers must admit one run: %v", runs)
+	}
+}
+
+func TestALibraryThatExceedsItsFetchDeadlineFailsWithoutPruning(t *testing.T) {
+	fixture := newInventoryFixture(t, libraryOf("lib-a", "One", "Two", "Three"))
+	fixture.seedLive(t)
+	before := digests(t, fixture.db)
+	fixture.peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+		if page == 1 {
+			<-r.Context().Done()
+			return true
+		}
+		return false
+	})
+	outcome := fixture.work.runOnce(faults{}, append(inventoryOnly, "--pass-deadline", "300ms", "--request-timeout", "30s")...)
+	if outcome.code != 1 || !contains(outcome.codes, "deadline") {
+		t.Fatalf("exit %d codes %v: %s", outcome.code, outcome.codes, outcome.output)
+	}
+	requireSame(t, before, digests(t, fixture.db))
+	if state := rows(t, fixture.db, `SELECT state, error_code FROM wf_inventory_libraries`); !reflect.DeepEqual(state, [][]string{{"string:failed", "string:deadline"}}) {
+		t.Fatalf("library %v", state)
 	}
 }

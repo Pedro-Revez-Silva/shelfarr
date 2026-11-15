@@ -31,6 +31,7 @@ const (
 	BlockedDirect         = "direct-download-unsupported"
 	BlockedNotDispatched  = "not-dispatched"
 	ErrorCredentials      = "credential-decrypt"
+	CodePassDeadline      = "pass-deadline"
 	OutcomeNotDue         = "not-due"
 	OutcomeCancelled      = "schedule-cancelled"
 	OutcomeCycleCompleted = "cycle-completed"
@@ -107,7 +108,7 @@ func (w *Workflow) report(name string, fields map[string]any) {
 }
 
 func (w *Workflow) Cycle(ctx context.Context) (CycleResult, error) {
-	due, outcome, err := w.due(ctx)
+	due, outcome, controlSeq, err := w.due(ctx)
 	if err != nil || !due {
 		return CycleResult{Outcome: outcome}, err
 	}
@@ -127,27 +128,30 @@ func (w *Workflow) Cycle(ctx context.Context) (CycleResult, error) {
 		return result, err
 	}
 	if cycleCtx.Err() != nil {
-		return result, cycleCtx.Err()
+		if ctx.Err() == nil {
+			return result, wfstore.Fail(CodePassDeadline, nil)
+		}
+		return result, ctx.Err()
 	}
 	w.report("downloads.cycle", map[string]any{"observed": totals.Observed, "progressed": totals.Progressed, "completed": totals.Completed, "not_found": totals.NotFound, "blocked": totals.Blocked, "errors": totals.Errors, "stale": totals.Stale})
-	return result, w.finishCycle(ctx)
+	return result, w.finishCycle(ctx, controlSeq)
 }
 
-func (w *Workflow) due(ctx context.Context) (bool, string, error) {
+func (w *Workflow) due(ctx context.Context) (bool, string, int64, error) {
 	schedule, err := wfstore.ReadSchedule(ctx, w.Owner.Store().DB(), Domain)
 	if err != nil {
-		return false, "", wfstore.Wrap(err)
+		return false, "", 0, wfstore.Wrap(err)
 	}
 	switch {
 	case schedule.State != "enabled":
-		return false, OutcomeCancelled, nil
+		return false, OutcomeCancelled, 0, nil
 	case schedule.NextDueAt > wfstore.FormatTimestamp(w.now()):
-		return false, OutcomeNotDue, nil
+		return false, OutcomeNotDue, 0, nil
 	}
-	return true, "", nil
+	return true, "", schedule.ControlSeq, nil
 }
 
-func (w *Workflow) finishCycle(ctx context.Context) error {
+func (w *Workflow) finishCycle(ctx context.Context, controlSeq int64) error {
 	return w.Owner.Write(ctx, func(tx *sql.Tx) error {
 		value, err := wfstore.Setting(ctx, tx, "download_check_interval")
 		if err != nil {
@@ -158,7 +162,7 @@ func (w *Workflow) finishCycle(ctx context.Context) error {
 			interval = min(max(parsed, 1), 86_400)
 		}
 		now := w.now()
-		_, err = w.Owner.ConsumeSlot(ctx, tx, Domain, now, now.Add(time.Duration(interval)*time.Second), "cycle-completed")
+		_, err = w.Owner.ConsumeSlot(ctx, tx, Domain, controlSeq, now, now.Add(time.Duration(interval)*time.Second), "cycle-completed")
 		return err
 	})
 }
@@ -262,6 +266,7 @@ func (w *Workflow) pollAll(ctx context.Context, candidates []candidate) (Totals,
 		mutex  sync.Mutex
 		totals Totals
 		fatal  error
+		first  error
 		group  sync.WaitGroup
 		slots  = make(chan struct{}, workers)
 	)
@@ -280,13 +285,22 @@ func (w *Workflow) pollAll(ctx context.Context, candidates []candidate) (Totals,
 			mutex.Lock()
 			defer mutex.Unlock()
 			verdict.addTo(&totals)
-			if err != nil && fatal == nil && wfstore.CodeOf(err) == wfstore.CodeFenced {
-				fatal = err
+			switch {
+			case err == nil:
+			case wfstore.CodeOf(err) == wfstore.CodeFenced:
+				if fatal == nil {
+					fatal = err
+				}
+			case first == nil && ctx.Err() == nil:
+				first = err
 			}
 		}(entry)
 	}
 	group.Wait()
-	return totals, fatal
+	if fatal != nil {
+		return totals, fatal
+	}
+	return totals, first
 }
 
 type verdict struct {

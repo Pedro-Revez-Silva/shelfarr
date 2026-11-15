@@ -233,7 +233,7 @@ func runService(arguments []string, flags *flag.FlagSet, workdir *string, out *r
 	flags.DurationVar(&options.grace, "shutdown-grace", 20*time.Second, "")
 	flags.IntVar(&options.pageSize, "page-size", 500, "")
 	selected := map[string]bool{}
-	if flags.Parse(arguments) != nil || *workdir == "" || options.tick <= 0 || options.concurrency < 1 || options.concurrency > 32 || options.busy <= 0 {
+	if flags.Parse(arguments) != nil || *workdir == "" || options.tick <= 0 || options.concurrency < 1 || options.concurrency > 32 || options.busy <= 0 || options.pageSize < 1 || options.pageSize > 1000 || options.requestLimit <= 0 || options.passDeadline <= 0 || options.grace <= 0 || options.backoff < 0 {
 		fmt.Fprintln(stderr, usage)
 		return exitUsage
 	}
@@ -304,7 +304,7 @@ func (s *service) run(ctx context.Context) int {
 		}()
 	}
 	if owner := s.owners["inventory"]; owner != nil {
-		workflow := &inventory.Workflow{Owner: owner, ABS: abs.Config{PageSize: s.options.pageSize, RequestTimeout: s.options.requestLimit}, Report: s.out.observe}
+		workflow := &inventory.Workflow{Owner: owner, FetchDeadline: s.options.passDeadline, ABS: abs.Config{PageSize: s.options.pageSize, RequestTimeout: s.options.requestLimit}, Report: s.out.observe}
 		start("inventory", func(ctx context.Context) bool {
 			result, err := workflow.Pass(ctx)
 			s.after("inventory", err)
@@ -328,6 +328,9 @@ func (s *service) run(ctx context.Context) int {
 			s.after("downloads", err)
 			if err == nil {
 				s.out.emit("downloads.pass", map[string]any{"outcome": result.Outcome})
+				if result.Totals.Errors > 0 {
+					s.out.fail("downloads", "observation-errors")
+				}
 			}
 			return err == nil
 		})
@@ -336,6 +339,9 @@ func (s *service) run(ctx context.Context) int {
 			s.after("handoffs", err)
 			if err == nil {
 				s.out.emit("handoffs.pass", map[string]any{"pending": result.Pending, "delivered": result.Delivered, "failed": result.Failed})
+				if result.Failed > 0 {
+					s.out.fail("handoffs", "delivery-failed")
+				}
 			}
 			return err == nil
 		})

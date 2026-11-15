@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/shelfarr-workflows.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+cleanup() { [ -n "$keep" ] || rm -rf "$work"; }
+trap cleanup EXIT
+export TMPDIR="$work"
+
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+
+step() { printf '\n== %s\n' "$*"; }
+
+clean_env() {
+  env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 "$@"
+}
+
+produce() {
+  (cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$@")
+}
+
+step "ruby: the extraction oracle reproduces the committed Audiobookshelf expectations"
+corpus="$root/apps/server/internal/abs/testdata/extract-corpus.json"
+(cd "$root" && bundle exec ruby tools/migration/abs_extraction_oracle.rb "$corpus") > "$work/extract-expected.json"
+cmp "$work/extract-expected.json" "$root/apps/server/internal/abs/testdata/extract-expected.json"
+
+step "ruby: produce a current-schema bundle and a stable-upgrade bundle from the real Rails code"
+produce "$work/bundle-current"
+produce "$work/bundle-upgrade" --mode stable-upgrade
+
+cd "$root/apps/server"
+step "go: format, vet (shipped, e2e and fault-injection builds), unit tests with the race detector"
+test -z "$(gofmt -l .)"
+go vet ./...
+go vet -tags e2e ./...
+go vet -tags faultinject ./...
+go test -race -count=1 ./...
+
+step "go: the workflow executable against both bundles, with race-instrumented binaries"
+SHELFARR_WORKFLOW_RACE=1 SHELFARR_WORKFLOW_BUNDLE="$work/bundle-current" SHELFARR_WORKFLOW_UPGRADE_BUNDLE="$work/bundle-upgrade" \
+  go test -tags e2e -count=1 -timeout 20m -skip TestMutantsAreDetected ./e2e/workflows/
+
+step "go: mutants of the critical invariants must each be rejected by an assertion"
+SHELFARR_WORKFLOW_BUNDLE="$work/bundle-current" SHELFARR_WORKFLOW_UPGRADE_BUNDLE="$work/bundle-upgrade" \
+  go test -tags e2e -count=1 -timeout 30m -run TestMutantsAreDetected ./e2e/workflows/
+
+step "go: the unchanged read-only checker still accepts both bundles after the workflow suite"
+go build -o "$work/compat" ./cmd/shelfarr-compat
+for bundle in bundle-current bundle-upgrade; do
+  "$work/compat" compat-check --bundle "$work/$bundle" --legacy-sha1 --timeout 300s | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["passed"], r; print("compat passed", [c["name"] for c in r["checks"]])'
+done
+
+step "go: clean reproducible cross-builds of the workflow executable"
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/workflows-$arch" ./cmd/shelfarr-workflows
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/workflows-$arch.again" ./cmd/shelfarr-workflows
+  cmp "$work/workflows-$arch" "$work/workflows-$arch.again"
+  printf '%s %s\n' "$arch" "$(sha256sum "$work/workflows-$arch" | cut -d' ' -f1)"
+done
+
+step "repository untouched after the whole run"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

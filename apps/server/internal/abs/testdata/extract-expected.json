@@ -574,5 +574,37 @@
     "asin": null,
     "published_year": null,
     "missing": false
+  },
+  {
+    "audiobookshelf_id": "li_37",
+    "title": "Both",
+    "subtitle": null,
+    "author": "Primary Author",
+    "narrator": null,
+    "series": null,
+    "series_position": null,
+    "publisher": null,
+    "language": null,
+    "description": null,
+    "isbn": null,
+    "asin": null,
+    "published_year": null,
+    "missing": false
+  },
+  {
+    "audiobookshelf_id": "li_38",
+    "title": "Both2",
+    "subtitle": null,
+    "author": null,
+    "narrator": "Primary Narrator",
+    "series": null,
+    "series_position": null,
+    "publisher": null,
+    "language": null,
+    "description": null,
+    "isbn": null,
+    "asin": null,
+    "published_year": null,
+    "missing": false
   }
 ]

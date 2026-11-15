@@ -64,8 +64,8 @@ func (s *Store) Resume(ctx context.Context, workflow string, now time.Time) erro
 	return s.control(ctx, `UPDATE wf_schedule SET state = 'enabled', next_due_at = ?, control_seq = control_seq + 1 WHERE workflow = ? AND state <> 'enabled'`, FormatTimestamp(now), workflow)
 }
 
-func (o *Owner) ConsumeSlot(ctx context.Context, tx *sql.Tx, workflow string, now time.Time, next time.Time, outcome string) (bool, error) {
-	result, err := tx.ExecContext(ctx, `UPDATE wf_schedule SET next_due_at = ?, last_outcome = ? WHERE workflow = ? AND state = 'enabled' AND next_due_at <= ?`, FormatTimestamp(next), outcome, workflow, FormatTimestamp(now))
+func (o *Owner) ConsumeSlot(ctx context.Context, tx *sql.Tx, workflow string, controlSeq int64, now time.Time, next time.Time, outcome string) (bool, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE wf_schedule SET next_due_at = ?, last_outcome = ? WHERE workflow = ? AND state = 'enabled' AND next_due_at <= ? AND control_seq = ?`, FormatTimestamp(next), outcome, workflow, FormatTimestamp(now), controlSeq)
 	if err != nil {
 		return false, err
 	}

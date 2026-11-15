@@ -30,16 +30,18 @@ const (
 	OutcomeAllFailed           = "all-libraries-failed"
 	OutcomeDiscoveryFailed     = "discovery-failed"
 	OutcomeInterrupted         = "interrupted"
+	CodeFetchDeadline          = "deadline"
 )
 
 type Event func(name string, fields map[string]any)
 
 type Workflow struct {
-	Owner      *wfstore.Owner
-	Now        func() time.Time
-	ABS        abs.Config
-	CancelPoll time.Duration
-	Report     Event
+	Owner         *wfstore.Owner
+	Now           func() time.Time
+	ABS           abs.Config
+	CancelPoll    time.Duration
+	FetchDeadline time.Duration
+	Report        Event
 }
 
 type Result struct {
@@ -138,7 +140,7 @@ func (w *Workflow) admit(ctx context.Context) (*run, string, error) {
 		if outcome != OutcomeIdle {
 			next = now.Add(minimumInterval)
 		}
-		consumed, err := w.Owner.ConsumeSlot(ctx, tx, Domain, now, next, ifEmpty(outcome, "admitted"))
+		consumed, err := w.Owner.ConsumeSlot(ctx, tx, Domain, schedule.ControlSeq, now, next, ifEmpty(outcome, "admitted"))
 		if err != nil || !consumed || outcome != OutcomeIdle {
 			return err
 		}
@@ -222,7 +224,7 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 		if err := passCtx.Err(); err != nil {
 			return finish(OutcomeInterrupted, err)
 		}
-		inventory, fetchErr := client.LibraryInventory(passCtx, entry.ID)
+		inventory, fetchErr := w.fetch(passCtx, client, entry.ID)
 		if fetchErr != nil && passCtx.Err() != nil {
 			return finish(OutcomeInterrupted, passCtx.Err())
 		}
@@ -250,6 +252,20 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 		return finish(outcome, err)
 	}
 	return finish(outcome, nil)
+}
+
+func (w *Workflow) fetch(ctx context.Context, client *abs.Client, libraryID string) (abs.Inventory, error) {
+	deadline := w.FetchDeadline
+	if deadline <= 0 {
+		deadline = 2 * time.Minute
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	inventory, err := client.LibraryInventory(fetchCtx, libraryID)
+	if err != nil && ctx.Err() == nil && fetchCtx.Err() != nil {
+		return abs.Inventory{}, &abs.Error{Code: CodeFetchDeadline}
+	}
+	return inventory, err
 }
 
 func stageCode(inventory abs.Inventory, err error) string {

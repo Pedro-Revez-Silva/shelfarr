@@ -137,7 +137,7 @@ func TestUnreliableInventoriesNeverChangeLiveInventory(t *testing.T) {
 			before := digests(t, db, "wf_none")
 			hold := make(chan struct{})
 			defer close(hold)
-			peer.hook = func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
+			peer.setHook(func(id string, page int, w http.ResponseWriter, r *http.Request) bool {
 				switch entry.name {
 				case "server error":
 					w.WriteHeader(500)
@@ -170,7 +170,7 @@ func TestUnreliableInventoriesNeverChangeLiveInventory(t *testing.T) {
 					}
 				}
 				return true
-			}
+			})
 			outcome := work.runOnce(faults{}, append([]string{"--page-size", "2"}, entry.args...)...)
 			if outcome.code != 1 {
 				t.Fatalf("exit %d: %s", outcome.code, outcome.output)

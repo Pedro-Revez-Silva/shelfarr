@@ -73,6 +73,11 @@ func Open(ctx context.Context, dir string, options Options) (*Store, error) {
 	if err := checkSQLite(database); err != nil {
 		return nil, ErrNotDisposable
 	}
+	if !hasSidecars(database) {
+		if err := verifyMarkerWithoutSideEffects(ctx, database, marker.Token); err != nil {
+			return nil, err
+		}
+	}
 	busy := options.BusyTimeoutMillis
 	if busy <= 0 {
 		busy = 5000
@@ -100,6 +105,35 @@ func Open(ctx context.Context, dir string, options Options) (*Store, error) {
 		return nil, ErrNotDisposable
 	}
 	return opened, nil
+}
+
+func hasSidecars(database string) bool {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Lstat(database + suffix); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func verifyMarkerWithoutSideEffects(ctx context.Context, database, token string) error {
+	query := url.Values{}
+	query.Set("mode", "ro")
+	query.Set("immutable", "1")
+	handle, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: database, RawQuery: query.Encode()}).String())
+	if err != nil {
+		return ErrNotDisposable
+	}
+	defer handle.Close()
+	handle.SetMaxOpenConns(1)
+	var stored string
+	if err := handle.QueryRowContext(ctx, `SELECT value FROM wf_meta WHERE key = 'disposable_token'`).Scan(&stored); err != nil {
+		return ErrNotDisposable
+	}
+	if subtle.ConstantTimeCompare([]byte(stored), []byte(token)) != 1 {
+		return ErrNotDisposable
+	}
+	return nil
 }
 
 func isMissingTable(err error) bool {

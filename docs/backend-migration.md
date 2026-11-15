@@ -1,8 +1,9 @@
 # Go backend migration
 
-Status: **M0, an experimental and unreachable proof.** Rails remains the only implementation that
-serves Shelfarr. Nothing in this slice is routed, packaged, started by the container, or reachable
-from the running application. It adds a command-line checker that reads isolated fixture bundles
+Status: **M0 and M1, experimental and unreachable proofs.** Rails remains the only implementation that
+serves Shelfarr. Nothing in these slices is routed, packaged, started by the container, or reachable
+from the running application. M1 (see `M1: durable workflows`) adds a runnable Go executable for library
+inventory sync and download monitoring that works only on a disposable copy of a fixture database. It adds a command-line checker that reads isolated fixture bundles
 and a producer that creates those bundles from the real Rails code. The producer has two modes:
 `current-schema` (the default) and `stable-upgrade`, which proves that a synthetic primary database
 with the schema of the released `v2026.11.05.1` survives the shipped migrations and is readable by
@@ -61,8 +62,19 @@ apps/server/                Go module (not built, shipped or referenced by the R
   internal/library/         library roots, directory walking and asset listing
   internal/consumer/        read projection of /me, the library list and one publication
   internal/compat/          the checks and the report
+  cmd/shelfarr-workflows/   the experimental durable workflow executable (M1)
+  internal/wfstore/         disposable-copy preparation, fenced writes, owner lock, schedule (M1)
+  internal/abs/             Audiobookshelf HTTP adapter and metadata extraction (M1)
+  internal/inventory/       library inventory workflow (M1)
+  internal/qbit/            qBittorrent HTTP adapter (M1)
+  internal/monitor/         download monitor and completion handoff (M1)
+  internal/netguard/        loopback-only HTTP client and bounded reads (M1)
+  internal/fault/           failpoints, compiled only with -tags faultinject (M1)
   e2e/                      executable tests, corrupted-bundle controls and mutants (build tag e2e)
-tools/migration/            independent Rails fixture producer and the verify script
+  e2e/workflows/            executable fault suite and mutants for the M1 workflows (build tag e2e)
+tools/migration/            independent Rails fixture producer and the verify scripts
+  verify-workflows            the single entry point for the M1 slice
+  abs_extraction_oracle.rb    runs the real Rails Audiobookshelf extraction over a corpus
   lib/release_source.rb       pinned release objects read from local Git history
   lib/released_records.rb     synthetic records written into the released schema
   lib/database_snapshot.rb    type-exact snapshot of any SQLite file, read immutably
@@ -400,6 +412,122 @@ non-media files, natural ordering, outside-root, missing, library-root, blank an
 password verdicts, 8 encrypted columns, 15 tampered envelopes and 44 consumer responses plus one
 refusal (111 cases).
 
+## M1: durable workflows
+
+`shelfarr-workflows` is a bounded experimental executable in the existing `apps/server` module. It runs two
+crash-recoverable workflows over SQLite state: **library inventory synchronisation** against an
+Audiobookshelf-compatible HTTP API and **download monitoring** against qBittorrent. It is not routed,
+packaged, started by the container or reachable from Rails, and it never touches a Rails queue. It replaces
+nothing: Rails still performs both jobs in production.
+
+### Disposable copies only
+
+```
+shelfarr-workflows prepare --bundle DIR --workdir NEW_DIR
+shelfarr-workflows run --workdir DIR [--workflows inventory,downloads] [--once] [options]
+shelfarr-workflows trigger|cancel|resume --workdir DIR --workflow inventory|downloads
+shelfarr-workflows status --workdir DIR
+```
+
+There is no database-path flag and no default path. `prepare` opens an M0 fixture bundle with the M0 verifier,
+copies `db/primary.sqlite3` with `VACUUM INTO` from an immutable read-only handle, switches the copy to WAL, adds
+the worker tables, and writes a private marker (`WORKDIR.json`, random token, also stored in `wf_meta`) and the
+bundle's synthetic key material (`encryption.json`, mode 0600). Every other command refuses a directory whose
+mode, marker or database token does not match, without creating a sidecar file. No environment variable, dotenv
+file or credential file is read; configuration comes from the copy's own `settings` and `download_clients` rows,
+decrypted with the copied synthetic keys. All HTTP goes through one client that refuses non-loopback addresses,
+ignores proxy variables and refuses redirects. Output is structured JSON lines of fixed codes: fixture-controlled
+text, URLs, paths, credentials and response bodies are never printed.
+
+Exit codes: `0` completed, `1` a recoverable failure was reported, `2` usage, `3` the domain already has an owner,
+`4` this process was superseded (fenced), `5` the directory is not a prepared disposable copy, `6` `prepare` refused.
+
+### Ownership and persisted authority
+
+Two write domains, `inventory` and `downloads`, each have exactly one owning process, enforced twice: a kernel
+`flock` on `locks/<domain>.lock` (released by the kernel on any exit, SIGKILL included) and a fencing generation in
+`wf_owner`, incremented at start and checked inside every domain write transaction. A superseded owner's next write
+fails and writes nothing; no lease expires, so no owner can publish after losing ownership. `trigger`, `cancel` and
+`resume` write only `wf_schedule`, the single persisted clock: one row per workflow with its state
+(`enabled`/`cancelled`), next due time and a control counter. A restart or a settings change cannot create a second
+chain, a cancelled workflow stays cancelled until `resume`, and a cycle that races a control change does not consume
+the new slot.
+
+### Schema (before and after)
+
+Rails tables are unchanged. The copy gains only these worker-owned tables (never shipped as Rails migrations):
+
+| Table | Written by | Purpose |
+| --- | --- | --- |
+| `wf_meta`, `wf_owner`, `wf_schedule` | prepare, owner, control commands | disposable token, generation per domain, persisted schedule |
+| `wf_inventory_runs` | inventory owner | one active run (partial unique index), configuration fingerprint, snapshot time |
+| `wf_inventory_libraries`, `wf_inventory_stage` | inventory owner | per-library outcome (`pending`, `staged`, `empty`, `failed`) and validated staged items |
+| `wf_download_state` | downloads owner | last error code and durable `blocked` reason per ownership token |
+| `wf_postprocess_handoffs` | downloads owner | unique, idempotency-keyed completion handoff (`pending`/`delivered`) |
+
+Existing Rails tables written, and only these columns: `library_items` (inventory; the existing unique key, enum
+platform value, `missing` boolean, Rails text timestamps with `synced_at` set to the snapshot time and `created_at`
+preserved on update), `downloads` (`progress`, `not_found_count`, `status` to completed, `download_path`,
+`updated_at`) and `request_events` (insert on completion). Nothing else in any table changes; the suite compares a
+digest of every other table before and after.
+
+### Inventory rules
+
+A run is admitted in one transaction with its schedule slot and configuration fingerprint (platform, server URL,
+library-id set or `auto`). Each library is fetched with bounded pagination (`limit`/`page`, a required numeric
+`total` that must stay constant, unique ids, no more than `total`, short or empty pages before `total` are
+`truncated`, 8 MiB per response, 100,000 items, per-request and per-library deadlines, no redirects). Only a
+validated complete snapshot is staged; `empty` is accepted only for page 0 with an explicit `total` of 0.
+Publication is one fenced transaction that re-reads the schedule and settings: cancelled or changed configuration
+abandons the run and deletes nothing. Otherwise it upserts with Rails' `synced_at` guard, prunes unseen rows of
+staged or empty libraries (same guard), and prunes libraries no longer configured only when no library of the run
+failed. A failed library is left untouched. A restart continues the same run: staged libraries are not fetched
+again, a crash before the publication commit leaves live inventory unchanged and one after it is final.
+Metadata extraction (14 fields) is checked against the real Rails extraction over a corpus.
+
+### Download monitoring rules
+
+Per active download (`queued`/`downloading`) and enabled qBittorrent client, bounded by `--concurrency`: only
+`200 []` is "not found" (counted up to 3, then durably `blocked`); every other status, transport error, bad JSON,
+wrong hash or out-of-range value is a coded error with no change to `downloads`. Every write carries the ownership
+token `(id, request, external id, client, selected release)`, so an observation of a cancelled, failed, re-dispatched,
+moved or replaced attempt cannot act on it. Completion is one transaction: the status claim, the `request_events`
+row and the unique handoff row; the request is not advanced. A separate loop delivers pending handoffs to an optional
+loopback `--handoff-url` with an `Idempotency-Key`: delivery is at-least-once (a crash after the consumer replies sends
+it again), the local completion is idempotent, and nothing claims exactly-once network effects.
+
+### Practical differences from the Ruby equivalent
+
+No semaphore lease patch, supervisor, cache reservation or successor job chain: ownership is a kernel lock plus a
+fencing generation, the clock is one row. Durable intent and the data effect share one SQLite transaction (Solid
+Queue's queue database is a separate file). A remote failure is a typed code that cannot flow into code that expects
+a list. Not solved by Go: idempotent steps, retry policy and backoff, external at-least-once delivery, the single
+SQLite writer, and everything listed below.
+
+### Not ported (explicit gaps)
+
+Real `PostProcessingJob` and media work; the failure branches of `DownloadMonitorJob` (`handle_download_failure!`,
+blocklisting and next-candidate selection, stale-dispatch and direct-download timeouts): client-reported failure and
+the not-found threshold are recorded as `blocked`, not acted on; download clients other than qBittorrent; library
+platforms other than Audiobookshelf (BookOrbit and Grimmory are `platform-unsupported`); post-scan refresh jobs;
+settings or client edits through Go; a resumed stale run can re-add an item a newer sync removed (the same behaviour as
+the Ruby guard); more than 2000 active downloads per cycle. This is not a production handover, not all-provider parity
+and not M2 packaging or volume rollback.
+
+### Verification
+
+```
+tools/migration/verify-workflows
+```
+
+produces a current-schema and a stable-upgrade bundle with the real Rails code, checks the extraction oracle, runs
+`gofmt`, `go vet` (shipped, e2e and fault-injection builds) and `go test -race`, the workflow fault suite against both
+bundles with race-instrumented binaries (SIGKILL at every inventory commit boundary and around completion and handoff,
+incomplete, empty and erroring inventories, configuration change and cancellation during a fetch, duplicate start,
+superseded owner, writer contention, hung peers, shutdown and restart, panics, credential and loopback isolation),
+26 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
+reproducible cross-builds and an untouched-repository check.
+
 ## Gaps (recorded in every report)
 
 | Gap | Status |
@@ -473,7 +601,7 @@ that add those paths; nothing else depends on them.
 
 ## What the next waves need from this
 
-- M1 reuses `internal/store`, `internal/bundle` and the producer for crash, hang, cancellation,
+- M1 (done for the two workflows above) reused `internal/bundle` and the producer for crash, hang, cancellation,
   retry, duplicate-instance and SQLite contention proofs;
 - M2 adds the stable and beta volume upgrade and activity-preserving rollback (the `stable-volume-upgrade` gap)
   and the packaged multi-architecture application;

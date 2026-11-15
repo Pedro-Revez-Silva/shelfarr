@@ -28,6 +28,18 @@ type absPeer struct {
 	hook      func(library string, page int, w http.ResponseWriter, r *http.Request) bool
 }
 
+func (p *absPeer) setHook(hook func(library string, page int, w http.ResponseWriter, r *http.Request) bool) {
+	p.mutex.Lock()
+	p.hook = hook
+	p.mutex.Unlock()
+}
+
+func (p *absPeer) currentHook() func(library string, page int, w http.ResponseWriter, r *http.Request) bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	return p.hook
+}
+
 func newABS(t *testing.T, libraries ...*fakeLibrary) *absPeer {
 	t.Helper()
 	peer := &absPeer{libraries: libraries}
@@ -37,7 +49,9 @@ func newABS(t *testing.T, libraries ...*fakeLibrary) *absPeer {
 			return
 		}
 		peer.record(r)
-		var listed []map[string]any
+		listed := []map[string]any{}
+		peer.mutex.Lock()
+		defer peer.mutex.Unlock()
 		for _, entry := range peer.libraries {
 			listed = append(listed, map[string]any{"id": entry.ID, "name": "Name " + entry.ID, "mediaType": entry.MediaType, "folders": []any{}})
 		}
@@ -51,7 +65,7 @@ func newABS(t *testing.T, libraries ...*fakeLibrary) *absPeer {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/libraries/"), "/items")
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		if peer.hook != nil && peer.hook(id, page, w, r) {
+		if hook := peer.currentHook(); hook != nil && hook(id, page, w, r) {
 			return
 		}
 		peer.mutex.Lock()
@@ -146,7 +160,24 @@ type qbitPeer struct {
 	inflight int
 	maxSeen  int
 	hook     func(hash string, w http.ResponseWriter, r *http.Request) bool
-	override func(hash string, w http.ResponseWriter, r *http.Request) bool
+}
+
+func (p *qbitPeer) setHook(hook func(hash string, w http.ResponseWriter, r *http.Request) bool) {
+	p.mutex.Lock()
+	p.hook = hook
+	p.mutex.Unlock()
+}
+
+func (p *qbitPeer) peak() int {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	return p.maxSeen
+}
+
+func (p *qbitPeer) running() int {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	return p.inflight
 }
 
 func newQBit(t *testing.T) *qbitPeer {
@@ -180,7 +211,10 @@ func newQBit(t *testing.T) *qbitPeer {
 			peer.inflight--
 			peer.mutex.Unlock()
 		}()
-		if peer.hook != nil && peer.hook(hash, w, r) {
+		peer.mutex.Lock()
+		hook := peer.hook
+		peer.mutex.Unlock()
+		if hook != nil && hook(hash, w, r) {
 			return
 		}
 		peer.mutex.Lock()
@@ -216,12 +250,27 @@ type consumer struct {
 	hook     func(key string, w http.ResponseWriter, r *http.Request) bool
 }
 
+func (c *consumer) setHook(hook func(key string, w http.ResponseWriter, r *http.Request) bool) {
+	c.mutex.Lock()
+	c.hook = hook
+	c.mutex.Unlock()
+}
+
+func (c *consumer) setStatus(status int) {
+	c.mutex.Lock()
+	c.status = status
+	c.mutex.Unlock()
+}
+
 func newConsumer(t *testing.T) *consumer {
 	t.Helper()
 	peer := &consumer{effects: map[string]int{}, status: 200}
 	peer.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Idempotency-Key")
-		if peer.hook != nil && peer.hook(key, w, r) {
+		peer.mutex.Lock()
+		hook := peer.hook
+		peer.mutex.Unlock()
+		if hook != nil && hook(key, w, r) {
 			return
 		}
 		peer.mutex.Lock()
@@ -278,7 +327,7 @@ func exec1Count(t *testing.T, db *sql.DB) int64 {
 
 func (w *workdir) seedDownload(db *sql.DB, client int64, hash string) seeded {
 	w.t.Helper()
-	request := exec1(w.t, db, `INSERT INTO requests (user_id, book_id, status, created_at, updated_at) VALUES (1, 1, 3, datetime('now'), datetime('now'))`)
+	request := exec1(w.t, db, `INSERT INTO requests (user_id, book_id, status, created_at, updated_at) VALUES ((SELECT MIN(id) FROM users), (SELECT MIN(id) FROM books), 3, datetime('now'), datetime('now'))`)
 	result := exec1(w.t, db, `INSERT INTO search_results (request_id, guid, title, status, created_at, updated_at) VALUES (?, ?, 'Synthetic release', 1, datetime('now'), datetime('now'))`, request, "guid-"+hash)
 	download := exec1(w.t, db, `INSERT INTO downloads (request_id, search_result_id, download_client_id, external_id, download_type, status, progress, name, created_at, updated_at) VALUES (?, ?, ?, ?, 'torrent', 1, 0, 'Synthetic', '2026-01-01 00:00:00.000000', '2026-01-01 00:00:00.000000')`,
 		request, result, strconv.FormatInt(client, 10), hash)

@@ -55,6 +55,10 @@ func setupAndRun(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, currentBundleEnvironment+" and "+upgradeBundleEnvironment+" must name fixture bundles from tools/migration/produce_fixture.rb")
 		return 2
 	}
+	if override := os.Getenv("SHELFARR_WORKFLOW_FAULT_BINARY"); override != "" {
+		faultBinary, plainBinary = override, os.Getenv("SHELFARR_WORKFLOW_PLAIN_BINARY")
+		return m.Run()
+	}
 	scratch, err := os.MkdirTemp("", "shelfarr-workflows-e2e-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -79,6 +83,10 @@ func setupAndRun(m *testing.M) int {
 		command := exec.Command("go", append(arguments, "./cmd/shelfarr-workflows")...)
 		command.Dir = module
 		command.Env = append(os.Environ(), "CGO_ENABLED=0")
+		if os.Getenv("SHELFARR_WORKFLOW_RACE") == "1" {
+			command.Args = append(command.Args[:2], append([]string{"-race"}, command.Args[2:]...)...)
+			command.Env = append(os.Environ(), "CGO_ENABLED=1")
+		}
 		if output, err := command.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "build failed: %v\n%s", err, output)
 			return 2
@@ -518,4 +526,22 @@ func deriveKey(primary, salt string) []byte {
 func readAll(reader io.Reader) string {
 	data, _ := io.ReadAll(reader)
 	return string(data)
+}
+
+func itoa(number int64) string { return fmt.Sprint(number) }
+
+type sqlDB = sql.DB
+
+func openImmutable(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	query := url.Values{}
+	query.Set("mode", "ro")
+	query.Set("immutable", "1")
+	handle, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: path, RawQuery: query.Encode()}).String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle.SetMaxOpenConns(1)
+	t.Cleanup(func() { handle.Close() })
+	return handle
 }
