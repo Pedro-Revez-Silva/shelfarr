@@ -62,10 +62,12 @@ func (a *App) transferGrant(w http.ResponseWriter, r *http.Request, principal *a
 	})
 }
 
-func (a *App) transfer(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	header := w.Header()
+func setTransferPrivacy(header http.Header) {
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("Referrer-Policy", "no-referrer")
+}
+
+func (a *App) transfer(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
 	claims, ok := a.openGrant(r, found)
 	if ok {
 		var err error

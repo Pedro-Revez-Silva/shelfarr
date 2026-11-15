@@ -165,6 +165,8 @@ func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
 		"missing owner":   {`UPDATE api_tokens SET user_id = 99 WHERE id = 1`, `UPDATE api_tokens SET user_id = 1 WHERE id = 1`},
 		"deleted token":   {`DELETE FROM api_tokens WHERE id = 1`, `INSERT INTO api_tokens (id, user_id, token_digest, scopes) VALUES (1, 1, 'restored', '["library:read"]')`},
 		"spaced scope":    {`UPDATE api_tokens SET scopes = '["progress:write", "search:read"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '"search:read library:read"' WHERE id = 1`},
+		"scope null":      {`UPDATE api_tokens SET scopes = 'null' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
+		"scope object":    {`UPDATE api_tokens SET scopes = '{"library:read":true}' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
 		"admin scope too": {`UPDATE api_tokens SET scopes = '["requests:admin"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["requests:admin","library:read"]' WHERE id = 1`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -371,8 +373,9 @@ func TestRemovedAndReplacedAssetsAnswerGoneAndNotFoundLikeTheBearerRoute(t *test
 func TestTransfersAreAdmittedLikeMediaStreams(t *testing.T) {
 	shelf := newTransferShelf(t, func(h *harness) { h.app.streams = make(chan struct{}, 1) })
 	shelf.h.app.streams <- struct{}{}
-	if got := shelf.fetch(http.MethodGet, nil); got.Code != http.StatusServiceUnavailable || got.Header().Get("Retry-After") == "" {
-		t.Fatalf("a full media pool admitted a transfer: %d", got.Code)
+	got := shelf.fetch(http.MethodGet, nil)
+	if got.Code != http.StatusServiceUnavailable || got.Header().Get("Retry-After") == "" || got.Header().Get("Cache-Control") != "private, no-store" || got.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("a full media pool admitted a transfer or answered it in the open: %d %v", got.Code, got.Header())
 	}
 	if got := shelf.h.sendBody(http.MethodPost, shelf.mintPath(), "", authorised()); got.Code != http.StatusCreated {
 		t.Fatalf("a full media pool blocked a mint: %d", got.Code)

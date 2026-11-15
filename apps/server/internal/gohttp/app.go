@@ -207,6 +207,9 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	if found.kind == routeAsset || found.kind == routeTransfer {
 		slots = a.streams
 	}
+	if found.kind == routeTransfer {
+		setTransferPrivacy(w.Header())
+	}
 	if !a.acquire(slots) {
 		w.Header().Set("Retry-After", "1")
 		problem(w, result, http.StatusServiceUnavailable, "server_busy")
