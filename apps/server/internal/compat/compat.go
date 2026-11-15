@@ -192,12 +192,12 @@ func (r *runner) checkLibraryAssets(ctx context.Context) {
 			failures = append(failures, label+":malformed")
 			continue
 		}
-		failures = append(failures, compareBook(lister, books, id, label, expected)...)
+		failures = append(failures, compareBook(ctx, lister, books, id, label, expected)...)
 	}
 	r.record("library-assets", len(r.bundle.Assets.Books), failures)
 }
 
-func compareBook(lister library.Lister, books []store.Book, id int64, label string, expected bundle.BookAssets) []string {
+func compareBook(ctx context.Context, lister library.Lister, books []store.Book, id int64, label string, expected bundle.BookAssets) []string {
 	var book *store.Book
 	for index := range books {
 		if books[index].ID == id {
@@ -213,7 +213,7 @@ func compareBook(lister library.Lister, books []store.Book, id int64, label stri
 	if book.BookType == store.BookTypeComicbook {
 		return nil
 	}
-	listing, err := lister.List(*book, book.FilePath.String)
+	listing, err := lister.List(ctx, *book, book.FilePath.String)
 	if err != nil {
 		return []string{label + ":" + reason(err)}
 	}

@@ -260,7 +260,7 @@ func ProjectDetail(publication consumer.Publication) (Detail, error) {
 	}
 	files := make([]File, 0, len(publication.Assets))
 	for _, asset := range publication.Assets {
-		files = append(files, File{ID: asset.ID, Filename: asset.Filename, Format: asset.Format, MediaType: asset.MediaType, SizeBytes: asset.SizeBytes, Position: asset.Position})
+		files = append(files, File{ID: asset.ID, Filename: asset.Filename, Format: asset.Format, MediaType: asset.MediaType, SizeBytes: asset.SizeBytes, Position: asset.Position, PageCount: asset.PageCount})
 	}
 	return Detail{Summary: summary, Description: description, Files: files}, nil
 }

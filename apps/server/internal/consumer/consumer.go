@@ -71,6 +71,9 @@ type assetBody struct {
 	SizeBytes  int64  `json:"size_bytes"`
 	Position   int    `json:"position"`
 	ContentURL string `json:"content_url"`
+
+	PageCount       *int   `json:"page_count,omitempty"`
+	ReadingOrderURL string `json:"reading_order_url,omitempty"`
 }
 
 type progressBody struct {
@@ -173,7 +176,7 @@ func (s Service) list(ctx context.Context, principal *account.Principal) (Respon
 	}
 	items := make([]publicationBody, 0, len(books))
 	for _, book := range books {
-		item, err := current.publication(book)
+		item, err := current.publication(ctx, book)
 		if err != nil {
 			return Response{}, err
 		}
@@ -198,14 +201,14 @@ func (s Service) show(ctx context.Context, principal *account.Principal, rawID s
 	if err != nil {
 		return Response{}, err
 	}
-	item, err := current.publication(*book)
+	item, err := current.publication(ctx, *book)
 	if err != nil {
 		return Response{}, err
 	}
 	return reply(200, item)
 }
 
-func (v view) publication(book store.Book) (publicationBody, error) {
+func (v view) publication(ctx context.Context, book store.Book) (publicationBody, error) {
 	description, err := truncatedDescription(book.Description)
 	if err != nil {
 		return publicationBody{}, err
@@ -214,7 +217,7 @@ func (v view) publication(book store.Book) (publicationBody, error) {
 	if err != nil {
 		return publicationBody{}, err
 	}
-	listing, err := v.lister.List(book, book.FilePath.String)
+	listing, err := v.lister.List(ctx, book, book.FilePath.String)
 	if err != nil {
 		return publicationBody{}, err
 	}
@@ -246,10 +249,16 @@ func (v view) publication(book store.Book) (publicationBody, error) {
 func assetBodies(book store.Book, listing library.Listing) []assetBody {
 	bodies := make([]assetBody, 0, len(listing.Assets))
 	for _, asset := range listing.Assets {
-		bodies = append(bodies, assetBody{
+		contentURL := assetsPath + strconv.FormatInt(book.ID, 10) + "/assets/" + asset.ID
+		body := assetBody{
 			ID: asset.ID, Filename: asset.Filename, Format: asset.Format, MediaType: asset.MediaType, SizeBytes: asset.SizeBytes,
-			Position: asset.Position, ContentURL: assetsPath + strconv.FormatInt(book.ID, 10) + "/assets/" + asset.ID,
-		})
+			Position: asset.Position, ContentURL: contentURL,
+		}
+		if asset.Format == "cbz" {
+			pages := asset.PageCount
+			body.PageCount, body.ReadingOrderURL = &pages, contentURL+"/reading_order"
+		}
+		bodies = append(bodies, body)
 	}
 	return bodies
 }

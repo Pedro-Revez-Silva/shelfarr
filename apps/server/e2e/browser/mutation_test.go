@@ -34,7 +34,7 @@ const (
 	lockout      = "TestBrowserLockoutIsAtomic"
 	faults       = "TestBrowserLoginFaults"
 	bounds       = "TestBrowserPasswordCostAndRateAreBounded"
-	unported     = "TestBrowserDataRefuses"
+	unported     = "TestBrowserDataServesFixedLayout"
 	allowlist    = "TestBrowserEndpointsAreOff"
 	restart      = "TestBrowserSessionsSurviveARestart"
 	cookies      = "TestBrowserBodiesAndCookies"
@@ -90,8 +90,10 @@ var mutants = []mutant{
 	{name: "cookie: the session cookie is readable by scripts", file: "internal/gohttp/browser.go", edits: one("Expires: expires.Truncate(time.Second), HttpOnly: true,", "Expires: expires.Truncate(time.Second), HttpOnly: false,"), unit: "./internal/gohttp/", scenario: lifecycle},
 	{name: "cookie: the secure flag is never set", file: "internal/gohttp/browser.go", edits: one("func (a *App) secureCookies() bool { return strings.HasPrefix(a.config.BrowserOrigin, \"https://\") }", "func (a *App) secureCookies() bool { return false }"), unit: "./internal/gohttp/"},
 	{name: "cookie: the session cookie is not Rails-escaped", file: "internal/gohttp/browser.go", edits: one("Value: url.QueryEscape(cookie), Path: \"/\"", "Value: cookie, Path: \"/\""), unit: "./internal/gohttp/", scenario: lifecycle},
-	{name: "formats: PDF and CBZ assets are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("if asset.Format == \"pdf\" || asset.Format == \"cbz\" {\n\t\t\t\treturn nil, errUnsupportedAsset", "if asset.Format == \"never\" {\n\t\t\t\treturn nil, errUnsupportedAsset"), unit: "./internal/gohttp/", scenario: unported},
-	{name: "formats: comic records are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("if book.BookType == store.BookTypeComicbook {\n\t\t\treturn nil, errUnsupportedKind", "if false {\n\t\t\treturn nil, errUnsupportedKind"), unit: "./internal/gohttp/", scenario: unported},
+	{name: "formats: PDF and CBZ assets are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("view := consumer.NewViewFor(roots, webFormats.Names, progress, states, true)", "view := consumer.NewViewFor(roots, []string{\"epub\"}, progress, states, true)"), unit: "./internal/gohttp/", scenario: unported + "|" + differential},
+	{name: "formats: comic records are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("webFormats = readerformats.Formats{Names: []string{\"cbz\", \"epub\", \"pdf\"}, Declared: true}", "webFormats = readerformats.Formats{Names: []string{\"epub\"}, Declared: true}"), unit: "./internal/gohttp/", scenario: unported + "|" + differential},
+	{name: "formats: a comic record's detail is not found", file: "internal/gohttp/browser_data.go", edits: one("book, ok := a.lookupBook(w, r, rawID, allBookTypes, result)", "book, ok := a.lookupBook(w, r, rawID, []int{store.BookTypeEbook, store.BookTypeAudiobook}, result)"), unit: "./internal/gohttp/", scenario: unported + "|" + differential},
+	{name: "formats: a CBZ file has no page count", file: "internal/webpreview/webpreview.go", edits: one("Position: asset.Position, PageCount: asset.PageCount})", "Position: asset.Position})"), unit: "./internal/webpreview/", scenario: unported + "|" + differential},
 	{name: "description: markup reaches the browser as raw HTML", file: "internal/webpreview/plaintext.go", edits: one("text, err := visibleText(lineBreaks(withoutRawTextElements(value)))", "text, err := value, error(nil)"), unit: "./internal/webpreview/", scenario: markup},
 	{name: "description: script and style bodies are kept", file: "internal/webpreview/plaintext.go", edits: one("lineBreaks(withoutRawTextElements(value))", "lineBreaks(value)"), unit: "./internal/webpreview/", scenario: markup},
 	{name: "description: block tags do not break lines", file: "internal/webpreview/plaintext.go", edits: one("lineBreaks(withoutRawTextElements(value))", "withoutRawTextElements(value)"), unit: "./internal/webpreview/", scenario: markup},

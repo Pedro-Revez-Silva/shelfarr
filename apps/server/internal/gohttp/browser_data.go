@@ -13,9 +13,7 @@ import (
 )
 
 var (
-	errUnsupportedKind = errors.New("publication kind is not supported")
-	webFormats         = readerformats.Formats{Names: []string{"cbz", "epub", "pdf"}, Declared: true}
-	webBookTypes       = []int{store.BookTypeEbook, store.BookTypeAudiobook, store.BookTypeComicbook}
+	webFormats = readerformats.Formats{Names: []string{"cbz", "epub", "pdf"}, Declared: true}
 )
 
 const webContinueLimit = 3
@@ -85,9 +83,6 @@ func (a *App) webPublications(r *http.Request, userID int64, books []store.Book)
 	}
 	ids := make([]int64, len(books))
 	for index, book := range books {
-		if book.BookType == store.BookTypeComicbook {
-			return nil, errUnsupportedKind
-		}
 		ids[index] = book.ID
 	}
 	progress, err := a.db.ProgressFor(r.Context(), userID, ids)
@@ -98,17 +93,12 @@ func (a *App) webPublications(r *http.Request, userID int64, books []store.Book)
 	if err != nil {
 		return nil, err
 	}
-	view := consumer.NewViewFor(roots, allReadingFormats, progress, states, true)
+	view := consumer.NewViewFor(roots, webFormats.Names, progress, states, true)
 	items := make([]consumer.Publication, 0, len(books))
 	for _, book := range books {
-		item, err := view.Publication(book)
+		item, err := view.Publication(r.Context(), book)
 		if err != nil {
 			return nil, err
-		}
-		for _, asset := range item.Assets {
-			if asset.Format == "pdf" || asset.Format == "cbz" {
-				return nil, errUnsupportedAsset
-			}
 		}
 		items = append(items, item)
 	}
@@ -201,7 +191,7 @@ func (a *App) webContinue(w http.ResponseWriter, r *http.Request, session browse
 }
 
 func (a *App) webBook(w http.ResponseWriter, r *http.Request, rawID string, result *outcome) (*store.Book, bool) {
-	book, ok := a.lookupBook(w, r, rawID, webBookTypes, result)
+	book, ok := a.lookupBook(w, r, rawID, allBookTypes, result)
 	if !ok {
 		return nil, false
 	}

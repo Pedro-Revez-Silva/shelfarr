@@ -2,6 +2,7 @@ package readerformats
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -41,16 +42,28 @@ func TestFormatsRefuseMalformedDeclarationsWithTheRailsMessages(t *testing.T) {
 	}
 }
 
-func TestFixedLayoutFormatsAreRefusedNotIgnored(t *testing.T) {
-	for _, header := range []string{"pdf", "epub,cbz", "cbz,pdf,epub"} {
+func TestGraphicSelectionsAreNormalisedAndMarkedGraphic(t *testing.T) {
+	cases := map[string]struct {
+		names   []string
+		graphic bool
+	}{
+		"pdf":          {[]string{"pdf"}, true},
+		"epub,cbz":     {[]string{"cbz", "epub"}, true},
+		"cbz,pdf,epub": {[]string{"cbz", "epub", "pdf"}, true},
+		"pdf, pdf":     {[]string{"pdf"}, true},
+		"epub":         {[]string{"epub"}, false},
+	}
+	for header, want := range cases {
 		formats, err := ParseFormats(header, true)
-		if err != nil || !errors.Is(formats.RequireSupported(), ErrUnsupported) {
-			t.Fatalf("%q: %v", header, err)
+		if err != nil || !reflect.DeepEqual(formats.Names, want.names) || formats.Graphic() != want.graphic || !formats.Declared {
+			t.Fatalf("%q: %+v %v", header, formats, err)
 		}
 	}
-	formats, _ := ParseFormats("epub", true)
-	if formats.RequireSupported() != nil {
-		t.Fatal("epub alone must be supported")
+	if formats, _ := ParseFormats("epub", true); !formats.Default() || formats.Joined() != "epub" {
+		t.Fatal("an explicit epub selection is the default identity")
+	}
+	if formats, _ := ParseFormats("", false); formats.Declared || formats.Graphic() {
+		t.Fatal("an absent header is the undeclared legacy selection")
 	}
 }
 

@@ -25,6 +25,7 @@ const (
 	routeProgress
 	routeReadingStatus
 	routeAsset
+	routeReadingOrder
 	routeExcluded
 	routeWrongMethod
 	routeBrowserSession
@@ -66,7 +67,6 @@ var ExcludedRoutes = []excludedRoute{
 	{http.MethodPost, "requests", "requests and acquisition"},
 	{http.MethodGet, "requests/{id}", "requests and acquisition"},
 	{http.MethodDelete, "requests/{id}", "requests and acquisition"},
-	{http.MethodGet, "library/{id}/assets/{asset}/reading_order", "CBZ reading order"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along", "read-along"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along/resources/{path...}", "read-along"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along/audio/{audio}", "read-along"},
@@ -141,6 +141,8 @@ func classify(method, path string) route {
 		return served(method, route{kind: routeReadingStatus, name: "reading_status", id: segments[1]}, http.MethodPut)
 	case len(segments) == 4 && segments[0] == "library" && segments[2] == "assets" && segmentOK(segments[1]) && segmentOK(segments[3]):
 		return supported(method, route{kind: routeAsset, name: "asset", id: segments[1], assetID: segments[3]})
+	case len(segments) == 5 && segments[0] == "library" && segments[2] == "assets" && segments[4] == "reading_order" && segmentOK(segments[1]) && segmentOK(segments[3]):
+		return supported(method, route{kind: routeReadingOrder, name: "reading_order", id: segments[1], assetID: segments[3]})
 	}
 	for _, excluded := range ExcludedRoutes {
 		if excluded.Method == method && matchPattern(excluded.Pattern, segments) {

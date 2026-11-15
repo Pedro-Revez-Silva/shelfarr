@@ -1,13 +1,17 @@
 package library
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/assetid"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/comic"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
@@ -15,7 +19,10 @@ const (
 	maxEntries   = 2000
 	maxDepth     = 8
 	maxEpubBytes = 250 << 20
+	pdfWindow    = 1024
 )
+
+var pdfHeader = regexp.MustCompile(`%PDF-[0-9]\.[0-9]`)
 
 var audioTypes = map[string]string{
 	"mp3": "audio/mpeg", "m4b": "audio/mp4", "m4a": "audio/mp4", "aac": "audio/aac",
@@ -31,6 +38,7 @@ type Asset struct {
 	MediaType string
 	SizeBytes int64
 	Position  int
+	PageCount int
 	Stat      assetid.Stat
 }
 
@@ -39,9 +47,16 @@ type Listing struct {
 	Assets      []Asset
 }
 
+type Found struct {
+	Unavailable bool
+	Asset       *Asset
+}
+
 type errSkip struct{ cause error }
 
 func (e errSkip) Error() string { return "asset skipped" }
+
+var errNotOffered = errors.New("file is not offered as an asset")
 
 var fixedLayoutLimits = map[string]int64{"pdf": 500 << 20, "cbz": 2 << 30}
 
@@ -149,28 +164,72 @@ func (l Lister) canonicalBoundary(path string) (boundary, error) {
 	return boundary{target: target, root: root, dir: info.IsDir()}, nil
 }
 
-func (l Lister) List(book store.Book, bookPath string) (Listing, error) {
-	assets, err := l.listAssets(book, bookPath)
-	var skip errSkip
-	switch {
-	case errors.Is(err, errUnavailable), errors.As(err, &skip):
+func (l Lister) List(ctx context.Context, book store.Book, bookPath string) (Listing, error) {
+	assets, err := l.listAssets(ctx, book, bookPath)
+	if unavailable(err) {
 		return Listing{Unavailable: true}, nil
-	case err != nil:
+	}
+	if err != nil {
 		return Listing{}, err
 	}
 	return Listing{Assets: assets}, nil
 }
 
-func (l Lister) listAssets(book store.Book, bookPath string) ([]Asset, error) {
-	candidates, err := l.candidates(book, bookPath)
+func unavailable(err error) bool {
+	var skip errSkip
+	return errors.Is(err, errUnavailable) || errors.As(err, &skip)
+}
+
+func (l Lister) Find(ctx context.Context, book store.Book, bookPath, id string) (Found, error) {
+	found, err := l.find(ctx, book, bookPath, id)
+	if unavailable(err) {
+		return Found{Unavailable: true}, nil
+	}
+	return found, err
+}
+
+func (l Lister) find(ctx context.Context, book store.Book, bookPath, id string) (Found, error) {
+	candidates, err := l.candidates(ctx, book, bookPath)
+	if err != nil {
+		return Found{}, err
+	}
+	position := 0
+	for _, candidate := range candidates {
+		asset, err := l.asset(ctx, book, bookPath, candidate, false)
+		var skip errSkip
+		if errors.Is(err, errNotOffered) || errors.As(err, &skip) {
+			continue
+		}
+		if err != nil {
+			return Found{}, err
+		}
+		if asset.ID != id {
+			position++
+			continue
+		}
+		inspected, err := l.asset(ctx, book, bookPath, candidate, true)
+		if errors.Is(err, errNotOffered) {
+			return Found{}, nil
+		}
+		if err != nil {
+			return Found{}, err
+		}
+		inspected.Position = position
+		return Found{Asset: &inspected}, nil
+	}
+	return Found{}, nil
+}
+
+func (l Lister) listAssets(ctx context.Context, book store.Book, bookPath string) ([]Asset, error) {
+	candidates, err := l.candidates(ctx, book, bookPath)
 	if err != nil {
 		return nil, err
 	}
 	var assets []Asset
 	for _, candidate := range candidates {
-		asset, err := l.asset(book, bookPath, candidate)
+		asset, err := l.asset(ctx, book, bookPath, candidate, true)
 		var skip errSkip
-		if errors.As(err, &skip) {
+		if errors.Is(err, errNotOffered) || errors.As(err, &skip) {
 			continue
 		}
 		if err != nil {
@@ -182,7 +241,7 @@ func (l Lister) listAssets(book store.Book, bookPath string) ([]Asset, error) {
 	return assets, nil
 }
 
-func (l Lister) candidates(book store.Book, bookPath string) ([]string, error) {
+func (l Lister) candidates(ctx context.Context, book store.Book, bookPath string) ([]string, error) {
 	located, err := l.canonicalBoundary(bookPath)
 	if err != nil {
 		return nil, err
@@ -192,7 +251,7 @@ func (l Lister) candidates(book store.Book, bookPath string) ([]string, error) {
 		if located.target == located.root {
 			return nil, errUnavailable
 		}
-		if paths, err = l.directoryFiles(book, located); err != nil {
+		if paths, err = l.directoryFiles(ctx, book, located); err != nil {
 			return nil, err
 		}
 	}
@@ -214,11 +273,14 @@ type pendingDirectory struct {
 	depth int
 }
 
-func (l Lister) directoryFiles(book store.Book, start boundary) ([]string, error) {
+func (l Lister) directoryFiles(ctx context.Context, book store.Book, start boundary) ([]string, error) {
 	var files []string
 	pending := []pendingDirectory{{start.target, 0}}
 	count := 0
 	for len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		current := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 		if current.depth > maxDepth {
@@ -258,7 +320,10 @@ func (l Lister) directoryFiles(book store.Book, start boundary) ([]string, error
 	return files, nil
 }
 
-func (l Lister) asset(book store.Book, bookPath, path string) (Asset, error) {
+func (l Lister) asset(ctx context.Context, book store.Book, bookPath, path string, inspect bool) (Asset, error) {
+	if err := ctx.Err(); err != nil {
+		return Asset{}, err
+	}
 	located, err := l.canonicalBoundary(path)
 	if err != nil {
 		return Asset{}, err
@@ -270,30 +335,91 @@ func (l Lister) asset(book store.Book, bookPath, path string) (Asset, error) {
 	if err != nil {
 		return Asset{}, errSkip{err}
 	}
+	format := assetFormat(book, path)
+	limit, fixedLayout := fixedLayoutLimits[format]
+	var file *os.File
+	if fixedLayout {
+		if file, err = openFixedLayout(located, info); err != nil {
+			return Asset{}, err
+		}
+		defer file.Close()
+		if info, err = file.Stat(); err != nil {
+			return Asset{}, errSkip{err}
+		}
+	}
 	stat, err := assetid.StatOf(info)
 	if err != nil {
 		return Asset{}, err
 	}
-	format := assetFormat(book, path)
 	if format == "epub" && stat.Size > maxEpubBytes {
 		return Asset{}, errUnavailable
 	}
-	if limit, limited := fixedLayoutLimits[format]; limited && stat.Size > limit {
-		return Asset{}, errSkip{}
+	id := assetid.ID(assetid.Input{BookID: book.ID, StoredPath: bookPath, CanonicalPath: located.target, Stat: stat})
+	pageCount := 0
+	if fixedLayout {
+		if stat.Size > limit {
+			return Asset{}, errNotOffered
+		}
+		if inspect {
+			if pageCount, err = inspectFixedLayout(ctx, format, file, id, stat.Size); err != nil {
+				return Asset{}, err
+			}
+		}
 	}
-	media, _ := l.mediaType(book, path)
+	mediaType, _ := l.mediaType(book, path)
 	filename := filepath.Base(path)
 	if !utf8.ValidString(filename) {
 		return Asset{}, errSkip{}
 	}
 	return Asset{
-		ID:        assetid.ID(assetid.Input{BookID: book.ID, StoredPath: bookPath, CanonicalPath: located.target, Stat: stat}),
+		ID:        id,
 		Path:      located.target,
 		Root:      located.root,
 		Filename:  filename,
-		Format:    assetFormat(book, path),
-		MediaType: media,
+		Format:    format,
+		MediaType: mediaType,
 		SizeBytes: stat.Size,
+		PageCount: pageCount,
 		Stat:      stat,
 	}, nil
+}
+
+func openFixedLayout(located boundary, expected os.FileInfo) (*os.File, error) {
+	file, err := media.OpenPinned(located.root, located.target)
+	if errors.Is(err, media.ErrNoPinnedOpen) {
+		return nil, err
+	}
+	if err != nil {
+		return nil, errSkip{err}
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(opened, expected) {
+		file.Close()
+		return nil, errSkip{err}
+	}
+	return file, nil
+}
+
+func inspectFixedLayout(ctx context.Context, format string, file *os.File, id string, size int64) (int, error) {
+	if format == "pdf" {
+		header := make([]byte, min(size, pdfWindow))
+		count, _ := file.ReadAt(header, 0)
+		if !pdfHeader.Match(header[:count]) {
+			return 0, errNotOffered
+		}
+		return 0, nil
+	}
+	if cached, hit := inspected.get(id); hit {
+		return cached, nil
+	}
+	pages, err := comic.Pages(ctx, file, size)
+	var invalid comic.Invalid
+	if errors.As(err, &invalid) {
+		return 0, errNotOffered
+	}
+	if err != nil {
+		return 0, err
+	}
+	inspected.remember(id, len(pages))
+	return len(pages), nil
 }

@@ -156,3 +156,63 @@ func TestFormatLabelsAndAuthorPresence(t *testing.T) {
 		t.Fatal("author presence")
 	}
 }
+
+func TestFixedLayoutPlacesNamePagesAndOnlyIntegerPagesOfFixedTypesAreShown(t *testing.T) {
+	cases := []struct {
+		locator string
+		label   string
+		page    string
+	}{
+		{`{"href":"document.pdf","type":"application/pdf","locations":{"position":7,"totalProgression":0.35}}`, "Page 7", "7"},
+		{`{"href":"a.png","type":"image/png","locations":{"position":3}}`, "Page 3", "3"},
+		{`{"href":"a.jpg","type":"image/jpeg","locations":{"position":12,"totalProgression":0.5}}`, "Page 12", "12"},
+		{`{"href":"a.webp","type":"image/webp","locations":{"position":1}}`, "Page 1", "1"},
+		{`{"href":"document.pdf","type":"application/pdf","locations":{"position":1.0,"totalProgression":0.25}}`, "25% read", "null"},
+		{`{"href":"document.pdf","type":"application/pdf","locations":{"position":0,"totalProgression":0.5}}`, "50% read", "null"},
+		{`{"href":"c.xhtml","type":"application/xhtml+xml","locations":{"position":4,"totalProgression":0.5}}`, "50% read", "null"},
+		{`{"href":"c.xhtml","locations":{"position":4}}`, "Continue reading", "null"},
+		{`{"href":"a.gif","type":"image/gif","locations":{"position":4}}`, "Continue reading", "null"},
+	}
+	for _, test := range cases {
+		document := `{"id":"1","title":"T","book_type":"ebook","assets":[{"id":"a","format":"cbz"}],"reading_status":"in_progress","progress":{"asset_id":"a","locator":` + test.locator + `,"version":1,"updated_at":"x"}}`
+		summary, err := Project(publication(t, document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := "null"
+		if summary.Progress.Page != nil {
+			page = strings.TrimSpace(string(mustJSON(t, *summary.Progress.Page)))
+		}
+		if summary.ProgressLabel != test.label || page != test.page {
+			t.Errorf("%s: label %q page %s", test.locator, summary.ProgressLabel, page)
+		}
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func TestDetailFilesCarryAPageCountOnlyForAComicArchive(t *testing.T) {
+	document := `{"id":"1","title":"T","book_type":"ebook","content_kind":"graphic","description":"","assets":[
+		{"id":"a","filename":"a.cbz","format":"cbz","media_type":"application/vnd.comicbook+zip","size_bytes":10,"position":0,"page_count":42,"reading_order_url":"/r"},
+		{"id":"b","filename":"b.pdf","format":"pdf","media_type":"application/pdf","size_bytes":20,"position":1},
+		{"id":"c","filename":"c.cbz","format":"cbz","media_type":"application/vnd.comicbook+zip","size_bytes":30,"position":2,"page_count":0}],
+		"reading_status":"unread","progress":null}`
+	detail, err := ProjectDetail(publication(t, document))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(mustJSON(t, detail.Files))
+	want := `[{"id":"a","filename":"a.cbz","format":"cbz","media_type":"application/vnd.comicbook+zip","size_bytes":10,"position":0,"page_count":42},` +
+		`{"id":"b","filename":"b.pdf","format":"pdf","media_type":"application/pdf","size_bytes":20,"position":1,"page_count":null},` +
+		`{"id":"c","filename":"c.cbz","format":"cbz","media_type":"application/vnd.comicbook+zip","size_bytes":30,"position":2,"page_count":0}]`
+	if encoded != want || detail.FormatLabel != "Comic" || detail.ContentKind != "graphic" {
+		t.Fatalf("%s %s %s", encoded, detail.FormatLabel, detail.ContentKind)
+	}
+}

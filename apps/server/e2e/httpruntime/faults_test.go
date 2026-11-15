@@ -404,7 +404,7 @@ func TestExcludedRoutesAreRefusedWithoutAnySideEffect(t *testing.T) {
 	before := shape(tokenState(t, copied.database), nil)
 	for _, request := range [][2]string{
 		{"GET", "/api/consumer/v1/discover"},
-		{"POST", "/api/consumer/v1/requests"}, {"GET", "/api/consumer/v1/library/1/assets/" + strings.Repeat("a", 64) + "/reading_order"},
+		{"POST", "/api/consumer/v1/requests"}, {"GET", "/api/consumer/v1/library/1/assets/" + strings.Repeat("a", 64) + "/read_along"},
 		{"POST", "/api/consumer/v1/library/1/assets/" + strings.Repeat("a", 64) + "/transfer_grant"},
 	} {
 		got := instance.do(request[0], request[1], bearer(f, "alice-full"))

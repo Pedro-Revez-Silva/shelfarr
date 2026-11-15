@@ -7,12 +7,14 @@ require "json"
 require "zip"
 require "active_support/testing/time_helpers"
 require_relative "progress_cases"
+require_relative "fixed_layout_cases"
 
 module Migration
   module Http
     class Cases
       include ActiveSupport::Testing::TimeHelpers
       include ProgressCases
+      include FixedLayoutCases
 
       PREFIX = "/api/consumer/v1"
       FORMATS_HEADER = "X-Shelfarr-Reader-Formats"
@@ -40,6 +42,8 @@ module Migration
         seed_extra_library
         seed_extra_tokens
         seed_extra_progress
+        seed_fixed_layout_library
+        seed_fixed_layout_progress
         seed_progress_library
         checkpoint_and_copy
         @session = ActionDispatch::Integration::Session.new(Rails.application)
@@ -245,8 +249,11 @@ module Migration
         continue_scenarios
         publication_scenarios
         asset_scenarios
+        fixed_layout_catalogue_scenarios
+        fixed_layout_asset_scenarios
         adoption_scenarios
         progress_scenarios
+        fixed_layout_progress_scenarios
         @token_state_after = token_state
       end
 
@@ -325,8 +332,7 @@ module Migration
           request("formats-library-#{name}", "#{PREFIX}/library?limit=4", bearer: "alice-full", headers: { FORMATS_HEADER => value })
         end
         { "pdf" => "pdf", "cbz" => "cbz", "all" => "epub,pdf,cbz" }.each do |name, value|
-          request("formats-library-#{name}", "#{PREFIX}/library?limit=4", bearer: "alice-full", headers: { FORMATS_HEADER => value },
-            go: { "status" => 501, "code" => "unsupported_reader_format" })
+          request("formats-library-#{name}", "#{PREFIX}/library?limit=4", bearer: "alice-full", headers: { FORMATS_HEADER => value })
         end
         request("formats-over-64-bytes", "#{PREFIX}/library", bearer: "alice-full", headers: { FORMATS_HEADER => "epub," * 20 })
       end
@@ -337,7 +343,7 @@ module Migration
         end
         %w[limit=1 limit=0 limit=21 limit=100 limit=1000 limit=abc limit=%20 limit%5B%5D=2].each { |query| request("continue-#{query}", "#{PREFIX}/continue?#{query}", bearer: "alice-full") }
         request("continue-formats-epub", "#{PREFIX}/continue", bearer: "alice-full", headers: { FORMATS_HEADER => "epub" })
-        request("continue-formats-pdf", "#{PREFIX}/continue", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" }, go: { "status" => 501, "code" => "unsupported_reader_format" })
+        request("continue-formats-pdf", "#{PREFIX}/continue", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" })
         request("continue-formats-invalid", "#{PREFIX}/continue", bearer: "alice-full", headers: { FORMATS_HEADER => "zzz" })
       end
 
@@ -361,13 +367,13 @@ module Migration
         first = acquired_books.first.id
         request("publication-formats-epub", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FORMATS_HEADER => "epub" })
         request("publication-formats-invalid", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FORMATS_HEADER => "zzz" })
-        request("publication-formats-pdf", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" }, go: { "status" => 501, "code" => "unsupported_reader_format" })
+        request("publication-formats-pdf", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" })
         request("publication-features-unknown", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FEATURES_HEADER => "something-new" })
         request("publication-features-invalid", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FEATURES_HEADER => "Bad Feature" })
         request("publication-features-read-along", "#{PREFIX}/library/#{first}", bearer: "alice-full", headers: { FEATURES_HEADER => "read-along" }, go: { "status" => 501, "code" => "unsupported_reader_feature" })
         comic = Book.find_by(book_type: :comicbook)
         request("publication-comic-default-formats", "#{PREFIX}/library/#{comic.id}", bearer: "alice-full") if comic
-        request("publication-comic-pdf-formats", "#{PREFIX}/library/#{comic.id}", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" }, go: { "status" => 501, "code" => "unsupported_reader_format" }) if comic
+        request("publication-comic-pdf-formats", "#{PREFIX}/library/#{comic.id}", bearer: "alice-full", headers: { FORMATS_HEADER => "pdf" }) if comic
       end
 
       def listed_assets(book, formats: Consumer::ReaderFormats::SUPPORTED)
@@ -382,13 +388,9 @@ module Migration
 
       def asset_scenarios
         acquired_books.each do |book|
-          next if book.comicbook?
-
           listed_assets(book).each_with_index do |asset, index|
-            graphic = %w[pdf cbz].include?(asset.format)
-            go = graphic ? { "status" => 501, "code" => "unsupported_asset_format" } : nil
-            request("asset-#{book.id}-#{index}-get", asset_path(book, asset.id), bearer: "alice-full", go: go)
-            request("asset-#{book.id}-#{index}-head", asset_path(book, asset.id), bearer: "alice-full", method: "HEAD", go: go)
+            request("asset-#{book.id}-#{index}-get", asset_path(book, asset.id), bearer: "alice-full")
+            request("asset-#{book.id}-#{index}-head", asset_path(book, asset.id), bearer: "alice-full", method: "HEAD")
           end
         end
         detailed_asset_scenarios
@@ -448,12 +450,12 @@ module Migration
         request("asset-bad-book-id", "#{PREFIX}/library/abc/assets/#{asset.id}", bearer: "alice-full")
         request("asset-with-suffix", "#{asset_path(book, asset.id)}.mp3", bearer: "alice-full", go: { "status" => 404, "code" => "not_found" })
         mixed, = asset_for("mixed")
-        listed_assets(mixed).each { |candidate| request("asset-mixed-#{candidate.format}", asset_path(mixed, candidate.id), bearer: "alice-full", go: %w[pdf cbz].include?(candidate.format) ? { "status" => 501, "code" => "unsupported_asset_format" } : nil) }
+        listed_assets(mixed).each { |candidate| request("asset-mixed-#{candidate.format}", asset_path(mixed, candidate.id), bearer: "alice-full") }
         too_large = @books.fetch("too-large")
         request("asset-too-large-publication", "#{PREFIX}/library/#{too_large.id}", bearer: "alice-full")
         comic = @books.fetch("comic-epub")
         comic_asset = listed_assets(comic).first
-        request("asset-comic-record", asset_path(comic, comic_asset.id), bearer: "alice-full", go: { "status" => 501, "code" => "unsupported_publication_kind" }) if comic_asset
+        request("asset-comic-record", asset_path(comic, comic_asset.id), bearer: "alice-full") if comic_asset
       end
 
       def adoption_scenarios

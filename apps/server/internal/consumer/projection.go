@@ -1,6 +1,8 @@
 package consumer
 
 import (
+	"context"
+
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
@@ -10,8 +12,6 @@ type Publication = publicationBody
 type PublicationList = listBody
 
 type Me = meBody
-
-var ReadingTypes = defaultTypes
 
 type View struct {
 	inner view
@@ -25,8 +25,8 @@ func NewViewFor(roots, formats []string, progress map[int64]store.Progress, stat
 	return View{inner: view{lister: library.Lister{Roots: roots, Formats: formats}, progress: progress, states: states, declared: declared}}
 }
 
-func (v View) Publication(book store.Book) (Publication, error) {
-	return v.inner.publication(book)
+func (v View) Publication(ctx context.Context, book store.Book) (Publication, error) {
+	return v.inner.publication(ctx, book)
 }
 
 func NewMe(id, name, username string, scopes []string) Me {

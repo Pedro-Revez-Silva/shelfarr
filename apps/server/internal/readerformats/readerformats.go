@@ -1,7 +1,6 @@
 package readerformats
 
 import (
-	"errors"
 	"regexp"
 	"slices"
 	"strings"
@@ -22,8 +21,6 @@ var (
 type Invalid struct{ Message string }
 
 func (e Invalid) Error() string { return e.Message }
-
-var ErrUnsupported = errors.New("declared reader capability is not supported by this runtime")
 
 type Formats struct {
 	Names    []string
@@ -70,13 +67,6 @@ func (f Formats) Default() bool {
 
 func (f Formats) Joined() string {
 	return strings.Join(f.Names, ",")
-}
-
-func (f Formats) RequireSupported() error {
-	if f.Graphic() {
-		return ErrUnsupported
-	}
-	return nil
 }
 
 func ParseFeatures(value string, present bool) (readAlong bool, err error) {

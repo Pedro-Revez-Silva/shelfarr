@@ -11,10 +11,7 @@ module Migration
       TEXT_HEADERS = { "Content-Type" => "text/plain" }.freeze
       UNSUPPORTED_VERB = { "status" => 405, "code" => "method_not_allowed" }.freeze
       UNSUPPORTED_BODY = { "status" => 415, "code" => "unsupported_media_type" }.freeze
-      UNSUPPORTED_ASSET = { "status" => 501, "code" => "unsupported_asset_format" }.freeze
-      UNSUPPORTED_KIND = { "status" => 501, "code" => "unsupported_publication_kind" }.freeze
       GENERIC_MEDIA = { "status" => 422, "code" => "invalid_progress" }.freeze
-      UNSUPPORTED_FORMATS = { "status" => 501, "code" => "unsupported_reader_format" }.freeze
       LOCATOR = { "href" => "OEBPS/chapter.xhtml", "type" => "application/xhtml+xml", "locations" => { "progression" => 0.3, "totalProgression" => 0.2, "position" => 4 } }.freeze
 
       def seed_progress_library
@@ -119,7 +116,7 @@ module Migration
         end
         request("progress-get-format-suffix", "#{Cases::PREFIX}/library/#{book_of('pw-audio').id}.json/progress", bearer: "alice-full", at: tick, go: { "status" => 404, "code" => "not_found" })
         get_progress("progress-get-missing-media", "pw-missing")
-        get_progress("progress-get-comic", "pw-comic", go: UNSUPPORTED_KIND)
+        get_progress("progress-get-comic", "pw-comic")
         unacquired = Book.where(file_path: [ nil ]).first
         request("progress-get-unacquired", "#{Cases::PREFIX}/library/#{unacquired.id}/progress", bearer: "alice-full", at: tick) if unacquired
       end
@@ -266,8 +263,8 @@ module Migration
         mixed = "pw-mixed"
         put_progress("epub-mixed-epub-asset", mixed, ebook_fields(mixed, LOCATOR).merge("asset_id" => asset_id(mixed, "epub")))
         pdf_locator = { "href" => "document.pdf", "type" => "application/pdf", "locations" => { "position" => 3 } }
-        put_progress("epub-mixed-pdf-asset", mixed, ebook_fields(mixed, pdf_locator, version: 1).merge("asset_id" => asset_id(mixed, "pdf")), go: UNSUPPORTED_ASSET, ignore: true)
-        put_progress("comic-record-write", "pw-comic", ebook_fields("pw-comic", LOCATOR), go: UNSUPPORTED_KIND, ignore: true)
+        put_progress("epub-mixed-pdf-asset", mixed, ebook_fields(mixed, pdf_locator, version: 1).merge("asset_id" => asset_id(mixed, "pdf")))
+        put_progress("comic-record-write", "pw-comic", ebook_fields("pw-comic", LOCATOR))
       end
 
       def scope_and_account_scenarios
@@ -332,13 +329,13 @@ module Migration
         end
         unacquired = Book.where(file_path: [ nil ]).first
         request("status-unacquired", "#{Cases::PREFIX}/library/#{unacquired.id}/reading_status", bearer: "alice-full", method: "PUT", headers: JSON_HEADERS, body: %({"status":"finished"}), at: tick, track: unacquired.id) if unacquired
-        put_status("status-comic-record", "pw-comic-status", { "status" => "finished" }, go: UNSUPPORTED_KIND, ignore: true)
+        put_status("status-comic-record", "pw-comic-status", { "status" => "finished" })
         put_status("status-missing-media", "pw-missing", { "status" => "finished" })
         put_status("status-formats-epub", "pw-epub-formats", { "status" => "finished" }, extra_headers: { Cases::FORMATS_HEADER => "epub" })
         put_status("status-formats-invalid", "pw-epub-formats", { "status" => "unread" }, extra_headers: { Cases::FORMATS_HEADER => "mobi" })
         put_status("status-formats-padded", "pw-epub-formats", { "status" => "in_progress" }, extra_headers: { Cases::FORMATS_HEADER => " epub " })
         put_status("status-formats-empty", "pw-epub-formats", { "status" => "unread" }, extra_headers: { Cases::FORMATS_HEADER => "" })
-        put_status("status-formats-pdf", "pw-epub-formats", { "status" => "unread" }, extra_headers: { Cases::FORMATS_HEADER => "pdf" }, go: UNSUPPORTED_FORMATS, ignore: true)
+        put_status("status-formats-pdf", "pw-epub-formats", { "status" => "unread" }, extra_headers: { Cases::FORMATS_HEADER => "pdf" })
         put_status("status-features-header-ignored", "pw-epub-formats", { "status" => "in_progress" }, extra_headers: { Cases::FEATURES_HEADER => "read-along" })
         put_status("status-form-encoded", "pw-epub-form", "status=finished", headers: FORM_HEADERS, go: UNSUPPORTED_BODY, ignore: true)
         put_status("status-text-body", "pw-epub-form", %({"status":"finished"}), headers: TEXT_HEADERS, go: UNSUPPORTED_BODY)
@@ -365,8 +362,6 @@ module Migration
         users_by_label.each_key do |label|
           @books.each do |key, book|
             next unless key.start_with?("pw-") || key.start_with?("legacy-")
-            next if book.comicbook?
-
             request("projection-#{label}-#{key}", "#{Cases::PREFIX}/library/#{book.id}", bearer: label, at: tick)
           end
           %w[unread in_progress finished].each { |status| request("projection-#{label}-library-#{status}", "#{Cases::PREFIX}/library?status=#{status}&limit=50", bearer: label, at: tick) }

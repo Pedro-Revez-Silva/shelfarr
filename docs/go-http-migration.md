@@ -21,7 +21,8 @@ progress writes, which answer `PUT`.
 | `/api/consumer/v1/library` | bearer, `library:read` | Catalogue with Rails-compatible cursors, `q`, `type`, `status`, `sort`, `limit`. |
 | `/api/consumer/v1/continue` | bearer, `library:read` | In-progress publications. |
 | `/api/consumer/v1/library/:id` | bearer, `library:read` | One publication. |
-| `/api/consumer/v1/library/:id/assets/:asset_id` | bearer, `library:read` | EPUB and audiobook bytes: `Range`, `If-Range`, `If-None-Match`, `HEAD`. |
+| `/api/consumer/v1/library/:id/assets/:asset_id` | bearer, `library:read` | EPUB, audiobook, PDF and CBZ bytes: `Range`, `If-Range`, `If-None-Match`, `HEAD`. PDF and CBZ are `attachment` under a restrictive document policy. |
+| `GET`, `HEAD /api/consumer/v1/library/:id/assets/:asset_id/reading_order` | bearer, `library:read` | The page list of one CBZ generation (see [Fixed-layout publications](#fixed-layout-publications-pdf-cbz-comics)). |
 | `GET`, `HEAD` `/api/consumer/v1/library/:id/progress` | bearer, `library:read` | `{"progress": null \| progress}` for the caller's own saved place. |
 | `PUT /api/consumer/v1/library/:id/progress` | bearer, `progress:write` | Compare-and-set save of a place (see Progress and reading status). `200` the stored progress, `409` the current one, `422` a refused checkpoint. |
 | `PUT /api/consumer/v1/library/:id/reading_status` | bearer, `progress:write` | `{"status": "unread" \| "in_progress" \| "finished"}`; answers the publication representation. |
@@ -29,7 +30,7 @@ progress writes, which answer `PUT`.
 
 ### Explicitly refused (HTTP 501, `not_implemented_in_go_runtime`, before authentication, no side effects)
 
-`discover`, `requests` (list, show, create, delete), `assets/:id/reading_order`, `read_along`
+`discover`, `requests` (list, show, create, delete), `read_along`
 (manifest, resources, audio), `transfer_grant` and `transfer`. Kobo stays with Rails; the browser session and `/preview/api/v1` JSON are described in
 [Browser sessions and the preview JSON](#browser-sessions-and-the-preview-json). Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
 (`GET, HEAD`; `GET, HEAD, PUT` for progress; `PUT` for reading status), before authentication and without
@@ -39,11 +40,7 @@ touching the credential.
 
 | Request | Answer |
 | --- | --- |
-| `X-Shelfarr-Reader-Formats` naming `pdf` or `cbz` | `501 unsupported_reader_format` |
 | `X-Shelfarr-Reader-Features: read-along` on a publication | `501 unsupported_reader_feature` |
-| an asset id that resolves to a PDF or CBZ | `501 unsupported_asset_format` |
-| an asset, a progress read or write, or a status write of a comic record | `501 unsupported_publication_kind` |
-| a progress write whose asset resolves to a PDF or CBZ (a page place Go cannot validate) | `501 unsupported_asset_format`, nothing stored |
 | a symbolic-link (reference import) library entry or a relative, `~` or `//` stored path | `501 unsupported_library_layout` |
 | a stored value Rails accepts but this runtime does not model (scope JSON that is not a string or list, a non-JSON locator, a malformed timestamp, a non-string path setting) | `501 unsupported_stored_value` |
 | a database library root outside every `-library-root` | `503 library_root_not_allowed` |
@@ -228,13 +225,135 @@ OIDC columns, `sessions` and `hardcover_connections(user_id, status)`; the suppo
 
 ### Refused instead of emptied
 
-PDF or CBZ assets, comic records and a description needing an HTML sanitizer are `501` (`unsupported_asset_format`,
-`unsupported_publication_kind`, `unsupported_stored_value`) for the whole response, never a missing book and never an empty
-success; reader and asset hand-offs stay on Rails. A library that contains one of those cannot be listed by Go yet.
+A description that cannot be rendered safely as plain text is `501 unsupported_stored_value` for the whole response, never a
+missing book and never an empty success. PDF, CBZ and comic publications are listed, projected and given a status like any
+other (see [Fixed-layout publications](#fixed-layout-publications-pdf-cbz-comics)); reading them in the browser, the
+reader and its asset hand-offs stay on Rails, and the Go preview offers no reader link for them.
 Plain-text descriptions are normalised as `WebPreview::PublicationJson` does; any `<`, `>`, `&`, carriage return or control
 character is refused rather than guessed.
 
-### Contract before and after
+### Fixed-layout publications (PDF, CBZ, comics)
+
+Status: experimental, default-off, no handover. This slice closes the `501` answers for PDF, CBZ and
+comic records on the consumer v1 routes and in the Go preview JSON. It adds no schema, no route a Rails
+client does not already call (the Rails routes `reading_order` and `assets/:id` exist), no stored format
+and no capability: the Rails answers recorded by the verifier are the oracle.
+
+### Capability negotiation
+
+`X-Shelfarr-Reader-Formats` selects what a response lists, exactly as in Rails (`Consumer::ReaderFormats`):
+
+| Header | Selection | Records listed | Assets listed | `content_kind` | Cursor identity |
+| --- | --- | --- | --- | --- | --- |
+| absent | legacy | ebook and audiobook | EPUB and audio | absent | the pre-negotiation identity |
+| `epub` (or `epub,epub`) | `epub` | ebook and audiobook | EPUB and audio | `book` / `graphic` | the same identity as absent |
+| names containing `pdf` or `cbz` | normalised (sorted, de-duplicated, padded names trimmed) | the above and comic records, presented as `ebook` | only the named formats (audio always) | `book` / `graphic` | bound to the normalised list |
+| empty, unknown, upper-case, trailing comma, over 64 bytes | refused | | | | `400 invalid_request` on library, continue, publication and status |
+
+`Vary: X-Shelfarr-Reader-Formats` is declared on every response that reads the header, as Rails does (including its
+repeated value on the library). A comic record is reachable by id for assets, progress, reading order and status
+without any header, and by id on the publication route only for a client that named a graphic format. An EPUB stored in a
+comic record is listed as an EPUB. `server.json` advertises `["cbz","epub","pdf"]`.
+
+### Asset bytes
+
+`GET`/`HEAD /api/consumer/v1/library/:id/assets/:asset_id` serves PDF (`application/pdf`, at most 500 MiB, `%PDF-d.d` within
+the first 1024 bytes) and CBZ (`application/vnd.comicbook+zip`, at most 2 GiB, a valid page list) through the existing bounded
+streaming machinery: the file is opened through a descriptor confined to its library root, its identity (device, inode, size,
+change and modification times) is recomputed from that descriptor and compared with the asset id, and the same descriptor is
+streamed. A file that is replaced, truncated or deleted after the listing is `410 asset_unavailable`; it is never
+reopened by name. A PDF or CBZ differs from an EPUB only by `Content-Disposition: attachment` and
+`Content-Security-Policy: default-src 'none'; sandbox; frame-ancestors 'none'; form-action 'none'; base-uri 'none'`.
+
+```
+GET /api/consumer/v1/library/12/assets/<asset>        Authorization: Bearer <library:read token>
+before  501 {"error":"unsupported_asset_format"}
+after   200 Content-Type: application/vnd.comicbook+zip   Content-Disposition: attachment; filename="Comic.cbz"; filename*=UTF-8''Comic.cbz
+        Content-Security-Policy: default-src 'none'; sandbox; ...   ETag: "<asset>"   Accept-Ranges: bytes   Cache-Control: private, no-store
+        206 / 304 / 416 / HEAD exactly as for an EPUB
+```
+
+### Reading order
+
+`GET`/`HEAD /api/consumer/v1/library/:id/assets/:asset_id/reading_order` (scope `library:read`) answers for the exact CBZ
+generation the id names, read from ZIP metadata alone on the pinned descriptor. Nothing is inflated, extracted or decoded.
+
+```
+before  501 {"error":"not_implemented_in_go_runtime"}
+after   200 {"asset_id":"<asset>","format":"cbz","items":[
+          {"position":1,"href":"page%201.png","media_type":"image/png","size_bytes":60,"compressed_size":41,
+           "compression_method":8,"local_header_offset":0,"crc32":"c17b226a"}, ...]}
+        410 {"error":"asset_unavailable"}   an id that is not a listed CBZ of this book, a replaced or malformed archive
+        404 / 403 / 401 as for every library route
+```
+
+The publication's CBZ asset gains `page_count` and `reading_order_url` (also Rails'); other formats gain nothing. The list is
+the archive's central directory validated by `internal/zipdirectory`, then `internal/comic`:
+
+* **Structure** (Rails `Consumer::ZipDirectory`, refused wholesale, never an empty list): one unambiguous end record whose
+  comment reaches the end of the file, one disk, a directory that ends exactly where that record begins, 1 to 10 000 entries,
+  a directory of at most 2 MiB, names of 1 to 1024 bytes, no ZIP64 locator or sentinel, only stored or deflated entries, no
+  encryption, masked-header or reserved flag, no ZIP64, Unicode-path or AES extra field, no symbolic link, device or pipe, no
+  absolute, drive, backslash, control, `.`, `..` or empty path part, names that are UTF-8 (or ASCII without the flag), no two
+  names equal after Unicode NFC, no folder with data, local headers that repeat the directory (name, flags, method, and sizes
+  and CRC unless a data descriptor defers them), entries that stay in front of the directory and never overlap. The standard
+  library's `archive/zip` is not used for this: it accepts ZIP64, ambiguity and the other forms above.
+* **Pages** (Rails `Consumer::ComicArchive`): visible `jpg`, `jpeg`, `png` and `webp` entries (extension compared
+  case-insensitively); `.`-prefixed parts and `__MACOSX` are hidden; a page is 1 byte to 32 MiB decoded and at most
+  32 MiB + 64 KiB compressed, all pages total at most 2 GiB, the page list at most 8 MiB, and at least one page is required.
+  Pages are ordered naturally (digit runs numerically, text case-insensitively, the exact name breaking ties) and numbered
+  from 1. `href` percent-escapes every byte outside `A-Za-z0-9-._~/`.
+* **Cost.** Metadata only, bounded before allocation, read with positioned reads on the pinned file, and the request context
+  is checked between reads, so a deadline or a departed client stops a scan. A validated page count is remembered per asset id
+  (512 entries; the id changes with the file's size, inode and times).
+* **Unicode.** NFC and lower-casing use `golang.org/x/text` (a new dependency). Compared with Ruby 3.3.13 (Unicode 15.0) over
+  every scalar value, normalisation is identical; lower-casing differs for the code points that Unicode 16 and 17 assigned
+  (55 of them), which Go leaves unchanged exactly as Ruby does, and for Greek final sigma, which Go does not apply and Ruby does not
+  apply either. If the Ruby runtime moves to a newer Unicode version, `internal/naturalorder` must follow it.
+
+### Page places
+
+`PUT /api/consumer/v1/library/:id/progress` accepts a place for a PDF or CBZ asset through the existing compare-and-set; the row
+is the same `consumer_progresses` row an EPUB writes, with the locator stored as sent. After the generic locator checks:
+
+| Asset | Required |
+| --- | --- |
+| both | only the keys `href`, `type`, `title` (string of at most 1024 bytes), `locations`, `text` (object) in the locator; only `position`, `progression`, `totalProgression`, `fragments` in `locations`; `locations.position` an integer (not `1.0`) from 1 to 100 000 |
+| PDF | `href` `document.pdf`, `type` `application/pdf`, `fragments` absent, `null` or exactly `["page=N"]` for position N; the server does not parse PDF pages |
+| CBZ | no `fragments` key at all; `href` and `type` equal item N of the reading order of that exact generation (re-read from the pinned file, outside the write transaction) |
+
+An EPUB asset, whatever the record type, keeps its EPUB rules. The filesystem is read before the write transaction; a refused,
+stale or replaced asset leaves every progress, status and time row unchanged. Status (`PUT .../reading_status`) works for every
+record Rails accepts, including comic records and with any valid `X-Shelfarr-Reader-Formats`.
+
+```
+PUT /api/consumer/v1/library/12/progress   {"asset_id":"<cbz>","expected_version":0,"client_mutation_id":"<uuid>",
+  "locator":{"href":"p2.png","type":"image/png","locations":{"position":2,"totalProgression":0.5}}}
+before  501 {"error":"unsupported_publication_kind"}      (a comic record)   or   501 unsupported_asset_format
+after   200 {"progress":{...,"version":1,"locator":{...as sent...}}}
+        409 progress_conflict   422 {"error":"invalid_progress","message":"This page is not page 2 of the comic's reading order; refresh the publication"}
+```
+
+### Go preview JSON
+
+`/preview/api/v1/library`, `/continue`, `/library/:id` and `PUT .../reading_status` project fixed-layout books exactly like
+`WebPreview::PublicationJson`: `format_label` `PDF` or `Comic`, `files[].page_count` (the CBZ page count, `null` otherwise),
+`progress.page` (an integer position of a fixed-layout locator type) and the `Page N` progress label. The reader link of such a
+book is still the Rails reader path; the Go screens add none.
+
+### Rows and files written
+
+None beyond the existing `consumer_progresses` and `consumer_reading_states` rows and the `api_tokens` touch. Nothing is
+written to the library. The fixtures are synthetic; no real book is read.
+
+### Rollback and limits
+
+Revert the commits of this slice: the `501` answers return and every row it wrote stays readable by Rails (it is the Rails row
+format). Not covered: a rendering or page-decoding client, ZIP resource extraction, EPUB read-along, transfer grants, reference-import
+symbolic links (still `501 unsupported_library_layout`), a comic archive other than the synthetic and fuzzed ones, and archives whose
+names use code points assigned after Unicode 15.0 (see above).
+
+## Contract before and after
 
 ```
 GET /preview/api/v1/auth/bootstrap                                 before 404   after 200 {"authenticated":false,"csrf_token":"v1.l.…","expires_in":600,"sign_in":{"available":true,"reason":null}}
@@ -448,8 +567,7 @@ maps, no listing, no manifest download.
   Rails does, whitespace normalised) and rendered as text only. 800 inputs, including XSS payloads, are replayed
   against the real Rails conversion (`tools/migration/plain_text_oracle.rb`); input Rails cannot convert (nesting
   deeper than its parser accepts) and CDATA inside `svg`/`math` are refused with `501 unsupported_stored_value`, and
-  Go refuses nesting beyond 256 levels. PDF, CBZ, comic and read-along refusals are unchanged and are explained on
-  screen.
+  Go refuses nesting beyond 256 levels. Read-along refusals are unchanged and are explained on screen.
 
 ### Deliberate limits of this pilot
 
@@ -547,8 +665,9 @@ or `501`, never served under the old identity.
 ## Deliberate differences from Rails
 
 1. **`server.json` states what this runtime does.** `consumer_features` is `[]` (no requests),
-   `reader_formats` is `["epub"]`, `reader_features` and `read_along_manifest_versions` are `[]`.
-   Rails advertises `requests`, `cbz,epub,pdf` and `read-along`; copying that would invite clients to
+   `reader_formats` is `["cbz","epub","pdf"]` (the Rails list: this runtime now serves all three),
+   `reader_features` and `read_along_manifest_versions` are `[]`.
+   Rails advertises `requests` and `read-along` too; copying that would invite clients to
    use routes this runtime refuses. `android` is derived from `-android-channels` (default `release`)
    with the Rails paths, which Rails still serves; `server_version` comes from `-server-version`.
 2. Error bodies of `404`, `405`, `5xx` are small JSON documents (`{"error": "..."}`); Rails renders its
@@ -576,7 +695,8 @@ or `501`, never served under the old identity.
    the escaping overhead of the 16 KiB limit may be judged differently.
 10. **Media messages.** Every unavailable listing (missing file, EPUB over 250 MiB, folder limits) is
     `422 invalid_progress` with the message `Media is missing or outside the authorized library`;
-    Rails words some of these differently.
+    Rails words some of these differently. The messages of a comic archive that fails its check between
+    the listing and the page comparison are Rails' own.
 11. **Wrong verbs.** `POST`, `DELETE` and `PATCH` on a progress route and anything but `PUT` on a status
     route are `405` with an `Allow` list; Rails answers `404`.
 12. A `400 invalid_json` carries `Vary: Accept, X-Requested-With` because the Rails answer does.
@@ -646,6 +766,12 @@ executable:
   a restart, 24 concurrent first writes (one wins) and 12 concurrent updaters (none lost), a SIGKILL
   before and after the commit followed by a retry, a client that leaves while holding the write
   lock, an externally held write lock, declared, chunked, stalled and abandoned bodies;
+* fixed-layout: the library, continue, publication, asset and `reading_order` routes under every capability subset
+  (about 1 000 further requests per fixture), the CBZ metadata of synthetic archives built with a raw ZIP writer (natural
+  order and Unicode names, hidden entries, a 10 000 page archive and about 90 malformed archives, each refused for the same
+  reason by Rails and Go), ranges and conditional requests on a PDF and a CBZ, page writes for PDF and CBZ with their
+  rejected variants, status on comic records, and the Go preview JSON for the same books; `go test -fuzz` targets
+  `zipdirectory.Entries`;
 * 53 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
   check, cursor binding and signature, symbolic links, identity re-check, root allow-list, ranges,
   `HEAD`, conditional requests, stream capacity, unknown schema, missing key, WAL, logging, and for
@@ -667,7 +793,7 @@ the image keeps the production Rails entrypoint and command.
 
 This is synthetic protocol testing against Rails, not a handover. Not covered: a real client or device,
 production data or keys, TLS and proxy headers, Kobo, the browser, progress and status writes,
-requests, PDF and CBZ pages, read-along manifests (the `readAlong` locator keys are stored and
+requests, rendering of PDF or CBZ pages, any comic archive larger than the synthetic ones, read-along manifests (the `readAlong` locator keys are stored and
 validated, nothing more), reference imports, other schema revisions, non-Linux hosts, power-loss
 durability (SIGKILL only), and Rails and Go running concurrently against one database. `RAILS_MASTER_KEY` credentials mode and
 rotated legacy cursor keys are not supported.

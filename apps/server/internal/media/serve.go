@@ -16,6 +16,9 @@ type Asset struct {
 	Filename  string
 	MediaType string
 	Size      int64
+
+	Disposition           string
+	ContentSecurityPolicy string
 }
 
 func etagMatches(header string, etag string) bool {
@@ -36,7 +39,10 @@ func Serve(w http.ResponseWriter, r *http.Request, file *os.File, asset Asset, s
 	header.Set("ETag", etag)
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Content-Type", asset.MediaType)
-	header.Set("Content-Disposition", ContentDisposition("inline", asset.Filename))
+	header.Set("Content-Disposition", ContentDisposition(asset.Disposition, asset.Filename))
+	if asset.ContentSecurityPolicy != "" {
+		header.Set("Content-Security-Policy", asset.ContentSecurityPolicy)
+	}
 	header.Set("Content-Transfer-Encoding", "binary")
 	if etagMatches(strings.Join(r.Header.Values("If-None-Match"), ", "), etag) {
 		w.WriteHeader(http.StatusNotModified)

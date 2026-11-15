@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,11 +22,16 @@ const (
 	maxLocatorBytes  = 16 << 10
 	maxHrefBytes     = 2048
 	maxReadAlongMs   = 48 * 3_600_000
+	maxPages         = 100_000
+	maxTitleBytes    = 1024
 	futureTolerance  = 5 * time.Minute
 	earliestObserved = 1583
 )
 
 var (
+	fixedLocatorKeys  = []string{"href", "type", "title", "locations", "text"}
+	fixedLocationKeys = []string{"position", "progression", "totalProgression", "fragments"}
+
 	ErrMalformed = errors.New("request body is not valid JSON")
 
 	assetPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -301,4 +307,64 @@ func validReadAlong(value strictjson.Value) bool {
 	offset, hasOffset := value.Member("offset_ms")
 	return hasGeneration && hasAudio && hasOffset && generation.Kind == strictjson.String && assetPattern.MatchString(generation.Text) &&
 		boundedInteger(audio, 1999) && boundedInteger(offset, maxReadAlongMs)
+}
+
+type Place struct {
+	Page      int64
+	Href      string
+	MediaType string
+}
+
+func FixedLayout(locator strictjson.Value, format string) (Place, error) {
+	shape := Invalid{"A page place needs a one-based locations.position and no text position"}
+	locations, _ := locator.Member("locations")
+	position, _ := locations.Member("position")
+	title, _ := locator.Member("title")
+	text, _ := locator.Member("text")
+	page, ok := pageNumber(position)
+	if !ok || !withinKeys(locator, fixedLocatorKeys) || !withinKeys(locations, fixedLocationKeys) ||
+		title.Kind != strictjson.Null && (title.Kind != strictjson.String || len(title.Text) > maxTitleBytes) ||
+		text.Kind != strictjson.Null && text.Kind != strictjson.Object {
+		return Place{}, shape
+	}
+	href, _ := locator.Member("href")
+	kind, _ := locator.Member("type")
+	fragments, hasFragments := locations.Member("fragments")
+	if format == "pdf" {
+		expected := "page=" + strconv.FormatInt(page, 10)
+		singlePage := len(fragments.Items) == 1 && fragments.Kind == strictjson.Array && fragments.Items[0].Kind == strictjson.String && fragments.Items[0].Text == expected
+		if href.Text != "document.pdf" || href.Kind != strictjson.String || kind.Text != "application/pdf" || kind.Kind != strictjson.String ||
+			fragments.Kind != strictjson.Null && !singlePage {
+			return Place{}, Invalid{"A PDF place is document.pdf with type application/pdf and an optional page=N fragment"}
+		}
+		return Place{Page: page, Href: href.Text, MediaType: kind.Text}, nil
+	}
+	if hasFragments {
+		return Place{}, Invalid{"A comic place has no fragments"}
+	}
+	place := Place{Page: page, Href: href.Text}
+	if kind.Kind == strictjson.String {
+		place.MediaType = kind.Text
+	}
+	return place, nil
+}
+
+func pageNumber(value strictjson.Value) (int64, bool) {
+	if value.Kind != strictjson.Integer {
+		return 0, false
+	}
+	number, ok := new(big.Int).SetString(value.Text, 10)
+	if !ok || number.Sign() < 1 || number.Cmp(big.NewInt(maxPages)) > 0 {
+		return 0, false
+	}
+	return number.Int64(), true
+}
+
+func withinKeys(value strictjson.Value, allowed []string) bool {
+	for _, key := range value.Keys {
+		if !slices.Contains(allowed, key) {
+			return false
+		}
+	}
+	return true
 }

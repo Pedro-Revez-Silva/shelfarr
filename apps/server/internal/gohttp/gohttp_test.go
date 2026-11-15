@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -184,7 +185,7 @@ func TestPublicServerDocumentReadsNoCredentialAndAdmitsWhatThisRuntimeLacks(t *t
 	if recorder.Code != 200 || json.Unmarshal(recorder.Body.Bytes(), &body) != nil {
 		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
 	}
-	if body["server_version"] != "1.2.3" || len(body["consumer_features"].([]any)) != 0 || len(body["reader_features"].([]any)) != 0 || len(body["reader_formats"].([]any)) != 1 || body["reader_formats"].([]any)[0] != "epub" {
+	if body["server_version"] != "1.2.3" || len(body["consumer_features"].([]any)) != 0 || len(body["reader_features"].([]any)) != 0 || fmt.Sprint(body["reader_formats"]) != "[cbz epub pdf]" {
 		t.Fatalf("capabilities overstated: %v", body)
 	}
 	android := body["android"].(map[string]any)
@@ -232,7 +233,7 @@ func TestAReplacedFileIsNeverServedUnderTheOldIdentity(t *testing.T) {
 	path := h.file("Book.epub", "original")
 	h.addBook(1, "Book", store.BookTypeEbook, path)
 	book := store.Book{ID: 1, FilePath: sql.NullString{String: path, Valid: true}, BookType: store.BookTypeEbook}
-	listing, err := library.Lister{Roots: []string{h.root}}.List(book, path)
+	listing, err := library.Lister{Roots: []string{h.root}}.List(context.Background(), book, path)
 	if err != nil || len(listing.Assets) != 1 {
 		t.Fatalf("%v %v", listing, err)
 	}
@@ -261,12 +262,12 @@ func TestAnUnchangedPathWithRewrittenContentChangesTheIdentity(t *testing.T) {
 	h := newHarness(t, nil)
 	path := h.file("Book.epub", "original")
 	book := store.Book{ID: 1, FilePath: sql.NullString{String: path, Valid: true}, BookType: store.BookTypeEbook}
-	before, _ := library.Lister{Roots: []string{h.root}}.List(book, path)
+	before, _ := library.Lister{Roots: []string{h.root}}.List(context.Background(), book, path)
 	time.Sleep(10 * time.Millisecond)
 	if err := os.WriteFile(path, []byte("rewritten content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := library.Lister{Roots: []string{h.root}}.List(book, path)
+	after, _ := library.Lister{Roots: []string{h.root}}.List(context.Background(), book, path)
 	if before.Assets[0].ID == after.Assets[0].ID {
 		t.Fatal("rewriting a file kept its asset identity")
 	}

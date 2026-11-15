@@ -36,7 +36,8 @@ module Migration
         configure_encryption
         seed_extra_library
         seed_extra_progress
-        hide_unported_formats
+        seed_fixed_layout_library
+        seed_fixed_layout_progress
         seed_markup_descriptions
         seed_people
         configure_preview
@@ -50,13 +51,6 @@ module Migration
 
       def password
         "Synthetic-#{SecureRandom.hex(10)}-Aa1"
-      end
-
-      def hide_unported_formats
-        Book.acquired.find_each do |book|
-          formats = listed_assets(book, formats: Consumer::ReaderFormats::SUPPORTED).map(&:format)
-          book.update_columns(file_path: nil) if book.comicbook? || formats.intersect?(%w[pdf cbz])
-        end
       end
 
       def seed_markup_descriptions
@@ -184,6 +178,7 @@ module Migration
         data_scenarios
         envelope_and_age_scenarios
         mutation_scenarios
+        fixed_layout_browser_scenarios
         login_scenarios
         logout_scenarios
         @rails_final = { "sessions" => database_rows("sessions", SESSION_COLUMNS), "users" => database_rows("users", USER_COLUMNS) }
@@ -263,6 +258,34 @@ module Migration
         browse("status-expired-session", path.call(epub), persona: "short-envelope", method: "PUT", at: NOON + 120.seconds, body: { "status" => "finished" })
         browse("status-member", path.call(epub), persona: "member", method: "PUT", body: { "status" => "in_progress" })
         browse("status-member-after", "#{PREVIEW}/library", persona: "member")
+      end
+
+      def fixed_layout_browser_scenarios
+        %w[alice bob].each do |persona|
+          browse("#{persona}-fx-library-wide", "#{PREVIEW}/library?limit=50", persona: persona)
+          browse("#{persona}-fx-library-title", "#{PREVIEW}/library?sort=title&q=fx&limit=50", persona: persona)
+          browse("#{persona}-fx-library-ebook", "#{PREVIEW}/library?type=ebook&q=fx&limit=50", persona: persona)
+          %w[unread in_progress finished].each { |status| browse("#{persona}-fx-library-#{status}", "#{PREVIEW}/library?status=#{status}&limit=50", persona: persona) }
+          browse("#{persona}-fx-continue", "#{PREVIEW}/continue", persona: persona)
+          browse("#{persona}-fx-continue-ebook", "#{PREVIEW}/continue?type=ebook", persona: persona)
+          cursor = nil
+          6.times do |page|
+            entry = browse("#{persona}-fx-page-#{page + 1}", "#{PREVIEW}/library?limit=4&sort=title&q=fx#{cursor ? "&cursor=#{CGI.escape(cursor)}" : ''}", persona: persona)
+            cursor = entry.dig("json", "next_cursor")
+            break unless cursor
+          end
+          (FIXED_KEYS + %w[fx-broken fx-missing-comic fx-pdf-early fx-pdf-empty comic-epub]).each { |key| browse("#{persona}-fx-detail-#{key}", "#{PREVIEW}/library/#{@books.fetch(key).id}", persona: persona) }
+        end
+        %w[fx-pdf fx-comic fx-comic-ebook fx-pdf-comic fx-series fx-missing-comic].each_with_index do |key, index|
+          path = "#{PREVIEW}/library/#{@books.fetch(key).id}/reading_status"
+          %w[finished in_progress unread].each_with_index do |status, position|
+            browse("fx-status-#{key}-#{status}", path, persona: index.even? ? "alice" : "bob", method: "PUT", body: { "status" => status }, at: NOON + position)
+          end
+          browse("fx-status-#{key}-after", "#{PREVIEW}/library/#{@books.fetch(key).id}", persona: index.even? ? "alice" : "bob")
+        end
+        browse("fx-status-invalid-comic", "#{PREVIEW}/library/#{@books.fetch('fx-comic').id}/reading_status", persona: "alice", method: "PUT", body: { "status" => "done" })
+        browse("fx-library-after-status", "#{PREVIEW}/library?limit=50&q=fx", persona: "alice")
+        browse("fx-continue-after-status", "#{PREVIEW}/continue", persona: "alice")
       end
 
       def login_scenarios

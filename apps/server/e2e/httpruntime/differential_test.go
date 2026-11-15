@@ -19,7 +19,6 @@ import (
 
 var goServerOverrides = map[string]any{
 	"consumer_features":            []any{},
-	"reader_formats":               []any{"epub"},
 	"reader_features":              []any{},
 	"read_along_manifest_versions": []any{},
 }

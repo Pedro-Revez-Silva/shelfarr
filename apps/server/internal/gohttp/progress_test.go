@@ -3,6 +3,7 @@
 package gohttp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -301,7 +302,7 @@ func TestWrongMethodsAreAnsweredBeforeAuthenticationWithTheRoutesOwnAllowList(t 
 	}
 }
 
-func TestBooksThatAreNotReachableAreNotFoundOrExplicitlyUnsupported(t *testing.T) {
+func TestBooksThatAreNotReachableAreNotFoundAndAComicRecordIsReachable(t *testing.T) {
 	lib := newHarness(t, nil).shelf()
 	lib.h.addBook(3, "Pending", store.BookTypeEbook, "")
 	livetest.Exec(t, lib.h.path, `UPDATE books SET file_path = NULL WHERE id = 3`)
@@ -317,13 +318,14 @@ func TestBooksThatAreNotReachableAreNotFoundOrExplicitlyUnsupported(t *testing.T
 			t.Errorf("status %s: %d", target, recorder.Code)
 		}
 	}
-	for _, request := range [][2]string{{"GET", "progress"}, {"PUT", "progress"}, {"PUT", "reading_status"}} {
-		recorder := lib.h.send(request[0], "/api/consumer/v1/library/4/"+request[1], jsonHeaders(progressToken), `{"status":"finished"}`)
-		if recorder.Code != http.StatusNotImplemented || !strings.Contains(recorder.Body.String(), "unsupported_publication_kind") {
-			t.Errorf("comic %v: %d %s", request, recorder.Code, recorder.Body.String())
-		}
+	if got := decodeObject(t, lib.h.send("GET", "/api/consumer/v1/library/4/progress", jsonHeaders(progressToken), ""), http.StatusOK); fmt.Sprint(got) != "map[progress:<nil>]" {
+		t.Fatalf("%v", got)
 	}
-	if rows := livetest.Query(t, lib.h.path, `SELECT (SELECT COUNT(*) FROM consumer_progresses), (SELECT COUNT(*) FROM consumer_reading_states)`); fmt.Sprint(rows) != "[[0 0]]" {
+	finished := decodeObject(t, lib.h.send("PUT", "/api/consumer/v1/library/4/reading_status", jsonHeaders(progressToken), `{"status":"finished"}`), http.StatusOK)
+	if finished["id"] != "4" || finished["book_type"] != "ebook" || finished["reading_status"] != "finished" {
+		t.Fatalf("%v", finished)
+	}
+	if rows := livetest.Query(t, lib.h.path, `SELECT (SELECT COUNT(*) FROM consumer_progresses), (SELECT COUNT(*) FROM consumer_reading_states)`); fmt.Sprint(rows) != "[[0 1]]" {
 		t.Fatalf("%v", rows)
 	}
 }
@@ -354,7 +356,7 @@ func TestValidationAnswersMatchRailsAndKeepTheSavedPlace(t *testing.T) {
 	}
 }
 
-func TestUnsupportedAssetsAreNeverAcceptedWithAnUnvalidatedLocator(t *testing.T) {
+func TestAPdfPlaceIsStoredOnlyWhenItNamesTheDocumentAndAPage(t *testing.T) {
 	lib := newHarness(t, nil).shelf()
 	lib.h.addBook(5, "Mixed", store.BookTypeEbook, filepathJoin(lib.h, "Mixed"))
 	os.MkdirAll(filepathJoin(lib.h, "Mixed"), 0o700)
@@ -362,7 +364,7 @@ func TestUnsupportedAssetsAreNeverAcceptedWithAnUnvalidatedLocator(t *testing.T)
 	os.WriteFile(filepathJoin(lib.h, "Mixed/Mixed.pdf"), []byte("%PDF-1.4\n"+strings.Repeat("x", 600)), 0o600)
 	var pdf string
 	mixed := store.Book{ID: 5, BookType: store.BookTypeEbook, FilePath: sql.NullString{String: filepathJoin(lib.h, "Mixed"), Valid: true}}
-	listing, err := library.Lister{Roots: []string{lib.h.root}, Formats: allReadingFormats}.List(mixed, mixed.FilePath.String)
+	listing, err := library.Lister{Roots: []string{lib.h.root}, Formats: allReadingFormats}.List(context.Background(), mixed, mixed.FilePath.String)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,13 +376,29 @@ func TestUnsupportedAssetsAreNeverAcceptedWithAnUnvalidatedLocator(t *testing.T)
 	if pdf == "" {
 		t.Fatal("the fixture has no PDF")
 	}
-	body := fmt.Sprintf(`{"asset_id":"%s","expected_version":0,"client_mutation_id":"%s","locator":{"href":"document.pdf","type":"application/pdf","locations":{"position":3}}}`, pdf, mutationOne)
-	recorder := lib.put(5, progressToken, body)
-	if recorder.Code != http.StatusNotImplemented || !strings.Contains(recorder.Body.String(), "unsupported_asset_format") {
-		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
+	place := func(mutation string, version int, locator string) string {
+		return fmt.Sprintf(`{"asset_id":"%s","expected_version":%d,"client_mutation_id":"%s","locator":%s}`, pdf, version, mutation, locator)
+	}
+	refused := map[string]string{
+		`{"href":"document.pdf","type":"application/pdf","locations":{"position":100001}}`:                                        "A page place needs a one-based locations.position and no text position",
+		`{"href":"document.pdf","type":"application/pdf","locations":{"position":3.0}}`:                                           "A bounded relative ebook locator is required",
+		`{"href":"document.pdf","type":"application/pdf","locations":{"position":3,"cfi":"/2"}}`:                                  "A page place needs a one-based locations.position and no text position",
+		`{"href":"document.pdf","type":"application/pdf","locations":{"position":3,"fragments":["page=4"]}}`:                      "A PDF place is document.pdf with type application/pdf and an optional page=N fragment",
+		`{"href":"other.pdf","type":"application/pdf","locations":{"position":3}}`:                                                "A PDF place is document.pdf with type application/pdf and an optional page=N fragment",
+		`{"href":"document.pdf","type":"application/pdf","title":"` + strings.Repeat("t", 1025) + `","locations":{"position":3}}`: "A page place needs a one-based locations.position and no text position",
+	}
+	for locator, message := range refused {
+		recorder := lib.put(5, progressToken, place(mutationOne, 0, locator))
+		if parsed := decodeObject(t, recorder, http.StatusUnprocessableEntity); parsed["error"] != "invalid_progress" || parsed["message"] != message {
+			t.Errorf("%s: %v", locator, parsed)
+		}
 	}
 	if rows := livetest.Query(t, lib.h.path, `SELECT COUNT(*) FROM consumer_progresses`); rows[0][0] != int64(0) {
-		t.Fatal("an unvalidated page place was stored")
+		t.Fatal("a refused page place was stored")
+	}
+	stored := decodeObject(t, lib.put(5, progressToken, place(mutationOne, 0, `{"href":"document.pdf","type":"application/pdf","title":"One","text":{"a":1},"locations":{"position":3,"progression":0.5,"fragments":["page=3"]}}`)), http.StatusOK)["progress"].(map[string]any)
+	if stored["asset_id"] != pdf || stored["version"] != 1.0 || fmt.Sprint(stored["locator"]) != `map[href:document.pdf locations:map[fragments:[page=3] position:3 progression:0.5] text:map[a:1] title:One type:application/pdf]` {
+		t.Fatalf("%v", stored)
 	}
 }
 
@@ -500,17 +518,18 @@ func TestReadingStatusValidationAndFormatHeaders(t *testing.T) {
 	if recorder := lib.h.send(http.MethodPut, url, headers, `{"status":"finished"}`); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_request") {
 		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
 	}
-	headers["X-Shelfarr-Reader-Formats"] = "pdf"
-	if recorder := lib.h.send(http.MethodPut, url, headers, `{"status":"finished"}`); recorder.Code != http.StatusNotImplemented || !strings.Contains(recorder.Body.String(), "unsupported_reader_format") {
-		t.Fatalf("%d %s", recorder.Code, recorder.Body.String())
+	if rows := livetest.Query(t, lib.h.path, `SELECT COUNT(*) FROM consumer_reading_states`); rows[0][0] != int64(0) {
+		t.Fatalf("a refused status write left state: %v", rows)
 	}
-	headers["X-Shelfarr-Reader-Formats"] = "epub"
-	declared := decodeObject(t, lib.h.send(http.MethodPut, url, headers, `{"status":"finished"}`), http.StatusOK)
-	if declared["content_kind"] != "book" || declared["reading_status"] != "finished" {
-		t.Fatalf("%v", declared)
+	for _, selection := range []string{"pdf", "epub", " cbz , epub,pdf "} {
+		headers["X-Shelfarr-Reader-Formats"] = selection
+		declared := decodeObject(t, lib.h.send(http.MethodPut, url, headers, `{"status":"finished"}`), http.StatusOK)
+		if declared["content_kind"] != "book" || declared["reading_status"] != "finished" {
+			t.Fatalf("%q: %v", selection, declared)
+		}
 	}
 	if rows := livetest.Query(t, lib.h.path, `SELECT COUNT(*) FROM consumer_reading_states`); rows[0][0] != int64(1) {
-		t.Fatalf("a refused status write left state: %v", rows)
+		t.Fatalf("a repeated status wrote more than one row: %v", rows)
 	}
 }
 

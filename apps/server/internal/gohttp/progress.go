@@ -8,17 +8,18 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/checkpoint"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/comic"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/consumer"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
-
-var graphicTypes = []int{store.BookTypeEbook, store.BookTypeAudiobook, store.BookTypeComicbook}
 
 var statusValues = map[string]int{"unread": 0, "in_progress": 1, "finished": 2}
 
@@ -92,15 +93,7 @@ func (a *App) decode(w http.ResponseWriter, r *http.Request, result *outcome) (c
 }
 
 func (a *App) checkpointBook(w http.ResponseWriter, r *http.Request, rawID string, result *outcome) (*store.Book, bool) {
-	book, ok := a.lookupBook(w, r, rawID, graphicTypes, result)
-	if !ok {
-		return nil, false
-	}
-	if book.BookType == store.BookTypeComicbook {
-		problem(w, result, http.StatusNotImplemented, "unsupported_publication_kind")
-		return nil, false
-	}
-	return book, true
+	return a.lookupBook(w, r, rawID, allBookTypes, result)
 }
 
 func (a *App) progress(w http.ResponseWriter, r *http.Request, principal *account.Principal, rawID string, result *outcome) {
@@ -157,7 +150,7 @@ func (a *App) updateProgress(w http.ResponseWriter, r *http.Request, principal *
 		writeInvalid(w, result, "invalid_progress", invalid.Message)
 		return
 	}
-	if message, failure := a.confirmAsset(r.Context(), *book, write.AssetID); failure != nil {
+	if message, failure := a.confirmPlace(r.Context(), *book, write); failure != nil {
 		mapFailure(w, result, failure)
 		return
 	} else if message != "" {
@@ -181,28 +174,56 @@ func writeInvalid(w http.ResponseWriter, result *outcome, code, message string) 
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": code, "message": message})
 }
 
-func (a *App) confirmAsset(ctx context.Context, book store.Book, wanted string) (string, error) {
+func (a *App) confirmPlace(ctx context.Context, book store.Book, write checkpoint.Write) (string, error) {
 	roots, err := a.resolveRoots(ctx)
 	if err != nil {
 		return "", err
 	}
-	listing, err := library.Lister{Roots: roots, Formats: allReadingFormats}.List(book, book.FilePath.String)
+	found, err := library.Lister{Roots: roots, Formats: allReadingFormats}.Find(ctx, book, book.FilePath.String, write.AssetID)
+	switch {
+	case err != nil:
+		return "", err
+	case found.Unavailable:
+		return mediaMissing, nil
+	case found.Asset == nil:
+		return assetGone, nil
+	case write.Locator == nil || !fixedLayout(found.Asset.Format):
+		return "", nil
+	}
+	place, err := checkpoint.FixedLayout(*write.Locator, found.Asset.Format)
+	var invalid checkpoint.Invalid
+	if errors.As(err, &invalid) {
+		return invalid.Message, nil
+	}
+	if found.Asset.Format == "pdf" {
+		return "", nil
+	}
+	return a.confirmPage(ctx, book, *found.Asset, place)
+}
+
+func (a *App) confirmPage(ctx context.Context, book store.Book, asset library.Asset, place checkpoint.Place) (string, error) {
+	file, err := openVerified(book, asset)
+	switch {
+	case errors.Is(err, media.ErrNoPinnedOpen):
+		return "", err
+	case errors.Is(err, errAssetChanged):
+		return "This media edition changed while opening", nil
+	case err != nil:
+		return "This media edition is unavailable", nil
+	}
+	defer file.Close()
+	pages, err := comic.Pages(ctx, file, asset.SizeBytes)
+	var invalid comic.Invalid
+	if errors.As(err, &invalid) {
+		return "This comic archive is unsupported or unsafe", nil
+	}
 	if err != nil {
 		return "", err
 	}
-	if listing.Unavailable {
-		return mediaMissing, nil
+	if place.Page > int64(len(pages)) || pages[place.Page-1].Href != place.Href || pages[place.Page-1].MediaType != place.MediaType {
+		return "This page is not page " + strconv.FormatInt(place.Page, 10) + " of the comic's reading order; refresh the publication", nil
 	}
-	for _, asset := range listing.Assets {
-		if asset.ID != wanted {
-			continue
-		}
-		if asset.Format == "pdf" || asset.Format == "cbz" {
-			return "", errUnsupportedAsset
-		}
-		return "", nil
-	}
-	return assetGone, nil
+	return "", nil
 }
 
 func (a *App) readingStatus(w http.ResponseWriter, r *http.Request, principal *account.Principal, rawID string, result *outcome) {
@@ -229,7 +250,7 @@ func (a *App) readingStatus(w http.ResponseWriter, r *http.Request, principal *a
 		mapFailure(w, result, err)
 		return
 	}
-	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats.Declared, roots)
+	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats, roots)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -242,5 +263,3 @@ func (a *App) readingStatus(w http.ResponseWriter, r *http.Request, principal *a
 	result.set(http.StatusOK, "")
 	writeJSON(w, http.StatusOK, items[0])
 }
-
-var errUnsupportedAsset = errors.New("asset format is not supported")

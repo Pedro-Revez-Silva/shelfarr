@@ -226,7 +226,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.login(w, r, result)
 	case routeAuthLogout:
 		a.logout(w, r, result)
-	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset, routeAuthRevoke:
+	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset, routeReadingOrder, routeAuthRevoke:
 		a.authenticated(w, r, found, result)
 	}
 }
@@ -266,6 +266,8 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 		a.readingStatus(w, r, principal, found.id, result)
 	case routeAsset:
 		a.asset(w, r, principal, found, result)
+	case routeReadingOrder:
+		a.readingOrder(w, r, principal, found, result)
 	case routeAuthRevoke:
 		a.revoke(w, r, principal, result)
 	}

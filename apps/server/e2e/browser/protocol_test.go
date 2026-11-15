@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -676,40 +677,63 @@ func TestBrowserDescriptionMarkupBecomesPlainTextAndNeverRawHTML(t *testing.T) {
 	})
 }
 
-func TestBrowserDataRefusesWhatTheRuntimeCannotRenderInsteadOfEmptyingIt(t *testing.T) {
+func TestBrowserDataServesFixedLayoutFilesAndComicRecordsInsteadOfDroppingOrRefusingThem(t *testing.T) {
 	eachFixture(t, func(t *testing.T, f fixture, copied runtimeCopy) {
 		instance := startServer(t, f, copied, serverOptions{})
 		client := instance.browser()
 		account, token := client.signIn("browser_member", f.personas.Passwords["browser_member"])
 		library := client.get("/preview/api/v1/library", account)
 		book := firstBook(t, library)
-		mixed := filepath.Join(f.doc.ExtraMediaRoot, "Mixed Formats")
-		sparse := filepath.Join(f.doc.ExtraMediaRoot, "browser-comic.epub")
+		mixed := filepath.Join(f.doc.ExtraMediaRoot, "fx-mixed")
+		comic := filepath.Join(f.doc.ExtraMediaRoot, "fx-comic.cbz")
 		cases := map[string]struct {
-			setup string
-			args  []any
-			code  string
+			setup   string
+			args    []any
+			label   string
+			formats []string
+			kind    string
 		}{
-			"pdf and cbz assets": {`UPDATE books SET file_path = ? WHERE id = ?`, []any{mixed, book}, "unsupported_asset_format"},
-			"a comic record":     {`UPDATE books SET book_type = 2, file_path = ? WHERE id = ?`, []any{sparse, book}, "unsupported_publication_kind"},
+			"pdf and cbz files": {`UPDATE books SET file_path = ? WHERE id = ?`, []any{mixed, book}, "Ebook", []string{"cbz", "epub", "pdf"}, "book"},
+			"a comic record":    {`UPDATE books SET book_type = 2, file_path = ? WHERE id = ?`, []any{comic, book}, "Comic", []string{"cbz"}, "graphic"},
 		}
 		original := rows(t, copied.database, `SELECT file_path, description, book_type FROM books WHERE id = ?`, book)[0]
 		for name, test := range cases {
 			exec1(t, copied.database, test.setup, test.args...)
 			detail := client.get("/preview/api/v1/library/"+book, account)
-			if detail.status != http.StatusNotImplemented || detail.code(t) != test.code {
-				t.Errorf("%s: detail answered %d %s", name, detail.status, detail.body)
+			var body struct {
+				Publication struct {
+					ContentKind string `json:"content_kind"`
+					FormatLabel string `json:"format_label"`
+					Files       []struct {
+						Format    string `json:"format"`
+						PageCount *int   `json:"page_count"`
+					} `json:"files"`
+				} `json:"publication"`
 			}
-			if list := client.get("/preview/api/v1/library", account); list.status != http.StatusNotImplemented {
-				t.Errorf("%s: the listing answered %d, it must not silently drop the book", name, list.status)
+			if detail.status != http.StatusOK || json.Unmarshal([]byte(detail.body), &body) != nil {
+				t.Fatalf("%s: detail answered %d %s", name, detail.status, detail.body)
 			}
-			write := client.put("/preview/api/v1/library/"+book+"/reading_status", account, token, `{"status":"finished"}`)
-			if write.status != http.StatusNotImplemented {
-				t.Errorf("%s: the status write answered %d", name, write.status)
+			var formats []string
+			for _, file := range body.Publication.Files {
+				formats = append(formats, file.Format)
+				if (file.Format == "cbz") != (file.PageCount != nil) {
+					t.Errorf("%s: %s page count %v", name, file.Format, file.PageCount)
+				}
 			}
-			if count(t, copied.database, `SELECT COUNT(*) FROM consumer_reading_states WHERE book_id = ? AND user_id = ?`, book, f.doc.Users["browser_member"]) != 0 {
-				t.Errorf("%s: a refused status write stored a row", name)
+			sort.Strings(formats)
+			if strings.Join(formats, ",") != strings.Join(test.formats, ",") || body.Publication.FormatLabel != test.label || body.Publication.ContentKind != test.kind {
+				t.Errorf("%s: %+v", name, body.Publication)
 			}
+			if list := client.get("/preview/api/v1/library", account); list.status != http.StatusOK || !strings.Contains(string(list.body), `"id":"`+book+`"`) {
+				t.Errorf("%s: the listing answered %d without the book", name, list.status)
+			}
+			if write := client.put("/preview/api/v1/library/"+book+"/reading_status", account, token, `{"status":"finished"}`); write.status != http.StatusOK {
+				t.Errorf("%s: the status write answered %d %s", name, write.status, write.body)
+			}
+			if count(t, copied.database, `SELECT COUNT(*) FROM consumer_reading_states WHERE book_id = ? AND user_id = ? AND status = 2`, book, f.doc.Users["browser_member"]) != 1 {
+				t.Errorf("%s: the status write stored nothing", name)
+			}
+			exec1(t, copied.database, `DELETE FROM consumer_reading_states WHERE book_id = ?`, book)
 			exec1(t, copied.database, `UPDATE books SET file_path = ?, description = ?, book_type = ? WHERE id = ?`, original["file_path"], original["description"], original["book_type"], book)
 		}
 		if client.get("/preview/api/v1/library/"+book, account).status != http.StatusOK {

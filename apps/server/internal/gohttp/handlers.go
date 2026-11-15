@@ -12,6 +12,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/assetid"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/catalogue"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/comic"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/consumer"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
@@ -75,13 +76,9 @@ func (a *App) readerFormats(w http.ResponseWriter, r *http.Request, result *outc
 	value, present := headerValue(r, readerformats.FormatsHeader)
 	formats, err := readerformats.ParseFormats(value, present)
 	var invalid readerformats.Invalid
-	switch {
-	case errors.As(err, &invalid):
+	if errors.As(err, &invalid) {
 		result.set(http.StatusBadRequest, "invalid_request")
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request", "message": invalid.Message})
-		return formats, false
-	case formats.RequireSupported() != nil:
-		problem(w, result, http.StatusNotImplemented, "unsupported_reader_format")
 		return formats, false
 	}
 	return formats, true
@@ -92,7 +89,7 @@ func (a *App) me(w http.ResponseWriter, principal *account.Principal, result *ou
 	writeJSON(w, http.StatusOK, consumer.NewMe(strconv.FormatInt(principal.UserID, 10), principal.Name, principal.Username, principal.VisibleScopes()))
 }
 
-func (a *App) publications(ctx context.Context, userID int64, books []store.Book, declared bool, roots []string) ([]consumer.Publication, error) {
+func (a *App) publications(ctx context.Context, userID int64, books []store.Book, formats readerformats.Formats, roots []string) ([]consumer.Publication, error) {
 	ids := make([]int64, len(books))
 	for index, book := range books {
 		ids[index] = book.ID
@@ -105,10 +102,10 @@ func (a *App) publications(ctx context.Context, userID int64, books []store.Book
 	if err != nil {
 		return nil, err
 	}
-	view := consumer.NewView(roots, progress, states, declared)
+	view := consumer.NewViewFor(roots, formats.Names, progress, states, formats.Declared)
 	items := make([]consumer.Publication, 0, len(books))
 	for _, book := range books {
-		item, err := view.Publication(book)
+		item, err := view.Publication(ctx, book)
 		if err != nil {
 			return nil, err
 		}
@@ -144,7 +141,7 @@ func (a *App) library(w http.ResponseWriter, r *http.Request, principal *account
 		mapFailure(w, result, err)
 		return
 	}
-	items, err := a.publications(r.Context(), principal.UserID, found.Books, formats.Declared, roots)
+	items, err := a.publications(r.Context(), principal.UserID, found.Books, formats, roots)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -177,7 +174,7 @@ func (a *App) continueReading(w http.ResponseWriter, r *http.Request, principal 
 		return
 	}
 	limit := continueLimit(params.Limit)
-	books, err := a.db.InProgress(r.Context(), principal.UserID, consumer.ReadingTypes, continueScan)
+	books, err := a.db.InProgress(r.Context(), principal.UserID, catalogue.ReadingTypes("", formats.Graphic()), continueScan)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -189,7 +186,7 @@ func (a *App) continueReading(w http.ResponseWriter, r *http.Request, principal 
 	}
 	items := []consumer.Publication{}
 	for start := 0; start < len(books) && len(items) < limit; start += continueSlice {
-		page, err := a.publications(r.Context(), principal.UserID, books[start:min(start+continueSlice, len(books))], formats.Declared, roots)
+		page, err := a.publications(r.Context(), principal.UserID, books[start:min(start+continueSlice, len(books))], formats, roots)
 		if err != nil {
 			mapFailure(w, result, err)
 			return
@@ -216,7 +213,7 @@ func (a *App) publication(w http.ResponseWriter, r *http.Request, principal *acc
 	if !ok {
 		return
 	}
-	book, ok := a.lookupBook(w, r, rawID, consumer.ReadingTypes, result)
+	book, ok := a.lookupBook(w, r, rawID, catalogue.ReadingTypes("", formats.Graphic()), result)
 	if !ok {
 		return
 	}
@@ -238,7 +235,7 @@ func (a *App) publication(w http.ResponseWriter, r *http.Request, principal *acc
 		mapFailure(w, result, err)
 		return
 	}
-	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats.Declared, roots)
+	items, err := a.publications(r.Context(), principal.UserID, []store.Book{*book}, formats, roots)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -269,58 +266,103 @@ func (a *App) lookupBook(w http.ResponseWriter, r *http.Request, rawID string, t
 	return book, true
 }
 
-var allReadingFormats = []string{"epub", "pdf", "cbz"}
+var (
+	allReadingFormats = []string{"epub", "pdf", "cbz"}
+	comicFormats      = []string{"cbz"}
+	allBookTypes      = []int{store.BookTypeEbook, store.BookTypeAudiobook, store.BookTypeComicbook}
+)
 
-func (a *App) asset(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
-	book, ok := a.lookupBook(w, r, found.id, []int{store.BookTypeEbook, store.BookTypeAudiobook, store.BookTypeComicbook}, result)
+const documentPolicy = "default-src 'none'; sandbox; frame-ancestors 'none'; form-action 'none'; base-uri 'none'"
+
+func fixedLayout(format string) bool {
+	return format == "pdf" || format == "cbz"
+}
+
+func (a *App) findAsset(w http.ResponseWriter, r *http.Request, found route, formats []string, result *outcome) (*store.Book, *library.Asset, bool) {
+	book, ok := a.lookupBook(w, r, found.id, allBookTypes, result)
 	if !ok {
-		return
-	}
-	if book.BookType == store.BookTypeComicbook {
-		problem(w, result, http.StatusNotImplemented, "unsupported_publication_kind")
-		return
+		return nil, nil, false
 	}
 	roots, err := a.resolveRoots(r.Context())
 	if err != nil {
 		mapFailure(w, result, err)
-		return
+		return nil, nil, false
 	}
 	if !assetID.MatchString(found.assetID) {
 		problem(w, result, http.StatusGone, "asset_unavailable")
+		return nil, nil, false
+	}
+	located, err := library.Lister{Roots: roots, Formats: formats}.Find(r.Context(), *book, book.FilePath.String, found.assetID)
+	if err != nil {
+		mapFailure(w, result, err)
+		return nil, nil, false
+	}
+	if located.Asset == nil {
+		problem(w, result, http.StatusGone, "asset_unavailable")
+		return nil, nil, false
+	}
+	return book, located.Asset, true
+}
+
+func (a *App) openAsset(w http.ResponseWriter, book store.Book, asset library.Asset, result *outcome) (*os.File, bool) {
+	file, err := openVerified(book, asset)
+	if err != nil {
+		if errors.Is(err, media.ErrNoPinnedOpen) {
+			mapFailure(w, result, err)
+			return nil, false
+		}
+		problem(w, result, http.StatusGone, "asset_unavailable")
+		return nil, false
+	}
+	return file, true
+}
+
+func (a *App) asset(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
+	book, chosen, ok := a.findAsset(w, r, found, allReadingFormats, result)
+	if !ok {
 		return
 	}
-	listing, err := library.Lister{Roots: roots, Formats: allReadingFormats}.List(*book, book.FilePath.String)
+	file, ok := a.openAsset(w, *book, *chosen, result)
+	if !ok {
+		return
+	}
+	defer file.Close()
+	served := media.Asset{ID: chosen.ID, Filename: chosen.Filename, MediaType: chosen.MediaType, Size: chosen.SizeBytes, Disposition: "inline"}
+	if fixedLayout(chosen.Format) {
+		served.Disposition, served.ContentSecurityPolicy = "attachment", documentPolicy
+	}
+	result.set(http.StatusOK, "")
+	media.Serve(w, r, file, served, a.config.StreamWriteStall)
+}
+
+type readingOrderBody struct {
+	AssetID string       `json:"asset_id"`
+	Format  string       `json:"format"`
+	Items   []comic.Page `json:"items"`
+}
+
+func (a *App) readingOrder(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
+	book, chosen, ok := a.findAsset(w, r, found, comicFormats, result)
+	if !ok {
+		return
+	}
+	file, ok := a.openAsset(w, *book, *chosen, result)
+	if !ok {
+		return
+	}
+	defer file.Close()
+	pages, err := comic.Pages(r.Context(), file, chosen.SizeBytes)
+	var invalid comic.Invalid
+	if errors.As(err, &invalid) {
+		problem(w, result, http.StatusGone, "asset_unavailable")
+		return
+	}
 	if err != nil {
 		mapFailure(w, result, err)
 		return
 	}
-	var chosen *library.Asset
-	for index := range listing.Assets {
-		if listing.Assets[index].ID == found.assetID {
-			chosen = &listing.Assets[index]
-			break
-		}
-	}
-	if chosen == nil {
-		problem(w, result, http.StatusGone, "asset_unavailable")
-		return
-	}
-	if chosen.Format == "pdf" || chosen.Format == "cbz" {
-		problem(w, result, http.StatusNotImplemented, "unsupported_asset_format")
-		return
-	}
-	file, err := openVerified(*book, *chosen)
-	if err != nil {
-		if errors.Is(err, media.ErrNoPinnedOpen) {
-			mapFailure(w, result, err)
-			return
-		}
-		problem(w, result, http.StatusGone, "asset_unavailable")
-		return
-	}
-	defer file.Close()
 	result.set(http.StatusOK, "")
-	media.Serve(w, r, file, media.Asset{ID: chosen.ID, Filename: chosen.Filename, MediaType: chosen.MediaType, Size: chosen.SizeBytes}, a.config.StreamWriteStall)
+	writeJSON(w, http.StatusOK, readingOrderBody{AssetID: chosen.ID, Format: "cbz", Items: pages})
 }
 
 var errAssetChanged = errors.New("media edition changed while opening")
@@ -370,7 +412,7 @@ func (a *App) server(w http.ResponseWriter, result *outcome) {
 		"server_version":               a.config.ServerVersion,
 		"consumer_api_versions":        []int{1},
 		"consumer_features":            []string{},
-		"reader_formats":               []string{"epub"},
+		"reader_formats":               []string{"cbz", "epub", "pdf"},
 		"reader_features":              []string{},
 		"read_along_manifest_versions": []int{},
 		"android":                      channels,
