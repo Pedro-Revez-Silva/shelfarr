@@ -179,7 +179,7 @@ module Migration
 
     def seed_tokens
       scopes = ConsumerDeviceGrant::SCOPES
-      @raw = {}
+      @raw ||= {}
       issue("alice-full", @users["alice"], scopes)
       issue("alice-progress-only", @users["alice"], [ "progress:write" ])
       issue("alice-revoked", @users["alice"], scopes)
@@ -429,7 +429,7 @@ module Migration
     def manifest
       {
         "fixture_format" => FORMAT_VERSION,
-        "origin" => "current-schema",
+        "origin" => origin,
         "producer" => { "ruby" => RUBY_VERSION, "rails" => Rails.version, "repository_head" => repository_head },
         "schema" => { "revision" => @schema_version.to_s, "path" => "db/schema.rb" },
         "media_root" => @root,
@@ -439,6 +439,10 @@ module Migration
         "files" => file_hashes,
         "external_trees" => external_trees
       }
+    end
+
+    def origin
+      "current-schema"
     end
 
     def coverage

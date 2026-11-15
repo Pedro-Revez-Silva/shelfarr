@@ -57,4 +57,19 @@ class ProduceIsolationTest < Minitest::Test
     assert_empty violations
     assert File.exist?(File.join(out, "manifest.json"))
   end
+
+  def test_booting_and_upgrading_a_released_database_reads_no_repository_credentials_keys_or_databases
+    out = File.join(@scratch, "upgrade-bundle")
+    output, status = Open3.capture2e(environment(out), "bundle", "exec", "ruby", "tools/migration/produce_fixture.rb", "--out", out, "--mode", "stable-upgrade", chdir: REPO, unsetenv_others: true)
+    assert status.success?, output
+    assert_empty violations
+    assert File.exist?(File.join(out, "db", "released-source.sqlite3"))
+  end
+
+  def test_an_unknown_mode_is_refused_before_anything_is_created
+    out = File.join(@scratch, "never")
+    _, status = Open3.capture2e(environment(out), "bundle", "exec", "ruby", "tools/migration/produce_fixture.rb", "--out", out, "--mode", "volume", chdir: REPO, unsetenv_others: true)
+    refute status.success?
+    refute File.exist?(out)
+  end
 end
