@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -559,13 +558,4 @@ func setClock(t testing.TB, path, at string) {
 	if err := os.WriteFile(path, []byte(at), 0o600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func contains(text string, parts ...string) bool {
-	for _, part := range parts {
-		if part != "" && strings.Contains(text, part) {
-			return true
-		}
-	}
-	return false
 }

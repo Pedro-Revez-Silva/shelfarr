@@ -3,7 +3,6 @@
 package browser
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -363,5 +362,3 @@ func exportForRails(t *testing.T, f fixture, copied runtimeCopy, issued map[stri
 		t.Fatal(err)
 	}
 }
-
-var _ = sql.ErrNoRows
