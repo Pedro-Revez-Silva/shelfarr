@@ -1,0 +1,154 @@
+import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
+import type { PublicationDetail } from "../contract";
+import { failureKind } from "../api/errors";
+import { usePublication } from "../queries";
+import { Cover } from "./Cover";
+import { PageHeading } from "./PageHeading";
+import { ReadingStatusForm } from "./ReadingStatusForm";
+import { ErrorPanel, Loading } from "./States";
+
+const routeApi = getRouteApi("/library/$publicationId");
+
+export function DetailsPage() {
+  const { publicationId } = routeApi.useParams();
+  const publication = usePublication(publicationId);
+
+  if (publication.isPending) {
+    return (
+      <section className="details" aria-busy="true">
+        <BackToLibrary />
+        <Loading label="Loading this book…" />
+      </section>
+    );
+  }
+
+  if (publication.isError) {
+    const missing = failureKind(publication.error) === "not_found";
+    return (
+      <section className="details">
+        <BackToLibrary />
+        {missing ? (
+          <div className="state state--empty" role="alert">
+            <h1>This book is no longer in your library</h1>
+            <p>It may have been removed from the server, or it was never available to this account.</p>
+            <div className="state-actions">
+              <Link to="/library" className="button button--primary">
+                Back to the library
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <ErrorPanel error={publication.error} onRetry={() => void publication.refetch()} />
+        )}
+      </section>
+    );
+  }
+
+  return <Details publication={publication.data} />;
+}
+
+function BackToLibrary() {
+  const router = useRouter();
+  const canGoBack = router.history.canGoBack();
+  if (canGoBack) {
+    return (
+      <button type="button" className="back-link" onClick={() => router.history.back()}>
+        <span aria-hidden="true">← </span>Back to the library
+      </button>
+    );
+  }
+  return (
+    <Link to="/library" className="back-link">
+      <span aria-hidden="true">← </span>Library
+    </Link>
+  );
+}
+
+function primaryLabel(publication: PublicationDetail): string {
+  const listening = publication.action === "listen";
+  if (publication.reading_status === "finished") return listening ? "Listen again" : "Read again";
+  if (publication.progress) return listening ? "Continue listening" : "Continue reading";
+  return listening ? "Start listening" : "Start reading";
+}
+
+function Details({ publication }: { publication: PublicationDetail }) {
+  const available = publication.availability === "available";
+  return (
+    <article className="details" aria-labelledby="publication-heading">
+      <BackToLibrary />
+      <div className="details-layout">
+        <Cover publication={publication} large />
+        <div className="details-main">
+          <p className="eyebrow">{publication.format_label}</p>
+          <PageHeading id="publication-heading">{publication.title}</PageHeading>
+          {publication.author ? <p className="details-author">{publication.author}</p> : null}
+
+          {available ? (
+            <div className="primary-action">
+              <a className="button button--primary button--large" href={publication.reader_url}>
+                {primaryLabel(publication)}
+                <span className="sr-only"> {publication.title} in the {publication.action === "listen" ? "player" : "reader"}</span>
+              </a>
+              {publication.progress || publication.reading_status !== "unread" ? <p className="progress-label">{publication.progress_label}</p> : null}
+              {publication.progress?.fraction != null && publication.reading_status === "in_progress" ? (
+                <progress className="book-progress" max={1} value={publication.progress.fraction} aria-label="Reading progress" />
+              ) : null}
+            </div>
+          ) : (
+            <p className="notice" role="note">
+              The files for this book are not available on the server right now, so it cannot be opened. Your saved place is kept.
+            </p>
+          )}
+
+          <ReadingStatusForm publication={publication} />
+        </div>
+      </div>
+
+      {publication.description ? (
+        <section aria-labelledby="about-heading" className="about">
+          <h2 id="about-heading">About this book</h2>
+          <p className="description">{publication.description}</p>
+        </section>
+      ) : null}
+
+      {publication.files.length > 0 ? (
+        <section aria-labelledby="files-heading" className="files">
+          <h2 id="files-heading">Files on the server</h2>
+          <div className="table-wrap">
+            <table>
+              <caption className="sr-only">Files stored for {publication.title}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">File</th>
+                  <th scope="col">Format</th>
+                  <th scope="col">Size</th>
+                </tr>
+              </thead>
+              <tbody>
+                {publication.files.map((file) => (
+                  <tr key={file.id}>
+                    <th scope="row">{file.filename}</th>
+                    <td>{file.page_count ? `${file.format.toUpperCase()} · ${file.page_count} pages` : file.format.toUpperCase()}</td>
+                    <td>{formatBytes(file.size_bytes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+    </article>
+  );
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}

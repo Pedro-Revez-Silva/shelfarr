@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Library preview · Shelfarr</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="robots" content="noindex">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#FBF7F0">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#16130F">
+    <%= csrf_meta_tags %>
+    <%= stylesheet_link_tag "web/preview" %>
+    <%= javascript_include_tag "web/preview", type: "module" %>
+  </head>
+  <body class="web-preview">
+    <div id="root">
+      <p class="boot-message">Loading your library preview…</p>
+      <p class="boot-message"><a href="<%= consumer_library_path %>">Open the classic library</a></p>
+    </div>
+    <noscript><p class="boot-message">The library preview needs JavaScript. <a href="<%= consumer_library_path %>">Open the classic library</a>.</p></noscript>
+    <script type="application/json" id="shelfarr-boot"><%= raw json_escape(@boot.to_json) %></script>
+  </body>
+</html>

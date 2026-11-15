@@ -29,6 +29,13 @@ RUN git init . && git remote add origin https://github.com/basecamp/thruster.git
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/thrust ./cmd/thrust
 
+FROM docker.io/oven/bun:1.4.4-slim@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS web-build
+WORKDIR /web/apps/web
+COPY apps/web/package.json apps/web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY apps/web ./
+RUN bun run typecheck && bun run build
+
 FROM base AS build
 
 RUN apt-get update -qq && \
@@ -43,6 +50,7 @@ RUN bundle install && \
     bundle exec bootsnap precompile -j 1 --gemfile
 
 COPY . .
+COPY --from=web-build /web/app/assets/builds/web app/assets/builds/web
 
 # Inject version from build arg (set by CI when building from a tag)
 ARG APP_VERSION=""
