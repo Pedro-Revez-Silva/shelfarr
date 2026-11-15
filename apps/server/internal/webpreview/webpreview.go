@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -248,24 +247,6 @@ func presence(value *string) *string {
 		return nil
 	}
 	return value
-}
-
-var (
-	runs       = regexp.MustCompile(`[ \t]+`)
-	lineEdges  = regexp.MustCompile(` ?\n ?`)
-	blankLines = regexp.MustCompile(`\n{3,}`)
-)
-
-func PlainText(value string) (string, error) {
-	for _, character := range value {
-		if character == '<' || character == '>' || character == '&' || character == '\r' || character == 0 || character < 0x20 && character != '\n' && character != '\t' {
-			return "", ErrUnsupported
-		}
-	}
-	text := runs.ReplaceAllString(value, " ")
-	text = lineEdges.ReplaceAllString(text, "\n")
-	text = blankLines.ReplaceAllString(text, "\n\n")
-	return strings.Trim(text, " \t\n\v\f\r"), nil
 }
 
 func ProjectDetail(publication consumer.Publication) (Detail, error) {

@@ -38,6 +38,7 @@ const (
 	allowlist    = "TestBrowserEndpointsAreOff"
 	restart      = "TestBrowserSessionsSurviveARestart"
 	cookies      = "TestBrowserBodiesAndCookies"
+	markup       = "TestBrowserDescriptionMarkup"
 )
 
 func one(old, replacement string) []edit { return []edit{{old, replacement}} }
@@ -91,7 +92,11 @@ var mutants = []mutant{
 	{name: "cookie: the session cookie is not Rails-escaped", file: "internal/gohttp/browser.go", edits: one("Value: url.QueryEscape(cookie), Path: \"/\"", "Value: cookie, Path: \"/\""), unit: "./internal/gohttp/", scenario: lifecycle},
 	{name: "formats: PDF and CBZ assets are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("if asset.Format == \"pdf\" || asset.Format == \"cbz\" {\n\t\t\t\treturn nil, errUnsupportedAsset", "if asset.Format == \"never\" {\n\t\t\t\treturn nil, errUnsupportedAsset"), unit: "./internal/gohttp/", scenario: unported},
 	{name: "formats: comic records are listed as if they were absent", file: "internal/gohttp/browser_data.go", edits: one("if book.BookType == store.BookTypeComicbook {\n\t\t\treturn nil, errUnsupportedKind", "if false {\n\t\t\treturn nil, errUnsupportedKind"), unit: "./internal/gohttp/", scenario: unported},
-	{name: "formats: markup in a description is guessed", file: "internal/webpreview/webpreview.go", edits: one("if character == '<' || character == '>' || character == '&' ||", "if"), unit: "./internal/webpreview/", scenario: unported},
+	{name: "description: markup reaches the browser as raw HTML", file: "internal/webpreview/plaintext.go", edits: one("text, err := visibleText(lineBreaks(withoutRawTextElements(value)))", "text, err := value, error(nil)"), unit: "./internal/webpreview/", scenario: markup},
+	{name: "description: script and style bodies are kept", file: "internal/webpreview/plaintext.go", edits: one("lineBreaks(withoutRawTextElements(value))", "lineBreaks(value)"), unit: "./internal/webpreview/", scenario: markup},
+	{name: "description: block tags do not break lines", file: "internal/webpreview/plaintext.go", edits: one("lineBreaks(withoutRawTextElements(value))", "withoutRawTextElements(value)"), unit: "./internal/webpreview/", scenario: markup},
+	{name: "description: a non-breaking space is shown as a space", file: "internal/webpreview/plaintext.go", edits: one("text = strings.ReplaceAll(text, \"\\u00a0\", \"&nbsp;\")", ""), unit: "./internal/webpreview/"},
+	{name: "description: markup nesting is not bounded", file: "internal/webpreview/plaintext.go", edits: one("if current.depth > maxMarkupDepth {", "if false {"), unit: "./internal/webpreview/"},
 	{name: "projection: the account is not part of the status isolation", file: "internal/live/queries.go", edits: one("func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {", "func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {\n\tuserID = 0"), unit: "./internal/gohttp/", scenario: differential},
 }
 

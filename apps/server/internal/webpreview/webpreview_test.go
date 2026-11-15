@@ -2,6 +2,7 @@ package webpreview
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -30,17 +31,68 @@ func TestCoverStyleIsTheRailsFnvBucket(t *testing.T) {
 	}
 }
 
-func TestPlainTextFollowsTheRailsNormalisationAndRefusesMarkup(t *testing.T) {
+func TestPlainTextFollowsTheRailsNormalisationAndRefusesWhatItCannotRender(t *testing.T) {
 	good := map[string]string{"  a   b\t\tc \n\n\n\n d \n": "a b c\n\nd", "First line\nSecond": "First line\nSecond", "": ""}
 	for input, want := range good {
 		if got, err := PlainText(input); err != nil || got != want {
 			t.Errorf("%q: %q %v", input, got, err)
 		}
 	}
-	for _, input := range []string{"<p>x</p>", "a > b", "fish & chips", "a\r\nb", "nul\x00", "bell\x07"} {
+	for _, input := range []string{"a\r\nb", "nul\x00", "bell\x07", strings.Repeat("<b>", maxMarkupDepth+1) + "x", "<svg><![CDATA[z]]></svg>", "<MATH><![CDATA[z]]>"} {
 		if _, err := PlainText(input); err == nil {
 			t.Errorf("%q was accepted", input)
 		}
+	}
+}
+
+type railsAnswer struct {
+	Text  *string `json:"text"`
+	Error string  `json:"error"`
+}
+
+func TestPlainTextMatchesTheRealRailsConversionOverTheCorpus(t *testing.T) {
+	var corpus []string
+	var expected []railsAnswer
+	for name, into := range map[string]any{"testdata/plain-text-corpus.json": &corpus, "testdata/plain-text-expected.json": &expected} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, into); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(corpus) != len(expected) || len(corpus) < 800 {
+		t.Fatalf("corpus %d expected %d", len(corpus), len(expected))
+	}
+	refused := 0
+	for index, input := range corpus {
+		got, err := PlainText(input)
+		if expected[index].Text == nil {
+			if err == nil {
+				t.Errorf("Rails raised %s for %q but the runtime answered %q", expected[index].Error, input, got)
+			}
+			refused++
+			continue
+		}
+		if err != nil || got != *expected[index].Text {
+			t.Errorf("%q: runtime %q (%v), Rails %q", input, got, err, *expected[index].Text)
+		}
+	}
+	if refused == 0 {
+		t.Fatal("the corpus holds no input that Rails refuses")
+	}
+}
+
+func TestPlainTextNeverReturnsMarkupThatCouldExecute(t *testing.T) {
+	for _, input := range []string{"<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "<svg onload=alert(1)>", "<a href=\"javascript:alert(1)\">x</a>"} {
+		got, err := PlainText(input)
+		if err != nil || strings.ContainsAny(got, "<>") {
+			t.Errorf("%q: %q %v", input, got, err)
+		}
+	}
+	if got, _ := PlainText("&lt;script&gt;alert(1)&lt;/script&gt;"); got != "<script>alert(1)</script>" {
+		t.Errorf("an escaped payload must stay literal text, got %q", got)
 	}
 }
 

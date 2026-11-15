@@ -650,6 +650,32 @@ func waitFor(t *testing.T, path string) {
 	t.Fatalf("%s never appeared", filepath.Base(path))
 }
 
+func TestBrowserDescriptionMarkupBecomesPlainTextAndNeverRawHTML(t *testing.T) {
+	eachFixture(t, func(t *testing.T, f fixture, copied runtimeCopy) {
+		instance := startServer(t, f, copied, serverOptions{})
+		client := instance.browser()
+		account, _ := client.signIn("browser_member", f.personas.Passwords["browser_member"])
+		book := firstBook(t, client.get("/preview/api/v1/library", account))
+		cases := map[string]string{
+			"<p>Hi</p><script>alert(1)</script>&amp; <b>bold</b>":                    "Hi\n& bold",
+			"<img src=x onerror=alert(1)>text &lt;script&gt;alert(1)&lt;/script&gt;": "text <script>alert(1)</script>",
+			"one<br>two<ul><li>a</li><li>b</li></ul>":                                "one\ntwo\n\na\nb",
+		}
+		for stored, want := range cases {
+			exec1(t, copied.database, `UPDATE books SET description = ? WHERE id = ?`, stored, book)
+			detail := client.get("/preview/api/v1/library/"+book, account)
+			var body struct {
+				Publication struct {
+					Description string `json:"description"`
+				} `json:"publication"`
+			}
+			if detail.status != http.StatusOK || json.Unmarshal([]byte(detail.body), &body) != nil || body.Publication.Description != want {
+				t.Errorf("%q: %d %s want %q", stored, detail.status, detail.body, want)
+			}
+		}
+	})
+}
+
 func TestBrowserDataRefusesWhatTheRuntimeCannotRenderInsteadOfEmptyingIt(t *testing.T) {
 	eachFixture(t, func(t *testing.T, f fixture, copied runtimeCopy) {
 		instance := startServer(t, f, copied, serverOptions{})
@@ -664,9 +690,8 @@ func TestBrowserDataRefusesWhatTheRuntimeCannotRenderInsteadOfEmptyingIt(t *test
 			args  []any
 			code  string
 		}{
-			"pdf and cbz assets":    {`UPDATE books SET file_path = ? WHERE id = ?`, []any{mixed, book}, "unsupported_asset_format"},
-			"html in a description": {`UPDATE books SET description = '<p>Hi</p>' WHERE id = ? AND ? <> ''`, []any{book, mixed}, "unsupported_stored_value"},
-			"a comic record":        {`UPDATE books SET book_type = 2, file_path = ? WHERE id = ?`, []any{sparse, book}, "unsupported_publication_kind"},
+			"pdf and cbz assets": {`UPDATE books SET file_path = ? WHERE id = ?`, []any{mixed, book}, "unsupported_asset_format"},
+			"a comic record":     {`UPDATE books SET book_type = 2, file_path = ? WHERE id = ?`, []any{sparse, book}, "unsupported_publication_kind"},
 		}
 		original := rows(t, copied.database, `SELECT file_path, description, book_type FROM books WHERE id = ?`, book)[0]
 		for name, test := range cases {
@@ -675,10 +700,8 @@ func TestBrowserDataRefusesWhatTheRuntimeCannotRenderInsteadOfEmptyingIt(t *test
 			if detail.status != http.StatusNotImplemented || detail.code(t) != test.code {
 				t.Errorf("%s: detail answered %d %s", name, detail.status, detail.body)
 			}
-			if name != "html in a description" {
-				if list := client.get("/preview/api/v1/library", account); list.status != http.StatusNotImplemented {
-					t.Errorf("%s: the listing answered %d, it must not silently drop the book", name, list.status)
-				}
+			if list := client.get("/preview/api/v1/library", account); list.status != http.StatusNotImplemented {
+				t.Errorf("%s: the listing answered %d, it must not silently drop the book", name, list.status)
 			}
 			write := client.put("/preview/api/v1/library/"+book+"/reading_status", account, token, `{"status":"finished"}`)
 			if write.status != http.StatusNotImplemented {
