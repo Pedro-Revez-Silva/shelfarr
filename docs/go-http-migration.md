@@ -366,7 +366,7 @@ bounded-grace and column checks without a migration.
 
 ### Verification
 
-`tools/migration/pairing/verify-pairing` (CI job `go-pairing`) produces both bundles with the real Rails code, records 216 steps per fixture with the
+`tools/migration/pairing/verify-pairing` (CI job `go-pairing`) produces both bundles with the real Rails code, records 217 steps per fixture with the
 real application at a frozen clock (Rails device creation, polling, the real `/consumer/connect` consent through real sessions, exchange, upgrade,
 adoption, revoke, legacy scope storage, cleanup, deleted approvers and owners, the rate limit) together with **the per-step effect on the
 `consumer_device_grants` and `api_tokens` rows** (random values are validated structurally and against their persisted digests and connection lineage, never erased), and the race-instrumented executable
@@ -376,7 +376,7 @@ denied, upgrade and family state and leaves Go-created state for the **real Rail
 explicit revoke against an adoption in both orders (parked inside the write lock), SIGKILL before and after the commit of creation, exchange, decision and revoke,
 a lost upgrade response, an externally held write lock, request deadlines, state changed while a write waited, CSRF, origin and account guards over cookie jars, the
 off switches, bounded bodies and concurrency, schema refusal, the production binary on real time with the seams' environment set, and a scan of every output and of the database files for
-plaintext secrets. Mutants of the critical invariants must each fail an assertion.
+plaintext secrets. 58 mutants of the critical invariants (codes, scopes, boundaries, precedence, bookkeeping, consumption, lineage, storage, decisions, revoke, headers, limits, guards, schema) must each compile and fail an assertion.
 
 Not proven: a real browser, the HTML consent page, a real app or device, TLS or proxy behaviour, production data, requests and acquisition, transfer grants, the legacy
 global-admin API, Rails and Go writing the same rows at once, power loss, clock zones other than UTC, and a deployment under a sub-path.
