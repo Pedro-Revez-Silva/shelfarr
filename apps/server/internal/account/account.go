@@ -61,6 +61,7 @@ func splitAuthorization(header string) (string, string, bool) {
 }
 
 type Principal struct {
+	TokenID  int64
 	UserID   int64
 	Username string
 	Name     string

@@ -46,5 +46,5 @@ func (a Authenticator) Authenticate(ctx context.Context, authorization string) (
 	if err != nil {
 		return nil, err
 	}
-	return &account.Principal{UserID: user.ID, Username: user.Username, Name: user.Name, Admin: user.Role == 1, Scopes: scopes}, nil
+	return &account.Principal{TokenID: token.ID, UserID: user.ID, Username: user.Username, Name: user.Name, Admin: user.Role == 1, Scopes: scopes}, nil
 }

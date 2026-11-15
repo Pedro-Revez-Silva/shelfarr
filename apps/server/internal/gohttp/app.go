@@ -31,6 +31,9 @@ type App struct {
 	cookies       railsmsg.Verifier
 	tokens        csrf.Tokens
 	limiter       *loginlimit.Limiter
+	deviceLimiter *loginlimit.Limiter
+	tokenLimiter  *loginlimit.Limiter
+	grants        live.GrantSource
 	previewIDs    map[string]bool
 }
 
@@ -67,6 +70,9 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		cookies:       cookies,
 		tokens:        tokens,
 		limiter:       loginlimit.New(config.LoginAttempts, config.LoginWindow, config.MaxLoginWorkers),
+		deviceLimiter: loginlimit.New(deviceAttempts, deviceWindow, 1),
+		tokenLimiter:  loginlimit.New(tokenAttempts, tokenWindow, 1),
+		grants:        newGrantSource(),
 		previewIDs:    previewIDs,
 	}, nil
 }
@@ -184,7 +190,11 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.ready(w, r, result)
 	case routeServer:
 		a.server(w, result)
-	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus:
+	case routeAuthDevice:
+		a.device(w, r, result)
+	case routeAuthToken:
+		a.exchange(w, r, result)
+	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)
@@ -192,7 +202,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.login(w, r, result)
 	case routeAuthLogout:
 		a.logout(w, r, result)
-	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset:
+	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset, routeAuthRevoke:
 		a.authenticated(w, r, found, result)
 	}
 }
@@ -212,7 +222,7 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 		return
 	}
 	required := requiredScope(r.Method, found)
-	if !principal.HasScope(required) {
+	if required != "" && !principal.HasScope(required) {
 		result.set(http.StatusForbidden, "insufficient_scope")
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient_scope", "required_scope": required})
 		return
@@ -232,10 +242,15 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 		a.readingStatus(w, r, principal, found.id, result)
 	case routeAsset:
 		a.asset(w, r, principal, found, result)
+	case routeAuthRevoke:
+		a.revoke(w, r, principal, result)
 	}
 }
 
 func requiredScope(method string, found route) string {
+	if found.kind == routeAuthRevoke {
+		return ""
+	}
 	if found.kind == routeReadingStatus || found.kind == routeProgress && method == http.MethodPut {
 		return "progress:write"
 	}

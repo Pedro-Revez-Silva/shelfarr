@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/fault"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
@@ -66,12 +67,18 @@ func (d *DB) RetireReplaced(ctx context.Context, token Token, clock func() time.
 		return false, Classify(err)
 	}
 	defer tx.Rollback()
+	if err := fault.Hit(ctx, "adopt.locked"); err != nil {
+		return false, err
+	}
 	adopted, err := retireIn(ctx, tx, token, clock())
 	if errors.Is(err, errAdoptionConflict) {
 		return false, nil
 	}
 	if err != nil {
 		return false, Classify(err)
+	}
+	if err := fault.Hit(ctx, "adopt.before-commit"); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, Classify(err)

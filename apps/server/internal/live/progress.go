@@ -44,7 +44,7 @@ func (d *DB) SaveProgress(ctx context.Context, userID, bookID int64, write check
 	}
 	result, err := saveIn(ctx, tx, userID, bookID, write, clock())
 	if err != nil {
-		return ProgressResult{}, classifyProgress(err)
+		return ProgressResult{}, classifyWrite(err)
 	}
 	if result.Outcome != ProgressApplied {
 		return result, nil
@@ -61,7 +61,7 @@ func (d *DB) SaveProgress(ctx context.Context, userID, bookID int64, write check
 	return result, nil
 }
 
-func classifyProgress(err error) error {
+func classifyWrite(err error) error {
 	if errors.Is(err, store.ErrUnsupported) || errors.Is(err, store.ErrTimestamp) {
 		return err
 	}

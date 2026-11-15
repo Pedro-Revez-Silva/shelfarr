@@ -35,6 +35,11 @@ const (
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
+	routeAuthDevice
+	routeAuthToken
+	routeAuthRevoke
+	routeBrowserConnect
+	routeBrowserDecide
 )
 
 type route struct {
@@ -52,9 +57,6 @@ type excludedRoute struct {
 }
 
 var ExcludedRoutes = []excludedRoute{
-	{http.MethodPost, "auth/device", "pairing and token creation"},
-	{http.MethodPost, "auth/token", "pairing and token creation"},
-	{http.MethodPost, "auth/revoke", "token revocation writes"},
 	{http.MethodGet, "discover", "requests and acquisition"},
 	{http.MethodGet, "requests", "requests and acquisition"},
 	{http.MethodPost, "requests", "requests and acquisition"},
@@ -114,6 +116,12 @@ func classify(method, path string) route {
 		return supported(method, route{kind: routeServer, name: "server"})
 	case rest == "me":
 		return supported(method, route{kind: routeMe, name: "me"})
+	case rest == "auth/device":
+		return posted(method, route{kind: routeAuthDevice, name: "auth_device"})
+	case rest == "auth/token":
+		return posted(method, route{kind: routeAuthToken, name: "auth_token"})
+	case rest == "auth/revoke":
+		return posted(method, route{kind: routeAuthRevoke, name: "auth_revoke"})
 	case rest == "continue":
 		return supported(method, route{kind: routeContinue, name: "continue"})
 	case rest == "library":
@@ -133,6 +141,13 @@ func classify(method, path string) route {
 		}
 	}
 	return route{kind: routeNone}
+}
+
+func posted(method string, found route) route {
+	if method != http.MethodPost {
+		return route{kind: routeNone}
+	}
+	return found
 }
 
 func supported(method string, found route) route {
@@ -159,6 +174,14 @@ func classifyPreview(method, rest string) route {
 		return supported(method, route{kind: routeBrowserPublication, name: "browser_publication", id: segments[1]})
 	case len(segments) == 3 && segments[0] == "library" && segments[2] == "reading_status" && segmentOK(segments[1]):
 		return served(method, route{kind: routeBrowserStatus, name: "browser_reading_status", id: segments[1]}, http.MethodPut)
+	case rest == "connect":
+		switch method {
+		case http.MethodGet, http.MethodHead:
+			return route{kind: routeBrowserConnect, name: "browser_connect"}
+		case http.MethodPost:
+			return route{kind: routeBrowserDecide, name: "browser_decide"}
+		}
+		return route{kind: routeWrongMethod, name: "browser_connect", allow: "GET, HEAD, POST"}
 	case rest == "auth/bootstrap":
 		return served(method, route{kind: routeAuthBootstrap, name: "auth_bootstrap"}, http.MethodGet)
 	case rest == "auth/login":

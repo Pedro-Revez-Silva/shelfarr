@@ -25,7 +25,7 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 	if !ok {
 		return
 	}
-	if found.kind == routeBrowserStatus && !a.mutationAllowed(w, r, *session, result) {
+	if (found.kind == routeBrowserStatus || found.kind == routeBrowserDecide) && !a.mutationAllowed(w, r, *session, result) {
 		return
 	}
 	switch found.kind {
@@ -39,6 +39,10 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.webPublication(w, r, *session, found.id, result)
 	case routeBrowserStatus:
 		a.webReadingStatus(w, r, *session, found.id, result)
+	case routeBrowserConnect:
+		a.connectInspect(w, r, *session, result)
+	case routeBrowserDecide:
+		a.connectDecide(w, r, *session, result)
 	}
 }
 

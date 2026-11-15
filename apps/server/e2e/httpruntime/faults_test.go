@@ -403,7 +403,6 @@ func TestExcludedRoutesAreRefusedWithoutAnySideEffect(t *testing.T) {
 	instance := startServer(t, f, copied, serverOptions{})
 	before := shape(tokenState(t, copied.database), nil)
 	for _, request := range [][2]string{
-		{"POST", "/api/consumer/v1/auth/token"}, {"POST", "/api/consumer/v1/auth/device"}, {"POST", "/api/consumer/v1/auth/revoke"},
 		{"GET", "/api/consumer/v1/discover"},
 		{"POST", "/api/consumer/v1/requests"}, {"GET", "/api/consumer/v1/library/1/assets/" + strings.Repeat("a", 64) + "/reading_order"},
 		{"POST", "/api/consumer/v1/library/1/assets/" + strings.Repeat("a", 64) + "/transfer_grant"},
