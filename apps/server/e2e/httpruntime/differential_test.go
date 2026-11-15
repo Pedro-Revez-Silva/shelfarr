@@ -168,10 +168,26 @@ func TestDifferentialAgainstRails(t *testing.T) {
 			instance := startServer(t, f, copied, serverOptions{seam: true, clockFile: clock})
 			observed := openMirror(t, copied.database)
 			var failures []string
+			var minted []mintedGrant
 			for _, entry := range f.doc.Cases {
+				if entry.SQL != "" {
+					execSQL(t, copied.database, entry.SQL)
+					continue
+				}
 				setClock(t, clock, entry)
 				before := observed.tokenMarks(t)
 				got := instance.doBody(context.Background(), entry.Method, entry.Path, requestHeaders(f, entry), requestBody(entry))
+				if entry.Grant != nil && got.status == http.StatusCreated {
+					var problems []string
+					url := grantURL(got)
+					got, problems = redactMintedGrant(t, f, entry, got)
+					for _, problem := range problems {
+						failures = append(failures, entry.Name+": "+problem)
+					}
+					if len(problems) == 0 {
+						minted = append(minted, mintedGrant{Name: entry.Name, Label: *entry.Bearer, URL: url, Book: *entry.TrackedBook, At: *entry.At, Plaintext: entry.Grant.Plaintext})
+					}
+				}
 				for _, problem := range compareEntry(f, entry, got) {
 					failures = append(failures, entry.Name+": "+problem)
 				}
@@ -192,6 +208,7 @@ func TestDifferentialAgainstRails(t *testing.T) {
 			compareTokenState(t, f, copied)
 			compareFinalRows(t, f, observed)
 			exportGoWrittenDatabase(t, f, copied)
+			exportMintedGrants(t, f, minted)
 		})
 	}
 }

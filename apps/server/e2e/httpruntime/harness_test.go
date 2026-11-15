@@ -73,6 +73,9 @@ type caseEntry struct {
 		Status int    `json:"status"`
 		Code   string `json:"code"`
 	} `json:"go"`
+	SQL           string                    `json:"sql"`
+	MintedURL     string                    `json:"minted_url"`
+	Grant         *grantShape               `json:"grant"`
 	Body          *string                   `json:"body"`
 	BodyBase64    *string                   `json:"body_base64"`
 	At            *string                   `json:"at"`
@@ -80,6 +83,12 @@ type caseEntry struct {
 	StateBefore   *caseState                `json:"state_before"`
 	State         *caseState                `json:"state"`
 	TokensChanged map[string]map[string]any `json:"tokens_changed"`
+}
+
+type grantShape struct {
+	Plaintext string `json:"plaintext"`
+	Length    int    `json:"length"`
+	Prefix    string `json:"prefix"`
 }
 
 type caseState struct {

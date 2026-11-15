@@ -8,6 +8,7 @@ require "zip"
 require "active_support/testing/time_helpers"
 require_relative "progress_cases"
 require_relative "fixed_layout_cases"
+require_relative "transfer_cases"
 
 module Migration
   module Http
@@ -15,6 +16,7 @@ module Migration
       include ActiveSupport::Testing::TimeHelpers
       include ProgressCases
       include FixedLayoutCases
+      include TransferCases
 
       PREFIX = "/api/consumer/v1"
       FORMATS_HEADER = "X-Shelfarr-Reader-Formats"
@@ -44,6 +46,7 @@ module Migration
         seed_extra_progress
         seed_fixed_layout_library
         seed_fixed_layout_progress
+        seed_transfer_fixtures
         seed_progress_library
         checkpoint_and_copy
         @session = ActionDispatch::Integration::Session.new(Rails.application)
@@ -254,6 +257,7 @@ module Migration
         adoption_scenarios
         progress_scenarios
         fixed_layout_progress_scenarios
+        transfer_scenarios
         @token_state_after = token_state
       end
 
@@ -264,7 +268,7 @@ module Migration
       end
 
       def authentication_scenarios
-        labels = @raw.keys.reject { |label| label.start_with?("adopt-") || label == "alice-adopting" || label == "alice-previous" }
+        labels = @raw.keys.reject { |label| label.start_with?("adopt-", "xfer-") || label == "alice-adopting" || label == "alice-previous" }
         labels.each { |label| %w[GET HEAD].each { |method| request("me-#{label}-#{method.downcase}", "#{PREFIX}/me", bearer: label, method: method) } }
         {
           "no-header" => nil, "bearer-only" => "Bearer", "bearer-blank" => "Bearer    ", "basic" => "Basic YWxpY2U6eA==", "token-only" => @raw.fetch("alice-full"),

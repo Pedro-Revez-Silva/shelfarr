@@ -49,7 +49,11 @@ func hexSum(data []byte) string {
 
 func newPrivateLibrary(t *testing.T, copied runtimeCopy, bigBytes int) privateLibrary {
 	t.Helper()
-	base := t.TempDir()
+	return newPrivateLibraryIn(t, copied, t.TempDir(), bigBytes)
+}
+
+func newPrivateLibraryIn(t *testing.T, copied runtimeCopy, base string, bigBytes int) privateLibrary {
+	t.Helper()
 	root, err := filepath.EvalSymlinks(base)
 	if err != nil {
 		t.Fatal(err)
