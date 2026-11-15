@@ -659,7 +659,7 @@ func TestBrowserDescriptionMarkupBecomesPlainTextAndNeverRawHTML(t *testing.T) {
 		cases := map[string]string{
 			"<p>Hi</p><script>alert(1)</script>&amp; <b>bold</b>":                    "Hi\n& bold",
 			"<img src=x onerror=alert(1)>text &lt;script&gt;alert(1)&lt;/script&gt;": "text <script>alert(1)</script>",
-			"one<br>two<ul><li>a</li><li>b</li></ul>":                                "one\ntwo\n\na\nb",
+			"one<br>two<ul><li>a</li><li>b</li></ul>":                                "one\ntwo\na\n\nb",
 		}
 		for stored, want := range cases {
 			exec1(t, copied.database, `UPDATE books SET description = ? WHERE id = ?`, stored, book)

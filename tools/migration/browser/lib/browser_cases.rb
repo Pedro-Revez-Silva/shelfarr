@@ -12,6 +12,14 @@ module Migration
     class Cases < Migration::Http::Cases
       PREVIEW = "/preview/api/v1"
       NOON = Time.utc(2026, 11, 15, 12, 0, 0, 123_456)
+      MARKUP_DESCRIPTIONS = [
+        "<p>First <b>bold</b> line &amp; entity</p><script>alert(1)</script><p>Second line</p>",
+        "<img src=x onerror=alert(document.cookie)>text &lt;script&gt;alert(1)&lt;/script&gt; &copy; &#169; &#x41; &nbsp;end",
+        "one<br>two<br/>three<ul><li>a</li><li>b</li></ul><h2>Heading</h2>tail",
+        "<style>p{display:none}</style><a href=\"javascript:alert(1)\">link</a><form>kept<input></form><!-- gone -->after\u00a0nbsp",
+        "<svg onload=alert(1)><script>1</script>s</svg><iframe src=javascript:alert(1)>fallback</iframe><textarea><b>raw</b></textarea>",
+        "x < y > z &amp;amp; <unknown-tag attr=\"1\">custom</unknown-tag> \u2028 line separator"
+      ].freeze
       SESSION_COLUMNS = %w[id user_id user_agent ip_address created_at updated_at].freeze
       USER_COLUMNS = %w[id failed_login_count last_failed_login_at last_failed_login_ip locked_until updated_at].freeze
 
@@ -29,6 +37,7 @@ module Migration
         seed_extra_library
         seed_extra_progress
         hide_unported_formats
+        seed_markup_descriptions
         seed_people
         configure_preview
         seed_sessions
@@ -48,6 +57,11 @@ module Migration
           formats = listed_assets(book, formats: Consumer::ReaderFormats::SUPPORTED).map(&:format)
           book.update_columns(file_path: nil) if book.comicbook? || formats.intersect?(%w[pdf cbz])
         end
+      end
+
+      def seed_markup_descriptions
+        @markup_books = Book.acquired.where(book_type: %i[ebook audiobook]).order(:id).last(MARKUP_DESCRIPTIONS.size)
+        @markup_books.zip(MARKUP_DESCRIPTIONS).each { |book, description| book.update_columns(description: description) }
       end
 
       def seed_people
@@ -198,6 +212,7 @@ module Migration
         acquired = Book.acquired.order(:id).to_a
         acquired.first(6).each { |book| browse("alice-detail-#{book.id}", "#{PREVIEW}/library/#{book.id}", persona: "alice") }
         acquired.last(3).each { |book| browse("bob-detail-#{book.id}", "#{PREVIEW}/library/#{book.id}", persona: "bob") }
+        @markup_books.each { |book| browse("markup-detail-#{book.id}", "#{PREVIEW}/library/#{book.id}", persona: "alice") }
         %w[0 01 999999 abc 9223372036854775808].each { |id| browse("detail-id-#{id}", "#{PREVIEW}/library/#{id}", persona: "alice") }
         unacquired = Book.where(file_path: nil).first
         browse("detail-unacquired", "#{PREVIEW}/library/#{unacquired.id}", persona: "alice") if unacquired
