@@ -99,6 +99,8 @@ module Migration
       end
 
       def migrate(budget: @deadline)
+        raise Failed.new("migration", "the deadline must be a finite number of seconds") unless budget.is_a?(Numeric) && budget.to_f.finite?
+
         context = migration_context
         applied = []
         started = clock
@@ -113,6 +115,7 @@ module Migration
             end
             applied << version.to_s
           end
+          raise Failed.new("migration", "deadline of #{budget} seconds exceeded", applied: applied) if clock - started > budget
         end
         applied
       end
@@ -162,19 +165,20 @@ module Migration
       end
 
       WATCHDOG = <<~SH
-        end=$(( $(date +%s) + $1 ))
+        read start _ < /proc/uptime
         while kill -0 "$2" 2>/dev/null; do
-          if [ "$(date +%s)" -ge "$end" ]; then
+          read now _ < /proc/uptime
+          if awk -v s="$start" -v n="$now" -v b="$1" 'BEGIN { exit !(n - s >= b) }'; then
             printf '%s\\n' "upgrade failed: migration: deadline of $1 seconds exceeded; the database is left for SQLite to recover" >&2
             kill -KILL "$2"
             exit 0
           fi
-          sleep 0.2
+          sleep 0.1
         done
       SH
 
       def with_watchdog(budget)
-        watchdog = budget.positive? ? Process.spawn("sh", "-c", WATCHDOG, "watchdog", budget.ceil.to_s, Process.pid.to_s, pgroup: true, in: :close, out: :close) : nil
+        watchdog = budget.positive? ? Process.spawn("sh", "-c", WATCHDOG, "watchdog", budget.to_s, Process.pid.to_s, pgroup: true, in: :close, out: :close) : nil
         yield
       ensure
         stop_watchdog(watchdog)

@@ -42,6 +42,14 @@ def finish(run, applied)
   { "applied" => applied.size, "verified" => true, "before_digest" => run.before.digest, "after_digest" => after.digest }
 end
 
+def fake_context(seconds)
+  context = Object.new
+  context.define_singleton_method(:get_all_versions) { [] }
+  context.define_singleton_method(:migrations) { [ Struct.new(:version).new(1) ] }
+  context.define_singleton_method(:up) { |_| sleep(seconds) }
+  context
+end
+
 def attempt
   yield
   nil
@@ -89,6 +97,21 @@ facts =
     writer.close
     _, status = Process.wait2(pid)
     { "signaled" => status.signaled?, "signal" => status.termsig, "stderr" => reader.read.lines.last.to_s.strip, "middle" => mid_state(run), "resumed" => finish(run, run.migrate) }
+  when "late-final-migration"
+    ticks = [ 0.0, 0.0, 999.0 ].each
+    run.define_singleton_method(:migration_context) { fake_context(0) }
+    run.define_singleton_method(:clock) { ticks.next }
+    { "failure" => attempt { run.migrate(budget: 100) } }
+  when "budget-near-a-second-boundary"
+    sleep(0.01) until Time.now.subsec >= 0.9
+    run.define_singleton_method(:migration_context) { fake_context(0.5) }
+    { "applied" => run.migrate(budget: 1), "refused" => [ Float::NAN, Float::INFINITY, "1" ].map { |budget| attempt { run.migrate(budget: budget) }&.fetch("message") } }
+  when "fractional-budget-overrun"
+    run.define_singleton_method(:migration_context) { fake_context(30) }
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    pid = fork { run.migrate(budget: 0.5) }
+    _, status = Process.wait2(pid)
+    { "signal" => status.termsig, "seconds" => Process.clock_gettime(Process::CLOCK_MONOTONIC) - started }
   when "reload-current-schema"
     ActiveRecord::Migration.verbose = false
     ActiveRecord::Base.with_connection { |connection| connection.disable_referential_integrity { load File.join(REPO_ROOT, "db", "schema.rb") } }

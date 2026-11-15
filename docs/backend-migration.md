@@ -371,7 +371,9 @@ A migration failure, an exhausted deadline or a verification failure ends the pr
 naming the stage (`release`, `source`, `migration`, `verification`, `repeat`), the failing version and the
 exception class, and no manifest (so the checker refuses the directory), and no values. Failures the producer
 detects exit with code 3. The deadline is enforced from outside the Ruby process: a watchdog shell, started
-before the first migration and stopped after the last, prints `upgrade failed: migration: deadline of N
+before the first migration and stopped after the last, measures the budget at full precision on the
+monotonic `/proc/uptime` clock (Linux; polled every 0.1 second, so it fires within about 0.15 second of the
+budget), prints `upgrade failed: migration: deadline of N
 seconds exceeded` and sends `SIGKILL` to the producer, so a migration that never returns is bounded and the
 exit status is the signal. It exits by itself when the producer disappears. SQLite DDL is transactional, so
 the database is left for SQLite to recover and the interrupted migration rolls back; the tests prove it for
@@ -379,8 +381,9 @@ a real conflict (an existing `kobo_account_shares` table makes `20261109020000` 
 versions stay, the failing migration leaves no column behind, released rows are untouched, and removing the
 conflict lets the remaining 5 apply), for a process killed with `SIGKILL` at the `CREATE TABLE "kobo_tags"`
 statement of the last migration, and for the same statement blocking forever until the watchdog fires (in
-both, 16 of the 17 new versions are recorded and the last is applied on resume). Between migrations the
-deadline is also checked in process.
+both, 16 of the 17 new versions are recorded and the last is applied on resume). The deadline is also
+checked in process before every migration and after the last one, so a migration that returns just late
+is a failure and not a success; a budget that is not a finite number is refused.
 
 ### Evidence kept in the bundle
 

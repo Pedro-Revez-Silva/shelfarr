@@ -88,6 +88,25 @@ class StableUpgradeTest < Minitest::Test
     assert_equal 1, facts.dig("resumed", "applied")
   end
 
+  def test_a_final_migration_that_returns_after_the_deadline_is_a_failure
+    failure = drive("late-final-migration").fetch("failure")
+    assert_equal "migration", failure.fetch("stage")
+    assert_match(/deadline of 100 seconds exceeded/, failure.fetch("message"))
+    assert_equal [ "1" ], failure.fetch("applied")
+  end
+
+  def test_a_migration_inside_its_budget_is_never_killed_near_a_second_boundary_and_bad_budgets_are_refused
+    facts = drive("budget-near-a-second-boundary")
+    assert_equal [ "1" ], facts.fetch("applied")
+    assert_equal [ "migration: the deadline must be a finite number of seconds" ] * 3, facts.fetch("refused")
+  end
+
+  def test_a_fractional_budget_is_enforced_at_full_precision
+    facts = drive("fractional-budget-overrun")
+    assert_equal 9, facts.fetch("signal")
+    assert_operator facts.fetch("seconds"), :<, 3
+  end
+
   def test_an_exhausted_deadline_stops_before_any_migration_and_leaves_the_released_database_untouched
     facts = drive("deadline")
     failure = facts.fetch("failure")
