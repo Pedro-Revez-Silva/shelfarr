@@ -65,10 +65,11 @@ go vet -tags e2e ./...
 go test -race -count=1 ./...
 
 mkdir -p "$work/go-rows"
-fixtures=(SHELFARR_HTTP_CASES_CURRENT="$work/http-current" SHELFARR_HTTP_CASES_UPGRADE="$work/http-upgrade" SHELFARR_HTTP_GO_ROWS_DIR="$work/go-rows")
+fixtures=(SHELFARR_HTTP_CASES_CURRENT="$work/http-current" SHELFARR_HTTP_CASES_UPGRADE="$work/http-upgrade")
+exported=("${fixtures[@]}" SHELFARR_HTTP_GO_ROWS_DIR="$work/go-rows")
 
 step "go: the real executable (race-instrumented) against Rails answers and the fault suite, on both fixtures"
-env "${fixtures[@]}" SHELFARR_HTTP_RACE=1 go test -tags e2e -count=1 -timeout 30m -v -skip TestMutantsAreDetected ./e2e/httpruntime/ | tee "$work/e2e.log" | grep -E '^(--- (PASS|FAIL|SKIP)|PASS|FAIL|ok)' || true
+env "${exported[@]}" SHELFARR_HTTP_RACE=1 go test -tags e2e -count=1 -timeout 30m -v -skip TestMutantsAreDetected ./e2e/httpruntime/ | tee "$work/e2e.log" | grep -E '^(--- (PASS|FAIL|SKIP)|PASS|FAIL|ok)' || true
 grep -q '^ok' "$work/e2e.log" || { cat "$work/e2e.log" >&2; exit 1; }
 if grep -q -- '--- SKIP' "$work/e2e.log"; then echo "a test was skipped" >&2; exit 1; fi
 

@@ -257,7 +257,7 @@ executable:
 * a differential replay of ~920 requests per fixture in recorded order (status, headers, JSON, asset
   bytes by hash and length, `HEAD`, ranges, conditional and `If-Range` requests, cursors issued by
   Rails and compared with the ones Go issues, bearer matrix, all four adoption refusals, a successful
-  adoption and the final `api_tokens` rows). The ~340 progress and status requests carry their real
+  adoption and the final `api_tokens` rows). The ~350 progress and status requests carry their real
   `PUT` bodies and a frozen Rails clock that the replay sets on the Go process (a seam compiled only
   with `-tags e2eclock`, absent from the shipped binary), so `updated_at` and every stored time must be
   identical. After each of them the rows of that book and the `api_tokens` rows that changed must equal
