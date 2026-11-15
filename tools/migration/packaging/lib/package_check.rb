@@ -120,7 +120,7 @@ module Migration
         record("web-assets-match-their-manifest", architecture, mode, !listed.empty? && listed == found, "#{found.size} files")
         refused = Volume::Command.capture("docker", "run", "--rm", "--network", "none", "--platform", "linux/#{architecture}", "--env", "SECRET_KEY_BASE=#{'s' * 64}", "--entrypoint", "/usr/local/bin/shelfarr-http", image,
                                           "-experimental", "-database", "/nonexistent/db.sqlite3", "-lock-file", "/nonexistent/lock", "-library-root", "/usr/local", "-web-assets-dir", "/nonexistent", timeout: 600)
-        record("shelfarr-http-refuses-a-missing-assets-folder", architecture, mode, refused.output == "refused: web-assets\n" && refused.status.exitstatus == 2, refused.output.lines.last.to_s.strip[0, 80])
+        record("shelfarr-http-refuses-a-missing-assets-folder", architecture, mode, refused.error == "refused: web-assets\n" && refused.status.exitstatus == 2, refused.error.lines.last.to_s.strip[0, 80])
       end
 
       def image_config(image)

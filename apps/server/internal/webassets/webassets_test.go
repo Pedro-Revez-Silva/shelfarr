@@ -108,7 +108,8 @@ func TestLoadRefusesUnsafeOrInconsistentDirectories(t *testing.T) {
 			os.WriteFile(filepath.Join(directory, "manifest.json"), []byte(`{"version":1,"extra":true}`), 0o600)
 		}},
 		{"manifest is oversized", func(t *testing.T, directory string, _ webassetstest.Manifest) {
-			os.WriteFile(filepath.Join(directory, "manifest.json"), bytes.Repeat([]byte(" "), manifestLimit+1), 0o600)
+			encoded, _ := os.ReadFile(filepath.Join(directory, "manifest.json"))
+			os.WriteFile(filepath.Join(directory, "manifest.json"), append(encoded, bytes.Repeat([]byte(" "), manifestLimit)...), 0o600)
 		}},
 		{"another version", rewrite(func(m *webassetstest.Manifest) { m.Version = 2 })},
 		{"script is a symlink", swap("script", func(directory, path string) {

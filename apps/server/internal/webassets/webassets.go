@@ -129,7 +129,7 @@ func readRegular(directory, name string, limit int64) ([]byte, error) {
 	}
 	defer opened.Close()
 	body, err := io.ReadAll(io.LimitReader(opened, limit+1))
-	if err != nil {
+	if err != nil || int64(len(body)) > limit {
 		return nil, ErrInvalid
 	}
 	return body, nil
