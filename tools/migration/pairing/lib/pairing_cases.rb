@@ -351,6 +351,44 @@ module Migration
         deleted_approver_flow
         rate_limit_flow
         @final = snapshot
+        prepare_handoff
+      end
+
+      HANDOFF_AT = Time.utc(2026, 11, 16, 9, 0, 0, 250_000)
+
+      def issue_credential(label, user, scopes: %w[library:read progress:write], replaces: nil)
+        token, raw = APIToken.issue!(name: label, user: user, scopes: scopes, issued_via: APIToken::CONSUMER_DEVICE, replaces: replaces)
+        @handoff[label] = raw
+        token
+      end
+
+      def prepare_handoff
+        @handoff = {}
+        one = person("pair_one")
+        travel_to(HANDOFF_AT, with_usec: true) do
+          _, device, user = ConsumerDeviceGrant.issue!(client_name: "Rails pending")
+          @handoff.merge!("pending_device" => device, "pending_user" => user)
+          approved, device, = ConsumerDeviceGrant.issue!(client_name: "Rails approved")
+          approved.decide!(actor: one, allow: true)
+          @handoff["approved_device"] = device
+          denied, device, = ConsumerDeviceGrant.issue!(client_name: "Rails denied")
+          denied.decide!(actor: one, allow: false)
+          @handoff["denied_device"] = device
+          origin = issue_credential("upgrade_origin", one)
+          upgrade, device, = ConsumerDeviceGrant.issue!(client_name: "Rails upgrade", scope: BUNDLE, replaces: origin)
+          upgrade.decide!(actor: one, allow: true)
+          @handoff["upgrade_device"] = device
+          issue_credential("plain", one)
+          first = issue_credential("chain_first", one)
+          issue_credential("chain_second", one, replaces: first)
+          family = issue_credential("family_a", one)
+          issue_credential("family_b", one, replaces: family).update!(replaces_api_token_id: nil)
+          _, device, = ConsumerDeviceGrant.issue!(client_name: "Rails family upgrade", scope: BUNDLE, replaces: family)
+          @handoff["family_upgrade_device"] = device
+        end
+        ActiveRecord::Base.with_connection { |connection| connection.execute("PRAGMA wal_checkpoint(TRUNCATE)") }
+        ActiveRecord::Base.connection_handler.clear_all_connections!
+        FileUtils.cp(@paths.primary_db, File.join(@paths.out, "db", "handoff.sqlite3"))
       end
 
       def fresh_base_flow
@@ -509,12 +547,12 @@ module Migration
 
       def stale_origin_flow
         flow("stale-origin")
-        device("stale-revoked", auth: bearer("tok:stale-revoke"), body: { "client_name" => "Stale" , "scope" => BUNDLE }, save: { "device_code" => "dev11", "user_code" => "user11" })
+        device("stale-revoked", auth: bearer("tok:stale-revoke"), body: { "client_name" => "Stale", "scope" => BUNDLE }, save: { "device_code" => "dev11", "user_code" => "user11" })
         decide("stale-revoked-allow", "pair_one", "${user11}", "allow", at: at(5))
         sql("stale-revoked-sql", "UPDATE api_tokens SET revoked_at = '2026-11-15 12:00:06' WHERE name = 'stale-revoke'", at: at(6))
         token("stale-revoked-poll", "dev11", at: at(20))
         token("stale-revoked-poll-again", "dev11", at: at(40))
-        device("stale-expired", auth: bearer("tok:stale-expire"), body: { "client_name" => "Stale" , "scope" => BUNDLE }, save: { "device_code" => "dev12", "user_code" => "user12" }, at: at(50))
+        device("stale-expired", auth: bearer("tok:stale-expire"), body: { "client_name" => "Stale", "scope" => BUNDLE }, save: { "device_code" => "dev12", "user_code" => "user12" }, at: at(50))
         decide("stale-expired-allow", "pair_one", "${user12}", "allow", at: at(55))
         sql("stale-expired-sql", "UPDATE api_tokens SET expires_at = '2026-11-15 12:01:00' WHERE name = 'stale-expire'", at: at(56))
         token("stale-expired-poll", "dev12", at: at(80))
@@ -568,7 +606,7 @@ module Migration
         sql("approver-deleted-sql", "UPDATE users SET deleted_at = '2026-11-15 12:00:10' WHERE username = 'pair_two'", at: at(10))
         token("poll-deleted-approver", "dev14", at: at(30))
         token("poll-deleted-approver-again", "dev14", at: at(60))
-        device("device-deleted-owner-upgrade", auth: bearer("tok:two-own"), body: { "client_name" => "Doomed" , "scope" => BUNDLE }, at: at(70))
+        device("device-deleted-owner-upgrade", auth: bearer("tok:two-own"), body: { "client_name" => "Doomed", "scope" => BUNDLE }, at: at(70))
         revoke("revoke-deleted-owner-token", bearer("tok:two-own"), at: at(71))
       end
 
@@ -584,12 +622,11 @@ module Migration
       def write_pairing_outputs
         FileUtils.mkdir_p(File.join(@paths.out, "secrets"), mode: 0o700)
         File.write(File.join(@paths.out, "secrets", "secret_key_base"), ENV.fetch("SECRET_KEY_BASE"), perm: 0o600)
-        File.write(File.join(@paths.out, "secrets", "pairing.json"), JSON.pretty_generate("tokens" => @raw, "passwords" => @people.transform_values { |entry| entry[:password] }), perm: 0o600)
+        File.write(File.join(@paths.out, "secrets", "pairing.json"), JSON.pretty_generate("tokens" => @raw, "passwords" => @people.transform_values { |entry| entry[:password] }, "handoff" => @handoff), perm: 0o600)
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "users" => @people.transform_values { |entry| entry[:user].id },
-                     "actors" => @people.keys, "final" => @final, "steps" => @steps }
+                     "actors" => @people.keys, "final" => @final, "handoff" => { "database" => "db/handoff.sqlite3", "at" => iso(HANDOFF_AT) }, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
-        ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }
         FileUtils.rm_rf(File.join(@paths.out, "scratch"))
       end

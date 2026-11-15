@@ -105,6 +105,7 @@ type casesDocument struct {
 
 type handoffDocument struct {
 	Database string `json:"database"`
+	At       string `json:"at"`
 }
 
 type secrets struct {
@@ -168,16 +169,21 @@ type runtimeCopy struct {
 
 func newRuntimeCopy(t testing.TB, f fixture) runtimeCopy {
 	t.Helper()
+	return newRuntimeCopyFrom(t, filepath.Join(f.dir, f.doc.Database))
+}
+
+func newRuntimeCopyFrom(t testing.TB, source string) runtimeCopy {
+	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	copied := runtimeCopy{dir: dir, database: filepath.Join(dir, "primary.sqlite3"), lock: filepath.Join(dir, "domain.lock")}
-	source, err := os.ReadFile(filepath.Join(f.dir, f.doc.Database))
+	contents, err := os.ReadFile(source)
 	if err != nil {
-		t.Fatal("cannot read the pre-scenario database")
+		t.Fatal("cannot read the source database")
 	}
-	if err := os.WriteFile(copied.database, source, 0o600); err != nil {
+	if err := os.WriteFile(copied.database, contents, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	database, err := sql.Open("sqlite", "file:"+copied.database)
