@@ -192,10 +192,12 @@ func (a *App) confirmPlace(ctx context.Context, book store.Book, write checkpoin
 	}
 	place, err := checkpoint.FixedLayout(*write.Locator, found.Asset.Format)
 	var invalid checkpoint.Invalid
-	if errors.As(err, &invalid) {
+	switch {
+	case errors.As(err, &invalid):
 		return invalid.Message, nil
-	}
-	if found.Asset.Format == "pdf" {
+	case err != nil:
+		return "", err
+	case found.Asset.Format == "pdf":
 		return "", nil
 	}
 	return a.confirmPage(ctx, book, *found.Asset, place)

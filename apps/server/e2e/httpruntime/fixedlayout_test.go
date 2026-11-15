@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -47,10 +49,10 @@ func buildComic(t *testing.T, names []string, method uint16) []byte {
 	return buffer.Bytes()
 }
 
-func newFixedLibrary(t *testing.T) fixedLibrary {
+func newFixedLibrary(t *testing.T, pdfSize int) fixedLibrary {
 	t.Helper()
 	s := newShelf(t)
-	pdf := append([]byte("%PDF-1.7\n"), pseudoRandom(77, pdfBytes)...)
+	pdf := append([]byte("%PDF-1.7\n"), pseudoRandom(77, pdfSize)...)
 	var names []string
 	for page := cbzPages; page >= 1; page-- {
 		names = append(names, fmt.Sprintf("pages/page %d.png", page))
@@ -102,7 +104,7 @@ func (s *server) fixedAssets(t *testing.T, f fixture, book int) []fixedAsset {
 }
 
 func TestPdfAndCbzBytesAreDeliveredIntactAsAttachmentsUnderTheDocumentPolicy(t *testing.T) {
-	library := newFixedLibrary(t)
+	library := newFixedLibrary(t, pdfBytes)
 	instance := library.start(t, serverOptions{})
 	f := library.f
 	pdf := instance.fixedAssets(t, f, pdfBook)[0]
@@ -136,7 +138,7 @@ func TestPdfAndCbzBytesAreDeliveredIntactAsAttachmentsUnderTheDocumentPolicy(t *
 		for _, seek := range []struct {
 			header      string
 			first, last int
-		}{{"bytes=0-0", 0, 0}, {"bytes=1048000-1049999", 1048000, 1049999}, {"bytes=-1000", len(test.content) - 1000, len(test.content) - 1}, {fmt.Sprintf("bytes=%d-", len(test.content)-10), len(test.content) - 10, len(test.content) - 1}} {
+		}{{"bytes=0-0", 0, 0}, {"bytes=40000-41999", 40000, 41999}, {"bytes=-1000", len(test.content) - 1000, len(test.content) - 1}, {fmt.Sprintf("bytes=%d-", len(test.content)-10), len(test.content) - 10, len(test.content) - 1}} {
 			headers := bearer(f, "alice-full")
 			headers["Range"] = seek.header
 			part := instance.do("GET", test.asset.URL, headers)
@@ -154,7 +156,7 @@ func TestPdfAndCbzBytesAreDeliveredIntactAsAttachmentsUnderTheDocumentPolicy(t *
 }
 
 func TestTheReadingOrderIsTheArchiveDirectoryInNaturalPageOrder(t *testing.T) {
-	library := newFixedLibrary(t)
+	library := newFixedLibrary(t, pdfBytes)
 	instance := library.start(t, serverOptions{})
 	f := library.f
 	comic := instance.fixedAssets(t, f, comicBook)[0]
@@ -207,7 +209,7 @@ func TestTheReadingOrderIsTheArchiveDirectoryInNaturalPageOrder(t *testing.T) {
 }
 
 func TestAReplacedTruncatedOrDeletedFixedLayoutFileIsGoneAndNeverServedUnderTheOldIdentity(t *testing.T) {
-	library := newFixedLibrary(t)
+	library := newFixedLibrary(t, pdfBytes)
 	instance := library.start(t, serverOptions{})
 	f := library.f
 	pdf := instance.fixedAssets(t, f, pdfBook)[0]
@@ -264,7 +266,7 @@ func (l fixedLibrary) pagePlace(index int) string {
 }
 
 func TestConcurrentPageWritesStoreOneCheckpointAndKeepEveryRetryIdempotent(t *testing.T) {
-	library := newFixedLibrary(t)
+	library := newFixedLibrary(t, pdfBytes)
 	instance := library.start(t, serverOptions{})
 	comic := instance.fixedAssets(t, library.f, comicBook)[0]
 	pdf := instance.fixedAssets(t, library.f, pdfBook)[0]
@@ -292,12 +294,52 @@ func TestConcurrentPageWritesStoreOneCheckpointAndKeepEveryRetryIdempotent(t *te
 		t.Fatalf("created=%d conflicts=%d other=%d", created.Load(), conflicts.Load(), other.Load())
 	}
 	first := put(instance, library.pathOf(pdfBook), library.token("alice-full"), fmt.Sprintf(`{"asset_id":"%s","expected_version":0,"client_mutation_id":"%s","observed_at":"2026-11-07T10:15:30.123456+01:00","locator":{"href":"document.pdf","type":"application/pdf","locations":{"position":7,"fragments":["page=7"]}}}`, pdf.ID, uuidB))
-	retry := put(instance, library.pathOf(pdfBook), library.token("alice-full"), fmt.Sprintf(`{"asset_id":"%s","expected_version":0,"client_mutation_id":"%s","observed_at":"2026-11-07T09:15:30.123Z","locator":{"fragments":["page=7"],"locations":{"position":7},"type":"application/pdf","href":"document.pdf"}}`, pdf.ID, uuidB))
+	retry := put(instance, library.pathOf(pdfBook), library.token("alice-full"), fmt.Sprintf(`{"asset_id":"%s","expected_version":0,"client_mutation_id":"%s","observed_at":"2026-11-07T09:15:30.123Z","locator":{"locations":{"fragments":["page=7"],"position":7},"type":"application/pdf","href":"document.pdf"}}`, pdf.ID, uuidB))
 	if first.status != 200 || retry.status != 200 || !bytes.Equal(first.body, retry.body) {
 		t.Fatalf("an identical retry with a re-encoded locator: %d %d\n%s\n%s", first.status, retry.status, first.body, retry.body)
 	}
 	rows := library.rows(t, `SELECT book_id, version, locator, observed_at FROM consumer_progresses ORDER BY book_id`)
-	if len(rows) != 2 || rows[0]["version"] != int64(1) || rows[1]["version"] != int64(1) || !strings.Contains(fmt.Sprint(rows[1]["observed_at"]), "2026-11-07 09:15:30.123") {
+	if len(rows) != 2 || rows[0]["version"] != int64(1) || rows[1]["version"] != int64(1) || !strings.Contains(fmt.Sprint(rows[0]["observed_at"]), "2026-11-07 09:15:30.123") {
 		t.Fatalf("%v", rows)
+	}
+}
+
+func TestAnAbandonedOrStalledPdfStreamReleasesItsSlotAndNeverStarvesTheCatalogue(t *testing.T) {
+	library := newFixedLibrary(t, 24<<20)
+	instance := library.start(t, serverOptions{arguments: []string{"-max-media-streams", "1", "-stream-write-stall", "2s"}})
+	f := library.f
+	pdf := instance.fixedAssets(t, f, pdfBook)[0]
+	connection := smallReceiveBuffer(t, instance.base[len("http://"):])
+	fmt.Fprintf(connection, "GET %s HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n\r\n", pdf.URL, f.token["alice-full"])
+	buffer := make([]byte, 100_000)
+	connection.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if count, _ := io.ReadAtLeast(connection, buffer, 50_000); count < 50_000 {
+		t.Fatal("the stream never started")
+	}
+	started := time.Now()
+	for _, target := range []string{"/api/consumer/v1/library", "/api/consumer/v1/continue", library.pathOf(pdfBook)} {
+		if got := instance.do("GET", target, graphicHeaders(f)); got.status != 200 {
+			t.Fatalf("%s: %d while a document is streaming", target, got.status)
+		}
+	}
+	comic := instance.fixedAssets(t, f, comicBook)[0]
+	if got := instance.do("GET", comic.ReadingOrderURL, bearer(f, "alice-full")); got.status != 200 || time.Since(started) > time.Second {
+		t.Fatalf("a reading order is metadata and must not wait for a stream slot: %d after %s", got.status, time.Since(started))
+	}
+	if got := instance.do("GET", comic.URL, bearer(f, "alice-full")); got.status != 503 || got.headers.Get("Retry-After") == "" {
+		t.Fatalf("the second stream should be refused while the slot is held: %d", got.status)
+	}
+	connection.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		headers := bearer(f, "alice-full")
+		headers["Range"] = "bytes=0-9"
+		if instance.do("GET", pdf.URL, headers).status == 206 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slot of an abandoned PDF stream was never released")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

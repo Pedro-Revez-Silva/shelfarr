@@ -310,6 +310,8 @@ the archive's central directory validated by `internal/zipdirectory`, then `inte
   every scalar value, normalisation is identical; lower-casing differs for the code points that Unicode 16 and 17 assigned
   (55 of them), which Go leaves unchanged exactly as Ruby does, and for Greek final sigma, which Go does not apply and Ruby does not
   apply either. If the Ruby runtime moves to a newer Unicode version, `internal/naturalorder` must follow it.
+  The same ordering now sorts the files of a folder publication (audio tracks and fixed-layout files); before this slice it
+  used `strings.ToLower`, which differs from Ruby for `İ`, final sigma and the same 55 code points.
 
 ### Page places
 
