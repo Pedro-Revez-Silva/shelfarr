@@ -58,15 +58,7 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 	if err != nil {
 		return start("listen")
 	}
-	server := &http.Server{
-		Handler:           app,
-		ReadHeaderTimeout: config.ReadHeaderTimeout,
-		ReadTimeout:       config.ReadTimeout,
-		IdleTimeout:       config.IdleTimeout,
-		MaxHeaderBytes:    config.MaxHeaderBytes,
-		BaseContext:       func(net.Listener) context.Context { return context.Background() },
-		ErrorLog:          log.New(io.Discard, "", 0),
-	}
+	server := newServer(app, config)
 	if announce != nil {
 		announce(listener.Addr())
 	}
@@ -83,4 +75,17 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 		server.Close()
 	}
 	return nil
+}
+
+func newServer(handler http.Handler, config Config) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: config.ReadHeaderTimeout,
+		ReadTimeout:       config.ReadTimeout,
+		WriteTimeout:      config.RequestTimeout,
+		IdleTimeout:       config.IdleTimeout,
+		MaxHeaderBytes:    config.MaxHeaderBytes,
+		BaseContext:       func(net.Listener) context.Context { return context.Background() },
+		ErrorLog:          log.New(io.Discard, "", 0),
+	}
 }

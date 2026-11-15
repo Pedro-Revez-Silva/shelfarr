@@ -11,10 +11,7 @@ type PublicationList = listBody
 
 type Me = meBody
 
-var (
-	ReadingTypes = defaultTypes
-	AssetsPath   = assetsPath
-)
+var ReadingTypes = defaultTypes
 
 type View struct {
 	inner view

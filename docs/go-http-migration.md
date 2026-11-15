@@ -111,7 +111,7 @@ or `501`, never served under the old identity.
 
 ## HTTP behaviour
 
-* Read-header 5s, read 15s, idle 60s, 32 KiB headers, a body on a `GET` is never read beyond 1 KiB.
+* Read-header 5s, read 15s, idle 60s, a write deadline equal to the request timeout (20s) for every non-streamed response, 32 KiB headers, a body on a `GET` is never read beyond 1 KiB.
 * Metadata requests and media streams have separate bounded capacity (`-max-metadata-requests`, default
   64; `-max-media-streams`, default 8). A full pool answers `503 server_busy` with `Retry-After`; a
   stalled audiobook client therefore cannot starve the catalogue.
@@ -166,7 +166,7 @@ executable:
   catalogue, busy SQLite, live WAL commits and external revocation, shutdown during a transfer,
   startup refusals, single ownership, cursor and secret mismatch, 24 concurrent adoptions, request
   limits, absence of sensitive values from every output;
-* 25 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
+* 26 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
   check, cursor binding and signature, symbolic links, identity re-check, root allow-list, ranges,
   `HEAD`, conditional requests, stream capacity, unknown schema, missing key, WAL, logging), each of
   which must fail an assertion, and each must compile.

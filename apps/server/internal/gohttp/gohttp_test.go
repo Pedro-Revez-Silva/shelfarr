@@ -347,3 +347,44 @@ func TestAStalledMediaClientIsDroppedAndItsSlotReturned(t *testing.T) {
 		t.Fatal("a stalled client held its media slot forever")
 	}
 }
+
+func TestAClientThatNeverReadsAMetadataResponseDoesNotHoldItsSlot(t *testing.T) {
+	h := newHarness(t, func(c *Config) { c.MaxMetadataRequests = 1; c.RequestTimeout = 600 * time.Millisecond })
+	description := strings.Repeat("日", 20_000)
+	for id := 1; id <= 50; id++ {
+		livetest.Exec(t, h.path, `INSERT INTO books (id, title, description, book_type, file_path) VALUES (?, 'Heavy', ?, 1, ?)`, id, description, filepath.Join(h.root, "absent.epub"))
+	}
+	server := httptest.NewUnstartedServer(nil)
+	server.Config = newServer(h.app, h.config)
+	server.Config.ConnState = func(connection net.Conn, state http.ConnState) {
+		if tcp, ok := connection.(*net.TCPConn); ok && state == http.StateNew {
+			tcp.SetWriteBuffer(4096)
+		}
+	}
+	server.Start()
+	defer server.Close()
+	connection, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	connection.(*net.TCPConn).SetReadBuffer(2048)
+	io.WriteString(connection, "GET /api/consumer/v1/library?limit=50 HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer "+rawToken+"\r\n\r\n")
+	deadline := time.Now().Add(10 * time.Second)
+	for len(h.app.metadata) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(h.app.metadata) == 0 {
+		t.Fatal("the request never held a slot")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if len(h.app.metadata) == 0 {
+		t.Fatal("the response was not blocked on the client, so the test proves nothing")
+	}
+	for len(h.app.metadata) != 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(h.app.metadata) != 0 {
+		t.Fatal("a client that never reads kept its metadata slot")
+	}
+}

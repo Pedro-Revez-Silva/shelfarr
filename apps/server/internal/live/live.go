@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"io"
 	"net/url"
 	"strconv"
@@ -185,5 +184,5 @@ func Classify(err error) error {
 	if strings.Contains(text, "database is locked") || strings.Contains(text, "sqlite_busy") || strings.Contains(text, "(5)") || strings.Contains(text, "(517)") {
 		return ErrBusy
 	}
-	return fmt.Errorf("%w", ErrUnavailable)
+	return ErrUnavailable
 }
