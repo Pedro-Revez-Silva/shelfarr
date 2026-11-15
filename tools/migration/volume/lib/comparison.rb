@@ -84,15 +84,11 @@ module Migration
         keyed = before.columns.any? { |column| column["pk"].positive? }
         before_columns = before.columns.map { |column| column["name"] }
         after_columns = after.columns.map { |column| column["name"] }
-        shared = before.columns.select { |column| after_columns.include?(column["name"]) }
-        shared.each do |column|
-          add(database, "#{subject}.#{column['name']}", "column-definition-changed") if after.columns.find { |candidate| candidate["name"] == column["name"] } != column
-        end
         (before_columns - after_columns).each { |column| add(database, "#{subject}.#{column}", "column-lost") }
         (after_columns - before_columns - Array(@allowances.added_columns[table])).each { |column| add(database, "#{subject}.#{column}", "column-added") }
         (before.indexes.keys - after.indexes.keys).each { |index| add(database, "#{subject}##{index}", "index-lost") }
         before.indexes.each { |index, definition| add(database, "#{subject}##{index}", "index-changed") if after.indexes.key?(index) && after.indexes[index] != definition }
-        add(database, subject, "foreign-keys-changed") unless before.foreign_keys == after.foreign_keys
+        compare_definition(database, table, before, after)
         mutable = Array(@allowances.mutable_columns[table])
         before.rows.each do |key, cells|
           row = after.rows[key]
@@ -105,6 +101,17 @@ module Migration
         return if @allowances.new_row_tables.include?(table)
 
         (after.rows.keys - before.rows.keys).each { |key| add(database, "#{subject}[#{label(key, keyed)}]", "row-added") }
+      end
+
+      def compare_definition(database, table, before, after)
+        return add(database, table, "definition-changed") if !@allowances.added_columns.key?(table) && before.definition != after.definition
+        return unless @allowances.added_columns.key?(table)
+
+        after.columns.each do |column|
+          earlier = before.columns.find { |candidate| candidate["name"] == column["name"] }
+          add(database, "#{table}.#{column['name']}", "column-definition-changed") if earlier && earlier != column
+        end
+        add(database, table, "foreign-keys-changed") unless before.foreign_keys == after.foreign_keys
       end
 
       def sequences(database, earlier, later)

@@ -136,6 +136,13 @@ It runs rubocop, the unit tests, builds the images, runs the container scenarios
 package checks, requires that no container of the run remains and that the repository is untouched. Unit tests
 alone: `bundle exec ruby -Itest tools/migration/volume/test/comparison_test.rb` (and `queue_inventory_test.rb`).
 
+Schema comparison is exact: the captured `CREATE TABLE` text of every existing table and every existing index
+must be byte identical. The one exception is a table the contract declares as receiving added columns
+(`api_tokens` on the stable upgrade): it is compared by its existing columns' type, nullability, default and key
+flags and by its foreign keys, because SQLite places an added column inside the `CREATE TABLE` text. **Known
+limit:** on that one declared table a dropped `UNIQUE` constraint or a changed collation is not detected. A
+behaviour-preserving rewrite of other tables' definition text is reported and must be allowed explicitly.
+
 State comparison reads typed rows (`typeof` per cell, floats by IEEE bits, blobs by bytes), schema, indexes,
 autoincrement counters, per-file content/mode/owner/mtime/inode and per-media identity (device-independent:
 inode, size, mtime, ctime, symlink target). Violations name `area:table[key].column:reason` only.
