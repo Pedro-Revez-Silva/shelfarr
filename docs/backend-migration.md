@@ -525,7 +525,7 @@ produces a current-schema and a stable-upgrade bundle with the real Rails code, 
 bundles with race-instrumented binaries (SIGKILL at every inventory commit boundary and around completion and handoff,
 incomplete, empty and erroring inventories, configuration change and cancellation during a fetch, duplicate start,
 superseded owner, writer contention, hung peers, shutdown and restart, panics, credential and loopback isolation),
-30 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
+32 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
 reproducible cross-builds and an untouched-repository check.
 
 ## Gaps (recorded in every report)

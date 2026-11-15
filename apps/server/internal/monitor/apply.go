@@ -45,9 +45,13 @@ func (w *Workflow) stillOwned(ctx context.Context, tx *sql.Tx, entry candidate, 
 }
 
 func (w *Workflow) recordStateIn(ctx context.Context, tx *sql.Tx, entry candidate, errorCode, blockedCode string, keepBlocked bool) error {
-	if owned, err := w.stillOwned(ctx, tx, entry, false); err != nil || !owned {
+	if owned, err := w.stillOwned(ctx, tx, entry, true); err != nil || !owned {
 		return err
 	}
+	return w.writeStateIn(ctx, tx, entry, errorCode, blockedCode, keepBlocked)
+}
+
+func (w *Workflow) writeStateIn(ctx context.Context, tx *sql.Tx, entry candidate, errorCode, blockedCode string, keepBlocked bool) error {
 	var errorValue, blockedValue any
 	if errorCode != "" {
 		errorValue = errorCode
@@ -168,7 +172,7 @@ func (w *Workflow) applyCompletion(ctx context.Context, entry candidate, torrent
 			entry.ID, entry.RequestID, handoffKey(entry.ID), path, now, now); err != nil {
 			return err
 		}
-		if err := w.recordStateIn(ctx, tx, entry, "", "", false); err != nil {
+		if err := w.writeStateIn(ctx, tx, entry, "", "", false); err != nil {
 			return err
 		}
 		if err := fault.Hit(ctx, "monitor.completion-before-commit"); err != nil {

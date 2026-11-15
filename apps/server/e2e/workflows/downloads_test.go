@@ -750,3 +750,88 @@ func TestHandoffBackoffStaysCappedForLargeAttemptCounts(t *testing.T) {
 		t.Fatalf("next attempt %s is not within the capped delay", next)
 	}
 }
+
+func TestStaleErrorAndBlockedStatesAreNeverWritten(t *testing.T) {
+	type variant struct {
+		hook func(hash string, w http.ResponseWriter, r *http.Request) bool
+		prep func(t *testing.T, f downloadFixture, seed seeded)
+	}
+	rejectRelease := func(t *testing.T, f downloadFixture, seed seeded) {
+		exec1(t, f.db, `UPDATE search_results SET status = 2 WHERE id = ?`, seed.Result)
+	}
+	cases := map[string]variant{
+		"http error after the release was replaced": {hook: func(hash string, w http.ResponseWriter, r *http.Request) bool { w.WriteHeader(500); return true }},
+		"malformed answer after the release was replaced": {hook: func(hash string, w http.ResponseWriter, r *http.Request) bool {
+			w.Write([]byte("<html>"))
+			return true
+		}},
+	}
+	for name, entry := range cases {
+		t.Run(name, func(t *testing.T) {
+			fixture := newDownloadFixture(t, currentBundle)
+			seed := fixture.work.seedDownload(fixture.db, fixture.client, hashOf(65))
+			reached := make(chan struct{}, 1)
+			release := make(chan struct{})
+			fixture.peer.setHook(func(hash string, w http.ResponseWriter, r *http.Request) bool {
+				reached <- struct{}{}
+				<-release
+				return entry.hook(hash, w, r)
+			})
+			fixture.work.control("trigger", "downloads")
+			run := fixture.work.command(faults{}, append([]string{"run", "--once"}, downloadsOnly...)...)
+			<-reached
+			rejectRelease(t, fixture, seed)
+			close(release)
+			run.wait()
+			if states := scalar[int64](t, fixture.db, `SELECT COUNT(*) FROM wf_download_state WHERE download_id = ?`, seed.Download); states != 0 {
+				t.Fatal("a stale error observation wrote state")
+			}
+		})
+	}
+	t.Run("static blocks for a download whose release was replaced", func(t *testing.T) {
+		fixture := newDownloadFixture(t, currentBundle)
+		usenet := scalar[int64](t, fixture.db, `SELECT id FROM download_clients WHERE client_type = 'sabnzbd'`)
+		for index, prepare := range []func(seed seeded){
+			func(seed seeded) {
+				exec1(t, fixture.db, `UPDATE downloads SET download_type = 'direct' WHERE id = ?`, seed.Download)
+			},
+			func(seed seeded) {
+				exec1(t, fixture.db, `UPDATE downloads SET external_id = NULL WHERE id = ?`, seed.Download)
+			},
+			func(seed seeded) {},
+		} {
+			client := fixture.client
+			if index == 2 {
+				client = usenet
+			}
+			seed := fixture.work.seedDownload(fixture.db, client, hashOf(70+index))
+			prepare(seed)
+			rejectRelease(t, fixture, seed)
+		}
+		if outcome := fixture.cycle(t); outcome.code != 0 {
+			t.Fatalf("exit %d: %s", outcome.code, outcome.output)
+		}
+		if states := scalar[int64](t, fixture.db, `SELECT COUNT(*) FROM wf_download_state`); states != 0 {
+			t.Fatalf("blocked states were written for replaced releases: %d", states)
+		}
+	})
+}
+
+func TestCompletionClearsEarlierErrorAndBlockedState(t *testing.T) {
+	fixture := newDownloadFixture(t, currentBundle)
+	seed := fixture.work.seedDownload(fixture.db, fixture.client, hashOf(66))
+	fixture.peer.set(seed.Hash, torrentState{Name: "Book", Progress: 0.3, State: "error", Size: 1})
+	fixture.cycle(t)
+	if blocked := scalar[sql.NullString](t, fixture.db, `SELECT blocked_code FROM wf_download_state WHERE download_id = ?`, seed.Download); !blocked.Valid {
+		t.Fatal("the failure was not recorded")
+	}
+	fixture.peer.set(seed.Hash, torrentState{Name: "Book", Progress: 1, State: "uploading", Size: 1, Content: "/d/Book"})
+	fixture.cycle(t)
+	state := rows(t, fixture.db, `SELECT error_code, blocked_code FROM wf_download_state WHERE download_id = ?`, seed.Download)
+	if !reflect.DeepEqual(state, [][]string{{"NULL", "NULL"}}) {
+		t.Fatalf("state after completion %v", state)
+	}
+	if status := fixture.download(t, seed.Download)["status"]; status != "3" {
+		t.Fatalf("status %s", status)
+	}
+}
