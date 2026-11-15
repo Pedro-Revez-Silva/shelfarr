@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/consumer"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
@@ -61,7 +62,7 @@ func mapFailure(w http.ResponseWriter, result *outcome, err error) {
 		problem(w, result, http.StatusServiceUnavailable, "library_root_not_allowed")
 	case errors.Is(err, library.ErrReference), errors.Is(err, library.ErrUnsupportedPath), errors.Is(err, library.ErrUnsupportedRoot):
 		problem(w, result, http.StatusNotImplemented, "unsupported_library_layout")
-	case errors.Is(err, consumer.ErrUnsupportedValue), errors.Is(err, store.ErrUnsupported), errors.Is(err, store.ErrTimestamp):
+	case errors.Is(err, consumer.ErrUnsupportedValue), errors.Is(err, store.ErrUnsupported), errors.Is(err, store.ErrTimestamp), errors.Is(err, account.ErrUnsupportedScopes):
 		problem(w, result, http.StatusNotImplemented, "unsupported_stored_value")
 	case errors.Is(err, media.ErrNoPinnedOpen):
 		problem(w, result, http.StatusNotImplemented, "confined_open_unsupported")

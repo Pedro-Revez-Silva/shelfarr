@@ -58,6 +58,9 @@ func readState(ctx context.Context, tx *sql.Tx, id int64) (tokenState, bool, err
 }
 
 func (d *DB) RetireReplaced(ctx context.Context, token Token, now time.Time) (bool, error) {
+	if !token.ReplacesID.Valid {
+		return true, nil
+	}
 	tx, err := d.write.BeginTx(ctx, nil)
 	if err != nil {
 		return false, Classify(err)
@@ -77,9 +80,6 @@ func (d *DB) RetireReplaced(ctx context.Context, token Token, now time.Time) (bo
 }
 
 func retireIn(ctx context.Context, tx *sql.Tx, token Token, now time.Time) (bool, error) {
-	if !token.ReplacesID.Valid {
-		return true, nil
-	}
 	previousID := token.ReplacesID.Int64
 	previous, found, err := readState(ctx, tx, previousID)
 	if err != nil || !found || previous.user != token.UserID {

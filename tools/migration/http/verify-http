@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/shelfarr-http.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+cleanup() { [ -n "$keep" ] || rm -rf "$work"; }
+trap cleanup EXIT
+export TMPDIR="$work"
+
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+
+step() { printf '\n== %s\n' "$*"; }
+
+clean_env() {
+  env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 TMPDIR="$work" "$@"
+}
+
+bundle_digest() {
+  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+}
+
+step "ruby: the independent producer is clean"
+(cd "$root" && bin/rubocop --force-exclusion tools/migration/http)
+
+step "ruby: produce the current-schema and the stable-upgrade bundles with the real Rails code"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$work/bundle-current")
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$work/bundle-upgrade" --mode stable-upgrade)
+current_before="$(bundle_digest "$work/bundle-current")"
+upgrade_before="$(bundle_digest "$work/bundle-upgrade")"
+
+step "ruby: record real Rails answers, headers, bodies and token side effects over private copies of both"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/http/capture_http_cases.rb --bundle "$work/bundle-current" --out "$work/http-current")
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/http/capture_http_cases.rb --bundle "$work/bundle-upgrade" --out "$work/http-upgrade")
+python3 - "$work" <<'PY'
+import json, sys
+work = sys.argv[1]
+for name in ("http-current", "http-upgrade"):
+    document = json.load(open(f"{work}/{name}/cases.json"))
+    statuses = {}
+    for case in document["cases"]:
+        statuses[case["status"]] = statuses.get(case["status"], 0) + 1
+    refused = sum(1 for case in document["cases"] if case.get("go"))
+    print(name, document["origin"], "cases", len(document["cases"]), "refused-by-design", refused, "statuses", dict(sorted(statuses.items())))
+PY
+
+cd "$root/apps/server"
+step "go: format, vet (shipped and e2e builds), unit tests with the race detector"
+test -z "$(gofmt -l .)"
+go vet ./...
+go vet -tags e2e ./...
+go test -race -count=1 ./...
+
+fixtures=(SHELFARR_HTTP_CASES_CURRENT="$work/http-current" SHELFARR_HTTP_CASES_UPGRADE="$work/http-upgrade")
+
+step "go: the real executable (race-instrumented) against Rails answers and the fault suite, on both fixtures"
+env "${fixtures[@]}" SHELFARR_HTTP_RACE=1 go test -tags e2e -count=1 -timeout 30m -v -skip TestMutantsAreDetected ./e2e/httpruntime/ | tee "$work/e2e.log" | grep -E '^(--- (PASS|FAIL|SKIP)|PASS|FAIL|ok)' || true
+grep -q '^ok' "$work/e2e.log" || { cat "$work/e2e.log" >&2; exit 1; }
+if grep -q -- '--- SKIP' "$work/e2e.log"; then echo "a test was skipped" >&2; exit 1; fi
+
+step "go: mutants of the critical invariants must each be rejected by an assertion"
+env "${fixtures[@]}" go test -tags e2e -count=1 -timeout 40m -run TestMutantsAreDetected ./e2e/httpruntime/
+
+step "go: the unchanged read-only checker still accepts both bundles"
+go build -o "$work/compat" ./cmd/shelfarr-compat
+for bundle in bundle-current bundle-upgrade; do
+  "$work/compat" compat-check --bundle "$work/$bundle" --legacy-sha1 --timeout 300s | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["passed"], r; print("compat passed", [c["name"] for c in r["checks"]])'
+done
+
+step "the source bundles were not modified by the HTTP runtime or by the capture"
+test "$current_before" = "$(bundle_digest "$work/bundle-current")" || { echo "bundle-current changed" >&2; exit 1; }
+test "$upgrade_before" = "$(bundle_digest "$work/bundle-upgrade")" || { echo "bundle-upgrade changed" >&2; exit 1; }
+echo "bundle digests unchanged: current $current_before upgrade $upgrade_before"
+
+step "go: clean reproducible cross-builds of the HTTP executable"
+for arch in amd64 arm64; do
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch" ./cmd/shelfarr-http
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch.again" ./cmd/shelfarr-http
+  cmp "$work/http-$arch" "$work/http-$arch.again"
+  printf '%s %s\n' "$arch" "$(sha256sum "$work/http-$arch" | cut -d' ' -f1)"
+done
+
+step "repository untouched after the whole run"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

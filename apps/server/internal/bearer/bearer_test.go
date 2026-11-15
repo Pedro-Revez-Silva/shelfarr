@@ -162,6 +162,7 @@ func TestRefusedAdoptionDoesNotDiscardAnythingNorAuthenticate(t *testing.T) {
 func TestContentionIsAnErrorNeverAnAnonymousRequest(t *testing.T) {
 	f := newFixture(t)
 	f.add(t, 1, "valid", 1, `["library:read"]`, "")
+	f.add(t, 2, "adopting", 1, `["library:read"]`, "replaces_api_token_id = 1")
 	holder, err := sql.Open("sqlite", "file:"+f.path+"?_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
@@ -175,8 +176,10 @@ func TestContentionIsAnErrorNeverAnAnonymousRequest(t *testing.T) {
 	if _, err := transaction.Exec(`UPDATE api_tokens SET name = 'held' WHERE id = 1`); err != nil {
 		t.Fatal(err)
 	}
-	principal, err := f.authenticator.Authenticate(context.Background(), "Bearer valid")
-	if !errors.Is(err, live.ErrBusy) || principal != nil {
-		t.Fatalf("%+v %v", principal, err)
+	for _, raw := range []string{"valid", "adopting"} {
+		principal, err := f.authenticator.Authenticate(context.Background(), "Bearer "+raw)
+		if !errors.Is(err, live.ErrBusy) || principal != nil {
+			t.Fatalf("%s: %+v %v", raw, principal, err)
+		}
 	}
 }

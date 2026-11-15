@@ -60,6 +60,13 @@ func TestOpenPinnedRefusesEverythingThatIsNotAPlainFileBeneathTheRoot(t *testing
 	if err := os.Symlink(outside, filepath.Join(root, "dir-link")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Symlink("real.epub", filepath.Join(root, "link-relative.epub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("nested", filepath.Join(root, "nested-link")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "nested", "inner.epub"), "inner")
 	if err := syscall.Mkfifo(filepath.Join(root, "pipe.epub"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +77,8 @@ func TestOpenPinnedRefusesEverythingThatIsNotAPlainFileBeneathTheRoot(t *testing
 		"link to a file outside":     {filepath.Join(root, "link-out.epub"), ErrUnavailable},
 		"link to a file inside":      {filepath.Join(root, "link-in.epub"), ErrUnavailable},
 		"link in a directory chain":  {filepath.Join(root, "dir-link", "secret.txt"), ErrUnavailable},
+		"relative link to a file":    {filepath.Join(root, "link-relative.epub"), ErrUnavailable},
+		"relative link directory":    {filepath.Join(root, "nested-link", "inner.epub"), ErrUnavailable},
 		"fifo":                       {filepath.Join(root, "pipe.epub"), ErrNotRegularFile},
 		"directory":                  {filepath.Join(root, "nested"), ErrNotRegularFile},
 		"missing":                    {filepath.Join(root, "absent.epub"), ErrUnavailable},
