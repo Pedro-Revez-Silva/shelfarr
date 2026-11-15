@@ -66,7 +66,7 @@ export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs =
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
     try {
       const session = await api.session(controller.signal, true);
-      if (generation === guard.generation) queryClient.setQueryData(keys.session, session);
+      if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
     } catch {
       guard.finishCheck(generation, false);

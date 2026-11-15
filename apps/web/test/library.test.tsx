@@ -506,4 +506,29 @@ describe("account revalidation", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(before + 1);
   });
+
+  test("a check that confirms at the moment another answer locks the page leaves nothing in the cache", async () => {
+    for (let turns = 0; turns < 12; turns += 1) {
+      const gate = deferred<void>();
+      const server = standardServer()
+        .on("GET", /\/api\/v1\/session$/, async () => {
+          await gate.promise;
+          return { body: session() };
+        })
+        .on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+          await gate.promise;
+          for (let turn = 0; turn < turns; turn += 1) await Promise.resolve();
+          return { status: 401, body: { error: "account_changed" } };
+        });
+      const services = createServices({ boot, csrfToken: () => null, fetcher: server.fetcher });
+      services.revalidate();
+      const library = services.api.library({}, undefined).catch((error: unknown) => error);
+      await waitFor(() => expect(server.requests.length).toBe(2));
+      gate.resolve();
+      expect(await library).toMatchObject({ kind: "account_changed" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(services.guard.isActive()).toBe(false);
+      expect(services.queryClient.getQueryCache().getAll()).toHaveLength(0);
+    }
+  });
 });
