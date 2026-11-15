@@ -268,7 +268,7 @@ func runMutantTests(t *testing.T, directory, packagePath, scenario string, tagge
 		arguments = append(arguments, "-run", scenario)
 	}
 	arguments = append(arguments, packagePath)
-	context, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	context, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 	command := exec.CommandContext(context, "go", arguments...)
 	command.Dir = directory

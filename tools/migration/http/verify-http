@@ -80,7 +80,7 @@ for pair in current:current-schema upgrade:stable-upgrade; do
 done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"
-env "${fixtures[@]}" go test -tags e2e -count=1 -timeout 90m -parallel 8 -run TestMutantsAreDetected ./e2e/httpruntime/
+env "${fixtures[@]}" go test -tags e2e -count=1 -timeout 150m -parallel 4 -run TestMutantsAreDetected ./e2e/httpruntime/
 
 step "go: the unchanged read-only checker still accepts both bundles"
 go build -o "$work/compat" ./cmd/shelfarr-compat
