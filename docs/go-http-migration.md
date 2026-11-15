@@ -155,7 +155,7 @@ allocated from a declared size; the input is bounded before it is decoded.
 ### Who may use a grant
 
 Every use re-reads `api_tokens` and `users`: the token `t` must exist, be unrevoked and unexpired at the moment of use, belong
-to user `u`, whose row must exist and not be soft-deleted, and still carry `library:read`. Nothing is cached, so a revocation,
+to user `u`, whose row must exist and not be soft-deleted, and still carry `library:read` (a scope column this runtime cannot read, such as `null` or an object, carries none, so the grant is `401`, as in Rails). Nothing is cached, so a revocation,
 an expiry, a lost scope, a changed or deleted owner or a deleted token takes effect on the next request and restoring the row
 revives the grant. The grant must name the same book and asset as the path. It opens only that book's exact asset
 generation, with `GET` or `HEAD`; it is not a credential anywhere else (every other route, including the mint, ignores a
@@ -190,7 +190,7 @@ bad grant with a perfect bearer is `401`.
 | transfer or mint, any other verb or a `.json` suffix | `404` |
 | transfer, all media slots busy | `503 server_busy` with `Retry-After` |
 
-A transfer takes a media-stream slot (`-max-media-streams`) like the bearer asset route; the mint takes a metadata slot. The file
+A transfer takes a media-stream slot (`-max-media-streams`) like the bearer asset route and answers a full pool `503 server_busy` with the same private headers; the mint takes a metadata slot. The file
 is the descriptor-pinned, root-confined, identity-checked open of the bearer route, and a client that leaves or stalls returns its
 slot exactly as there. A request already authorised when its token is revoked finishes; the next one is refused.
 
