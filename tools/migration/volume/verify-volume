@@ -35,6 +35,7 @@ bin/rubocop --force-exclusion tools/migration/volume tools/migration/packaging
 step "ruby: comparison engine and queue inventory (no containers)"
 bundle exec ruby -Itest tools/migration/volume/test/comparison_test.rb
 bundle exec ruby -Itest tools/migration/volume/test/queue_inventory_test.rb
+bundle exec ruby -Itest tools/migration/volume/test/snapshot_manifest_test.rb
 
 step "containers: build the stable, beta and candidate images from pinned git objects"
 bundle exec ruby tools/migration/packaging/build-images --scratch "$work/build" --report "$work/images.json"

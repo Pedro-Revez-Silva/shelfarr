@@ -62,7 +62,10 @@ module Migration
         manifest = JSON.parse(File.read(path))
         raise BackupRefused, "refusing: unsupported snapshot format" unless manifest["format"] == FORMAT
 
-        unknown = manifest.fetch("databases").keys - Layout::DATABASES
+        databases = manifest["databases"]
+        raise BackupRefused, "refusing: snapshot must include the primary database" unless databases.is_a?(Hash) && databases.key?(Layout::PRIMARY)
+
+        unknown = databases.keys - Layout::DATABASES
         raise BackupRefused, "refusing: the manifest names a database outside the volume contract" unless unknown.empty?
 
         manifest.fetch("databases").each do |name, entry|

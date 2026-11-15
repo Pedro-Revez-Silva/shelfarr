@@ -109,7 +109,8 @@ cannot answer; a process holds a volume file open; a hot rollback journal exists
 key material is missing (unless `--environment-keys` declares environment keys); a database fails its integrity
 check; the output directory exists or is inside the volume. After copying, quiescence is checked again. Restore
 refuses a target that is not an empty plain directory or is mounted by an active container, a manifest that is
-missing (an interrupted snapshot never has one), and any database or archive whose SHA-256 differs.
+missing (an interrupted snapshot never has one), a database inventory that omits the primary database,
+and any database or archive whose SHA-256 differs. These manifest checks run before the restore target is written.
 
 Databases are copied with SQLite's backup API from a private copy of the database and its `-wal` (never from the
 live file pair). Everything else goes into `files.tar` (GNU tar, numeric owners, nanosecond mtimes) written by a
