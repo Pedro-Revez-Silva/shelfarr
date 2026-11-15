@@ -616,11 +616,17 @@ func TestLoginBodiesAreBoundedAndTyped(t *testing.T) {
 
 func TestLoginWhileSignedInIsRefusedAndAnUnknownSessionCookieIsIgnoredNotAdopted(t *testing.T) {
 	h := newBrowserHarness(t, nil)
+	other := h.client()
+	other.signIn("alice", alicePassword)
 	client := h.client()
-	client.signIn("alice", alicePassword)
 	token, _ := client.bootstrap()
-	if recorder := client.login("bob", bobPassword, token); recorder.Code != http.StatusUnprocessableEntity && recorder.Code != http.StatusConflict {
-		t.Fatalf("login over a session answered %d", recorder.Code)
+	client.cookies[sessionCookieName] = other.cookies[sessionCookieName]
+	recorder := client.login("bob", bobPassword, token)
+	if recorder.Code != http.StatusConflict || errorCode(t, recorder) != "already_signed_in" {
+		t.Fatalf("login over a session answered %d %s", recorder.Code, recorder.Body.String())
+	}
+	if rows := livetest.Query(t, h.path, `SELECT COUNT(*) FROM sessions WHERE user_id = 2`); rows[0][0].(int64) != 0 {
+		t.Fatal("a second session was created")
 	}
 	planted := h.client()
 	forged, _ := h.app.cookies.GenerateMessage(json.RawMessage("4242"), sessionPurpose, h.clock.Now().Add(time.Hour))
