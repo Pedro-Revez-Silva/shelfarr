@@ -47,6 +47,8 @@ func run(args []string, stderr *os.File) int {
 	flags.StringVar(&channels, "android-channels", "release", "Android channels reported by server.json")
 	flags.StringVar(&previewUsers, "preview-user-ids", "", "comma-separated user ids allowed to use the browser preview API (default: SHELFARR_WEB_PREVIEW_USER_IDS; off when empty)")
 	flags.StringVar(&config.BrowserOrigin, "browser-origin", "", "canonical browser origin, scheme://host[:port] with no path; required for sign-in and every browser write")
+	flags.IntVar(&config.LoginAttempts, "login-attempts", 0, "sign-in attempts allowed per client address per window (default 10)")
+	flags.DurationVar(&config.LoginWindow, "login-window", 0, "rate-limit window for sign-in attempts (default 3m)")
 	flags.IntVar(&config.MaxLoginWorkers, "max-login-workers", 0, "concurrent password checks")
 	flags.IntVar(&config.MaxMetadataRequests, "max-metadata-requests", 0, "concurrent metadata requests")
 	flags.IntVar(&config.MaxMediaStreams, "max-media-streams", 0, "concurrent media streams")

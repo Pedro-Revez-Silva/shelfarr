@@ -245,6 +245,8 @@ func TestSessionCookiesAreRefusedWhenTamperedWrongPurposeExpiredOrOversized(t *t
 	expired, _ := h.app.cookies.GenerateMessage(json.RawMessage("5"), sessionPurpose, h.clock.Now())
 	stringID, _ := h.app.cookies.GenerateMessage(json.RawMessage(`"5"`), sessionPurpose, h.clock.Now().Add(time.Hour))
 	floatID, _ := h.app.cookies.GenerateMessage(json.RawMessage("5.0"), sessionPurpose, h.clock.Now().Add(time.Hour))
+	paddedID, _ := h.app.cookies.GenerateMessage(json.RawMessage(`"05"`), sessionPurpose, h.clock.Now().Add(time.Hour))
+	signedID, _ := h.app.cookies.GenerateMessage(json.RawMessage(`"+5"`), sessionPurpose, h.clock.Now().Add(time.Hour))
 	listID, _ := h.app.cookies.GenerateMessage(json.RawMessage("[5]"), sessionPurpose, h.clock.Now().Add(time.Hour))
 	other, _ := mustVerifier(t, "another-secret-key-base-another-secret-key-base").GenerateMessage(json.RawMessage("5"), sessionPurpose, h.clock.Now().Add(time.Hour))
 	cases := map[string]struct {
@@ -252,7 +254,7 @@ func TestSessionCookiesAreRefusedWhenTamperedWrongPurposeExpiredOrOversized(t *t
 		want  int
 	}{
 		"valid": {url.QueryEscape(good), 200}, "string id": {url.QueryEscape(stringID), 200}, "wrong purpose": {url.QueryEscape(wrongPurpose), 401},
-		"expired envelope": {url.QueryEscape(expired), 401}, "float id": {url.QueryEscape(floatID), 401}, "list id": {url.QueryEscape(listID), 401},
+		"expired envelope": {url.QueryEscape(expired), 401}, "float id": {url.QueryEscape(floatID), 401}, "zero padded id": {url.QueryEscape(paddedID), 401}, "signed id": {url.QueryEscape(signedID), 401}, "list id": {url.QueryEscape(listID), 401},
 		"other key": {url.QueryEscape(other), 401}, "tampered": {url.QueryEscape(good[:len(good)-2] + "00"), 401}, "unescaped plus": {strings.ReplaceAll(good, "+", "%2B") + "x", 401},
 		"empty": {"", 401}, "oversized": {strings.Repeat("A", maxCookieValue+1), 401}, "raw base64 plus": {good, 0},
 	}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/csrf"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/fault"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/strictjson"
@@ -436,6 +437,10 @@ func (a *App) failedLogin(w http.ResponseWriter, r *http.Request, userID int64, 
 }
 
 func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.Credentials, result *outcome) {
+	if err := fault.Hit(r.Context(), "login.checked"); err != nil {
+		mapFailure(w, result, err)
+		return
+	}
 	created, err := a.db.CompleteLogin(r.Context(), credentials.ID, credentials.PasswordDigest, live.Client{UserAgent: r.UserAgent(), IP: clientIP(r)}, a.now)
 	if err != nil {
 		mapFailure(w, result, err)

@@ -2,7 +2,9 @@ package railsmsg
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -101,5 +103,53 @@ func TestQuoteMatchesTheRailsJsonEncoder(t *testing.T) {
 		if got := Quote(input); got != want {
 			t.Errorf("%q: got %s want %s", input, got, want)
 		}
+	}
+}
+
+func TestRailsSessionCookieEnvelopeRoundTripsAndEnforcesPurposeAndExpiry(t *testing.T) {
+	verifier, err := NewVerifier("cookie-secret-key-base-cookie-secret-key-base", "signed cookie")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	token, err := verifier.GenerateMessage(json.RawMessage("42"), "cookie.session_id", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := verifier.VerifiedMessage(token, "cookie.session_id", now); !ok || string(value) != "42" {
+		t.Fatalf("round trip %s %v", value, ok)
+	}
+	for name, check := range map[string]func() bool{
+		"other purpose": func() bool { _, ok := verifier.VerifiedMessage(token, "cookie.other", now); return ok },
+		"at expiry": func() bool {
+			_, ok := verifier.VerifiedMessage(token, "cookie.session_id", now.Add(time.Minute))
+			return ok
+		},
+		"cursor shape": func() bool {
+			cursor, _ := verifier.Generate(json.RawMessage(`{"a":1}`), "cookie.session_id")
+			_, ok := verifier.VerifiedMessage(cursor, "cookie.session_id", now)
+			return ok
+		},
+		"other key": func() bool {
+			other, _ := NewVerifier("another-secret-key-base-another-secret-key-base", "signed cookie")
+			_, ok := other.VerifiedMessage(token, "cookie.session_id", now)
+			return ok
+		},
+		"other salt": func() bool {
+			other, _ := NewVerifier("cookie-secret-key-base-cookie-secret-key-base", "encrypted cookie")
+			_, ok := other.VerifiedMessage(token, "cookie.session_id", now)
+			return ok
+		},
+		"oversized": func() bool {
+			_, ok := verifier.VerifiedMessage(token+strings.Repeat("a", 5000), "cookie.session_id", now)
+			return ok
+		},
+	} {
+		if check() {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if _, ok := verifier.Verified(token, "cookie.session_id"); ok {
+		t.Fatal("a cookie envelope was accepted as a cursor")
 	}
 }

@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/shelfarr-browser.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+cleanup() { [ -n "$keep" ] || rm -rf "$work"; }
+trap cleanup EXIT
+export TMPDIR="$work"
+
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+
+step() { printf '\n== %s\n' "$*"; }
+
+clean_env() {
+  env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 TMPDIR="$work" "$@"
+}
+
+bundle_digest() {
+  (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+}
+
+step "ruby: the independent producers are clean"
+(cd "$root" && bin/rubocop --force-exclusion tools/migration/browser)
+
+step "ruby: produce the current-schema and the stable-upgrade bundles with the real Rails code"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$work/bundle-current")
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/produce_fixture.rb --out "$work/bundle-upgrade" --mode stable-upgrade)
+current_before="$(bundle_digest "$work/bundle-current")"
+upgrade_before="$(bundle_digest "$work/bundle-upgrade")"
+
+step "ruby: record real Rails sessions, cookies, preview answers, sign-in and lockout effects over private copies of both"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/capture_browser_cases.rb --bundle "$work/bundle-current" --out "$work/browser-current")
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/capture_browser_cases.rb --bundle "$work/bundle-upgrade" --out "$work/browser-upgrade")
+python3 - "$work" <<'PY'
+import json, sys
+work = sys.argv[1]
+for name in ("browser-current", "browser-upgrade"):
+    document = json.load(open(f"{work}/{name}/cases.json"))
+    kinds, statuses = {}, {}
+    for step in document["steps"]:
+        kinds[step["kind"]] = kinds.get(step["kind"], 0) + 1
+        if step["kind"] == "request":
+            statuses[step["status"]] = statuses.get(step["status"], 0) + 1
+    print(name, "steps", kinds, "statuses", dict(sorted(statuses.items())))
+PY
+
+cd "$root/apps/server"
+step "go: format, vet (shipped and e2e builds), unit tests with the race detector"
+test -z "$(gofmt -l .)"
+go vet ./...
+go vet -tags e2e ./...
+go test -race -count=1 ./internal/gohttp/ ./internal/csrf/ ./internal/loginlimit/ ./internal/webpreview/ ./internal/railsmsg/ ./internal/live/ ./internal/catalogue/ ./internal/account/
+
+mkdir -p "$work/go-out"
+exported=(SHELFARR_BROWSER_CASES_CURRENT="$work/browser-current" SHELFARR_BROWSER_CASES_UPGRADE="$work/browser-upgrade")
+
+step "go: the real executable (race-instrumented) against Rails cookies, answers, sign-in effects and the fault suite, on both fixtures"
+env "${exported[@]}" SHELFARR_BROWSER_GO_DIR="$work/go-out" SHELFARR_HTTP_RACE=1 go test -tags e2e -count=1 -timeout 30m -v -skip TestMutantsAreDetected ./e2e/browser/ | tee "$work/e2e.log" | grep -E '^(--- (PASS|FAIL|SKIP)|PASS|FAIL|ok)' || true
+grep -q '^ok' "$work/e2e.log" || { cat "$work/e2e.log" >&2; exit 1; }
+if grep -q -- '--- SKIP' "$work/e2e.log"; then echo "a test was skipped" >&2; exit 1; fi
+
+step "ruby: the real Rails application consumes the cookies and rows Go issued, and reads the lock state Go wrote"
+for pair in current:current-schema upgrade:stable-upgrade; do
+  (cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/verify_go_sessions.rb --bundle "$work/bundle-${pair%%:*}" --cases "$work/browser-${pair%%:*}" --database "$work/go-out/${pair##*:}.sqlite3" --cookies "$work/go-out/${pair##*:}.cookies.json" --out "$work/rails-reads-${pair%%:*}")
+done
+
+step "go: mutants of the browser authentication invariants must each be rejected by an assertion"
+env "${exported[@]}" go test -tags e2e -count=1 -timeout 60m -run TestMutantsAreDetected ./e2e/browser/
+
+step "the source bundles were not modified by the browser runtime or by the capture"
+test "$current_before" = "$(bundle_digest "$work/bundle-current")" || { echo "bundle-current changed" >&2; exit 1; }
+test "$upgrade_before" = "$(bundle_digest "$work/bundle-upgrade")" || { echo "bundle-upgrade changed" >&2; exit 1; }
+echo "bundle digests unchanged: current $current_before upgrade $upgrade_before"
+
+step "repository untouched after the whole run"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

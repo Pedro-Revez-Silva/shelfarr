@@ -31,8 +31,8 @@ progress writes, which answer `PUT`.
 
 Pairing and token creation (`POST auth/device`, `auth/token`), token revocation (`POST auth/revoke`),
 `discover`, `requests` (list, show, create, delete), `assets/:id/reading_order`, `read_along`
-(manifest, resources, audio), `transfer_grant` and `transfer`. Kobo, browser sessions, CSRF and the browser `/preview` API stay with
-Rails. Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
+(manifest, resources, audio), `transfer_grant` and `transfer`. Kobo and the browser HTML shell stay with Rails; the browser session and `/preview/api/v1` JSON are described in
+[Browser sessions and the preview JSON](#browser-sessions-and-the-preview-json). Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
 (`GET, HEAD`; `GET, HEAD, PUT` for progress; `PUT` for reading status), before authentication and without
 touching the credential.
 
@@ -121,6 +121,154 @@ The write domain added by this slice is exactly `consumer_progresses` and `consu
   A write whose client left (or whose process was killed) before the commit stores nothing; one killed
   after the commit is stored and a retry of the same body returns it unchanged. This is SIGKILL
   testing, not power-loss testing.
+
+## Browser sessions and the preview JSON
+
+Status: experimental, default-off, backend only. No page, script or style is served, no UI changed, Rails stays
+the production server. This slice lets the runtime resume the browser session Rails issued, sign a local
+account in and out, and answer the session-authenticated JSON the static TypeScript preview already calls. It is
+not a login handover: only local password sign-in for accounts that need nothing else is ported.
+
+### What is served
+
+| Route | Authentication | Notes |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/api/v1/session` | `session_id` cookie, `X-Shelfarr-Account` | `{account, server, links, admin?}`; `links.discover` is `/discover` when Hardcover is enabled and a token or the account's active connection exists (the Rails rule), else `/search`; every other link is the root-mount path. |
+| `GET`, `HEAD /preview/api/v1/library`, `/continue`, `/library/:id` | same | The account-bound envelope `{account, items, next_cursor}` / `{account, items}` / `{account, publication}` of `WebPreview::LibraryController`, projected from the Go catalogue and publication services with the browser reader selection (`epub,pdf,cbz`, so Rails-issued cursors keep their identity). |
+| `PUT /preview/api/v1/library/:id/reading_status` | same, plus CSRF | `{"status": "unread" \| "in_progress" \| "finished"}`; answers `{account, publication}`. |
+| `GET /preview/api/v1/auth/bootstrap` | none or cookie | New. Signed out: `{authenticated:false, csrf_token, expires_in, sign_in:{available, reason}}` and a login nonce cookie. Signed in: `{authenticated:true, account, csrf_token, expires_in}`. It never discloses personal data to a signed-out caller. |
+| `POST /preview/api/v1/auth/login` | login CSRF token | New. `{"username","password"}`; answers `{authenticated:true, account, csrf_token, expires_in}` and sets `session_id`. |
+| `POST /preview/api/v1/auth/logout` | session CSRF token, `X-Shelfarr-Account` | New. Deletes the caller's `sessions` row and clears the cookie. |
+
+The native `/api/consumer/v1` routes still authenticate bearer credentials only and never read a cookie. The
+browser routes never read `Authorization`. No response ever carries a CORS header and `OPTIONS` is `405`.
+
+Guard order is the Rails `WebPreviewAccess` order, evaluated before any personal data is read: allowlist not
+configured `404 not_found`; no valid session `401 signed_out`; account not on the allowlist `404 not_found`;
+`X-Shelfarr-Account` missing, repeated or not the exact decimal user id `401 account_changed`; then, for a
+write, CSRF `422 invalid_csrf`. Guard errors always carry `Cache-Control: private, no-store` (Rails sends
+`no-cache` on those four).
+
+### Per-user allowlist
+
+Off unless `-preview-user-ids` or the existing nonsecret `SHELFARR_WEB_PREVIEW_USER_IDS` (not both: `preview-user-ids-ambiguous`)
+lists up to 100 comma-separated ids matching `[1-9][0-9]{0,18}`. Unset, blank, malformed (any bad entry), too long:
+the preview stays off for everybody (`404`), a warning code is printed, and there is no all-users fallback. It is
+read once at start; restart to change it, where Rails re-reads the variable per request. Sign-in for an account off the list is
+refused as `401 invalid_credentials` (after a dummy password check) and writes nothing.
+
+### Session cookie and rows, both ways
+
+Verified against the installed Rails 8.1.4.1 and a real login. `session_id` is a signed cookie:
+`<base64 {"_rails":{"message":base64(JSON integer id),"exp":"…Z","pur":"cookie.session_id"}}>--<hex HMAC-SHA1>`,
+key = PBKDF2-HMAC-SHA256(`secret_key_base`, `signed cookie`, 1000, 64 bytes), `Set-Cookie` value CGI-escaped,
+`Path=/; HttpOnly; SameSite=Lax; Expires`, `Secure` only when `-browser-origin` is `https`. Go verifies and issues exactly
+that, so a cookie works against both servers and rollback to Rails loses no session.
+
+* Authenticated when the signature, purpose and `exp` hold, a `sessions` row exists, the user row exists and
+  is not deleted, and `created_at` is not older than `session_max_age_days` (default 30; the boundary
+  instant is still valid). An expired row, or a row of a deleted user, is deleted and the cookie cleared, as in Rails. A
+  session whose user row is missing is signed out and kept (Rails raises). A non-integer setting, or one outside
+  0-36500, is `501 unsupported_stored_value`, never a guess.
+* Cookies longer than 1024 bytes are refused; the first `session_id` cookie wins, as in Rack.
+* Day arithmetic is UTC. A Rails deployment with a DST time zone may differ by up to an hour at the exact boundary.
+* The encrypted `_shelfarr_session` cookie (Rails CSRF, OIDC, pending OTP) is never read or written.
+
+### CSRF
+
+Go owns it; nothing depends on the Rails cookie session. Tokens are `v1.<s|l>.<expiry>.<HMAC-SHA256>` under a key derived
+from `secret_key_base` with its own salt.
+
+* Session token (2 h): bound to session id, user id and the row's creation time, so it dies with logout, expiry and
+  re-login. Returned by `bootstrap` and `login`; sent as `X-CSRF-Token`.
+* Login token (10 min): bound to a random `shelfarr_login` nonce cookie (`HttpOnly; SameSite=Strict; Path=/preview/api/v1/auth`),
+  so a token minted in another browser cannot sign this one in (login CSRF). The nonce is cleared by a successful sign-in.
+* Every mutation also needs `Origin` equal to the configured canonical origin (exactly one header; `null` and
+  absence are refused) and, when sent, `Sec-Fetch-Site: same-origin`. A refusal is `422 invalid_csrf`.
+* Sign-in while a valid session cookie is present is `409 already_signed_in`; an unknown or forged session id is ignored,
+  and the new session always gets a fresh id.
+
+`-browser-origin scheme://host[:port]` is required for any write or sign-in (`501 browser_origin_not_configured`
+otherwise; reading still works). It must be the origin the browser shows, with no path. **Unsupported:** serving
+under a sub-path, TLS or host rewriting that changes the browser's origin, and any use of `Forwarded` or `X-Forwarded-*`
+(never read; the client address is the TCP peer, so behind a proxy the sign-in rate limit is shared).
+
+### Sign-in
+
+`POST /preview/api/v1/auth/login` runs in this order, cheapest first, and creates nothing until the end: preview
+configured, origin, CSRF, not already signed in, deployment not passwordless, per-address rate limit (10 per 3 min, `-login-attempts`,
+`-login-window`; `429` with `Retry-After`; fixed 1024 buckets, bounded memory), body (4 KiB, `application/json`, 5 s), a bounded pool of
+password checks (`-max-login-workers`, default 4, 2 s wait, `503 server_busy`), then bcrypt outside any database lock
+(cost above 14 is `501 unsupported_stored_value`; passwords above 72 bytes are not accepted). One `BEGIN IMMEDIATE` then
+re-reads the user and refuses if the account was deleted, locked, got a different password digest, or gained a second factor
+while the check ran or the lock was awaited; otherwise it resets the failure counters (only if dirty) and inserts the
+`sessions` row (`user_agent`, `ip_address`, microsecond `created_at`/`updated_at`).
+
+Every credential failure (unknown, wrong, locked, deleted, off the allowlist, stale) is the same
+`401 {"error":"invalid_credentials"}`. A wrong password for a real account increments `failed_login_count`, sets
+`last_failed_login_at`/`ip`, and at `login_lockout_threshold` (5) sets `locked_until` (`login_lockout_duration_minutes`, 15), in one
+transaction, so concurrent failures lock after exactly the threshold. Locked accounts are not counted further.
+
+**Refused explicitly, never bypassed, no session created:** an account with an enabled second factor
+(`501 mfa_not_supported`, after a correct password), an account linked to OIDC (`501 oidc_account_not_supported`), and a
+passwordless deployment (`auth_disabled` setting or `DISABLE_AUTH=true` in the Go process's own environment, which must match Rails':
+`501 sign_in_unsupported`). Signup, recovery and administration are not ported. A valid session that already exists is resumed whatever the
+account's later configuration.
+
+Security logs are `{"msg":"security","event":…,"user_id":…}` with fixed events; no username, password, cookie,
+token, address or user agent is logged.
+
+### Rows written (the whole list)
+
+`sessions` (insert on sign-in; delete on logout, expiry and deleted user), `users` (`failed_login_count`,
+`last_failed_login_at`, `last_failed_login_ip`, `locked_until`, `updated_at`), plus the progress-slice
+`consumer_reading_states`. Not written, deliberately: `activity_logs` (Rails records `user.login` and `user.logout`),
+queue, cable, cache. One owning backend per table remains a handover prerequisite; Rails and Go writing `sessions` or
+`users` at the same moment is unsupported and untested. Required columns now also include the `users` login and
+OIDC columns, `sessions` and `hardcover_connections(user_id, status)`; the supported schema revision is unchanged.
+
+### Refused instead of emptied
+
+PDF or CBZ assets, comic records and a description needing an HTML sanitizer are `501` (`unsupported_asset_format`,
+`unsupported_publication_kind`, `unsupported_stored_value`) for the whole response, never a missing book and never an empty
+success; reader and asset hand-offs stay on Rails. A library that contains one of those cannot be listed by Go yet.
+Plain-text descriptions are normalised as `WebPreview::PublicationJson` does; any `<`, `>`, `&`, carriage return or control
+character is refused rather than guessed.
+
+### Contract before and after
+
+```
+GET /preview/api/v1/auth/bootstrap                                 before 404   after 200 {"authenticated":false,"csrf_token":"v1.l.…","expires_in":600,"sign_in":{"available":true,"reason":null}}
+POST /preview/api/v1/auth/login   Origin, X-CSRF-Token, JSON body   before 404   after 200 {"authenticated":true,"account":"5","csrf_token":"v1.s.…","expires_in":7200} + Set-Cookie session_id
+                                                                            401 invalid_credentials · 409 already_signed_in · 422 invalid_csrf · 429 rate_limited
+                                                                            501 mfa_not_supported | oidc_account_not_supported | sign_in_unsupported | browser_origin_not_configured
+POST /preview/api/v1/auth/logout  Origin, X-CSRF-Token, X-Shelfarr-Account   before 404   after 200 {"authenticated":false} + cleared cookie
+GET /preview/api/v1/session | library | continue | library/:id        before 404   after the Rails envelopes above (session cookie)
+PUT /preview/api/v1/library/:id/reading_status                         before 404   after 200 {account, publication} | 422 invalid_csrf | 422 invalid_reading_status
+```
+
+Nothing a consumer outside this repository observes changes in Rails, the schema, the stored formats or the existing Go routes.
+New Go-only routes and flags: `-preview-user-ids`, `-browser-origin`, `-login-attempts`, `-login-window`, `-max-login-workers`.
+Rollback: stop the Go runtime. Every cookie and row Go wrote is a valid Rails cookie or row, every row Rails wrote works in Go,
+and reverting the commits removes the routes without a migration.
+
+### Verification
+
+`tools/migration/browser/verify-browser` (CI job `go-browser`) produces the current and the stable-upgrade bundles with the real
+Rails code, records with the real application: Rails-issued sessions (a real `POST /session`, rows built with the real cookie jar),
+tampered, wrong-purpose, unknown-row and short-lived cookies, ages at the exact expiry boundary and under a changed `session_max_age_days`, a deleted
+user, an account off the allowlist, the preview answers of every route, status writes, lockout and sign-in effects at a frozen clock, and
+Rails logout. The race-instrumented executable replays all of it and must match Rails status, headers, JSON, and the resulting `sessions`,
+`users` and `consumer_reading_states` rows byte for byte. The real Rails application then loads the cookies and rows Go issued, rejects the revoked
+one, reads the lock state Go wrote and accepts a password after Go reset the counters. Real-HTTP tests with a cookie jar cover CSRF
+(missing, wrong, replayed across sessions, other origin, `null`, cross-site, stale account, expired), login CSRF, restart durability, the
+production clock, 40 concurrent wrong passwords, concurrent sessions, over-cost and rate-limited sign-in, oversized, stalled and duplicated
+inputs, the unported modes, SIGKILL before and after the session commit, a client that leaves while holding the lock, and a credential or
+account that changes during the password check or the lock wait. Every output is scanned for the synthetic secrets. 48 mutants of
+these invariants must each fail an assertion.
+
+Not proven: a real browser, TLS or proxy behaviour, any production data, OIDC, second factors, signup and recovery, PDF and CBZ pages,
+read-along, power loss, Rails and Go writing the same rows at once, and clock zones other than UTC.
 
 ## Database access
 

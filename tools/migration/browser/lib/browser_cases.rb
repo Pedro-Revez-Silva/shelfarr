@@ -1,0 +1,286 @@
+# frozen_string_literal: true
+
+require "cgi"
+require "digest"
+require "fileutils"
+require "json"
+require "securerandom"
+require_relative "../../http/lib/http_cases"
+
+module Migration
+  module Browser
+    class Cases < Migration::Http::Cases
+      PREVIEW = "/preview/api/v1"
+      NOON = Time.utc(2026, 11, 15, 12, 0, 0, 123_456)
+      SESSION_COLUMNS = %w[id user_id user_agent ip_address created_at updated_at].freeze
+      USER_COLUMNS = %w[id failed_login_count last_failed_login_at last_failed_login_ip locked_until updated_at].freeze
+
+      def initialize(paths:, bundle:)
+        super
+        @steps = []
+        @personas = {}
+        @secrets = {}
+      end
+
+      def call
+        load_bundle
+        reset_database
+        configure_encryption
+        seed_extra_library
+        seed_extra_progress
+        hide_unported_formats
+        seed_people
+        configure_preview
+        seed_sessions
+        checkpoint_and_copy
+        run_browser_scenarios
+        write_browser_outputs
+      end
+
+      private
+
+      def password
+        "Synthetic-#{SecureRandom.hex(10)}-Aa1"
+      end
+
+      def hide_unported_formats
+        Book.acquired.find_each do |book|
+          formats = listed_assets(book, formats: Consumer::ReaderFormats::SUPPORTED).map(&:format)
+          book.update_columns(file_path: nil) if book.comicbook? || formats.intersect?(%w[pdf cbz])
+        end
+      end
+
+      def seed_people
+        credentials = JSON.parse(File.read(File.join(@bundle, "secrets", "credentials.json"))).fetch("users")
+        @people = {}
+        %w[alice bob carol].each { |name| @people[name] = { user: users.fetch(name), password: credentials.fetch(name).fetch("password") } }
+        {
+          "browser_admin" => { role: :admin }, "browser_member" => {}, "browser_oidc" => { oidc_provider: "synthetic", oidc_uid: SecureRandom.hex(8) },
+          "browser_outsider" => {}, "browser_lockable" => {}
+        }.each do |name, extra|
+          secret = password
+          @people[name] = { user: User.create!({ username: name, name: name.tr("_", " ").capitalize, password: secret }.merge(extra)), password: secret }
+        end
+        @people.each { |name, person| @secrets[name] = person.fetch(:password) }
+      end
+
+      def configure_preview
+        allowed = @people.except("browser_outsider").values.map { |person| person[:user].id }
+        @allowed = allowed.sort.join(",")
+        ENV[WebPreview::Access::VARIABLE] = @allowed
+      end
+
+      def session_cookie(row, expires:)
+        jar = ActionDispatch::TestRequest.create.cookie_jar
+        jar.signed[:session_id] = { value: row.id, expires: expires }
+        CGI.escape(jar[:session_id])
+      end
+
+      def make_session(name, user, created_at:, cookie_expires: created_at + 30.days)
+        row = Session.create!(user: user, created_at: created_at, updated_at: created_at, ip_address: "127.0.0.1")
+        @personas[name] = { "cookie" => session_cookie(row, expires: cookie_expires), "user_id" => user.id, "session_id" => row.id }
+      end
+
+      def rails_login(name, username)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        travel_to(NOON, with_usec: true) { session.post "/session", params: { username: username, password: @people.fetch(username).fetch(:password) } }
+        raw = session.response.headers["set-cookie"].to_s[/session_id=([^;]+)/, 1]
+        @personas[name] = { "cookie" => raw, "user_id" => @people.fetch(username).fetch(:user).id, "session_id" => Session.maximum(:id) }
+      end
+
+      def database_rows(table, columns, where: nil)
+        ActiveRecord::Base.with_connection do |connection|
+          selected = columns.map { |column| "CAST(#{table}.#{column} AS TEXT) AS #{column}" }.join(", ")
+          connection.select_all("SELECT #{selected} FROM #{table} #{where} ORDER BY #{table}.id").to_a
+        end
+      end
+
+      def browse(name, path, persona: nil, method: "GET", account: :persona, headers: {}, body: nil, at: nil, go: nil, origin_check: false)
+        sent = { "Accept" => "application/json" }.merge(headers)
+        user_id = persona && @personas.fetch(persona).fetch("user_id")
+        sent["Cookie"] = "session_id=#{@personas.fetch(persona).fetch('cookie')}" if persona && !headers.key?("Cookie")
+        sent["X-Shelfarr-Account"] = account == :persona ? user_id.to_s : account.to_s if account && (account != :persona || user_id)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.host! "www.example.com"
+        perform = -> { session.process(method.downcase.to_sym, path, params: body&.to_json, headers: body ? sent.merge("Content-Type" => "application/json") : sent) }
+        at ||= NOON
+        travel_to(at, with_usec: true, &perform)
+        response = session.response
+        text = response.body.to_s
+        clears = Array(response.headers["set-cookie"]).join("\n").match?(/session_id=;/)
+        entry = { "kind" => "request", "name" => name, "persona" => persona, "method" => method, "path" => path, "headers" => sent.except("Cookie", "Accept"), "body" => body,
+                  "at" => at.utc.iso8601(6), "status" => response.status, "response_headers" => normalized(response.headers), "clears_session_cookie" => clears }
+        entry["json"] = JSON.parse(text) if response.media_type == "application/json" && !text.empty?
+        entry["go"] = go if go
+        entry["unauthenticated_go_difference"] = true if origin_check
+        @steps << entry
+        entry
+      end
+
+      def setting_step(name, key, value)
+        SettingsService.set(key, value)
+        row = Setting.find_by!(key: key.to_s)
+        @steps << { "kind" => "setting", "name" => name, "key" => row.key, "value" => row.value, "value_type" => row.value_type }
+      end
+
+      def login_step(name, username, at:, password_override: nil, go: nil, submitted: nil)
+        user = @people.fetch(username).fetch(:user)
+        before = Session.count
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        secret = password_override || @people.fetch(username).fetch(:password)
+        travel_to(at, with_usec: true) { session.post "/session", params: { username: submitted || username, password: secret } }
+        created = Session.count - before
+        entry = { "kind" => "login", "name" => name, "username" => submitted || username, "password_of" => username, "wrong_password" => !password_override.nil?, "at" => at.utc.iso8601(6), "rails_location" => session.response.location,
+                  "session_created" => created.positive?, "go" => go, "users_after" => database_rows("users", USER_COLUMNS, where: "WHERE id = #{user.id}"),
+                  "sessions_after" => database_rows("sessions", SESSION_COLUMNS) }
+        @steps << entry
+      end
+
+      def logout_step(name, persona)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.delete "/session", headers: { "Cookie" => "session_id=#{@personas.fetch(persona).fetch('cookie')}" }
+        @steps << { "kind" => "logout", "name" => name, "persona" => persona, "status" => session.response.status, "sessions_after" => database_rows("sessions", SESSION_COLUMNS) }
+      end
+
+      def seed_sessions
+        fresh = NOON - 3.minutes
+        make_session("alice", @people["alice"][:user], created_at: fresh)
+        make_session("bob", @people["bob"][:user], created_at: fresh)
+        make_session("admin", @people["browser_admin"][:user], created_at: fresh)
+        make_session("member", @people["browser_member"][:user], created_at: fresh)
+        make_session("outsider", @people["browser_outsider"][:user], created_at: fresh)
+        make_session("deleted-user", @people["carol"][:user], created_at: fresh)
+        rails_login("login-member", "browser_member")
+        rails_login("login-admin", "browser_admin")
+        make_session("short-envelope", @people["alice"][:user], created_at: fresh, cookie_expires: NOON + 90.seconds)
+        jar = ActionDispatch::TestRequest.create.cookie_jar
+        jar.signed[:other_cookie] = { value: Session.maximum(:id), expires: NOON + 30.days }
+        @personas["wrong-purpose"] = { "cookie" => CGI.escape(jar[:other_cookie]), "user_id" => @people["alice"][:user].id, "session_id" => nil }
+        @personas["unknown-session"] = { "cookie" => session_cookie(Struct.new(:id).new(987_654_321), expires: NOON + 30.days), "user_id" => @people["alice"][:user].id, "session_id" => nil }
+        user = @people["browser_member"][:user]
+        later = NOON + 31.days
+        {
+          "age-just-inside" => NOON - 30.days + 5.seconds, "age-just-outside" => NOON - 30.days - 1.second, "age-way-outside" => NOON - 90.days,
+          "age-exact" => NOON - 30.days, "age-exact-minus-1us" => NOON - 30.days - Rational(1, 1_000_000), "age-8-days" => NOON - 8.days, "age-8-days-b" => NOON - 8.days,
+          "age-6-days" => NOON - 6.days
+        }.each { |name, created_at| make_session(name, user, created_at: created_at, cookie_expires: later) }
+      end
+
+      def run_browser_scenarios
+        data_scenarios
+        envelope_and_age_scenarios
+        mutation_scenarios
+        login_scenarios
+        logout_scenarios
+        @rails_final = { "sessions" => database_rows("sessions", SESSION_COLUMNS), "users" => database_rows("users", USER_COLUMNS) }
+      end
+
+      def data_scenarios
+        browse("anonymous-session", "#{PREVIEW}/session", account: nil)
+        browse("anonymous-library", "#{PREVIEW}/library", account: "1")
+        %w[alice bob admin member login-member login-admin].each do |persona|
+          %w[GET HEAD].each { |method| browse("#{persona}-session-#{method.downcase}", "#{PREVIEW}/session", persona: persona, method: method) }
+          browse("#{persona}-library", "#{PREVIEW}/library", persona: persona)
+          browse("#{persona}-continue", "#{PREVIEW}/continue", persona: persona)
+        end
+        browse("alice-library-audio", "#{PREVIEW}/library?type=audiobook&limit=3", persona: "alice")
+        browse("alice-library-title", "#{PREVIEW}/library?sort=title&limit=7", persona: "alice")
+        browse("alice-library-query", "#{PREVIEW}/library?q=quiet", persona: "alice")
+        browse("alice-library-status", "#{PREVIEW}/library?status=in_progress", persona: "alice")
+        browse("alice-library-bad", "#{PREVIEW}/library?type=film", persona: "alice")
+        browse("alice-continue-audio", "#{PREVIEW}/continue?type=audiobook", persona: "alice")
+        cursor = nil
+        5.times do |page|
+          entry = browse("bob-page-#{page + 1}", "#{PREVIEW}/library?limit=6#{cursor ? "&cursor=#{CGI.escape(cursor)}" : ''}", persona: "bob")
+          cursor = entry.dig("json", "next_cursor")
+          break unless cursor
+        end
+        acquired = Book.acquired.order(:id).to_a
+        acquired.first(6).each { |book| browse("alice-detail-#{book.id}", "#{PREVIEW}/library/#{book.id}", persona: "alice") }
+        acquired.last(3).each { |book| browse("bob-detail-#{book.id}", "#{PREVIEW}/library/#{book.id}", persona: "bob") }
+        %w[0 01 999999 abc 9223372036854775808].each { |id| browse("detail-id-#{id}", "#{PREVIEW}/library/#{id}", persona: "alice") }
+        unacquired = Book.where(file_path: nil).first
+        browse("detail-unacquired", "#{PREVIEW}/library/#{unacquired.id}", persona: "alice") if unacquired
+        browse("outsider-session", "#{PREVIEW}/session", persona: "outsider")
+        browse("outsider-library", "#{PREVIEW}/library", persona: "outsider")
+        browse("deleted-user-session", "#{PREVIEW}/session", persona: "deleted-user")
+        browse("deleted-user-again", "#{PREVIEW}/session", persona: "deleted-user")
+        browse("wrong-purpose-session", "#{PREVIEW}/session", persona: "wrong-purpose")
+        browse("unknown-session-row", "#{PREVIEW}/session", persona: "unknown-session")
+        browse("account-missing", "#{PREVIEW}/session", persona: "alice", account: nil)
+        browse("account-wrong", "#{PREVIEW}/session", persona: "alice", account: "2")
+        browse("account-zero-padded", "#{PREVIEW}/session", persona: "alice", account: "0#{@personas['alice']['user_id']}")
+        browse("bearer-is-not-a-session", "#{PREVIEW}/session", account: "1", headers: { "Authorization" => "Bearer #{@raw.fetch('alice-full')}" })
+      end
+
+      def envelope_and_age_scenarios
+        browse("short-envelope-valid", "#{PREVIEW}/session", persona: "short-envelope")
+        browse("short-envelope-expired", "#{PREVIEW}/session", persona: "short-envelope", at: NOON + 120.seconds)
+        %w[age-just-inside age-just-outside age-way-outside age-exact age-exact-minus-1us].each { |name| browse(name, "#{PREVIEW}/session", persona: name) }
+        browse("age-just-inside-later", "#{PREVIEW}/session", persona: "age-just-inside", at: NOON + 10.seconds)
+        setting_step("custom-max-age", :session_max_age_days, 7)
+        browse("custom-age-8-days", "#{PREVIEW}/session", persona: "age-8-days")
+        browse("custom-age-6-days", "#{PREVIEW}/session", persona: "age-6-days")
+        setting_step("default-max-age-restored", :session_max_age_days, 30)
+        browse("default-age-8-days", "#{PREVIEW}/session", persona: "age-8-days-b")
+      end
+
+      def mutation_scenarios
+        books = Book.acquired.where(book_type: %i[ebook audiobook]).order(:id).to_a
+        epub = books.find(&:ebook?)
+        audio = books.find(&:audiobook?)
+        path = ->(book) { "#{PREVIEW}/library/#{book.id}/reading_status" }
+        browse("status-alice-finished", path.call(epub), persona: "alice", method: "PUT", body: { "status" => "finished" })
+        browse("status-alice-after", "#{PREVIEW}/library/#{epub.id}", persona: "alice")
+        browse("status-alice-in-library", "#{PREVIEW}/library?status=finished", persona: "alice")
+        browse("status-bob-isolated", "#{PREVIEW}/library/#{epub.id}", persona: "bob")
+        browse("status-alice-unread-keeps-place", path.call(audio), persona: "alice", method: "PUT", body: { "status" => "unread" })
+        browse("status-alice-in-progress", path.call(audio), persona: "alice", method: "PUT", body: { "status" => "in_progress" })
+        browse("status-repeat", path.call(audio), persona: "alice", method: "PUT", body: { "status" => "in_progress" })
+        browse("status-continue-after", "#{PREVIEW}/continue", persona: "alice")
+        %w[done FINISHED].each { |value| browse("status-invalid-#{value}", path.call(epub), persona: "alice", method: "PUT", body: { "status" => value }) }
+        browse("status-not-a-string", path.call(epub), persona: "alice", method: "PUT", body: { "status" => 1 })
+        browse("status-missing", path.call(epub), persona: "alice", method: "PUT", body: {})
+        browse("status-no-book", "#{PREVIEW}/library/999999/reading_status", persona: "alice", method: "PUT", body: { "status" => "finished" })
+        browse("status-account-changed", path.call(epub), persona: "alice", method: "PUT", account: "999", body: { "status" => "finished" })
+        browse("status-signed-out", path.call(epub), method: "PUT", account: "1", body: { "status" => "finished" })
+        browse("status-outsider", path.call(epub), persona: "outsider", method: "PUT", body: { "status" => "finished" })
+        browse("status-expired-session", path.call(epub), persona: "short-envelope", method: "PUT", at: NOON + 120.seconds, body: { "status" => "finished" })
+        browse("status-member", path.call(epub), persona: "member", method: "PUT", body: { "status" => "in_progress" })
+        browse("status-member-after", "#{PREVIEW}/library", persona: "member")
+      end
+
+      def login_scenarios
+        at = ->(seconds) { NOON + seconds }
+        refused_mfa = { "status" => 501, "code" => "mfa_not_supported" }
+        login_step("login-clean", "browser_lockable", at: at.call(0))
+        5.times { |index| login_step("login-wrong-#{index + 1}", "browser_lockable", at: at.call(10 + index), password_override: "Wrong-#{SecureRandom.hex(4)}-Zz9") }
+        login_step("login-while-locked", "browser_lockable", at: at.call(60))
+        login_step("login-after-lock", "browser_lockable", at: at.call(15 * 60 + 20))
+        login_step("login-wrong-password-member", "browser_member", at: at.call(15 * 60 + 35), password_override: "Wrong-#{SecureRandom.hex(4)}-Zz9")
+        login_step("login-unknown-user", "browser_member", at: at.call(15 * 60 + 40), password_override: "Wrong-#{SecureRandom.hex(4)}-Zz9", submitted: "nobody_here")
+        login_step("login-padded-uppercase-username", "browser_member", at: at.call(15 * 60 + 45), submitted: "  BROWSER_MEMBER ")
+        login_step("login-second-factor", "alice", at: at.call(15 * 60 + 50), go: refused_mfa)
+        login_step("login-oidc-account", "browser_oidc", at: at.call(15 * 60 + 60), go: { "status" => 501, "code" => "oidc_account_not_supported" })
+      end
+
+      def logout_scenarios
+        logout_step("logout-login-member", "login-member")
+        browse("after-logout", "#{PREVIEW}/session", persona: "login-member")
+      end
+
+      def write_browser_outputs
+        FileUtils.mkdir_p(File.join(@paths.out, "secrets"), mode: 0o700)
+        File.write(File.join(@paths.out, "secrets", "secret_key_base"), ENV.fetch("SECRET_KEY_BASE"), perm: 0o600)
+        File.write(File.join(@paths.out, "secrets", "personas.json"), JSON.pretty_generate("personas" => @personas, "passwords" => @secrets), perm: 0o600)
+        document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
+                     "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
+                     "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id }, "steps" => @steps }
+        File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
+        ActiveRecord::Base.connection_handler.clear_all_connections!
+        Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }
+        FileUtils.rm_rf(File.join(@paths.out, "scratch"))
+      end
+    end
+  end
+end
