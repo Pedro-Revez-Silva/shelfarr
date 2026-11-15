@@ -112,7 +112,64 @@ export const bootSchema = z.object({
   api: z.string().startsWith("/"),
   classic_library: sitePath,
 });
-export type Boot = z.infer<typeof bootSchema>;
+
+export const goViews = ["library", "details", "connect"] as const;
+export type GoView = (typeof goViews)[number];
+
+export const goBootSchema = z.object({
+  version: z.literal(CONTRACT_VERSION),
+  runtime: z.literal("go"),
+  view: z.enum(goViews),
+  mount: sitePath,
+  api: sitePath,
+});
+export type GoBoot = z.infer<typeof goBootSchema>;
+
+export type Boot = {
+  version: typeof CONTRACT_VERSION;
+  account: string;
+  mount: string;
+  api: string;
+  classic_library: string | null;
+  runtime?: "go";
+};
+
+export const bootstrapSchema = z.discriminatedUnion("authenticated", [
+  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative() }),
+  z.object({
+    authenticated: z.literal(false),
+    csrf_token: z.string().min(1),
+    expires_in: z.number().int().nonnegative(),
+    sign_in: z.object({ available: z.boolean(), reason: z.string().nullable() }),
+  }),
+]);
+export type Bootstrap = z.infer<typeof bootstrapSchema>;
+
+export const connectGrantSchema = z.object({
+  pending: z.boolean(),
+  decidable: z.boolean(),
+  client_name: z.string().optional(),
+  upgrade: z.boolean().optional(),
+  requesting: z.boolean().optional(),
+  scopes: z.array(z.string()).optional(),
+  expires_at: timestamp.optional(),
+});
+export type ConnectGrant = z.infer<typeof connectGrantSchema>;
+
+export const connectInspectSchema = z.object({
+  account: identifier,
+  account_name: z.string(),
+  grant: connectGrantSchema.nullable(),
+});
+export type ConnectInspect = z.infer<typeof connectInspectSchema>;
+
+export const connectDecisionSchema = z.object({
+  account: identifier,
+  decision: z.enum(["allowed", "denied"]),
+  upgrade: z.boolean(),
+  requesting: z.boolean(),
+});
+export type ConnectDecision = z.infer<typeof connectDecisionSchema>;
 
 export const libraryFiltersSchema = z.object({
   q: z.string().max(200).optional().catch(undefined),

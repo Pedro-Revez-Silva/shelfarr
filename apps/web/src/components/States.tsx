@@ -34,10 +34,27 @@ const MESSAGES = {
   not_found: { title: "Not found", body: "This item is not in your library any more." },
   signed_out: { title: "Your session ended", body: "Sign in again to continue." },
   account_changed: { title: "The account changed", body: "Reload this page to continue." },
+  unsupported: { title: "This server cannot show that yet", body: "This experimental server has not learned a format your library contains. Nothing was changed." },
+  different_account: { title: "Different account", body: "This belongs to another account. Nothing was changed." },
+  invalid_grant: { title: "That code is no longer valid", body: "It has expired or was already used. Start again in the app." },
+  rate_limited: { title: "Too many attempts", body: "Wait a moment, then try again." },
+  busy: { title: "The server is busy", body: "Try again in a moment. Nothing was changed." },
 } as const;
 
+const UNSUPPORTED: Record<string, string> = {
+  unsupported_asset_format: "A book in your library is a PDF or a comic-book (CBZ) file. This experimental server cannot list those yet.",
+  unsupported_publication_kind: "Your library includes a comic record. This experimental server cannot list those yet.",
+  unsupported_stored_value: "A stored value in your library is in a form this experimental server cannot read yet.",
+  unsupported_library_layout: "Your library uses a folder layout (such as linked imports) this experimental server cannot read yet.",
+  unsupported_reader_format: "This experimental server cannot show that format yet.",
+  unsupported_reader_feature: "This experimental server cannot show that feature yet.",
+};
+
 export function ErrorPanel({ error, onRetry, children }: { error: unknown; onRetry?: () => void; children?: ReactNode }) {
-  const message = MESSAGES[failureKind(error)];
+  const kind = failureKind(error);
+  const base = MESSAGES[kind];
+  const code = (error as ApiError | undefined)?.code ?? null;
+  const message = kind === "unsupported" && code && UNSUPPORTED[code] ? { ...base, body: `${UNSUPPORTED[code]} Nothing was changed.` } : base;
   const detail = (error as ApiError | undefined)?.status;
   return (
     <div className="state state--error" role="alert">

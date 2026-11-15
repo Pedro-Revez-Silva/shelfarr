@@ -1,14 +1,31 @@
-export type FailureKind = "signed_out" | "account_changed" | "not_found" | "network" | "contract" | "invalid" | "csrf" | "server";
+export type FailureKind =
+  | "signed_out"
+  | "account_changed"
+  | "not_found"
+  | "network"
+  | "contract"
+  | "invalid"
+  | "csrf"
+  | "server"
+  | "unsupported"
+  | "different_account"
+  | "invalid_grant"
+  | "rate_limited"
+  | "busy";
 
 export class ApiError extends Error {
   readonly kind: FailureKind;
   readonly status: number | null;
+  readonly code: string | null;
+  readonly retryAfterSeconds: number | null;
 
-  constructor(kind: FailureKind, message: string, status: number | null = null) {
+  constructor(kind: FailureKind, message: string, status: number | null = null, code: string | null = null, retryAfterSeconds: number | null = null) {
     super(message);
     this.name = "ApiError";
     this.kind = kind;
     this.status = status;
+    this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 

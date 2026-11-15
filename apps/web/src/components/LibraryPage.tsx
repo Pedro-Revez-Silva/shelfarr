@@ -4,6 +4,7 @@ import type { LibraryFilters } from "../contract";
 import { flattenLibrary, useContinueReading, useLibrary, useSession } from "../queries";
 import { useServices } from "../services";
 import { useListRestoration } from "../restoration";
+import { usePageTitle } from "../title";
 import { ContinueShelf } from "./ContinueShelf";
 import { LibraryControls } from "./LibraryControls";
 import { PageHeading } from "./PageHeading";
@@ -24,7 +25,8 @@ function compact(filters: LibraryFilters): LibraryFilters {
 export function LibraryPage() {
   const filters = routeApi.useSearch();
   const navigate = useNavigate();
-  const { boot } = useServices();
+  const { boot, mode } = useServices();
+  usePageTitle(filters.q ? `Search: ${filters.q}` : "Library");
   const session = useSession();
   const library = useLibrary(filters);
   const filtered = Boolean(filters.q || filters.type || filters.status);
@@ -75,8 +77,8 @@ export function LibraryPage() {
             </EmptyState>
           ) : (
             <EmptyState title="Nothing on this server yet">
-              <p>Acquired ebooks, comics and audiobooks appear here. To find something new, use Discover in the classic app.</p>
-              {session.data ? (
+              <p>{mode === "go" ? "Acquired ebooks and audiobooks appear here." : "Acquired ebooks, comics and audiobooks appear here. To find something new, use Discover in the classic app."}</p>
+              {session.data && mode === "rails" ? (
                 <a className="button" href={session.data.links.discover}>
                   Discover books
                   <span className="sr-only"> (opens the classic Shelfarr app)</span>

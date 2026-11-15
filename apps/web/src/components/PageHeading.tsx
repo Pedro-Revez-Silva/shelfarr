@@ -21,3 +21,7 @@ export function PageHeading({ id, children, className }: { id: string; children:
 export function resetFirstPage() {
   firstPage = true;
 }
+
+export function markPageNavigated() {
+  firstPage = false;
+}

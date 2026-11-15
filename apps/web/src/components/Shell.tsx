@@ -6,6 +6,7 @@ import { PrimaryNavigation } from "./Navigation";
 import { LockedScreen } from "./LockedScreen";
 import { useServices } from "../services";
 import { useAccountRevalidation } from "../revalidation";
+import { SignOutButton } from "../go/SignOutButton";
 
 export function Shell() {
   const guard = useGuardState();
@@ -18,9 +19,11 @@ export function Shell() {
   return <ActiveShell classicLibrary={boot.classic_library} />;
 }
 
-function ActiveShell({ classicLibrary }: { classicLibrary: string }) {
+function ActiveShell({ classicLibrary }: { classicLibrary: string | null }) {
   const session = useSession();
+  const { mode } = useServices();
   useAccountRevalidation();
+  const go = mode === "go";
 
   return (
     <div className="shell">
@@ -35,16 +38,25 @@ function ActiveShell({ classicLibrary }: { classicLibrary: string }) {
             </svg>
             shelfarr
           </Link>
-          <span className="preview-badge">Library preview</span>
+          <span className="preview-badge">{go ? "Experimental server" : "Library preview"}</span>
         </div>
         <AccountBar session={session.data} loading={session.isPending} />
-        <a className="classic-link" href={session.data?.links.legacy_library ?? classicLibrary}>
-          Classic library
-          <span className="sr-only"> (opens the classic Shelfarr app)</span>
-        </a>
+        {go ? (
+          <SignOutButton />
+        ) : (
+          <a className="classic-link" href={session.data?.links.legacy_library ?? classicLibrary ?? "."}>
+            Classic library
+            <span className="sr-only"> (opens the classic Shelfarr app)</span>
+          </a>
+        )}
         <PrimaryNavigation session={session.data} />
       </header>
       <main id="main" className="shell-main">
+        {go ? (
+          <p className="pilot-note" role="note">
+            This experimental server lets you browse your library and set reading status. Reading, listening and downloads are not available here yet.
+          </p>
+        ) : null}
         <Outlet />
       </main>
     </div>

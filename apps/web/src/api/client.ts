@@ -13,6 +13,7 @@ import {
   type ReadingStatus,
   type Session,
 } from "../contract";
+import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import type { AccountGuard } from "./account-guard";
 import { ApiError, type FailureKind } from "./errors";
 
@@ -24,13 +25,19 @@ export type ApiDependencies = {
   csrfToken: () => string | null;
   fetcher?: typeof fetch;
   requestVerification?: () => void;
+  mutations?: MutationLifecycle;
+};
+
+export type MutationLifecycle = {
+  prepare: (signal?: AbortSignal) => Promise<void>;
+  rejected: () => void;
 };
 
 type RequestOptions<T> = {
   path: string;
   schema: z.ZodType<T>;
   signal?: AbortSignal | undefined;
-  method?: "GET" | "PUT";
+  method?: "GET" | "PUT" | "POST";
   verifying?: boolean;
   body?: unknown;
   account: (value: T) => string;
@@ -43,6 +50,12 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   invalid_csrf: "csrf",
   invalid_request: "invalid",
   invalid_reading_status: "invalid",
+  different_account: "different_account",
+  invalid_grant: "invalid_grant",
+  rate_limited: "rate_limited",
+  server_busy: "busy",
+  database_busy: "busy",
+  request_timeout: "busy",
 };
 
 export class ApiClient {
@@ -94,13 +107,31 @@ export class ApiClient {
     return envelope.publication;
   }
 
+  inspectConnection(code: string, signal?: AbortSignal): Promise<ConnectInspect> {
+    const query = new URLSearchParams({ user_code: code });
+    return this.request({ path: `/connect${suffix(query)}`, schema: connectInspectSchema, signal, account: (value) => value.account });
+  }
+
+  decideConnection(code: string, decision: "allow" | "deny", signal?: AbortSignal): Promise<ConnectDecision> {
+    return this.request({
+      path: "/connect",
+      schema: connectDecisionSchema,
+      method: "POST",
+      body: { user_code: code, decision },
+      signal,
+      account: (value) => value.account,
+    });
+  }
+
   private async request<T>(options: RequestOptions<T>): Promise<T> {
     const { boot, guard } = this.deps;
     guard.assertActive();
 
     const headers: Record<string, string> = { Accept: "application/json", [ACCOUNT_HEADER]: guard.account };
-    if (options.method === "PUT") {
+    if (options.method === "PUT" || options.method === "POST") {
       headers["Content-Type"] = "application/json";
+      await this.deps.mutations?.prepare(options.signal);
+      guard.assertActive();
       const token = this.deps.csrfToken();
       if (token) headers["X-CSRF-Token"] = token;
     }
@@ -118,7 +149,7 @@ export class ApiClient {
 
     const payload = await readJson(response);
 
-    if (!response.ok) throw this.failure(response.status, payload);
+    if (!response.ok) throw this.failure(response.status, payload, response);
 
     if (!options.verifying) {
       const trusted = await untilAborted(guard.untilSettled(), options.signal);
@@ -138,12 +169,17 @@ export class ApiClient {
     return parsed.data;
   }
 
-  private failure(status: number, payload: unknown): ApiError {
+  private failure(status: number, payload: unknown, response: Response): ApiError {
     const envelope = errorEnvelopeSchema.safeParse(payload);
-    const kind = envelope.success ? FAILURE_BY_CODE[envelope.data.error] : undefined;
+    const code = envelope.success ? envelope.data.error : null;
+    const kind = code ? FAILURE_BY_CODE[code] : undefined;
     if (kind === "signed_out" || kind === "account_changed") this.deps.guard.lock(kind);
-    if (kind) return new ApiError(kind, envelope.success ? (envelope.data.message ?? envelope.data.error) : "", status);
-    return new ApiError(status >= 500 ? "server" : "contract", `The server answered ${status}`, status);
+    if (kind === "csrf") this.deps.mutations?.rejected();
+    const retry = Number.parseInt(response.headers.get("retry-after") ?? "", 10);
+    const retryAfter = Number.isFinite(retry) && retry >= 0 ? retry : null;
+    if (kind) return new ApiError(kind, envelope.success ? (envelope.data.message ?? envelope.data.error) : "", status, code, retryAfter);
+    if (code?.startsWith("unsupported_") || code === "not_implemented_in_go_runtime" || code === "confined_open_unsupported") return new ApiError("unsupported", `The server cannot show this yet (${code})`, status, code);
+    return new ApiError(status >= 500 ? "server" : "contract", `The server answered ${status}`, status, code, retryAfter);
   }
 }
 

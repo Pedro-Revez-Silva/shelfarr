@@ -1,12 +1,15 @@
 import { QueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { AccountGuard, type GuardState } from "./api/account-guard";
-import { ApiClient } from "./api/client";
+import { ApiClient, type MutationLifecycle } from "./api/client";
 import { isApiError } from "./api/errors";
 import type { Boot, LibraryFilters } from "./contract";
 
+export type Mode = "rails" | "go";
+
 export type Services = {
   boot: Boot;
+  mode: Mode;
   guard: AccountGuard;
   api: ApiClient;
   queryClient: QueryClient;
@@ -32,14 +35,16 @@ export function createQueryKeys(account: string) {
 const VALIDATION_TIMEOUT_MS = 8000;
 
 export type ServiceInputs = {
+  guard?: AccountGuard;
   validationTimeoutMs?: number;
   boot: Boot;
   csrfToken: () => string | null;
   fetcher?: typeof fetch;
+  mutations?: MutationLifecycle;
 };
 
-export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs = VALIDATION_TIMEOUT_MS }: ServiceInputs): Services {
-  const guard = new AccountGuard(boot.account);
+export function createServices({ boot, csrfToken, fetcher, mutations, guard: suppliedGuard, validationTimeoutMs = VALIDATION_TIMEOUT_MS }: ServiceInputs): Services {
+  const guard = suppliedGuard ?? new AccountGuard(boot.account);
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -47,7 +52,7 @@ export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs =
         staleTime: 30_000,
         gcTime: 10 * 60_000,
         refetchOnReconnect: true,
-        retry: (count, error) => (isApiError(error) ? (error.kind === "network" || error.kind === "server") && count < 2 : count < 1),
+        retry: (count, error) => (isApiError(error) ? (error.kind === "network" || error.kind === "server" || error.kind === "busy") && count < 2 : count < 1),
       },
       mutations: { retry: false, networkMode: "always" },
     },
@@ -58,7 +63,7 @@ export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs =
   });
   let requestVerificationRef: () => void = () => undefined;
   const requestVerification = () => requestVerificationRef();
-  const deps = fetcher ? { boot, guard, csrfToken, fetcher, requestVerification } : { boot, guard, csrfToken, requestVerification };
+  const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
   const verify = async (generation: number): Promise<void> => {
@@ -86,7 +91,7 @@ export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs =
     }, 0);
   };
   requestVerificationRef = revalidate;
-  return { boot, guard, api, queryClient, keys, revalidate };
+  return { boot, mode: boot.runtime === "go" ? "go" : "rails", guard, api, queryClient, keys, revalidate };
 }
 
 const ServicesContext = createContext<Services | null>(null);

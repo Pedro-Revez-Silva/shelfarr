@@ -17,5 +17,5 @@
     "noEmit": true,
     "types": ["bun"]
   },
-  "include": ["src", "test", "build.ts"]
+  "include": ["src", "test", "e2e", "build.ts", "build-go.ts"]
 }

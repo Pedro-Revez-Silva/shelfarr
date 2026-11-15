@@ -1,7 +1,7 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 import { App } from "../src/App";
-import type { Boot, LibraryPage, PublicationDetail, PublicationSummary, Session } from "../src/contract";
+import type { LibraryPage, PublicationDetail, PublicationSummary, Session } from "../src/contract";
 import { resetFirstPage } from "../src/components/PageHeading";
 import { createAppRouter } from "../src/router";
 import { createServices, type Services } from "../src/services";
@@ -9,7 +9,7 @@ import { createServices, type Services } from "../src/services";
 export const ACCOUNT = "12";
 export const MOUNT = "/sub/preview";
 
-export const boot: Boot = { version: 1, account: ACCOUNT, mount: MOUNT, api: `${MOUNT}/api/v1`, classic_library: "/sub/read" };
+export const boot = { version: 1 as const, account: ACCOUNT, mount: MOUNT, api: `${MOUNT}/api/v1`, classic_library: "/sub/read" };
 
 export function summary(overrides: Partial<PublicationSummary> = {}): PublicationSummary {
   return {

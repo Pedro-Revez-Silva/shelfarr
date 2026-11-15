@@ -1,16 +1,19 @@
 import { Link } from "@tanstack/react-router";
 import type { Session } from "../contract";
+import { useServices } from "../services";
 
 export function PrimaryNavigation({ session }: { session: Session | undefined }) {
+  const { mode } = useServices();
+  const handoffs = mode === "rails";
   return (
-    <nav className="primary-nav" aria-label="Primary" aria-busy={session ? undefined : "true"}>
+    <nav className="primary-nav" aria-label="Primary" aria-busy={session || !handoffs ? undefined : "true"}>
       <ul>
         <li>
           <Link to="/library" className="nav-link">
             Library
           </Link>
         </li>
-        {session ? (
+        {session && handoffs ? (
           <>
             <HandoffLink href={session.links.discover} label="Discover" />
             <HandoffLink href={session.links.requests} label="Requests" />

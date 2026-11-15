@@ -2,6 +2,8 @@ import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import type { PublicationDetail } from "../contract";
 import { failureKind } from "../api/errors";
 import { usePublication } from "../queries";
+import { useServices } from "../services";
+import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { ReadingStatusForm } from "./ReadingStatusForm";
@@ -12,6 +14,7 @@ const routeApi = getRouteApi("/library/$publicationId");
 export function DetailsPage() {
   const { publicationId } = routeApi.useParams();
   const publication = usePublication(publicationId);
+  usePageTitle(publication.data?.title ?? (publication.isError ? "Book not found" : "Loading book"));
 
   if (publication.isPending) {
     return (
@@ -73,6 +76,7 @@ function primaryLabel(publication: PublicationDetail): string {
 
 function Details({ publication }: { publication: PublicationDetail }) {
   const available = publication.availability === "available";
+  const { mode } = useServices();
   return (
     <article className="details" aria-labelledby="publication-heading">
       <BackToLibrary />
@@ -83,7 +87,17 @@ function Details({ publication }: { publication: PublicationDetail }) {
           <PageHeading id="publication-heading">{publication.title}</PageHeading>
           {publication.author ? <p className="details-author">{publication.author}</p> : null}
 
-          {available ? (
+          {available && mode === "go" ? (
+            <div className="primary-action">
+              <p className="notice" role="note">
+                Opening this {publication.action === "listen" ? "audiobook" : "book"} is not available on this experimental server yet. Your saved place is kept and you can still set its status below.
+              </p>
+              {publication.progress || publication.reading_status !== "unread" ? <p className="progress-label">{publication.progress_label}</p> : null}
+              {publication.progress?.fraction != null && publication.reading_status === "in_progress" ? (
+                <progress className="book-progress" max={1} value={publication.progress.fraction} aria-label="Reading progress" />
+              ) : null}
+            </div>
+          ) : available ? (
             <div className="primary-action">
               <a className="button button--primary button--large" href={publication.reader_url}>
                 {primaryLabel(publication)}

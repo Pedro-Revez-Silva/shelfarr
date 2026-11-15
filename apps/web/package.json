@@ -6,7 +6,9 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "build": "bun run build.ts",
-    "verify": "bun run typecheck && bun test && bun run build"
+    "verify": "bun run typecheck && bun test && bun run build",
+    "build:go": "bun run build-go.ts",
+    "e2e": "cd e2e && bun test --timeout 90000"
   },
   "dependencies": {
     "@tanstack/react-query": "5.107.1",
@@ -23,6 +25,8 @@
     "@types/bun": "1.4.4",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "axe-core": "4.14.0",
+    "playwright-core": "1.65.1",
     "typescript": "7.0.2"
   },
   "packageManager": "bun@1.4.4"
