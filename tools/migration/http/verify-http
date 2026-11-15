@@ -51,10 +51,11 @@ work = sys.argv[1]
 for name in ("http-current", "http-upgrade"):
     document = json.load(open(f"{work}/{name}/cases.json"))
     statuses = {}
-    for case in document["cases"]:
+    requests = [case for case in document["cases"] if "status" in case]
+    for case in requests:
         statuses[case["status"]] = statuses.get(case["status"], 0) + 1
-    refused = sum(1 for case in document["cases"] if case.get("go"))
-    print(name, document["origin"], "cases", len(document["cases"]), "refused-by-design", refused, "statuses", dict(sorted(statuses.items())))
+    refused = sum(1 for case in requests if case.get("go"))
+    print(name, document["origin"], "cases", len(requests), "database-steps", len(document["cases"]) - len(requests), "refused-by-design", refused, "statuses", dict(sorted(statuses.items())))
 PY
 
 cd "$root/apps/server"
