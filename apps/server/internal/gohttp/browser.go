@@ -448,6 +448,11 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 		mapFailure(w, result, err)
 		return
 	}
+	days, err := a.db.IntegerSetting(r.Context(), "session_max_age_days", 30)
+	if err != nil || days < 0 || days > maxSessionAgeDays {
+		mapFailure(w, result, errors.Join(err, store.ErrUnsupported))
+		return
+	}
 	created, err := a.db.CompleteLogin(r.Context(), credentials.ID, credentials.PasswordDigest, live.Client{UserAgent: r.UserAgent(), IP: clientIP(r)}, a.config.PasswordlessEnv, a.now)
 	if err != nil {
 		mapFailure(w, result, err)
@@ -469,11 +474,6 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 	case live.LoginNeedsOIDC:
 		a.security("login.oidc_account_unsupported", credentials.ID)
 		a.loginRefused(w, result, http.StatusNotImplemented, "oidc_account_not_supported", "")
-		return
-	}
-	days, err := a.db.IntegerSetting(r.Context(), "session_max_age_days", 30)
-	if err != nil || days < 0 || days > maxSessionAgeDays {
-		mapFailure(w, result, errors.Join(err, store.ErrUnsupported))
 		return
 	}
 	expires := created.Session.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)

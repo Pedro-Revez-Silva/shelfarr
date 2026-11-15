@@ -43,6 +43,7 @@ const (
 func one(old, replacement string) []edit { return []edit{{old, replacement}} }
 
 var mutants = []mutant{
+	{name: "login: an unusable session lifetime is not refused before commit", file: "internal/gohttp/browser.go", edits: one("if err != nil || days < 0 || days > maxSessionAgeDays {", "if false {"), unit: "./internal/gohttp/"},
 	{name: "session cookie: the signature is not verified", file: "internal/railsmsg/railsmsg.go", edits: one("if !hmac.Equal([]byte(digest), []byte(v.sign(text))) {", "if false && !hmac.Equal([]byte(digest), []byte(v.sign(text))) {"), unit: "./internal/railsmsg/", scenario: restart},
 	{name: "session cookie: the purpose is not checked", file: "internal/railsmsg/railsmsg.go", edits: one("if message.Rails.Message == nil || message.Rails.Purpose != purpose {", "if message.Rails.Message == nil {"), scenario: restart + "|" + differential},
 	{name: "session cookie: the envelope expiry is ignored", file: "internal/railsmsg/railsmsg.go", edits: one("if err != nil || !now.Before(expires) {", "if err != nil || !now.Before(expires) && false {"), unit: "./internal/gohttp/", scenario: differential},
