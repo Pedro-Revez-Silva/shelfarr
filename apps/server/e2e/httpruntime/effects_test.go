@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
-	"strconv"
 	"testing"
 )
 
@@ -165,5 +165,27 @@ func compareFinalRows(t *testing.T, f fixture, m mirror) {
 	if !reflect.DeepEqual(canonicalRows(reading), canonicalRows(f.doc.ReadingRows)) {
 		t.Errorf("final consumer_reading_states differ from Rails\n got %v\nwant %v", reading, f.doc.ReadingRows)
 	}
-	_ = strconv.Itoa
+}
+
+func exportGoWrittenDatabase(t *testing.T, f fixture, copied runtimeCopy) {
+	t.Helper()
+	directory := os.Getenv("SHELFARR_HTTP_GO_ROWS_DIR")
+	if directory == "" {
+		return
+	}
+	database, err := sql.Open("sqlite", "file:"+copied.database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(copied.database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, f.name+".sqlite3"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }

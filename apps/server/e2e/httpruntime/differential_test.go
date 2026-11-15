@@ -192,6 +192,7 @@ func TestDifferentialAgainstRails(t *testing.T) {
 			}
 			compareTokenState(t, f, copied)
 			compareFinalRows(t, f, observed)
+			exportGoWrittenDatabase(t, f, copied)
 		})
 	}
 }
