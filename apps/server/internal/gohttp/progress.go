@@ -44,6 +44,10 @@ func (a *App) readLimitedBody(w http.ResponseWriter, r *http.Request, limit int6
 			return nil, &bodyFailure{http.StatusUnsupportedMediaType, "unsupported_media_type"}
 		}
 	}
+	return a.readBounded(w, r, limit)
+}
+
+func (a *App) readBounded(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, *bodyFailure) {
 	if r.ContentLength > limit {
 		w.Header().Set("Connection", "close")
 		return nil, &bodyFailure{http.StatusRequestEntityTooLarge, "request_too_large"}

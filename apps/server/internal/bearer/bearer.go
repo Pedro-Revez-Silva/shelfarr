@@ -6,6 +6,7 @@ import (
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/transfergrant"
 )
 
 type Authenticator struct {
@@ -46,5 +47,22 @@ func (a Authenticator) Authenticate(ctx context.Context, authorization string) (
 	if err != nil {
 		return nil, err
 	}
-	return &account.Principal{TokenID: token.ID, UserID: user.ID, Username: user.Username, Name: user.Name, Admin: user.Role == 1, Scopes: scopes}, nil
+	return &account.Principal{TokenID: token.ID, TokenExpiresAt: token.ExpiresAt, UserID: user.ID, Username: user.Username, Name: user.Name, Admin: user.Role == 1, Scopes: scopes}, nil
+}
+
+func (a Authenticator) AuthorizeGrant(ctx context.Context, claims transfergrant.Claims) (bool, error) {
+	token, err := a.DB.ActiveTokenByID(ctx, claims.TokenID, live.TimestampText(a.Now()))
+	if err != nil || token == nil || !token.UserID.Valid || token.UserID.Int64 != claims.UserID {
+		return false, err
+	}
+	user, err := a.DB.UserByID(ctx, claims.UserID)
+	if err != nil || user == nil || user.Deleted {
+		return false, err
+	}
+	scopes, err := account.ScopeList(token.Scopes)
+	if err != nil {
+		return false, err
+	}
+	principal := account.Principal{Scopes: scopes}
+	return principal.HasScope(transfergrant.Scope), nil
 }

@@ -331,7 +331,7 @@ func readPages(ctx context.Context, book store.Book, asset library.Asset) ([]com
 	return comic.Pages(ctx, file, asset.SizeBytes)
 }
 
-func (a *App) asset(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
+func (a *App) serveAsset(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
 	book, chosen, ok := a.findAsset(w, r, found, allReadingFormats, result)
 	if !ok {
 		return

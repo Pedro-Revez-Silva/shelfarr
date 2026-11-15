@@ -65,6 +65,20 @@ func (d *DB) ActiveTokenByDigest(ctx context.Context, digest, now string) (*Toke
 	return &token, nil
 }
 
+func (d *DB) ActiveTokenByID(ctx context.Context, id int64, now string) (*Token, error) {
+	var token Token
+	err := d.read.QueryRowContext(ctx,
+		`SELECT id, user_id, scopes, CAST(revoked_at AS TEXT), CAST(expires_at AS TEXT), replaces_api_token_id FROM api_tokens WHERE id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`,
+		id, now).Scan(&token.ID, &token.UserID, &token.Scopes, &token.RevokedAt, &token.ExpiresAt, &token.ReplacesID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, Classify(err)
+	}
+	return &token, nil
+}
+
 func (d *DB) UserByID(ctx context.Context, id int64) (*User, error) {
 	var user User
 	var deleted sql.NullString

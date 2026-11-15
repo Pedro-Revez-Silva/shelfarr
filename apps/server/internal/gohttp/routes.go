@@ -26,6 +26,8 @@ const (
 	routeReadingStatus
 	routeAsset
 	routeReadingOrder
+	routeTransferGrant
+	routeTransfer
 	routeExcluded
 	routeWrongMethod
 	routeBrowserSession
@@ -70,8 +72,6 @@ var ExcludedRoutes = []excludedRoute{
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along", "read-along"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along/resources/{path...}", "read-along"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along/audio/{audio}", "read-along"},
-	{http.MethodPost, "library/{id}/assets/{asset}/transfer_grant", "transfer grants"},
-	{http.MethodGet, "library/{id}/assets/{asset}/transfer", "transfer grants"},
 }
 
 func segmentOK(segment string) bool {
@@ -143,6 +143,10 @@ func classify(method, path string) route {
 		return supported(method, route{kind: routeAsset, name: "asset", id: segments[1], assetID: segments[3]})
 	case len(segments) == 5 && segments[0] == "library" && segments[2] == "assets" && segments[4] == "reading_order" && segmentOK(segments[1]) && segmentOK(segments[3]):
 		return supported(method, route{kind: routeReadingOrder, name: "reading_order", id: segments[1], assetID: segments[3]})
+	case len(segments) == 5 && segments[0] == "library" && segments[2] == "assets" && segments[4] == "transfer_grant" && segmentOK(segments[1]) && segmentOK(segments[3]):
+		return posted(method, route{kind: routeTransferGrant, name: "transfer_grant", id: segments[1], assetID: segments[3]})
+	case len(segments) == 5 && segments[0] == "library" && segments[2] == "assets" && segments[4] == "transfer" && segmentOK(segments[1]) && segmentOK(segments[3]):
+		return fetched(method, route{kind: routeTransfer, name: "transfer", id: segments[1], assetID: segments[3]})
 	}
 	for _, excluded := range ExcludedRoutes {
 		if excluded.Method == method && matchPattern(excluded.Pattern, segments) {
@@ -154,6 +158,13 @@ func classify(method, path string) route {
 
 func posted(method string, found route) route {
 	if method != http.MethodPost {
+		return route{kind: routeNone}
+	}
+	return found
+}
+
+func fetched(method string, found route) route {
+	if method != http.MethodGet && method != http.MethodHead {
 		return route{kind: routeNone}
 	}
 	return found

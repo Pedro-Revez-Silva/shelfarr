@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -61,12 +62,13 @@ func splitAuthorization(header string) (string, string, bool) {
 }
 
 type Principal struct {
-	TokenID  int64
-	UserID   int64
-	Username string
-	Name     string
-	Admin    bool
-	Scopes   []string
+	TokenID        int64
+	TokenExpiresAt sql.NullString
+	UserID         int64
+	Username       string
+	Name           string
+	Admin          bool
+	Scopes         []string
 }
 
 var privilegedScopes = map[string]bool{"requests:admin": true, "users:write": true}

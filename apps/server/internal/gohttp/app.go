@@ -14,6 +14,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/loginlimit"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/railsmsg"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/transfergrant"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webassets"
 )
 
@@ -35,6 +36,7 @@ type App struct {
 	deviceLimiter *loginlimit.Limiter
 	tokenLimiter  *loginlimit.Limiter
 	grants        live.GrantSource
+	transfers     transfergrant.Grants
 	previewIDs    map[string]bool
 	web           *webUI
 }
@@ -52,6 +54,10 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		return nil, err
 	}
 	tokens, err := csrf.New(config.SecretKeyBase)
+	if err != nil {
+		return nil, err
+	}
+	transfers, err := transfergrant.New(config.SecretKeyBase)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +91,7 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		deviceLimiter: loginlimit.New(deviceAttempts, deviceWindow, 1),
 		tokenLimiter:  loginlimit.New(tokenAttempts, tokenWindow, 1),
 		grants:        newGrantSource(),
+		transfers:     transfers,
 		previewIDs:    previewIDs,
 		web:           web,
 	}, nil
@@ -197,7 +204,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		return
 	}
 	slots := a.metadata
-	if found.kind == routeAsset {
+	if found.kind == routeAsset || found.kind == routeTransfer {
 		slots = a.streams
 	}
 	if !a.acquire(slots) {
@@ -226,7 +233,9 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.login(w, r, result)
 	case routeAuthLogout:
 		a.logout(w, r, result)
-	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset, routeReadingOrder, routeAuthRevoke:
+	case routeTransfer:
+		a.transfer(w, r, found, result)
+	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset, routeReadingOrder, routeTransferGrant, routeAuthRevoke:
 		a.authenticated(w, r, found, result)
 	}
 }
@@ -265,7 +274,9 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 	case routeReadingStatus:
 		a.readingStatus(w, r, principal, found.id, result)
 	case routeAsset:
-		a.asset(w, r, principal, found, result)
+		a.serveAsset(w, r, found, result)
+	case routeTransferGrant:
+		a.transferGrant(w, r, principal, found, result)
 	case routeReadingOrder:
 		a.readingOrder(w, r, principal, found, result)
 	case routeAuthRevoke:
