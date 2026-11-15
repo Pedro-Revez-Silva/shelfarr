@@ -55,7 +55,7 @@ func (w *Workflow) requireActive(ctx context.Context, tx *sql.Tx, active run) er
 	if err != nil {
 		return err
 	}
-	if schedule.State != "enabled" {
+	if schedule.State != "enabled" || schedule.CancelEpoch != active.CancelEpoch {
 		return context.Canceled
 	}
 	config, err := LoadConfig(ctx, tx)

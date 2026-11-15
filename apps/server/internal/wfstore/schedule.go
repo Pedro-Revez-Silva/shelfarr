@@ -15,14 +15,15 @@ type Schedule struct {
 	State       string
 	NextDueAt   string
 	ControlSeq  int64
+	CancelEpoch int64
 	LastOutcome string
 }
 
 func ReadSchedule(ctx context.Context, q Querier, workflow string) (Schedule, error) {
 	var schedule Schedule
 	var outcome sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT workflow, state, next_due_at, control_seq, last_outcome FROM wf_schedule WHERE workflow = ?`, workflow).
-		Scan(&schedule.Workflow, &schedule.State, &schedule.NextDueAt, &schedule.ControlSeq, &outcome)
+	err := q.QueryRowContext(ctx, `SELECT workflow, state, next_due_at, control_seq, cancel_epoch, last_outcome FROM wf_schedule WHERE workflow = ?`, workflow).
+		Scan(&schedule.Workflow, &schedule.State, &schedule.NextDueAt, &schedule.ControlSeq, &schedule.CancelEpoch, &outcome)
 	schedule.LastOutcome = outcome.String
 	return schedule, err
 }
@@ -54,7 +55,7 @@ func (s *Store) Cancel(ctx context.Context, workflow string) error {
 	if !validDomain(workflow) {
 		return Fail(CodeUsage, nil)
 	}
-	return s.control(ctx, `UPDATE wf_schedule SET state = 'cancelled', control_seq = control_seq + 1 WHERE workflow = ? AND state <> 'cancelled'`, workflow)
+	return s.control(ctx, `UPDATE wf_schedule SET state = 'cancelled', cancel_epoch = cancel_epoch + 1, control_seq = control_seq + 1 WHERE workflow = ? AND state <> 'cancelled'`, workflow)
 }
 
 func (s *Store) Resume(ctx context.Context, workflow string, now time.Time) error {

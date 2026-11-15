@@ -420,10 +420,10 @@ func TestSchedulingNeverCreatesASecondChain(t *testing.T) {
 	if runs := fixture.runs(t); len(runs) != 1 {
 		t.Fatalf("restarts admitted extra runs: %v", runs)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO wf_inventory_runs (generation, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (1, 'audiobookshelf', 'x', 'x', 'fetching', 'x')`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO wf_inventory_runs (generation, cancel_epoch, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (1, 0, 'audiobookshelf', 'x', 'x', 'fetching', 'x')`); err != nil {
 		t.Fatalf("one active run is allowed: %v", err)
 	}
-	if _, err := fixture.db.Exec(`INSERT INTO wf_inventory_runs (generation, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (1, 'audiobookshelf', 'y', 'y', 'fetching', 'y')`); err == nil {
+	if _, err := fixture.db.Exec(`INSERT INTO wf_inventory_runs (generation, cancel_epoch, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (1, 0, 'audiobookshelf', 'y', 'y', 'fetching', 'y')`); err == nil {
 		t.Fatal("two active runs were accepted")
 	}
 	exec1(t, fixture.db, `UPDATE wf_inventory_runs SET state = 'abandoned' WHERE scope_fingerprint = 'x'`)
@@ -455,5 +455,73 @@ func TestALibraryThatExceedsItsFetchDeadlineFailsWithoutPruning(t *testing.T) {
 	requireSame(t, before, digests(t, fixture.db))
 	if state := rows(t, fixture.db, `SELECT state, error_code FROM wf_inventory_libraries`); !reflect.DeepEqual(state, [][]string{{"string:failed", "string:deadline"}}) {
 		t.Fatalf("library %v", state)
+	}
+}
+
+func TestCancellationSurvivesAResumeWhileTheOwnerIsDown(t *testing.T) {
+	fixture := newInventoryFixture(t, libraryOf("lib-a", "One", "Two"))
+	fixture.seedLive(t)
+	before := digests(t, fixture.db)
+	injected := newFaults(t, map[string]string{"inventory.before-publish": "park"})
+	run := fixture.work.command(injected, append([]string{"run", "--once"}, inventoryOnly...)...)
+	injected.reached(t, "inventory.before-publish")
+	run.kill()
+	if code := fixture.work.control("cancel", "inventory"); code != 0 {
+		t.Fatalf("cancel exited %d", code)
+	}
+	if code := fixture.work.control("resume", "inventory"); code != 0 {
+		t.Fatalf("resume exited %d", code)
+	}
+	restarted := fixture.work.runOnce(faults{}, inventoryOnly...)
+	if restarted.code != 0 {
+		t.Fatalf("exit %d: %s", restarted.code, restarted.output)
+	}
+	if runs := fixture.runs(t); !reflect.DeepEqual(runs, [][]string{{"int64:1", "string:cancelled"}}) {
+		t.Fatalf("the cancelled run was revived: %v", runs)
+	}
+	requireSame(t, before, digests(t, fixture.db))
+	next := fixture.work.runOnce(faults{}, inventoryOnly...)
+	if next.code != 0 {
+		t.Fatalf("exit %d: %s", next.code, next.output)
+	}
+	if runs := fixture.runs(t); !reflect.DeepEqual(runs, [][]string{{"int64:1", "string:cancelled"}, {"int64:2", "string:published"}}) {
+		t.Fatalf("runs %v", runs)
+	}
+}
+
+func TestCredentialChangesAbandonAStagedRun(t *testing.T) {
+	for name, change := range map[string]map[string]string{
+		"credential removed":  {"audiobookshelf_api_key": ""},
+		"credential replaced": {"audiobookshelf_api_key": "another-synthetic-key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newInventoryFixture(t, libraryOf("lib-a", "One"))
+			fixture.seedLive(t)
+			before := digests(t, fixture.db, "settings")
+			injected := newFaults(t, map[string]string{"inventory.before-publish": "park"})
+			run := fixture.work.command(injected, append([]string{"run", "--once"}, inventoryOnly...)...)
+			injected.reached(t, "inventory.before-publish")
+			setSettings(t, fixture.db, change)
+			injected.release(t, "inventory.before-publish")
+			if code := run.wait(); code != 0 {
+				t.Fatalf("exit %d: %s", code, run.output())
+			}
+			requireSame(t, before, digests(t, fixture.db, "settings"))
+			if runs := fixture.runs(t); !reflect.DeepEqual(runs, [][]string{{"int64:1", "string:abandoned"}}) {
+				t.Fatalf("runs %v", runs)
+			}
+		})
+	}
+}
+
+func TestLibraryIdentifiersAreNeverEchoedInOutput(t *testing.T) {
+	fixture := newInventoryFixture(t, libraryOf(absKey, "One"))
+	outcome := fixture.work.runOnce(faults{}, inventoryOnly...)
+	if outcome.code != 0 {
+		t.Fatalf("exit %d: %s", outcome.code, outcome.output)
+	}
+	assertNoSecrets(t, outcome.output)
+	if count := scalar[int64](t, fixture.db, `SELECT COUNT(*) FROM library_items WHERE library_id = ?`, absKey); count != 1 {
+		t.Fatalf("inventory %d", count)
 	}
 }

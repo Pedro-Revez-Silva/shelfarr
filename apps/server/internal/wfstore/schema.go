@@ -18,6 +18,7 @@ CREATE TABLE wf_schedule (
   state TEXT NOT NULL DEFAULT 'enabled' CHECK (state IN ('enabled', 'cancelled')),
   next_due_at TEXT NOT NULL,
   control_seq INTEGER NOT NULL DEFAULT 0,
+  cancel_epoch INTEGER NOT NULL DEFAULT 0,
   last_outcome TEXT
 ) STRICT;
 
@@ -25,6 +26,7 @@ CREATE TABLE wf_inventory_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL DEFAULT 'library' CHECK (kind = 'library'),
   generation INTEGER NOT NULL,
+  cancel_epoch INTEGER NOT NULL,
   platform TEXT NOT NULL,
   scope_fingerprint TEXT NOT NULL,
   snapshot_at TEXT NOT NULL,

@@ -53,6 +53,7 @@ type run struct {
 	ID          int64
 	Fingerprint string
 	SnapshotAt  string
+	CancelEpoch int64
 }
 
 type library struct {
@@ -97,7 +98,7 @@ func (w *Workflow) Pass(ctx context.Context) (Result, error) {
 
 func (w *Workflow) activeRun(ctx context.Context) (*run, error) {
 	var found run
-	err := w.Owner.Store().DB().QueryRowContext(ctx, `SELECT id, scope_fingerprint, snapshot_at FROM wf_inventory_runs WHERE state = 'fetching'`).Scan(&found.ID, &found.Fingerprint, &found.SnapshotAt)
+	err := w.Owner.Store().DB().QueryRowContext(ctx, `SELECT id, scope_fingerprint, snapshot_at, cancel_epoch FROM wf_inventory_runs WHERE state = 'fetching'`).Scan(&found.ID, &found.Fingerprint, &found.SnapshotAt, &found.CancelEpoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -144,8 +145,8 @@ func (w *Workflow) admit(ctx context.Context) (*run, string, error) {
 		if err != nil || !consumed || outcome != OutcomeIdle {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO wf_inventory_runs (generation, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (?, ?, ?, ?, 'fetching', ?)`,
-			w.Owner.Generation, config.Platform, config.Fingerprint(), wfstore.FormatTimestamp(now), wfstore.FormatTimestamp(now))
+		result, err := tx.ExecContext(ctx, `INSERT INTO wf_inventory_runs (generation, cancel_epoch, platform, scope_fingerprint, snapshot_at, state, admitted_at) VALUES (?, ?, ?, ?, ?, 'fetching', ?)`,
+			w.Owner.Generation, schedule.CancelEpoch, config.Platform, config.Fingerprint(), wfstore.FormatTimestamp(now), wfstore.FormatTimestamp(now))
 		if err != nil {
 			return err
 		}
@@ -153,7 +154,7 @@ func (w *Workflow) admit(ctx context.Context) (*run, string, error) {
 		if err != nil {
 			return err
 		}
-		admitted = &run{ID: id, Fingerprint: config.Fingerprint(), SnapshotAt: wfstore.FormatTimestamp(now)}
+		admitted = &run{ID: id, Fingerprint: config.Fingerprint(), SnapshotAt: wfstore.FormatTimestamp(now), CancelEpoch: schedule.CancelEpoch}
 		return nil
 	})
 	return admitted, outcome, err
@@ -170,7 +171,7 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 	result := Result{RunID: active.ID, Outcome: OutcomeInterrupted}
 	passCtx, stop := context.WithCancel(ctx)
 	defer stop()
-	go w.watchCancellation(passCtx, stop)
+	go w.watchCancellation(passCtx, active, stop)
 
 	finish := func(outcome string, err error) (Result, error) {
 		result.Outcome = outcome
@@ -180,6 +181,11 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 		return result, err
 	}
 
+	if cancelled, err := w.cancelRequested(passCtx, active); err != nil {
+		return finish(OutcomeInterrupted, err)
+	} else if cancelled {
+		return finish(OutcomeInterrupted, context.Canceled)
+	}
 	config, err := LoadConfig(passCtx, w.Owner.Store().DB())
 	if err != nil {
 		return finish(OutcomeInterrupted, err)
@@ -217,7 +223,7 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 		}
 	}
 
-	for _, entry := range libraries {
+	for index, entry := range libraries {
 		if entry.State != "pending" {
 			continue
 		}
@@ -234,7 +240,7 @@ func (w *Workflow) drive(ctx context.Context, active run) (Result, error) {
 		if err := w.stage(passCtx, active, entry.ID, inventory, fetchErr); err != nil {
 			return finish(OutcomeInterrupted, err)
 		}
-		w.report("inventory.library", map[string]any{"run": active.ID, "library": entry.ID, "code": stageCode(inventory, fetchErr)})
+		w.report("inventory.library", map[string]any{"run": active.ID, "ordinal": index, "code": stageCode(inventory, fetchErr)})
 		if err := fault.Hit(passCtx, "inventory.library-staged"); err != nil {
 			return finish(OutcomeInterrupted, err)
 		}
@@ -278,7 +284,7 @@ func stageCode(inventory abs.Inventory, err error) string {
 	return "complete"
 }
 
-func (w *Workflow) watchCancellation(ctx context.Context, stop context.CancelFunc) {
+func (w *Workflow) watchCancellation(ctx context.Context, active run, stop context.CancelFunc) {
 	interval := w.CancelPoll
 	if interval <= 0 {
 		interval = 250 * time.Millisecond
@@ -290,8 +296,7 @@ func (w *Workflow) watchCancellation(ctx context.Context, stop context.CancelFun
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			schedule, err := wfstore.ReadSchedule(ctx, w.Owner.Store().DB(), Domain)
-			if err == nil && schedule.State != "enabled" {
+			if cancelled, err := w.cancelRequested(ctx, active); err == nil && cancelled {
 				stop()
 				return
 			}
@@ -300,16 +305,24 @@ func (w *Workflow) watchCancellation(ctx context.Context, stop context.CancelFun
 }
 
 func (w *Workflow) concludeCancellation(ctx context.Context, active run, result Result) (Result, error) {
-	schedule, err := wfstore.ReadSchedule(ctx, w.Owner.Store().DB(), Domain)
+	cancelled, err := w.cancelRequested(ctx, active)
 	if err != nil {
-		return result, wfstore.Wrap(err)
+		return result, err
 	}
-	if schedule.State == "enabled" {
+	if !cancelled {
 		result.Outcome = OutcomeInterrupted
 		return result, nil
 	}
 	result.Outcome = OutcomeCancelled
 	return result, w.closeRun(ctx, active, "cancelled", OutcomeCancelled)
+}
+
+func (w *Workflow) cancelRequested(ctx context.Context, active run) (bool, error) {
+	schedule, err := wfstore.ReadSchedule(ctx, w.Owner.Store().DB(), Domain)
+	if err != nil {
+		return false, wfstore.Wrap(err)
+	}
+	return schedule.State != "enabled" || schedule.CancelEpoch != active.CancelEpoch, nil
 }
 
 func (w *Workflow) libraries(ctx context.Context, runID int64) ([]library, error) {

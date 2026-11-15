@@ -680,3 +680,73 @@ func TestControlChangesDuringACycleKeepTheScheduleDue(t *testing.T) {
 		t.Fatalf("a cycle that raced a control change consumed the new slot: %s", next)
 	}
 }
+
+func TestStaleObservationsWriteNeitherProgressNorState(t *testing.T) {
+	cases := map[string]func(t *testing.T, f downloadFixture, seed seeded){
+		"request cancelled": func(t *testing.T, f downloadFixture, seed seeded) {
+			exec1(t, f.db, `UPDATE downloads SET status = 4 WHERE id = ?`, seed.Download)
+		},
+		"release replaced": func(t *testing.T, f downloadFixture, seed seeded) {
+			exec1(t, f.db, `UPDATE search_results SET status = 2 WHERE id = ?`, seed.Result)
+		},
+		"re-dispatched under a new torrent": func(t *testing.T, f downloadFixture, seed seeded) {
+			exec1(t, f.db, `UPDATE downloads SET external_id = ? WHERE id = ?`, hashOf(98), seed.Download)
+		},
+		"moved to another client": func(t *testing.T, f downloadFixture, seed seeded) {
+			other := f.work.seedClient(f.db, f.peer.URL, qbitPassword, true)
+			exec1(t, f.db, `UPDATE downloads SET download_client_id = ? WHERE id = ?`, itoa(other), seed.Download)
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			fixture := newDownloadFixture(t, currentBundle)
+			seed := fixture.work.seedDownload(fixture.db, fixture.client, hashOf(63))
+			fixture.peer.set(seed.Hash, torrentState{Name: "Book", Progress: 0.75, State: "downloading", Size: 1})
+			reached := make(chan struct{}, 1)
+			release := make(chan struct{})
+			fixture.peer.setHook(func(hash string, w http.ResponseWriter, r *http.Request) bool {
+				if hash == seed.Hash {
+					reached <- struct{}{}
+					<-release
+				}
+				return false
+			})
+			fixture.work.control("trigger", "downloads")
+			run := fixture.work.command(faults{}, append([]string{"run", "--once"}, downloadsOnly...)...)
+			<-reached
+			change(t, fixture, seed)
+			afterChange := fixture.download(t, seed.Download)
+			close(release)
+			if code := run.wait(); code != 0 {
+				t.Fatalf("exit %d: %s", code, run.output())
+			}
+			if !reflect.DeepEqual(afterChange, fixture.download(t, seed.Download)) {
+				t.Fatalf("a stale observation wrote progress: %v", differences(afterChange, fixture.download(t, seed.Download)))
+			}
+			if states := scalar[int64](t, fixture.db, `SELECT COUNT(*) FROM wf_download_state WHERE download_id = ?`, seed.Download); states != 0 {
+				t.Fatalf("a stale observation wrote state")
+			}
+		})
+	}
+}
+
+func TestHandoffBackoffStaysCappedForLargeAttemptCounts(t *testing.T) {
+	fixture := newDownloadFixture(t, currentBundle)
+	seed := fixture.work.seedDownload(fixture.db, fixture.client, hashOf(64))
+	fixture.peer.set(seed.Hash, torrentState{Name: "Book", Progress: 1, State: "uploading", Size: 1})
+	fixture.cycle(t)
+	exec1(t, fixture.db, `UPDATE wf_postprocess_handoffs SET attempts = 64`)
+	fixture.consumer.setStatus(500)
+	options := append([]string{"--handoff-url", fixture.consumer.URL, "--handoff-backoff", "30s"}, downloadsOnly...)
+	if outcome := fixture.work.runOnce(faults{}, options...); outcome.code != 1 {
+		t.Fatalf("exit %d", outcome.code)
+	}
+	fixture.work.runOnce(faults{}, options...)
+	if got := len(fixture.consumer.deliveries()); got != 1 {
+		t.Fatalf("a failing consumer was retried immediately: %d deliveries", got)
+	}
+	next := scalar[string](t, fixture.db, `SELECT next_attempt_at FROM wf_postprocess_handoffs`)
+	if limit := time.Now().UTC().Add(5 * time.Minute).Format("2006-01-02 15:04:05.000000"); next > limit || next < time.Now().UTC().Format("2006-01-02 15:04:05.000000") {
+		t.Fatalf("next attempt %s is not within the capped delay", next)
+	}
+}

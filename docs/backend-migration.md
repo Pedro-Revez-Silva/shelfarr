@@ -437,7 +437,7 @@ mode, marker or database token does not match, without creating a sidecar file. 
 file or credential file is read; configuration comes from the copy's own `settings` and `download_clients` rows,
 decrypted with the copied synthetic keys. All HTTP goes through one client that refuses non-loopback addresses,
 ignores proxy variables and refuses redirects. Output is structured JSON lines of fixed codes: fixture-controlled
-text, URLs, paths, credentials and response bodies are never printed.
+text (including library identifiers, which are reported as ordinals), URLs, paths, credentials and response bodies are never printed.
 
 Exit codes: `0` completed, `1` a recoverable failure was reported, `2` usage, `3` the domain already has an owner,
 `4` this process was superseded (fenced), `5` the directory is not a prepared disposable copy, `6` `prepare` refused.
@@ -450,7 +450,7 @@ Two write domains, `inventory` and `downloads`, each have exactly one owning pro
 fails and writes nothing; no lease expires, so no owner can publish after losing ownership. `trigger`, `cancel` and
 `resume` write only `wf_schedule`, the single persisted clock: one row per workflow with its state
 (`enabled`/`cancelled`), next due time and a control counter. A restart or a settings change cannot create a second
-chain, a cancelled workflow stays cancelled until `resume`, and a cycle that races a control change does not consume
+chain, a cancelled workflow stays cancelled until `resume` (each cancel also bumps an epoch that an admitted run is fenced against, so a resume cannot revive it), and a cycle that races a control change does not consume
 the new slot.
 
 ### Schema (before and after)
@@ -474,7 +474,7 @@ digest of every other table before and after.
 ### Inventory rules
 
 A run is admitted in one transaction with its schedule slot and configuration fingerprint (platform, server URL,
-library-id set or `auto`). Each library is fetched with bounded pagination (`limit`/`page`, a required numeric
+credential, library-id set or `auto`) and the schedule's cancellation epoch. Each library is fetched with bounded pagination (`limit`/`page`, a required numeric
 `total` that must stay constant, unique ids, no more than `total`, short or empty pages before `total` are
 `truncated`, 8 MiB per response, 100,000 items, per-request and per-library deadlines, no redirects). Only a
 validated complete snapshot is staged; `empty` is accepted only for page 0 with an explicit `total` of 0.
@@ -525,7 +525,7 @@ produces a current-schema and a stable-upgrade bundle with the real Rails code, 
 bundles with race-instrumented binaries (SIGKILL at every inventory commit boundary and around completion and handoff,
 incomplete, empty and erroring inventories, configuration change and cancellation during a fetch, duplicate start,
 superseded owner, writer contention, hung peers, shutdown and restart, panics, credential and loopback isolation),
-26 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
+30 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
 reproducible cross-builds and an untouched-repository check.
 
 ## Gaps (recorded in every report)

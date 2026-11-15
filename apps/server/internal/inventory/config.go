@@ -100,6 +100,6 @@ func (c Config) Fingerprint() string {
 		sort.Strings(sorted)
 		scope = "explicit:" + strings.Join(sorted, ",")
 	}
-	sum := sha256.Sum256([]byte("v1\x00" + c.Platform + "\x00" + strings.TrimRight(c.URL, "/") + "\x00" + scope))
+	sum := sha256.Sum256([]byte("v2\x00" + c.Platform + "\x00" + strings.TrimRight(c.URL, "/") + "\x00" + c.APIKey + "\x00" + scope))
 	return hex.EncodeToString(sum[:])
 }

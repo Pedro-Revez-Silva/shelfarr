@@ -34,7 +34,20 @@ func (w *Workflow) recordState(ctx context.Context, entry candidate, errorCode, 
 	})
 }
 
+func (w *Workflow) stillOwned(ctx context.Context, tx *sql.Tx, entry candidate, requireSelected bool) (bool, error) {
+	query := `SELECT COUNT(*) FROM downloads WHERE id = ? AND request_id = ? AND COALESCE(external_id, '') = ? AND download_client_id IS ? AND search_result_id IS ? AND status IN (0, 1)`
+	if requireSelected {
+		query += ` AND ` + selectedRelease
+	}
+	var count int
+	err := tx.QueryRowContext(ctx, query, entry.ownerArguments()...).Scan(&count)
+	return count == 1, err
+}
+
 func (w *Workflow) recordStateIn(ctx context.Context, tx *sql.Tx, entry candidate, errorCode, blockedCode string, keepBlocked bool) error {
+	if owned, err := w.stillOwned(ctx, tx, entry, false); err != nil || !owned {
+		return err
+	}
 	var errorValue, blockedValue any
 	if errorCode != "" {
 		errorValue = errorCode
@@ -59,9 +72,17 @@ func (w *Workflow) applyProgress(ctx context.Context, entry candidate, torrent *
 		blocked = BlockedClientFailure
 		result.blocked = true
 	}
-	progressed := false
+	progressed, stale := false, false
 	err := w.Owner.Write(ctx, func(tx *sql.Tx) error {
-		progressed = false
+		progressed, stale = false, false
+		owned, err := w.stillOwned(ctx, tx, entry, true)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			stale = true
+			return nil
+		}
 		stamp := wfstore.FormatTimestamp(w.now())
 		arguments := append([]any{torrent.Progress, stamp}, entry.ownerArguments()...)
 		arguments = append(arguments, torrent.Progress)
@@ -74,6 +95,9 @@ func (w *Workflow) applyProgress(ctx context.Context, entry candidate, torrent *
 		return w.recordStateIn(ctx, tx, entry, "", blocked, false)
 	})
 	result.progressed = err == nil && progressed
+	if err == nil && stale {
+		result.stale, result.blocked = true, false
+	}
 	return result, err
 }
 

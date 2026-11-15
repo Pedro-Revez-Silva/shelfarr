@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	deliveryBatch    = 20
-	maxReplyBytes    = 64 << 10
-	maxBackoffFactor = 8
+	deliveryBatch   = 20
+	maxReplyBytes   = 64 << 10
+	maxBackoffShift = 3
 )
 
 type handoff struct {
@@ -132,7 +132,7 @@ func (w *Workflow) markDelivered(ctx context.Context, entry handoff) error {
 }
 
 func (w *Workflow) markFailed(ctx context.Context, entry handoff, code string) error {
-	factor := min(1<<entry.Attempts, maxBackoffFactor)
+	factor := 1 << min(entry.Attempts, maxBackoffShift)
 	next := w.now().Add(time.Duration(factor) * w.HandoffBackoff)
 	return w.Owner.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `UPDATE wf_postprocess_handoffs SET attempts = attempts + 1, last_error_code = ?, next_attempt_at = ? WHERE id = ? AND state = 'pending'`, code, wfstore.FormatTimestamp(next), entry.ID)
