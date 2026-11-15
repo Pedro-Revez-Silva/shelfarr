@@ -2,7 +2,7 @@
 
 Status: **experimental, unreachable proof.** Rails is still the only implementation that serves Shelfarr and the
 only owner of the persistent volume. Nothing here changes the shipped Dockerfile, entrypoint, schema, routes or
-UI. The Go checker and workflow binaries are added to an *experimental packaging image* that sits on top of the
+UI. The Go checker, workflow and HTTP binaries are added to an *experimental packaging image* that sits on top of the
 unchanged Rails image; that image is a Rails-plus-tools proof, **not the finished Go server package**.
 
 The proof answers one question before any Go handover: does a production-shaped persistent volume written by a
@@ -33,7 +33,7 @@ production data, power-loss durability, or running arm64 natively.
 | `stable` | release `v2026.11.05.1`, commit `96333c6674a21701f7229c1a51038dc3b117c1a0`, tree `c9a17fcfa4591898ac47a299e8fab09ecd2c15c1` | `git archive` of the pinned commit read from local history (replacement objects and lazy fetch disabled, tree id re-verified), release Dockerfile |
 | `beta` | beta predecessor `ca3ce810a50053b1279048c7b705c1fae97c0a9a`, tree `6f21bc30ef3a2d2b43614d6fdb3582a6c72733c8` | same |
 | `candidate-rails` | clean `HEAD` | the production `Dockerfile`, unchanged |
-| `candidate` | `candidate-rails` plus `tools/migration/packaging/Dockerfile` | adds `/usr/local/bin/shelfarr-compat` and `shelfarr-workflows`; `ENTRYPOINT` and `CMD` are the production ones (asserted) |
+| `candidate` | `candidate-rails` plus `tools/migration/packaging/Dockerfile` | adds `/usr/local/bin/shelfarr-compat`, `shelfarr-workflows` and `shelfarr-http`; `ENTRYPOINT` and `CMD` are the production ones (asserted) |
 
 `tools/migration/packaging/build-images` builds them. Base images (`ruby:3.3.13-slim`, `golang:1.27.4`) and the
 packages and gems the unchanged Dockerfile needs are fetched by the container build itself; no source revision is

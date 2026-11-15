@@ -1,8 +1,9 @@
 # Go HTTP runtime: the native consumer read lane
 
 Status: **experimental, default-off, unreachable from production.** Rails remains the only server that
-runs. `shelfarr-http` is not started by the container, not routed, not packaged and not part of the
-Dockerfile. It reads a compatible Shelfarr SQLite database and library roots that an operator names
+runs. The experimental migration image includes `shelfarr-http`, but its unchanged Rails entrypoint
+does not start or route it. The production Dockerfile does not include it. It reads a compatible
+Shelfarr SQLite database and library roots that an operator names
 explicitly, and serves the part of the native consumer API that installed readers use to browse and
 open EPUBs and audiobooks. It is the next backend foundation after M0 (compatibility checker), M1
 (durable workflows) and M3 (static TypeScript Library); it is not a handover.
@@ -175,6 +176,11 @@ It also checks that the source bundles keep their digests, that the unchanged M0
 accepts both, that the `linux/amd64` and `linux/arm64` builds are byte-reproducible and that the
 repository is untouched. All runs use private generated copies and loopback fixtures.
 
+The `go-http` CI job runs this verifier with full Git history so the pinned stable-schema producer
+can read its release object. The experimental packaging checks also cross-build and execute the
+binary on amd64 and arm64, assert that it refuses to start without `-experimental`, and verify that
+the image keeps the production Rails entrypoint and command.
+
 ## Not proven
 
 This is synthetic protocol testing against Rails, not a handover. Not covered: a real client or device,
@@ -187,4 +193,5 @@ rotated legacy cursor keys are not supported.
 
 The slice adds `apps/server/cmd/shelfarr-http`, the packages named in this change,
 `apps/server/e2e/httpruntime`, `tools/migration/http` and this document. Revert those commits; the
-executable is not referenced by anything else.
+HTTP executable is also listed in the experimental packaging Dockerfile, package inventory and CI
+job; remove those references when reverting the runtime. No production route or entrypoint changes.

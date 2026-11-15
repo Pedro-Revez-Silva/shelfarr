@@ -12,7 +12,7 @@ module Migration
       IMAGE_REPOSITORY = "shelfarr-m2"
       PROJECT_PREFIX = "shelfarr-m2"
       ARCHITECTURES = %w[amd64 arm64].freeze
-      GO_BINARIES = %w[shelfarr-compat shelfarr-workflows].freeze
+      GO_BINARIES = %w[shelfarr-compat shelfarr-workflows shelfarr-http].freeze
 
       module_function
 

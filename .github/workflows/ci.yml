@@ -46,6 +46,30 @@ jobs:
           bun audit
           bun run build
 
+  go-http:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code and pinned release history
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          fetch-depth: 0
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libvips
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec
+        with:
+          bundler-cache: true
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: apps/server/go.mod
+          cache-dependency-path: apps/server/go.sum
+      - name: Verify Go HTTP parity and fault handling
+        env:
+          SHELFARR_MIGRATION_SCRATCH: ${{ runner.temp }}/shelfarr-go-http
+        run: tools/migration/http/verify-http
+
   quality:
     runs-on: ubuntu-latest
 
@@ -160,7 +184,7 @@ jobs:
         run: test/filesystem_contracts/cifs-smoke.sh
 
   container:
-    needs: [quality, companion, filesystem-contracts, web-reader, web-preview]
+    needs: [quality, companion, filesystem-contracts, web-reader, web-preview, go-http]
     runs-on: ubuntu-latest
 
     steps:

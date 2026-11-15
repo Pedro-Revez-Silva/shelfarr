@@ -10,8 +10,8 @@ COPY apps/server/go.mod apps/server/go.sum ./
 RUN go mod download
 COPY apps/server ./
 ARG TARGETARCH
-RUN GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ ./cmd/shelfarr-compat ./cmd/shelfarr-workflows
+RUN GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ ./cmd/shelfarr-compat ./cmd/shelfarr-workflows ./cmd/shelfarr-http
 
 FROM ${RAILS_IMAGE}
-COPY --from=go-build /out/shelfarr-compat /out/shelfarr-workflows /usr/local/bin/
-LABEL org.shelfarr.packaging="experimental: Rails image plus Go checker and workflow binaries; the entrypoint and command are the production ones"
+COPY --from=go-build /out/shelfarr-compat /out/shelfarr-workflows /out/shelfarr-http /usr/local/bin/
+LABEL org.shelfarr.packaging="experimental: Rails image plus Go checker, workflow and HTTP binaries; the entrypoint and command are the production ones"

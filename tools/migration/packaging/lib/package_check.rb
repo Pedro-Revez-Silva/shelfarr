@@ -101,6 +101,9 @@ module Migration
         record("shelfarr-compat-usage", architecture, mode, usage.output.include?("usage: shelfarr-compat compat-check") && usage.output.include?("exit=2"), usage.output.lines.last.to_s.strip)
         workflows = container(image, architecture, "/usr/local/bin/shelfarr-workflows status --workdir /nonexistent 2>&1; echo exit=$?")
         record("shelfarr-workflows-refuses-without-a-workdir", architecture, mode, workflows.output.include?("exit=5"), workflows.output.lines.last.to_s.strip)
+        http = container(image, architecture, "/usr/local/bin/shelfarr-http 2>&1")
+        disabled = http.status.exitstatus == 2 && http.output == "refused: this runtime is experimental and default-off; pass -experimental\n"
+        record("shelfarr-http-refuses-without-opt-in", architecture, mode, disabled, "exit=#{http.status.exitstatus}")
         encoded = container(image, architecture, SYNTHETIC_ENCODE)
         record("ffmpeg-synthetic-aac-encode", architecture, mode, encoded.success? && encoded.output.strip.to_f.between?(0.9, 1.2), "duration=#{encoded.output.strip[0, 12]}")
         vips = container(image, architecture, "ldconfig -p | grep -c 'libvips.so'")
