@@ -307,7 +307,7 @@ describe("account revalidation", () => {
     await user.click(screen.getByRole("radio", { name: "Audiobooks" }));
     await waitFor(() => expect(server.called("GET", /type=audiobook/).length).toBeGreaterThan(0));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
+    await waitFor(() => expect(services.guard.trust).toBe("checking"));
     libraryGate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(screen.queryByText("A private book after the switch")).toBeNull();
@@ -333,7 +333,7 @@ describe("account revalidation", () => {
     });
     await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
+    await waitFor(() => expect(services.guard.trust).toBe("checking"));
     libraryGate.resolve();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByText("Still Ada's book")).toBeNull();
@@ -360,7 +360,7 @@ describe("account revalidation", () => {
     });
     await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
     window.dispatchEvent(new Event("focus"));
-    await waitFor(() => expect(services.guard.recentValidationPending(500)).toBe(true));
+    await waitFor(() => expect(services.guard.trust).toBe("checking"));
     libraryGate.resolve();
     sessionGate.resolve();
     await screen.findByRole("heading", { name: "The signed-in account changed" }, { timeout: 8000 });
@@ -391,13 +391,13 @@ describe("account revalidation", () => {
       void request;
     }));
     server.on("GET", /\/api\/v1\/library(\?|$)/, () => ({ body: page([summary()]) }));
-    const verified = services.revalidate();
+    services.revalidate();
     const outcome = await Promise.race([
       services.api.library({}, undefined).catch((error: unknown) => error),
       new Promise((resolve) => setTimeout(() => resolve("still held"), 1500)),
     ]);
     expect(outcome).toMatchObject({ kind: "network" });
-    expect(await verified).toBe(false);
+    expect(services.guard.trust).not.toBe("trusted");
     expect(services.guard.isActive()).toBe(true);
   });
 
@@ -431,5 +431,79 @@ describe("account revalidation", () => {
     oldSession.resolve();
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.queryByRole("link", { name: "The Quiet Library" })).toBeNull();
+  });
+
+  test("an inconclusive check stays unverified: a response that arrives after it failed is not released", async () => {
+    const libraryGate = deferred<void>();
+    const server = standardServer();
+    const { services } = renderApp({ server });
+    await screen.findByText("Ada Reader");
+    let libraryCalls = 0;
+    server.on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+      libraryCalls += 1;
+      if (libraryCalls > 1) return { status: 401, body: { error: "account_changed" } };
+      await libraryGate.promise;
+      return { body: page([summary({ title: "Late private A book" })]) };
+    });
+    server.on("GET", /\/api\/v1\/session$/, () => ({ status: 500, body: { error: "internal" } }));
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
+    await waitFor(() => expect(libraryCalls).toBe(1));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(services.guard.trust).toBe("unverified"), { timeout: 8000 });
+    libraryGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByText("Late private A book")).toBeNull();
+    await screen.findByRole("heading", { name: "The signed-in account changed" }, { timeout: 10000 });
+    expect(screen.queryByText("Late private A book")).toBeNull();
+  }, 20000);
+
+  test("a newer focus event supersedes a check that is still pending, whatever that older check answers", async () => {
+    const firstCheck = deferred<void>();
+    const secondCheck = deferred<void>();
+    const libraryGate = deferred<void>();
+    const server = standardServer();
+    const { services } = renderApp({ server });
+    await screen.findByText("Ada Reader");
+    let sessionCalls = 0;
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      sessionCalls += 1;
+      if (sessionCalls === 1) {
+        await firstCheck.promise;
+        return { body: session() };
+      }
+      await secondCheck.promise;
+      return { status: 401, body: { error: "account_changed" } };
+    });
+    server.on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+      await libraryGate.promise;
+      return { body: page([summary({ title: "Coalesced private A book" })]) };
+    });
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(sessionCalls).toBe(1));
+    window.dispatchEvent(new Event("pageshow"));
+    await waitFor(() => expect(sessionCalls).toBe(2));
+    libraryGate.resolve();
+    firstCheck.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(services.guard.trust).toBe("checking");
+    expect(screen.queryByText("Coalesced private A book")).toBeNull();
+    secondCheck.resolve();
+    await screen.findByRole("heading", { name: "The signed-in account changed" });
+    expect(screen.queryByText("Coalesced private A book")).toBeNull();
+    expect(services.queryClient.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  test("events fired together share one check", async () => {
+    const server = standardServer();
+    renderApp({ server });
+    await screen.findByText("Ada Reader");
+    const before = server.called("GET", /\/api\/v1\/session$/).length;
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("pageshow"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(before + 1));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(before + 1);
   });
 });

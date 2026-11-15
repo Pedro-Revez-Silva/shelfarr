@@ -11,7 +11,7 @@ export type Services = {
   api: ApiClient;
   queryClient: QueryClient;
   keys: QueryKeys;
-  revalidate: () => Promise<boolean>;
+  revalidate: () => void;
 };
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
@@ -29,7 +29,6 @@ export function createQueryKeys(account: string) {
   };
 }
 
-const COALESCE_MS = 500;
 const VALIDATION_TIMEOUT_MS = 8000;
 
 export type ServiceInputs = {
@@ -57,26 +56,36 @@ export function createServices({ boot, csrfToken, fetcher, validationTimeoutMs =
     void queryClient.cancelQueries();
     queryClient.clear();
   });
-  const deps = fetcher ? { boot, guard, csrfToken, fetcher } : { boot, guard, csrfToken };
+  let requestVerificationRef: () => void = () => undefined;
+  const requestVerification = () => requestVerificationRef();
+  const deps = fetcher ? { boot, guard, csrfToken, fetcher, requestVerification } : { boot, guard, csrfToken, requestVerification };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
-  const verify = async (): Promise<boolean> => {
+  const verify = async (generation: number): Promise<void> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
     try {
-      queryClient.setQueryData(keys.session, await api.session(controller.signal));
-      return true;
+      const session = await api.session(controller.signal, true);
+      if (generation === guard.generation) queryClient.setQueryData(keys.session, session);
+      guard.finishCheck(generation, true);
     } catch {
-      return false;
+      guard.finishCheck(generation, false);
     } finally {
       clearTimeout(timer);
     }
   };
+  let scheduled = false;
   const revalidate = () => {
-    if (!guard.isActive()) return Promise.resolve(false);
-    if (guard.recentValidationPending(COALESCE_MS)) return guard.confirmed();
-    return guard.track(verify());
+    if (!guard.isActive()) return;
+    guard.invalidate();
+    if (scheduled) return;
+    scheduled = true;
+    setTimeout(() => {
+      scheduled = false;
+      void verify(guard.generation);
+    }, 0);
   };
+  requestVerificationRef = revalidate;
   return { boot, guard, api, queryClient, keys, revalidate };
 }
 

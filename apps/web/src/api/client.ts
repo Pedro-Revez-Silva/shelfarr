@@ -23,6 +23,7 @@ export type ApiDependencies = {
   guard: AccountGuard;
   csrfToken: () => string | null;
   fetcher?: typeof fetch;
+  requestVerification?: () => void;
 };
 
 type RequestOptions<T> = {
@@ -30,7 +31,7 @@ type RequestOptions<T> = {
   schema: z.ZodType<T>;
   signal?: AbortSignal | undefined;
   method?: "GET" | "PUT";
-  validatesAccount?: boolean;
+  verifying?: boolean;
   body?: unknown;
   account: (value: T) => string;
 };
@@ -51,8 +52,8 @@ export class ApiClient {
     this.deps = deps;
   }
 
-  session(signal?: AbortSignal): Promise<Session> {
-    return this.request({ path: "/session", schema: sessionSchema, signal, validatesAccount: true, account: (value) => value.account.id });
+  session(signal?: AbortSignal, verifying = false): Promise<Session> {
+    return this.request({ path: "/session", schema: sessionSchema, signal, verifying, account: (value) => value.account.id });
   }
 
   library(filters: LibraryFilters, cursor: string | undefined, signal?: AbortSignal): Promise<LibraryPage> {
@@ -120,10 +121,13 @@ export class ApiClient {
 
     if (!response.ok) throw this.failure(response.status, payload);
 
-    if (!options.validatesAccount) {
-      const confirmed = await untilAborted(guard.confirmed(), options.signal);
+    if (!options.verifying) {
+      const trusted = await untilAborted(guard.untilSettled(), options.signal);
       guard.assertActive();
-      if (!confirmed) throw new ApiError("network", "The account could not be confirmed; try again");
+      if (!trusted) {
+        this.deps.requestVerification?.();
+        throw new ApiError("network", "The account could not be confirmed; try again");
+      }
     }
 
     const parsed = options.schema.safeParse(payload);

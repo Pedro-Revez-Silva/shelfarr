@@ -73,13 +73,20 @@ The browser keeps using the Rails cookie session. No bearer token is minted into
   locks the tab.
 - A locked tab (signed out, or account changed in another tab) cancels in-flight queries,
   empties the query cache and renders only an explanation with a way back; it never renders
-  data from before. A late response is discarded because the lock is checked again after
-  the network call, and while an account check is in flight every personal response is held
-  until the check finishes: delivered if the account is unchanged, dropped if it changed.
-- Query keys start with `["account", <id>]`. The shell checks the session (one shared request) on window `focus`, on `pageshow`
-  and when the document becomes visible, so a switch in another tab is noticed without an action.
-  A response the server generated for the old account before any check started cannot be told
-  apart from a normal one; it was the old account's data at request time.
+  data from before.
+- The page keeps one trust state: `trusted`, `checking` or `unverified`. Every window `focus`,
+  `pageshow` or visible-document event starts a new generation and a fresh `GET session` (events
+  in the same burst share one request); only the check of the latest generation can change the
+  state, so an older answer can never confirm a newer event. While `checking`, every personal
+  response is held. It is delivered only once the check confirms the same account. A failed or
+  timed-out (8 s) check leaves the page `unverified`: held and later responses are refused with a
+  retryable error that triggers a new check, so recovery is always a fresh positive answer.
+  Authoritative `signed_out` / `account_changed` answers are processed immediately, never
+  queued behind a check, and held requests honour cancellation.
+- Query keys start with `["account", <id>]`. The checks above run without any user action, so a
+  switch in another tab is noticed on return.
+  A response the server generated for the old account before the first check started cannot be
+  told apart from a normal one; it was the old account's data at request time.
 
 ## Contract (v1)
 
