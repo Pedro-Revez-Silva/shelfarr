@@ -27,6 +27,8 @@ func TestTimestampTextFollowsActiveRecordQuoting(t *testing.T) {
 	}
 }
 
+func fixed(moment time.Time) func() time.Time { return func() time.Time { return moment } }
+
 type tokenFixture struct {
 	path     string
 	database *DB
@@ -75,7 +77,7 @@ func TestAdoptionRevokesThePreviousTokenAndClearsThePointerAtomically(t *testing
 	f := newTokens(t)
 	f.token(t, 1, 1, nil, "")
 	f.token(t, 2, 1, 1, "")
-	adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), instant)
+	adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), fixed(instant))
 	if err != nil || !adopted {
 		t.Fatalf("%v %v", adopted, err)
 	}
@@ -119,7 +121,7 @@ func TestAdoptionIsRefusedWithoutChangingAnything(t *testing.T) {
 					before[index] = f.snapshot(t, id)
 				}
 			}
-			adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), instant)
+			adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), fixed(instant))
 			if err != nil || adopted {
 				t.Fatalf("adopted=%v err=%v", adopted, err)
 			}
@@ -138,7 +140,7 @@ func TestAdoptionRollsBackTheRevocationWhenTheSecondWriteFails(t *testing.T) {
 	f.token(t, 2, 1, 1, "")
 	livetest.Exec(t, f.path, `CREATE TRIGGER refuse_pointer_clear BEFORE UPDATE OF replaces_api_token_id ON api_tokens WHEN NEW.replaces_api_token_id IS NULL BEGIN SELECT RAISE(ABORT, 'refused'); END`)
 	before := f.snapshot(t, 1)
-	if adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), instant); err == nil || adopted {
+	if adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), fixed(instant)); err == nil || adopted {
 		t.Fatalf("adopted=%v err=%v", adopted, err)
 	}
 	if f.snapshot(t, 1) != before {
@@ -158,7 +160,7 @@ func TestConcurrentAdoptionsRevokeThePreviousTokenOnce(t *testing.T) {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			results[index], failures[index] = f.database.RetireReplaced(context.Background(), token, instant.Add(time.Duration(index)*time.Millisecond))
+			results[index], failures[index] = f.database.RetireReplaced(context.Background(), token, fixed(instant.Add(time.Duration(index)*time.Millisecond)))
 		}()
 	}
 	group.Wait()
@@ -173,7 +175,7 @@ func TestConcurrentAdoptionsRevokeThePreviousTokenOnce(t *testing.T) {
 	if len(stamp) < 19 || stamp[:19] != first || stamp[:19] > later {
 		t.Fatalf("unexpected revocation time %q", stamp)
 	}
-	if again, err := f.database.RetireReplaced(context.Background(), token, instant.Add(time.Hour)); err != nil || !again {
+	if again, err := f.database.RetireReplaced(context.Background(), token, fixed(instant.Add(time.Hour))); err != nil || !again {
 		t.Fatalf("a repeat adoption failed: %v %v", again, err)
 	}
 	if f.snapshot(t, 1).revoked != stamp {
@@ -195,5 +197,31 @@ func TestActiveTokenLookupHonoursRevocationAndExpiryExactlyAsRailsQueriesThem(t 
 		if err != nil || (found != nil) != active {
 			t.Errorf("token %d: found=%v err=%v want active=%v", id, found != nil, err, active)
 		}
+	}
+}
+
+func TestExpiryIsEvaluatedAfterTheAdoptionLockIsAcquired(t *testing.T) {
+	cases := map[string]struct{ parent, own string }{
+		"parent expires while waiting":         {"expires_at = '2026-11-15 09:30:16'", ""},
+		"own credential expires while waiting": {"", "expires_at = '2026-11-15 09:30:16'"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newTokens(t)
+			f.token(t, 1, 1, nil, c.parent)
+			f.token(t, 2, 1, 1, c.own)
+			calls := 0
+			clock := func() time.Time {
+				calls++
+				return instant.Add(5 * time.Second)
+			}
+			before := [2]tokenSnapshot{f.snapshot(t, 1), f.snapshot(t, 2)}
+			if adopted, err := f.database.RetireReplaced(context.Background(), f.lookup(t, 2), clock); err != nil || adopted {
+				t.Fatalf("adopted=%v err=%v", adopted, err)
+			}
+			if calls == 0 || f.snapshot(t, 1) != before[0] || f.snapshot(t, 2) != before[1] {
+				t.Fatalf("calls=%d or a token changed", calls)
+			}
+		})
 	}
 }

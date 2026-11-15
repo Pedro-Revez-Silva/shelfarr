@@ -259,7 +259,7 @@ module Migration
         end
         filters = {
           "type-ebook" => "type=ebook", "type-audiobook" => "type=audiobook", "type-blank" => "type=", "type-whitespace" => "type=%20", "type-unknown" => "type=comic",
-          "status-unread" => "status=unread", "status-in-progress" => "status=in_progress", "status-finished" => "status=finished", "status-unknown" => "status=nope",
+          "status-blank" => "status=%20", "status-unread" => "status=unread", "status-in-progress" => "status=in_progress", "status-finished" => "status=finished", "status-unknown" => "status=nope",
           "query-title" => "q=quiet", "query-percent" => "q=%25", "query-underscore" => "q=_", "query-backslash" => "q=%5C", "query-unicode" => "q=%C3%A9", "query-upper" => "q=ALPHA",
           "query-blank" => "q=", "query-spaces" => "q=%20%20", "query-too-long" => "q=#{'a' * 201}", "query-200-bytes" => "q=#{'a' * 200}", "query-array" => "q%5B%5D=x",
           "sort-title" => "sort=title", "sort-recent" => "sort=recent", "sort-unknown" => "sort=zzz", "sort-blank" => "sort=",

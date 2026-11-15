@@ -54,6 +54,7 @@ var mutants = []mutant{
 	{name: "startup: an unknown schema revision is accepted", file: "internal/live/live.go", edit: edit{"if !contains(SupportedRevisions, revision) {", "if false && !contains(SupportedRevisions, revision) {"}, unit: "./internal/live/", scenario: "TestStartupRefuses"},
 	{name: "startup: a missing secret key base is replaced by a default", file: "internal/gohttp/secret.go", edit: edit{"return \"\", ErrSecretMissing", "return \"development-secret-key-base-development-secret-key-base\", nil"}, unit: "./internal/gohttp/", scenario: "TestStartupRefuses"},
 	{name: "wal: reads ignore the write-ahead log", file: "internal/live/live.go", edit: edit{`query.Set("mode", "rw")`, "query.Set(\"mode\", \"ro\")\n\tquery.Set(\"immutable\", \"1\")"}, unit: "./internal/live/", scenario: "TestLiveWal"},
+	{name: "catalogue: a whitespace status filters every book away", file: "internal/catalogue/catalogue.go", edit: edit{"if !params.Status.Blank() {\n\t\tselection.Status = status", "if true {\n\t\tselection.Status = status"}, unit: "./internal/catalogue/"},
 	{name: "capacity: a client that never reads a metadata response holds its slot", file: "internal/gohttp/run.go", edit: edit{"WriteTimeout:      config.RequestTimeout,", "WriteTimeout:      0,"}, unit: "./internal/gohttp/"},
 	{name: "logging: request paths are logged", file: "internal/gohttp/app.go", edit: edit{`slog.String("route", found.name)`, `slog.String("route", r.URL.RequestURI())`}, unit: "./internal/gohttp/", scenario: "TestSensitiveValues"},
 }

@@ -110,7 +110,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.logRequest(r, found, recorder, result, started)
 	}()
 	setDefaultHeaders(recorder.Header())
-	r.Body = http.MaxBytesReader(recorder, r.Body, 1<<10)
 	a.dispatch(recorder, r, found, result)
 }
 

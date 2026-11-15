@@ -267,3 +267,16 @@ func TestQueryParsingFollowsRackForTheParametersThatMatter(t *testing.T) {
 		t.Fatalf("%+v %v", params, err)
 	}
 }
+
+func TestAWhitespaceStatusFiltersNothingButStillBindsTheCursor(t *testing.T) {
+	f := newFixture(t)
+	seedMany(t, f)
+	plain, err := f.call(t, 1, "limit=4", legacy)
+	blank, blankErr := f.call(t, 1, "limit=4&status=%20", legacy)
+	if err != nil || blankErr != nil || fmt.Sprint(ids(plain)) != fmt.Sprint(ids(blank)) || len(blank.Books) != 4 {
+		t.Fatalf("%v %v %v %v", ids(plain), ids(blank), err, blankErr)
+	}
+	if _, err := f.call(t, 1, "limit=4&cursor="+url.QueryEscape(*plain.NextCursor)+"&status=%20", legacy); err == nil {
+		t.Fatal("a cursor must stay bound to the raw status text, as in Rails")
+	}
+}

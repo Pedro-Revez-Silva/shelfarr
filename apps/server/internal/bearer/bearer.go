@@ -32,11 +32,11 @@ func (a Authenticator) Authenticate(ctx context.Context, authorization string) (
 			return nil, nil
 		}
 	}
-	adopted, err := a.DB.RetireReplaced(ctx, *token, now)
+	adopted, err := a.DB.RetireReplaced(ctx, *token, a.Now)
 	if err != nil || !adopted {
 		return nil, err
 	}
-	if err := a.DB.TouchToken(ctx, token.ID, now); err != nil {
+	if err := a.DB.TouchToken(ctx, token.ID, a.Now()); err != nil {
 		return nil, err
 	}
 	if user == nil {

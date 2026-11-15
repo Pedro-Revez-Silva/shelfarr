@@ -59,7 +59,7 @@ Two writes happen on `GET`, as in Rails, both on `api_tokens` only:
 1. `last_used_at` and `updated_at` are set for every authenticated lookup.
 2. **Permission-upgrade adoption.** A token that carries `replaces_api_token_id` retires its parent on
    first use: in one immediate transaction the parent must exist for the same owner, both tokens must be
-   usable, the parent gets `revoked_at` and `updated_at`, and the new token's pointer is cleared. Any
+   usable at the moment the transaction holds the write lock (the clock is read after any wait), the parent gets `revoked_at` and `updated_at`, and the new token's pointer is cleared. Any
    refusal (parent revoked, expired, other owner, missing) leaves both rows untouched and answers `401`.
    If the second write fails the revocation rolls back. A concurrent adoption by another request is
    recognised (`replaces_api_token_id` already `NULL`) and revokes nothing twice.
@@ -111,7 +111,7 @@ or `501`, never served under the old identity.
 
 ## HTTP behaviour
 
-* Read-header 5s, read 15s, idle 60s, a write deadline equal to the request timeout (20s) for every non-streamed response, 32 KiB headers, a body on a `GET` is never read beyond 1 KiB.
+* Read-header 5s, read 15s, idle 60s, a write deadline equal to the request timeout (20s) for every non-streamed response, 32 KiB headers, no handler reads a request body; `net/http` discards at most 256 KiB of it before closing the connection.
 * Metadata requests and media streams have separate bounded capacity (`-max-metadata-requests`, default
   64; `-max-media-streams`, default 8). A full pool answers `503 server_busy` with `Retry-After`; a
   stalled audiobook client therefore cannot starve the catalogue.
@@ -166,7 +166,7 @@ executable:
   catalogue, busy SQLite, live WAL commits and external revocation, shutdown during a transfer,
   startup refusals, single ownership, cursor and secret mismatch, 24 concurrent adoptions, request
   limits, absence of sensitive values from every output;
-* 26 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
+* 27 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
   check, cursor binding and signature, symbolic links, identity re-check, root allow-list, ranges,
   `HEAD`, conditional requests, stream capacity, unknown schema, missing key, WAL, logging), each of
   which must fail an assertion, and each must compile.

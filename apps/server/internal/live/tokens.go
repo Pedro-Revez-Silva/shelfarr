@@ -57,7 +57,7 @@ func readState(ctx context.Context, tx *sql.Tx, id int64) (tokenState, bool, err
 	return state, err == nil, err
 }
 
-func (d *DB) RetireReplaced(ctx context.Context, token Token, now time.Time) (bool, error) {
+func (d *DB) RetireReplaced(ctx context.Context, token Token, clock func() time.Time) (bool, error) {
 	if !token.ReplacesID.Valid {
 		return true, nil
 	}
@@ -66,7 +66,7 @@ func (d *DB) RetireReplaced(ctx context.Context, token Token, now time.Time) (bo
 		return false, Classify(err)
 	}
 	defer tx.Rollback()
-	adopted, err := retireIn(ctx, tx, token, now)
+	adopted, err := retireIn(ctx, tx, token, clock())
 	if errors.Is(err, errAdoptionConflict) {
 		return false, nil
 	}

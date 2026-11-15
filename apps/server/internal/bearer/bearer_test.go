@@ -183,3 +183,23 @@ func TestContentionIsAnErrorNeverAnAnonymousRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestExpiryDuringAdoptionIsDecidedByTheClockAfterTheWait(t *testing.T) {
+	f := newFixture(t)
+	f.add(t, 1, "previous", 1, `["library:read"]`, "expires_at = '2026-11-15 09:30:16'")
+	f.add(t, 2, "adopting", 1, `["library:read"]`, "replaces_api_token_id = 1")
+	calls := 0
+	f.authenticator.Now = func() time.Time {
+		calls++
+		if calls == 1 {
+			return now
+		}
+		return now.Add(5 * time.Second)
+	}
+	if principal, err := f.authenticator.Authenticate(context.Background(), "Bearer adopting"); err != nil || principal != nil {
+		t.Fatalf("%+v %v", principal, err)
+	}
+	if f.used(t, 2) || livetest.Query(t, f.path, `SELECT replaces_api_token_id FROM api_tokens WHERE id = 2`)[0][0] != int64(1) {
+		t.Fatal("an adoption of an expired parent changed the credential")
+	}
+}
