@@ -60,6 +60,7 @@ type progressFixture struct {
 func newProgress(t *testing.T) progressFixture {
 	t.Helper()
 	path := livetest.Create(t)
+	livetest.Exec(t, path, `PRAGMA journal_mode=WAL`)
 	livetest.Exec(t, path, `INSERT INTO users (id, username) VALUES (1, 'alice'), (2, 'bob')`)
 	return progressFixture{path: path, database: open(t, path)}
 }
