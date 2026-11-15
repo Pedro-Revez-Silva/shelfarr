@@ -40,6 +40,7 @@ class Verifier
     verify_models
     verify_api_reads
     verify_rails_writes_on_top
+    verify_rails_page_writes_on_top
     report
   end
 
@@ -131,7 +132,6 @@ class Verifier
     @session.put("#{PREFIX}/library/#{row.book_id}/reading_status", params: JSON.generate(status: "finished"), headers: { "Authorization" => "Bearer #{@tokens.fetch(label)}", "Content-Type" => "application/json" })
     expect(@session.response.status == 200, "Rails could not set a status on a Go-written book")
     @counts[:rails_writes] += 2
-    verify_rails_page_writes_on_top
   end
 
   def verify_rails_page_writes_on_top
@@ -145,7 +145,10 @@ class Verifier
       rescue Consumer::LibraryAssets::Unavailable
         nil
       end
-      next unless asset && %w[pdf cbz].include?(asset.format)
+      unless asset && %w[pdf cbz].include?(asset.format)
+        @counts[:page_rows_not_continued] += 1
+        next
+      end
 
       locator = if asset.format == "pdf"
         { "href" => "document.pdf", "type" => "application/pdf", "locations" => { "position" => 2 } }
@@ -158,7 +161,9 @@ class Verifier
       parsed = JSON.parse(@session.response.body)
       expect(@session.response.status == 200 && parsed.dig("progress", "version") == row.version + 1 && parsed.dig("progress", "locator") == locator, "Rails could not continue a Go-written #{asset.format} page")
       @counts[:rails_page_writes] += 1
+      @counts["rails_#{asset.format}_page_writes".to_sym] += 1
     end
+    %i[rails_pdf_page_writes rails_cbz_page_writes].each { |name| expect(@counts[name].positive?, "Rails continued no Go-written #{name.to_s.split('_')[1].upcase} page") }
   end
 
   def report
