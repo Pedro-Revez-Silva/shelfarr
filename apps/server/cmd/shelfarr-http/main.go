@@ -50,6 +50,7 @@ func run(args []string, stderr *os.File) int {
 	flags.DurationVar(&config.StreamWriteStall, "stream-write-stall", 0, "longest a media client may stall a single write")
 	flags.DurationVar(&config.RequestTimeout, "request-timeout", 0, "deadline for the database and filesystem work of one request")
 	flags.DurationVar(&config.BusyTimeout, "busy-timeout", 0, "how long SQLite waits for a competing writer")
+	flags.DurationVar(&config.BodyTimeout, "body-timeout", 0, "deadline for receiving the body of a write request")
 	flags.DurationVar(&config.ShutdownTimeout, "shutdown-timeout", 0, "how long shutdown waits for running requests")
 	flags.DurationVar(&config.ReadHeaderTimeout, "read-header-timeout", 0, "deadline for receiving request headers")
 	if err := flags.Parse(args); err != nil {
@@ -59,6 +60,7 @@ func run(args []string, stderr *os.File) int {
 		fmt.Fprintln(stderr, "refused: this runtime is experimental and default-off; pass -experimental")
 		return exitUsage
 	}
+	config.Clock = testClock()
 	config.LibraryRoots = roots
 	config.AndroidChannels = gohttp.ParseAndroidChannels(channels)
 	secret, err := gohttp.ResolveSecretKeyBase(os.Getenv, secretFile)

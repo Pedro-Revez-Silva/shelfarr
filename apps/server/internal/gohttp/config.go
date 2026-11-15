@@ -33,7 +33,9 @@ type Config struct {
 	IdleTimeout         time.Duration
 	ShutdownTimeout     time.Duration
 	BusyTimeout         time.Duration
+	BodyTimeout         time.Duration
 	MaxHeaderBytes      int
+	Clock               func() time.Time
 }
 
 func (c *Config) applyDefaults() {
@@ -49,6 +51,7 @@ func (c *Config) applyDefaults() {
 	set(&c.IdleTimeout, 60*time.Second)
 	set(&c.ShutdownTimeout, 20*time.Second)
 	set(&c.BusyTimeout, 5*time.Second)
+	set(&c.BodyTimeout, 5*time.Second)
 	if c.MaxMetadataRequests <= 0 {
 		c.MaxMetadataRequests = 64
 	}

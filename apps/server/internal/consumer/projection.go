@@ -51,3 +51,9 @@ func (p Publication) ProgressAssetID() (string, bool) {
 	}
 	return p.Progress.AssetID, true
 }
+
+type Progress = progressBody
+
+func NewProgress(progress store.Progress) (Progress, error) {
+	return progressRepresentation(progress)
+}

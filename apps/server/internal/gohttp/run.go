@@ -50,7 +50,11 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 		return start("database-unavailable")
 	}
 	defer database.Close()
-	app, err := NewApp(config, database, roots, logger, time.Now)
+	clock := config.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	app, err := NewApp(config, database, roots, logger, clock)
 	if err != nil {
 		return start("config")
 	}

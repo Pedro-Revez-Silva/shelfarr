@@ -32,8 +32,8 @@ var requiredColumns = map[string][]string{
 	"users":                   {"id", "username", "name", "role", "deleted_at"},
 	"api_tokens":              {"id", "user_id", "scopes", "token_digest", "revoked_at", "expires_at", "last_used_at", "updated_at", "replaces_api_token_id"},
 	"books":                   {"id", "title", "author", "description", "cover_url", "file_path", "book_type", "content_kind"},
-	"consumer_progresses":     {"user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},
-	"consumer_reading_states": {"user_id", "book_id", "status", "updated_at"},
+	"consumer_progresses":     {"id", "user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},
+	"consumer_reading_states": {"id", "user_id", "book_id", "status", "updated_at"},
 }
 
 type Options struct {

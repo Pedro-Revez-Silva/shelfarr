@@ -133,7 +133,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		problem(w, result, http.StatusNotFound, "not_found")
 		return
 	case routeWrongMethod:
-		w.Header().Set("Allow", "GET, HEAD")
+		w.Header().Set("Allow", found.allow)
 		problem(w, result, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	case routeExcluded:
@@ -161,7 +161,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.ready(w, r, result)
 	case routeServer:
 		a.server(w, result)
-	case routeMe, routeLibrary, routeContinue, routePublication, routeAsset:
+	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset:
 		a.authenticated(w, r, found, result)
 	}
 }
@@ -180,9 +180,10 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 		writeEmpty(w, http.StatusUnauthorized)
 		return
 	}
-	if !principal.HasScope("library:read") {
+	required := requiredScope(r.Method, found)
+	if !principal.HasScope(required) {
 		result.set(http.StatusForbidden, "insufficient_scope")
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient_scope", "required_scope": "library:read"})
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient_scope", "required_scope": required})
 		return
 	}
 	switch found.kind {
@@ -194,7 +195,18 @@ func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route,
 		a.continueReading(w, r, principal, result)
 	case routePublication:
 		a.publication(w, r, principal, found.id, result)
+	case routeProgress:
+		a.progress(w, r, principal, found.id, result)
+	case routeReadingStatus:
+		a.readingStatus(w, r, principal, found.id, result)
 	case routeAsset:
 		a.asset(w, r, principal, found, result)
 	}
+}
+
+func requiredScope(method string, found route) string {
+	if found.kind == routeReadingStatus || found.kind == routeProgress && method == http.MethodPut {
+		return "progress:write"
+	}
+	return "library:read"
 }

@@ -64,6 +64,8 @@ func mapFailure(w http.ResponseWriter, result *outcome, err error) {
 		problem(w, result, http.StatusNotImplemented, "unsupported_library_layout")
 	case errors.Is(err, consumer.ErrUnsupportedValue), errors.Is(err, store.ErrUnsupported), errors.Is(err, store.ErrTimestamp), errors.Is(err, account.ErrUnsupportedScopes):
 		problem(w, result, http.StatusNotImplemented, "unsupported_stored_value")
+	case errors.Is(err, errUnsupportedAsset):
+		problem(w, result, http.StatusNotImplemented, "unsupported_asset_format")
 	case errors.Is(err, media.ErrNoPinnedOpen):
 		problem(w, result, http.StatusNotImplemented, "confined_open_unsupported")
 	default:

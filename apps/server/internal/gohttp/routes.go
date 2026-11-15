@@ -2,6 +2,7 @@ package gohttp
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -18,6 +19,8 @@ const (
 	routeContinue
 	routeLibrary
 	routePublication
+	routeProgress
+	routeReadingStatus
 	routeAsset
 	routeExcluded
 	routeWrongMethod
@@ -28,6 +31,7 @@ type route struct {
 	name    string
 	id      string
 	assetID string
+	allow   string
 }
 
 type excludedRoute struct {
@@ -45,9 +49,6 @@ var ExcludedRoutes = []excludedRoute{
 	{http.MethodPost, "requests", "requests and acquisition"},
 	{http.MethodGet, "requests/{id}", "requests and acquisition"},
 	{http.MethodDelete, "requests/{id}", "requests and acquisition"},
-	{http.MethodGet, "library/{id}/progress", "progress reads and writes"},
-	{http.MethodPut, "library/{id}/progress", "progress reads and writes"},
-	{http.MethodPut, "library/{id}/reading_status", "reading status writes"},
 	{http.MethodGet, "library/{id}/assets/{asset}/reading_order", "CBZ reading order"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along", "read-along"},
 	{http.MethodGet, "library/{id}/assets/{asset}/read_along/resources/{path...}", "read-along"},
@@ -105,6 +106,10 @@ func classify(method, path string) route {
 		return supported(method, route{kind: routeLibrary, name: "library"})
 	case len(segments) == 2 && segments[0] == "library" && segmentOK(segments[1]):
 		return supported(method, route{kind: routePublication, name: "publication", id: segments[1]})
+	case len(segments) == 3 && segments[0] == "library" && segments[2] == "progress" && segmentOK(segments[1]):
+		return served(method, route{kind: routeProgress, name: "progress", id: segments[1]}, http.MethodGet, http.MethodHead, http.MethodPut)
+	case len(segments) == 3 && segments[0] == "library" && segments[2] == "reading_status" && segmentOK(segments[1]):
+		return served(method, route{kind: routeReadingStatus, name: "reading_status", id: segments[1]}, http.MethodPut)
 	case len(segments) == 4 && segments[0] == "library" && segments[2] == "assets" && segmentOK(segments[1]) && segmentOK(segments[3]):
 		return supported(method, route{kind: routeAsset, name: "asset", id: segments[1], assetID: segments[3]})
 	}
@@ -117,8 +122,12 @@ func classify(method, path string) route {
 }
 
 func supported(method string, found route) route {
-	if method != http.MethodGet && method != http.MethodHead {
-		return route{kind: routeWrongMethod, name: found.name}
+	return served(method, found, http.MethodGet, http.MethodHead)
+}
+
+func served(method string, found route, allowed ...string) route {
+	if !slices.Contains(allowed, method) {
+		return route{kind: routeWrongMethod, name: found.name, allow: strings.Join(allowed, ", ")}
 	}
 	return found
 }
