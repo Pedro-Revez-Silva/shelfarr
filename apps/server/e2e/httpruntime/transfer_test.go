@@ -540,3 +540,40 @@ func TestAReplacedOrRemovedAssetKillsItsGrantAndRailsAgreesAboutGoGrants(t *test
 		})
 	}
 }
+
+func TestAMintRechecksTheAssetWhenItOpensItNotOnlyWhenItListsIt(t *testing.T) {
+	f := currentFixture(t)
+	copied := newRuntimeCopy(t, f)
+	library := newPrivateLibrary(t, copied, 5000)
+	faultDir := t.TempDir()
+	instance := startServer(t, f, copied, serverOptions{roots: []string{library.root}, seam: true, faults: "transfer.listed=park", faultDir: faultDir})
+	epub := instance.assets(t, f, library.bookIDs["epub"])[0]
+	headers := bearer(f, "alice-full")
+	headers["Content-Type"] = "application/json"
+	var minted result
+	var group sync.WaitGroup
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		minted = instance.doBody(context.Background(), "POST", "/api/consumer/v1/library/"+strconv.FormatInt(library.bookIDs["epub"], 10)+"/assets/"+epub.ID+"/transfer_grant", headers, []byte("{}"))
+	}()
+	reached := filepath.Join(faultDir, "transfer.listed.reached")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(reached); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the mint never reached the listing")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	successor := library.files["epub"] + ".successor"
+	os.WriteFile(successor, pseudoRandom(5, 4000), 0o600)
+	os.Rename(successor, library.files["epub"])
+	os.WriteFile(filepath.Join(faultDir, "transfer.listed.release"), nil, 0o600)
+	group.Wait()
+	if minted.status != http.StatusGone || bytes.Contains(minted.body, []byte("grant=")) {
+		t.Fatalf("a grant was minted for a generation replaced after it was listed: %d %s", minted.status, minted.body)
+	}
+}

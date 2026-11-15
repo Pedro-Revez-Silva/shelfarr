@@ -52,24 +52,18 @@ func (d *DB) StringSetting(ctx context.Context, key string) (string, bool, error
 }
 
 func (d *DB) ActiveTokenByDigest(ctx context.Context, digest, now string) (*Token, error) {
-	var token Token
-	err := d.read.QueryRowContext(ctx,
-		`SELECT id, user_id, scopes, CAST(revoked_at AS TEXT), CAST(expires_at AS TEXT), replaces_api_token_id FROM api_tokens WHERE token_digest = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`,
-		digest, now).Scan(&token.ID, &token.UserID, &token.Scopes, &token.RevokedAt, &token.ExpiresAt, &token.ReplacesID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, Classify(err)
-	}
-	return &token, nil
+	return d.activeToken(ctx, "token_digest", digest, now)
 }
 
 func (d *DB) ActiveTokenByID(ctx context.Context, id int64, now string) (*Token, error) {
+	return d.activeToken(ctx, "id", id, now)
+}
+
+func (d *DB) activeToken(ctx context.Context, column string, value any, now string) (*Token, error) {
 	var token Token
 	err := d.read.QueryRowContext(ctx,
-		`SELECT id, user_id, scopes, CAST(revoked_at AS TEXT), CAST(expires_at AS TEXT), replaces_api_token_id FROM api_tokens WHERE id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`,
-		id, now).Scan(&token.ID, &token.UserID, &token.Scopes, &token.RevokedAt, &token.ExpiresAt, &token.ReplacesID)
+		`SELECT id, user_id, scopes, CAST(revoked_at AS TEXT), CAST(expires_at AS TEXT), replaces_api_token_id FROM api_tokens WHERE `+column+` = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`,
+		value, now).Scan(&token.ID, &token.UserID, &token.Scopes, &token.RevokedAt, &token.ExpiresAt, &token.ReplacesID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

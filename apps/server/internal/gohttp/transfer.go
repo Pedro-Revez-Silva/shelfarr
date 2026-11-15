@@ -35,6 +35,10 @@ func (a *App) transferGrant(w http.ResponseWriter, r *http.Request, principal *a
 	if !ok {
 		return
 	}
+	if err := fault.Hit(r.Context(), "transfer.listed"); err != nil {
+		mapFailure(w, result, err)
+		return
+	}
 	file, ok := a.openAsset(w, result, *book, *chosen)
 	if !ok {
 		return

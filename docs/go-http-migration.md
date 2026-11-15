@@ -466,7 +466,7 @@ written to the library. The fixtures are synthetic; no real book is read.
 ### Rollback and limits
 
 Revert the commits of this slice: the `501` answers return and every row it wrote stays readable by Rails (it is the Rails row
-format). Not covered: a rendering or page-decoding client, ZIP resource extraction, EPUB read-along, transfer grants, reference-import
+format). Not covered: a rendering or page-decoding client, ZIP resource extraction, EPUB read-along, reference-import
 symbolic links (still `501 unsupported_library_layout`), a comic archive other than the synthetic and fuzzed ones, and archives whose
 names use code points assigned after Unicode 15.0 (see above).
 
@@ -614,7 +614,7 @@ a lost upgrade response, an externally held write lock, request deadlines, state
 off switches, bounded bodies and concurrency, schema refusal, the production binary on real time with the seams' environment set, and a scan of every output and of the database files for
 plaintext secrets. 58 mutants of the critical invariants (codes, scopes, boundaries, precedence, bookkeeping, consumption, lineage, storage, decisions, revoke, headers, limits, guards, schema) must each compile and fail an assertion.
 
-Not proven: a real browser, the HTML consent page, a real app or device, TLS or proxy behaviour, production data, requests and acquisition, transfer grants, the legacy
+Not proven: a real browser, the HTML consent page, a real app or device, TLS or proxy behaviour, production data, requests and acquisition, a physical download manager or real device, the legacy
 global-admin API, Rails and Go writing the same rows at once, power loss, clock zones other than UTC, and a deployment under a sub-path.
 
 ## Browser screens: sign-in, native connection consent and Library (opt-in)
@@ -872,6 +872,21 @@ executable:
   touched), and at the end the whole `consumer_progresses` and `consumer_reading_states` tables must
   equal Rails'. Locators are compared as JSON values; `go` overrides name every deliberate difference
   and require the rows to be unchanged;
+* transfer grants (`TransferCases`, ~530 recorded requests per fixture on top of the above): a real Rails mints a grant for every listed
+  asset of every acquired book (EPUB, audio, PDF, CBZ, comic records) at a frozen instant; Go replays the mint and must return the same
+  status, headers, `expires_at` and a grant of the same length whose decrypted plaintext is byte for byte the one Rails minted, then
+  consumes every Rails-minted URL (GET, HEAD, ranges, `If-Range`, `If-None-Match`, empty files) with the same status, headers and bytes.
+  The same replay covers the expiry boundary to the microsecond, tokens expiring sooner than a day, revocation through the API and
+  through direct row changes (scope, expiry, owner, deleted owner, deleted token, a removed book), adoption lineage, binding to the
+  wrong book or asset, about 50 query spellings and malformed queries, credential and cookie precedence, the other endpoints that must
+  ignore a grant, and every mint refusal; token rows and reading state must equal Rails' after every request. The
+  Rails models then read what Go minted (`verify_go_rows.rb`): each Go grant is opened by Rails with the same secret, serves the same
+  bytes, carries the same claims and dies at the same moment, and a private library whose file Go saw replaced and whose book Go saw
+  removed gives Rails the same `410` and `404`;
+* transfer grants against the shipped executable at real time: a Rails-minted grant served by the untagged binary and after a restart,
+  Go grants surviving a restart and refused under another secret, live revocation and restoration, an in-flight transfer finishing after
+  a revocation while the next one is refused, an aborted client returning its slot, stalled clients bounded, concurrent transfers during a
+  revocation, a panic and hostile queries leaving no grant in the log, and a mint whose file is replaced between listing and opening;
 * faults: generated EPUB fetched intact and generated audio seeked, replaced, rewritten, deleted and
   symbolic-link-swapped assets, traversal attempts, client disconnect, stalled clients with a live
   catalogue, busy SQLite, live WAL commits and external revocation, shutdown during a transfer,
@@ -889,14 +904,14 @@ executable:
   reason by Rails and Go), ranges and conditional requests on a PDF and a CBZ, page writes for PDF and CBZ with their
   rejected variants, status on comic records, and the Go preview JSON for the same books; `go test -fuzz` targets
   `zipdirectory.Entries`;
-* 117 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
+* 147 mutants of the critical invariants (revoked, expired, deleted-owner credentials, adoption, scope
   check, cursor binding and signature, symbolic links, identity re-check, root allow-list, ranges,
   `HEAD`, conditional requests, stream capacity, unknown schema, missing key, WAL, logging, and for
   progress: scope, version, mutation id, retry data, chronological and resolution rules, unknown
   times, isolation, locator comparison, status independence, future tolerance, traversal, version
   range, asset identity, body size, body deadline, content type, conflict and malformed-body answers, and for fixed-layout
   files: format negotiation and cursor identity, attachment and document policy, PDF header and size boundaries, identity
-  re-checks, every ZIP refusal, page limits, natural order and Unicode folding, reading-order guards and page-place validation), each of which must fail an assertion, and each must compile.
+  re-checks, every ZIP refusal, page limits, natural order and Unicode folding, reading-order guards and page-place validation, and for transfer grants: expiry boundary and millisecond truncation, purpose, salt, random nonce, claim types, lifetime, grammar, book and asset binding, live revocation, scope, owner and deleted-user rechecks, no touch and no adoption on use, verb routing, stream admission, privacy headers, mint body bounds and the asset recheck when the mint opens the file), each of which must fail an assertion, and each must compile.
 
 It also checks that the source bundles keep their digests, that the unchanged M0 checker still
 accepts both, that the `linux/amd64` and `linux/arm64` builds are byte-reproducible and that the
@@ -909,12 +924,12 @@ the image keeps the production Rails entrypoint and command.
 
 ## Not proven
 
-This is synthetic protocol testing against Rails, not a handover. Not covered: a real client or device,
+This is synthetic protocol testing against Rails, not a handover. Not covered: a real client, device or download manager,
 production data or keys, TLS and proxy headers, Kobo, the browser, progress and status writes,
 requests, rendering of PDF or CBZ pages, any comic archive larger than the synthetic ones, read-along manifests (the `readAlong` locator keys are stored and
 validated, nothing more), reference imports, other schema revisions, non-Linux hosts, power-loss
 durability (SIGKILL only), and Rails and Go running concurrently against one database. `RAILS_MASTER_KEY` credentials mode and
-rotated legacy cursor keys are not supported.
+rotated legacy cursor keys are not supported; a rotated `secret_key_base` invalidates every transfer grant, as in Rails.
 
 ## Rollback
 
@@ -924,4 +939,6 @@ The slice adds `apps/server/cmd/shelfarr-http`, the packages named in this chang
 and extends the verifier; reverting it restores the `501` answers and leaves every row it wrote
 readable by Rails. Revert those commits; the
 HTTP executable is also listed in the experimental packaging Dockerfile, package inventory and CI
-job; remove those references when reverting the runtime. No production route or entrypoint changes.
+job; remove those references when reverting the runtime. No production route or entrypoint changes. The transfer-grant slice adds
+`internal/transfergrant`, `internal/railsmsg/encryptor.go`, `internal/gohttp/transfer.go` and `live.ActiveTokenByID`; reverting it restores
+the `501` answers, writes nothing that Rails cannot read, and grants minted by either server keep working on Rails.
