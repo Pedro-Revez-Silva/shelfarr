@@ -304,6 +304,10 @@ func TestReadingOrderAnswersOnlyForTheExactCbzGeneration(t *testing.T) {
 	if got := lib.get(path(999, lib.cbzID), nil); got.Code != http.StatusNotFound {
 		t.Fatalf("%d", got.Code)
 	}
+	lib.h.addBook(15, "Audio holding an archive", store.BookTypeAudiobook, lib.h.file("Archive.mp3", comicArchive("p1.png")))
+	if got := lib.get(path(15, lib.h.firstAsset(15, nil)), nil); got.Code != http.StatusGone || got.Body.String() != `{"error":"asset_unavailable"}` {
+		t.Fatalf("an audio asset whose bytes happen to be a ZIP has a reading order: %d %s", got.Code, got.Body.String())
+	}
 	readOnly := lib.h.do(http.MethodGet, path(12, lib.cbzID), jsonHeaders(writeOnlyToken))
 	if readOnly.Code != http.StatusForbidden || !strings.Contains(readOnly.Body.String(), "insufficient_scope") {
 		t.Fatalf("%d %s", readOnly.Code, readOnly.Body.String())

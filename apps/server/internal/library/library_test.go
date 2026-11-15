@@ -499,3 +499,43 @@ func TestNaturalOrderOfFixedLayoutFilesFollowsRubyForUnicodeAndNumbers(t *testin
 		t.Fatalf("%q", paths)
 	}
 }
+
+type swappingContext struct {
+	context.Context
+	calls  int
+	onCall int
+	swap   func()
+}
+
+func (c *swappingContext) Err() error {
+	c.calls++
+	if c.calls == c.onCall {
+		c.swap()
+	}
+	return c.Context.Err()
+}
+
+func TestAFileRewrittenBetweenMatchingAndInspectionIsNotReturnedUnderTheOldIdentity(t *testing.T) {
+	space := newWorkspace(t)
+	path := space.bytes("S/doc.pdf", padded(0, "%PDF-1.7"))
+	book := ebook(path)
+	lister := Lister{Roots: []string{space.root}, Formats: []string{"pdf"}}
+	listing, err := lister.List(context.Background(), book, path)
+	if err != nil || len(listing.Assets) != 1 {
+		t.Fatalf("%+v %v", listing, err)
+	}
+	original := listing.Assets[0].ID
+	swapping := &swappingContext{Context: context.Background(), onCall: 2, swap: func() {
+		if err := os.WriteFile(path, padded(0, "%PDF-1.7 rewritten"), 0o644); err != nil {
+			t.Error(err)
+		}
+	}}
+	found, err := lister.Find(swapping, book, path, original)
+	if err != nil || found.Unavailable || found.Asset != nil || swapping.calls < 2 {
+		t.Fatalf("%+v %v after %d checks", found, err, swapping.calls)
+	}
+	again, err := lister.Find(context.Background(), book, path, original)
+	if err != nil || again.Asset != nil {
+		t.Fatalf("the old identity survived: %+v %v", again, err)
+	}
+}

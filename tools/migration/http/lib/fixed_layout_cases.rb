@@ -42,6 +42,7 @@ module Migration
         write_bytes(File.join(broken, "bad-header.pdf"), "not a pdf", stamp)
         fixed_book("fx-broken", "FX Broken Archives", :comicbook, broken)
         fixed_book("fx-missing-comic", "FX Missing Comic", :comicbook, File.join(root, "fx-missing.cbz"))
+        fixed_book("fx-audio-zip", "FX Audio Holding A Comic Archive", :audiobook, write_bytes(File.join(root, "fx-audio-zip.mp3"), FixedLayoutMedia.simple_pages(3), stamp + 20))
         fixed_book("fx-edit-pdf", "FX Edit Pdf", :ebook, write_bytes(File.join(root, "fx-edit-pdf.pdf"), pdf_bytes.call(76, 6000), stamp + 21))
         fixed_book("fx-edit-pdf-comic", "FX Edit Pdf Comic", :comicbook, write_bytes(File.join(root, "fx-edit-pdf-comic.pdf"), pdf_bytes.call(77, 6000), stamp + 22))
         fixed_book("fx-edit-comic", "FX Edit Comic", :comicbook, write_bytes(File.join(root, "fx-edit-comic.cbz"), FixedLayoutMedia.natural_pages, stamp + 23))
@@ -246,6 +247,7 @@ module Migration
         request("fx-reading-order-epub-asset", reading_order_path(@books.fetch("fx-mixed"), fixed_asset("fx-mixed", "epub").id), bearer: "alice-full")
         request("fx-reading-order-comic-epub-asset", reading_order_path(@books.fetch("comic-epub"), fixed_assets("comic-epub").first.id), bearer: "alice-full")
         request("fx-reading-order-audio-asset", reading_order_path(@books.fetch("big-audio"), listed_assets(@books.fetch("big-audio")).first.id), bearer: "alice-full")
+        request("fx-reading-order-audio-holding-an-archive", reading_order_path(@books.fetch("fx-audio-zip"), listed_assets(@books.fetch("fx-audio-zip")).first.id), bearer: "alice-full")
         request("fx-reading-order-with-suffix", "#{path}.json", bearer: "alice-full", go: { "status" => 404, "code" => "not_found" })
         request("fx-reading-order-post", path, bearer: "alice-full", method: "POST", headers: { "Content-Type" => "application/json" }, body: "{}", go: ProgressCases::UNSUPPORTED_VERB)
       end

@@ -346,6 +346,10 @@ func (a *App) readingOrder(w http.ResponseWriter, r *http.Request, principal *ac
 	if !ok {
 		return
 	}
+	if chosen.Format != "cbz" {
+		problem(w, result, http.StatusGone, "asset_unavailable")
+		return
+	}
 	file, ok := a.openAsset(w, *book, *chosen, result)
 	if !ok {
 		return

@@ -214,6 +214,9 @@ func (l Lister) find(ctx context.Context, book store.Book, bookPath, id string) 
 		if err != nil {
 			return Found{}, err
 		}
+		if inspected.ID != id {
+			return Found{}, nil
+		}
 		inspected.Position = position
 		return Found{Asset: &inspected}, nil
 	}
