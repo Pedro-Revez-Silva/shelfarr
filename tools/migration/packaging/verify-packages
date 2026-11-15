@@ -1,0 +1,35 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "json"
+require "tmpdir"
+require "optparse"
+require_relative "lib/git_source"
+require_relative "lib/package_check"
+require_relative "../volume/lib/scratch"
+
+options = {}
+OptionParser.new do |parser|
+  parser.on("--image NAME") { |value| options[:image] = value }
+  parser.on("--report FILE") { |value| options[:report] = value }
+end.parse!
+
+abort "--image is required" unless options[:image]
+root = File.expand_path("../../..", __dir__)
+scratch = Dir.mktmpdir("shelfarr-m2-packages-", Migration::Volume::Scratch.root)
+commit = Migration::Packaging::GitSource.clean_head(root)
+begin
+  check = Migration::Packaging::PackageCheck.new(root: root, scratch: scratch, candidate_image: options.fetch(:image), commit: commit)
+  findings = check.run
+ensure
+  FileUtils.rm_rf(scratch) unless ENV["SHELFARR_MIGRATION_KEEP"]
+end
+
+document = { "commit" => commit, "host_architecture" => check.host_architecture, "findings" => findings.map(&:to_h),
+             "executed" => findings.group_by(&:mode).transform_values { |group| group.map(&:architecture).uniq.sort } }
+File.write(options[:report], JSON.pretty_generate(document)) if options[:report]
+failed = findings.reject(&:passed).reject { |finding| finding.detail.start_with?("informational") }
+findings.each { |finding| puts format("%-8s %-6s %-22s %s %s", finding.passed ? "ok" : "FAIL", finding.architecture, finding.mode, finding.check, finding.detail[0, 100]) }
+puts "package checks: #{findings.size - failed.size}/#{findings.size} passed"
+exit(failed.empty? ? 0 : 1)

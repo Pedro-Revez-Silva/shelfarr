@@ -1,0 +1,32 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require "optparse"
+require_relative "lib/image_builder"
+
+options = { roles: %w[stable beta candidate] }
+OptionParser.new do |parser|
+  parser.on("--role LIST", "comma separated: stable,beta,candidate") { |value| options[:roles] = value.split(",") }
+  parser.on("--scratch DIR") { |value| options[:scratch] = value }
+  parser.on("--report FILE") { |value| options[:report] = value }
+end.parse!
+
+scratch = options.fetch(:scratch) { File.join(ENV.fetch("TMPDIR", File.join(Dir.home, ".cache", "agent-tmp")), "shelfarr-m2-build") }
+abort "refusing RAM-backed scratch" if scratch.start_with?("/tmp", "/dev/shm")
+FileUtils.mkdir_p(scratch)
+root = File.expand_path("../../..", __dir__)
+builder = Migration::Packaging::ImageBuilder.new(root: root, scratch: scratch, log: ->(line) { warn line })
+
+results = options[:roles].map do |role|
+  case role
+  when "stable" then builder.release(Migration::Volume::Pins::STABLE)
+  when "beta" then builder.release(Migration::Volume::Pins::BETA)
+  when "candidate" then builder.candidate
+  else abort "unknown role #{role}"
+  end
+end
+
+document = JSON.pretty_generate(results.map(&:to_h))
+options[:report] ? File.write(options[:report], document) : puts(document)

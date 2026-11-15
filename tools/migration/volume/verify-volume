@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
+scratch_root="${SHELFARR_MIGRATION_SCRATCH:-${TMPDIR:-$HOME/.cache/agent-tmp}}"
+case "$scratch_root" in
+  /tmp | /tmp/* | /dev/shm | /dev/shm/*) echo "refusing RAM-backed scratch: $scratch_root" >&2; exit 2 ;;
+esac
+mkdir -p "$scratch_root"
+work="$(mktemp -d "$scratch_root/shelfarr-volume.XXXXXX")"
+keep="${SHELFARR_MIGRATION_KEEP:-}"
+report="${SHELFARR_M2_REPORT_DIR:-$work/report}"
+mkdir -p "$report"
+cleanup() { [ -n "$keep" ] || rm -rf "$work"; }
+trap cleanup EXIT
+export TMPDIR="$work"
+export SHELFARR_MIGRATION_SCRATCH="$work"
+
+wanted_ruby="$(tr -d '[:space:]' < "$root/.ruby-version")"
+case "$(ruby -e 'print RUBY_VERSION')" in
+  "$wanted_ruby") ;;
+  *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
+esac
+docker info >/dev/null 2>&1 || { echo "a usable container runtime is required; without one only the non-container proofs can run" >&2; exit 2; }
+
+step() { printf '\n== %s\n' "$*"; }
+cd "$root"
+marker="$work/start-marker"
+touch "$marker"
+sleep 1
+
+step "ruby: style"
+bin/rubocop --force-exclusion tools/migration/volume tools/migration/packaging
+
+step "ruby: comparison engine and queue inventory (no containers)"
+bundle exec ruby -Itest tools/migration/volume/test/comparison_test.rb
+bundle exec ruby -Itest tools/migration/volume/test/queue_inventory_test.rb
+bundle exec ruby -Itest tools/migration/volume/test/snapshot_manifest_test.rb
+
+step "containers: build the stable, beta and candidate images from pinned git objects"
+bundle exec ruby tools/migration/packaging/build-images --scratch "$work/build" --report "$work/images.json"
+images="$(ruby -rjson -e 'rows = JSON.parse(File.read(ARGV[0])); puts JSON.generate(rows.to_h { |row| [row.fetch("role"), row.fetch("image")] }.reject { |role, _| role == "candidate-rails" })' "$work/images.json")"
+export SHELFARR_M2_IMAGES="$images"
+cp "$work/images.json" "$report/images.json"
+
+for suite in upgrade rollback backup negative_controls; do
+  step "containers: $suite scenarios"
+  bundle exec ruby -Itest "tools/migration/volume/test/${suite}_test.rb" 2>&1 | tee "$report/$suite.log" | tail -n 25
+  test "${PIPESTATUS[0]}" -eq 0
+done
+
+step "containers: the operator command line on a real volume"
+bundle exec ruby tools/migration/volume/test/cli_test.rb
+
+step "packaging: amd64 executed natively, arm64 cross-built and executed under emulation"
+candidate="$(ruby -rjson -e 'puts JSON.parse(ENV.fetch("SHELFARR_M2_IMAGES")).fetch("candidate")')"
+bundle exec ruby tools/migration/packaging/verify-packages --image "$candidate" --report "$report/packages.json"
+
+step "no container of this run remains"
+leftover="$(docker ps --all --quiet --filter "label=org.shelfarr.m2.project")"
+if [ -n "$leftover" ]; then
+  echo "containers left behind by the run: $leftover" >&2
+  exit 1
+fi
+
+step "repository untouched after the whole run"
+changed="$(find "$root" -newer "$marker" -not -path "$root/.git" -not -path "$root/.git/*" -not -path "$root/log/*" -not -path "$root/tmp/*" 2>/dev/null || true)"
+if [ -n "$changed" ]; then
+  echo "repository files changed during verification:" >&2
+  echo "$changed" >&2
+  exit 1
+fi
+echo "verification passed"

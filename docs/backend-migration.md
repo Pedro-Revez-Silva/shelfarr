@@ -532,7 +532,7 @@ reproducible cross-builds and an untouched-repository check.
 
 | Gap | Status |
 | --- | --- |
-| `stable-volume-upgrade` | **partial.** `--mode stable-upgrade` proves the primary database of `v2026.11.05.1` survives the shipped migrations. The queue, cable and cache databases, queued Ruby jobs, key files, packaging and activity-preserving rollback are M2. The checker's public report still lists this gap as missing, because a volume has not been migrated. |
+| `stable-volume-upgrade` | **partial; M2 adds an executable volume proof (see [backend-volume-upgrade.md](backend-volume-upgrade.md)).** `--mode stable-upgrade` proves the primary database of `v2026.11.05.1` survives the shipped migrations. The queue, cable and cache databases, queued Ruby jobs, key files, packaging and activity-preserving rollback are M2. The checker's public report still lists this gap as missing, because a volume has not been migrated. |
 | `catalogue-pagination` | missing; a list larger than 30 publications is refused. |
 | `token-adoption` | missing; replacement tokens are refused. |
 | `reference-imports` | missing; symbolic-link library entries are refused. |
@@ -603,6 +603,6 @@ that add those paths; nothing else depends on them.
 
 - M1 (done for the two workflows above) reused `internal/bundle` and the producer for crash, hang, cancellation,
   retry, duplicate-instance and SQLite contention proofs;
-- M2 adds the stable and beta volume upgrade and activity-preserving rollback (the `stable-volume-upgrade` gap)
+- M2 adds the stable and beta volume upgrade and activity-preserving rollback (the `stable-volume-upgrade` gap); its experimental, Rails-plus-tools proof is documented in [backend-volume-upgrade.md](backend-volume-upgrade.md) and still claims no Go write-domain handover
   and the packaged multi-architecture application;
 - M3 onward reuse the projection contract, adding the session and CSRF API for the TypeScript client.

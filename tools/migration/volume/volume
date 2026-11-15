@@ -1,0 +1,81 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "lib/docker"
+require_relative "lib/known_jobs"
+require_relative "lib/queue_inventory"
+require_relative "lib/volume_backup"
+require_relative "lib/volume_guard"
+
+OK = 0
+USAGE = 2
+REFUSED = 3
+FAILED = 4
+
+COMMANDS = %w[check snapshot restore queue known-jobs].freeze
+command = ARGV.shift
+unless COMMANDS.include?(command)
+  warn "usage: volume #{COMMANDS.join('|')} [options]"
+  exit USAGE
+end
+
+options = { environment_keys: false }
+OptionParser.new do |parser|
+  parser.on("--storage DIR") { |value| options[:storage] = value }
+  parser.on("--out DIR") { |value| options[:out] = value }
+  parser.on("--snapshot DIR") { |value| options[:snapshot] = value }
+  parser.on("--target DIR") { |value| options[:target] = value }
+  parser.on("--image NAME") { |value| options[:image] = value }
+  parser.on("--known-classes FILE") { |value| options[:known] = value }
+  parser.on("--environment-keys") { options[:environment_keys] = true }
+end.parse!
+
+def require_options(options, *names)
+  missing = names.reject { |name| options[name] }
+  return if missing.empty?
+
+  warn "missing #{missing.map { |name| "--#{name.to_s.tr('_', '-')}" }.join(', ')}"
+  exit USAGE
+end
+
+include Migration::Volume
+
+docker = Docker.new
+begin
+  result =
+    case command
+    when "check"
+      require_options(options, :storage)
+      guard = VolumeGuard.new(docker: docker)
+      guard.assert_quiescent!(options[:storage])
+      guard.assert_keys_present!(options[:storage], environment_keys: options[:environment_keys])
+      { "quiescent" => true, "key_material" => "present-or-environment-declared" }
+    when "snapshot"
+      require_options(options, :storage, :out)
+      manifest = VolumeBackup.new(docker: docker).snapshot(storage: options[:storage], out: options[:out], environment_keys: options[:environment_keys])
+      { "snapshot" => options[:out], "databases" => manifest.fetch("databases").keys, "key_files" => manifest.fetch("key_files_present"), "format" => manifest.fetch("format"),
+        "loss_boundary" => "every write after this snapshot is lost if it is restored" }
+    when "restore"
+      require_options(options, :snapshot, :target)
+      manifest = VolumeBackup.new(docker: docker).restore(snapshot: options[:snapshot], target: options[:target])
+      { "restored_to" => options[:target], "databases" => manifest.fetch("databases").keys, "activity_preserving" => false }
+    when "queue"
+      require_options(options, :storage, :known)
+      guard = VolumeGuard.new(docker: docker)
+      guard.assert_quiescent!(options[:storage])
+      QueueInventory.call(storage: options[:storage], known_classes: JSON.parse(File.read(options[:known])))
+    when "known-jobs"
+      require_options(options, :image)
+      KnownJobs.from_image(options[:image])
+    end
+  puts JSON.generate(result)
+  exit(command == "queue" && result["blocked_unsupported"].to_i.positive? ? REFUSED : OK)
+rescue Refusal, BackupRefused, StateRefused => error
+  warn error.message[0, 300]
+  exit REFUSED
+rescue StandardError => error
+  warn "#{error.class}: #{error.message[0, 300]}"
+  exit FAILED
+end
