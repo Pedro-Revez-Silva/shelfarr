@@ -100,21 +100,22 @@ change times, so media cannot be copied: a variant bundle may copy `db/`, `expec
   regular file, so a FIFO, device or symbolic link where a file belongs is refused immediately;
 - limits while reading: manifest 1 MiB, expected documents 16 MiB, credentials 64 KiB, database
   256 MiB, any hashed file 512 MiB, 4096 entries per tree, an encrypted envelope 1 MiB, a decrypted
-  or inflated value 1 MiB, the whole run 60 seconds by default (10 minutes at most);
+  or inflated value 1 MiB, a cooperative deadline of 60 seconds by default (10 minutes at most);
 - JSON documents reject unknown fields and any data after the first value (including a stray closing
   bracket);
-- bcrypt digests with a cost above 14 are refused before any work (`bcrypt-cost-unsupported`), and the
-  deadline is checked between every password, asset, response and envelope case. One bcrypt
-  verification of at most cost 14 is the longest uninterruptible step.
+- bcrypt digests with a cost above 14 are refused before any work (`bcrypt-cost-unsupported`).
+  The cooperative deadline is checked between password, asset and response cases. Synchronous
+  bcrypt, cryptographic work and regular-file I/O are not forcibly interrupted, so a deadline
+  is not a hard wall-clock guarantee.
 
 ## Producer isolation
-
-`tools/migration/produce_fixture.rb --out ABSOLUTE_NEW_DIRECTORY` boots the real Rails application
-in the existing `test` environment, with everything redirected before boot:
 
 Dotenv loads only the private bundle's temporary `.env` path. Checkout `.env`, `.env.test`
 and `.env.test.local` files are never loaded. The isolation probe blocks protected file reads
 outside the bundle before they can return any bytes.
+
+`tools/migration/produce_fixture.rb --out ABSOLUTE_NEW_DIRECTORY` boots the real Rails application
+in the existing `test` environment, with everything redirected before boot:
 
 - `--out` must be absolute, not exist, and its parent must resolve outside the repository;
 - it refuses to run when `RAILS_ENV` is not `test`, or when the environment carries `DATABASE_URL`,
@@ -152,7 +153,14 @@ bundle or arguments were refused (nothing but a one-line reason on stderr). The 
 names, case counts and index labels such as `column[2]:decryption` or `response[17]:body-mismatch`
 (the index is the position in the corresponding `expected/*.json` list). Nothing taken from a bundle
 (file names, tree names, case names) is echoed, so a hostile bundle cannot smuggle text into the
-output. It never prints plaintext, keys, passwords, tokens, digests, bundle paths or media paths.
+output. It never prints plaintext, keys, passwords, tokens, credential digests, bundle paths or media paths.
+
+The unpublished development report previously copied `origin`, `schema_revision`,
+`coverage_digest` and gap descriptions from the manifest. The public report now omits those
+three provenance fields and supplies its own fixed gap identifiers, statuses and descriptions.
+Only `fixture_format`, `passed`, `checks` and checker-owned `gaps` are serialized. Provenance
+and coverage metadata remain in the private manifest. Existing repository callers consume
+the result and check list; the fixture bundle format is unchanged.
 
 `--legacy-sha1` is explicit. Active Record derives keys with SHA-256 under the application's
 `load_defaults 8.1`; legacy SHA-1 derivation is only readable where an instance still has that
@@ -267,7 +275,7 @@ notation are ignored; strings, `null` versus absent versus empty, ordering, nest
 
 ## Coverage
 
-`manifest.coverage.cases` lists every case; the report echoes `coverage_digest`. The current bundle
+`manifest.coverage.cases` lists every case and its digest stays in the private manifest. The current bundle
 has 13 identity vectors, 12 library books (including indirect path, Unicode NFD names, hidden and
 non-media files, natural ordering, outside-root, missing, library-root, blank and comic cases), 18
 password verdicts, 8 encrypted columns, 15 tampered envelopes and 44 consumer responses plus one

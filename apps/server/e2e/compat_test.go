@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -201,6 +202,66 @@ func TestHostileBundleTextIsNeverEchoed(t *testing.T) {
 	refused := execute(t, binary, tree.dir, "--legacy-sha1")
 	if refused.code != 2 || strings.Contains(refused.stderr, "hostile") || strings.Contains(refused.stderr, "private") {
 		t.Fatalf("exit %d stderr %q", refused.code, refused.stderr)
+	}
+}
+
+func TestPublicReportDoesNotEchoManifestMetadata(t *testing.T) {
+	const marker = "/private/manifest-metadata-sentinel"
+	for _, test := range []struct {
+		name string
+		code int
+	}{{"passing", 0}, {"failing", 1}} {
+		t.Run(test.name, func(t *testing.T) {
+			current := newVariant(t)
+			current.manifest["origin"] = marker
+			coverage := current.manifest["coverage"].(map[string]any)
+			coverage["digest"] = marker
+			coverage["cases"].([]any)[0] = marker
+			for _, entry := range coverage["gaps"].([]any) {
+				gap := entry.(map[string]any)
+				for _, key := range []string{"id", "status", "detail"} {
+					gap[key] = marker
+				}
+			}
+			for key := range current.manifest["producer"].(map[string]any) {
+				current.manifest["producer"].(map[string]any)[key] = marker
+			}
+			if test.code == 1 {
+				current.manifest["schema"].(map[string]any)["revision"] = marker
+			}
+			current.seal()
+			result := execute(t, binary, current.dir, "--legacy-sha1")
+			if result.code != test.code {
+				t.Fatalf("exit %d, want %d", result.code, test.code)
+			}
+			if strings.Contains(result.stdout+result.stderr, marker) {
+				t.Fatal("manifest metadata was echoed")
+			}
+			var public map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(result.stdout), &public); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"origin", "schema_revision", "coverage_digest"} {
+				if _, found := public[field]; found {
+					t.Errorf("public report retained private field %s", field)
+				}
+			}
+			var gaps []struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(public["gaps"], &gaps); err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]string, 0, len(gaps))
+			for _, gap := range gaps {
+				ids = append(ids, gap.ID)
+			}
+			sort.Strings(ids)
+			want := []string{"catalogue-pagination", "pdf-cbz-assets", "reference-imports", "stable-volume-upgrade", "token-adoption"}
+			if !reflect.DeepEqual(ids, want) {
+				t.Fatalf("checker gap identifiers = %v, want %v", ids, want)
+			}
+		})
 	}
 }
 

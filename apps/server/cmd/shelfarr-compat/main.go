@@ -34,7 +34,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("compat-check", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	directory := flags.String("bundle", "", "fixture bundle directory")
-	timeout := flags.Duration("timeout", time.Minute, "overall time limit")
+	timeout := flags.Duration("timeout", time.Minute, "cooperative time limit")
 	legacy := flags.Bool("legacy-sha1", false, "also try the legacy SHA1 key derivation")
 	if err := flags.Parse(arguments[1:]); err != nil || *directory == "" || *timeout <= 0 || *timeout > 10*time.Minute {
 		fmt.Fprintln(stderr, "usage: shelfarr-compat compat-check --bundle DIRECTORY [--timeout 60s] [--legacy-sha1]")

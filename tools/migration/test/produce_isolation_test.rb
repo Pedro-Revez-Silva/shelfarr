@@ -34,6 +34,22 @@ class ProduceIsolationTest < Minitest::Test
     assert_equal protected_reads.size, violations.size
   end
 
+  def test_the_trap_blocks_an_existing_protected_file_before_returning_bytes
+    path = File.join(@scratch, ".env.synthetic")
+    File.write(path, "SYNTHETIC_GUARD_SENTINEL=present\n")
+    script = <<~RUBY
+      begin
+        File.binread(ARGV.fetch(0))
+        exit 7
+      rescue Errno::ENOENT
+        exit 0
+      end
+    RUBY
+    output, status = Open3.capture2e(environment(File.join(@scratch, "allowed")), "ruby", "-e", script, path, unsetenv_others: true)
+    assert status.success?, output
+    assert_equal [ path ], violations
+  end
+
   def test_booting_and_producing_a_bundle_reads_no_repository_credentials_keys_or_databases
     out = File.join(@scratch, "bundle")
     output, status = Open3.capture2e(environment(out), "bundle", "exec", "ruby", "tools/migration/produce_fixture.rb", "--out", out, chdir: REPO, unsetenv_others: true)

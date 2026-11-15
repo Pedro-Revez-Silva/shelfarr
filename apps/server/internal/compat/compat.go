@@ -34,13 +34,10 @@ type Check struct {
 }
 
 type Report struct {
-	FixtureFormat  int          `json:"fixture_format"`
-	Origin         string       `json:"origin"`
-	SchemaRevision string       `json:"schema_revision"`
-	CoverageDigest string       `json:"coverage_digest"`
-	Passed         bool         `json:"passed"`
-	Checks         []Check      `json:"checks"`
-	Gaps           []bundle.Gap `json:"gaps"`
+	FixtureFormat int          `json:"fixture_format"`
+	Passed        bool         `json:"passed"`
+	Checks        []Check      `json:"checks"`
+	Gaps          []bundle.Gap `json:"gaps"`
 }
 
 type Options struct {
@@ -97,9 +94,13 @@ func (r *runner) report() Report {
 			passed = false
 		}
 	}
-	manifest := r.bundle.Manifest
-	return Report{FixtureFormat: manifest.FixtureFormat, Origin: manifest.Origin, SchemaRevision: manifest.Schema.Revision,
-		CoverageDigest: manifest.Coverage.Digest, Passed: passed, Checks: r.checks, Gaps: manifest.Coverage.Gaps}
+	return Report{FixtureFormat: bundle.SupportedFormat, Passed: passed, Checks: r.checks, Gaps: []bundle.Gap{
+		{ID: "stable-volume-upgrade", Status: "missing", Detail: "a released stable volume has not been migrated"},
+		{ID: "catalogue-pagination", Status: "missing", Detail: "cursor encoding is not read"},
+		{ID: "token-adoption", Status: "missing", Detail: "replacement tokens are refused, not adopted"},
+		{ID: "reference-imports", Status: "missing", Detail: "symbolic-link library entries are refused"},
+		{ID: "pdf-cbz-assets", Status: "missing", Detail: "only the default EPUB and audio asset listing is covered"},
+	}}
 }
 
 func (r *runner) record(name string, cases int, failures []string) {
