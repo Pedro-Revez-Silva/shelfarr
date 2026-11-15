@@ -3,6 +3,7 @@
 package httpruntime
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -123,3 +124,5 @@ func smallReceiveBuffer(t *testing.T, address string) *net.TCPConn {
 	}
 	return connection.(*net.TCPConn)
 }
+
+func bufioReader(connection net.Conn) *bufio.Reader { return bufio.NewReader(connection) }

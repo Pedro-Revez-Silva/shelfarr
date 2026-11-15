@@ -5,10 +5,15 @@ require "digest"
 require "fileutils"
 require "json"
 require "zip"
+require "active_support/testing/time_helpers"
+require_relative "progress_cases"
 
 module Migration
   module Http
     class Cases
+      include ActiveSupport::Testing::TimeHelpers
+      include ProgressCases
+
       PREFIX = "/api/consumer/v1"
       FORMATS_HEADER = "X-Shelfarr-Reader-Formats"
       FEATURES_HEADER = "X-Shelfarr-Reader-Features"
@@ -35,6 +40,7 @@ module Migration
         seed_extra_library
         seed_extra_tokens
         seed_extra_progress
+        seed_progress_library
         checkpoint_and_copy
         @session = ActionDispatch::Integration::Session.new(Rails.application)
         run_scenarios
@@ -175,6 +181,8 @@ module Migration
         admin = User.create!(username: "admin_http", name: "Admin Http", password: "Synthetic-#{SecureRandom.hex(8)}-Aa1", role: :admin)
         member = User.create!(username: "member_http", name: "Member Http", password: "Synthetic-#{SecureRandom.hex(8)}-Aa1")
         issue("admin-full", admin, %w[library:read progress:write requests:admin users:write])
+        issue("alice-read-only", users.fetch("alice"), %w[library:read])
+        issue("bob-read-only", users.fetch("bob"), %w[library:read])
         issue("member-privileged-scopes", member, %w[library:read requests:admin users:write])
         direct_token("member-string-scopes", member, scopes: %w[library:read].to_json).update_columns(scopes: "\"library:read,progress:write\"")
         direct_token("member-spaced-scopes", member, scopes: %w[library:read].to_json).update_columns(scopes: "[\"library:read progress:write\", \"search:read\"]")
@@ -207,17 +215,21 @@ module Migration
         end
       end
 
-      def request(name, path, bearer: nil, method: "GET", headers: {}, authorization: nil, go: nil)
+      def request(name, path, bearer: nil, method: "GET", headers: {}, authorization: nil, go: nil, body: nil, at: nil, track: nil)
         sent = headers.dup
         sent["Authorization"] = authorization if authorization
         sent["Authorization"] = "Bearer #{@raw.fetch(bearer)}" if bearer
-        @session.process(method.downcase.to_sym, path, headers: sent)
+        before = track && { "state" => progress_state(track), "tokens" => token_marks }
+        recorded = body&.dup
+        perform = -> { @session.process(method.downcase.to_sym, path, params: body, headers: sent) }
+        at ? travel_to(at, with_usec: true, &perform) : perform.call
         response = @session.response
-        body = response.body.to_s
+        text = response.body.to_s
         entry = { "name" => name, "method" => method, "path" => path, "bearer" => bearer, "authorization" => authorization, "headers" => headers,
-                  "status" => response.status, "response_headers" => normalized(response.headers), "body_bytes" => body.bytesize, "body_sha256" => Digest::SHA256.hexdigest(body) }
-        entry["json"] = JSON.parse(body) if response.media_type == "application/json" && !body.empty?
+                  "status" => response.status, "response_headers" => normalized(response.headers), "body_bytes" => text.bytesize, "body_sha256" => Digest::SHA256.hexdigest(text) }
+        entry["json"] = JSON.parse(text) if response.media_type == "application/json" && !text.empty?
         entry["go"] = go if go
+        record_write(entry, recorded, at, track, before) if body || at || track
         @cases << entry
         entry
       end
@@ -234,6 +246,7 @@ module Migration
         publication_scenarios
         asset_scenarios
         adoption_scenarios
+        progress_scenarios
         @token_state_after = token_state
       end
 
@@ -468,7 +481,8 @@ module Migration
         document = {
           "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3",
           "server_version" => server.dig("json", "server_version"), "schema_revision" => @manifest.dig("schema", "revision"),
-          "origin" => @manifest.fetch("origin"), "token_state_before" => @token_state_before, "token_state_after" => @token_state_after, "cases" => @cases
+          "origin" => @manifest.fetch("origin"), "token_state_before" => @token_state_before, "token_state_after" => @token_state_after,
+          "progress_rows_after" => progress_rows, "reading_rows_after" => reading_rows, "cases" => @cases
         }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
