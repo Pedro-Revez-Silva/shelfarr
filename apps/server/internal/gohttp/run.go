@@ -13,6 +13,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/ownership"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webassets"
 )
 
 const responseGrace = 2 * time.Second
@@ -57,6 +58,9 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 		clock = time.Now
 	}
 	app, err := NewApp(config, database, roots, logger, clock)
+	if errors.Is(err, webassets.ErrInvalid) {
+		return start("web-assets")
+	}
 	if err != nil {
 		return start("config")
 	}

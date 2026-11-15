@@ -25,6 +25,7 @@ type Config struct {
 	AndroidChannels []string
 	Listen          string
 	AllowPublicBind bool
+	WebAssetsDir    string
 
 	PreviewUserIDs  []string
 	BrowserOrigin   string
@@ -99,6 +100,9 @@ func (c *Config) Validate() error {
 		return ErrConfig
 	}
 	if !validServerVersion(c.ServerVersion) {
+		return ErrConfig
+	}
+	if c.WebAssetsDir != "" && (!filepath.IsAbs(c.WebAssetsDir) || filepath.Clean(c.WebAssetsDir) != c.WebAssetsDir || c.WebAssetsDir == "/") {
 		return ErrConfig
 	}
 	if c.BrowserOrigin != "" {

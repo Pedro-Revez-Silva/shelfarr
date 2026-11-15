@@ -40,6 +40,9 @@ const (
 	routeAuthRevoke
 	routeBrowserConnect
 	routeBrowserDecide
+	routeWebIndex
+	routeWebShell
+	routeWebAsset
 )
 
 type route struct {
@@ -48,6 +51,7 @@ type route struct {
 	id      string
 	assetID string
 	allow   string
+	web     bool
 }
 
 type excludedRoute struct {
@@ -102,6 +106,9 @@ func classify(method, path string) route {
 		return supported(method, route{kind: routeUp, name: "up"})
 	case "/readyz":
 		return supported(method, route{kind: routeReady, name: "readyz"})
+	}
+	if found, web := classifyWeb(method, path); web {
+		return found
 	}
 	if strings.HasPrefix(path, previewPrefix) {
 		return classifyPreview(method, strings.TrimPrefix(path, previewPrefix))

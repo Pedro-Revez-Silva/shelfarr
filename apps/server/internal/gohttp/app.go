@@ -14,6 +14,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/loginlimit"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/railsmsg"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webassets"
 )
 
 var errRootNotAllowed = errors.New("library root is outside the configured roots")
@@ -35,6 +36,7 @@ type App struct {
 	tokenLimiter  *loginlimit.Limiter
 	grants        live.GrantSource
 	previewIDs    map[string]bool
+	web           *webUI
 }
 
 func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
@@ -57,6 +59,16 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 	for _, id := range config.PreviewUserIDs {
 		previewIDs[id] = true
 	}
+	var web *webUI
+	if config.WebAssetsDir != "" {
+		bundle, err := webassets.Load(config.WebAssetsDir)
+		if err != nil {
+			return nil, err
+		}
+		if web, err = newWebUI(bundle); err != nil {
+			return nil, err
+		}
+	}
 	return &App{
 		config:        config,
 		db:            database,
@@ -74,6 +86,7 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		tokenLimiter:  loginlimit.New(tokenAttempts, tokenWindow, 1),
 		grants:        newGrantSource(),
 		previewIDs:    previewIDs,
+		web:           web,
 	}, nil
 }
 
@@ -157,6 +170,9 @@ func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, r
 }
 
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
+	if found.web && a.web == nil {
+		found = route{kind: routeNone}
+	}
 	switch found.kind {
 	case routeNone:
 		problem(w, result, http.StatusNotFound, "not_found")
@@ -170,6 +186,9 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		return
 	case routeUp:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	case routeWebIndex, routeWebShell, routeWebAsset:
+		a.serveWeb(w, r, found, result)
 		return
 	}
 	slots := a.metadata
