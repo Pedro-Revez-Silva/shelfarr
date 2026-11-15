@@ -130,6 +130,26 @@ describe("signing in on the Go runtime", () => {
     expect(server.called("POST", /\/auth\/login$/)).toHaveLength(1);
   });
 
+  test("two submit events in one tick still send one login request", async () => {
+    const gate = deferred<void>();
+    const server = libraryServer(() => signedOut()).on("POST", /\/auth\/login$/, async () => {
+      await gate.promise;
+      return { body: signedIn() };
+    });
+    renderGo({ server });
+    const user = userEvent.setup();
+    await fill(user, "ada", "secret");
+    const form = screen.getByLabelText("Username").closest("form");
+    act(() => {
+      form?.requestSubmit();
+      form?.requestSubmit();
+    });
+    await waitFor(() => expect(server.called("POST", /\/auth\/login$/)).toHaveLength(1));
+    gate.resolve();
+    await screen.findByRole("link", { name: "The Quiet Library" });
+    expect(server.called("POST", /\/auth\/login$/)).toHaveLength(1);
+  });
+
   test("an expired login token is refreshed first, with one login request", async () => {
     let issued = 0;
     const server = libraryServer(() => signedOut(`token-${++issued}`, { expires_in: issued === 1 ? 1 : 600 })).on("POST", /\/auth\/login$/, () => ({ body: signedIn() }));

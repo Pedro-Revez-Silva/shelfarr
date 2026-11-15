@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readUserCode } from "../src/go/ConnectPage";
 import { ACCOUNT, deferred, FakeServer } from "./helpers";
@@ -102,6 +102,34 @@ describe("the native connection consent page", () => {
     expect(screen.getByText("Return to the Shelfarr app to open your library.")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
     expect(window.location.search).toBe("");
+  });
+
+  test("two decision events in one tick still send one request", async () => {
+    const gate = deferred<void>();
+    const server = connectServer().on("POST", /\/api\/v1\/connect$/, async () => {
+      await gate.promise;
+      return { body: { account: ACCOUNT, decision: "allowed", upgrade: false, requesting: false } };
+    });
+    open(server);
+    const allow = await screen.findByRole("button", { name: "Connect app" });
+    const deny = screen.getByRole("button", { name: "Deny" });
+    act(() => {
+      allow.click();
+      allow.click();
+      deny.click();
+    });
+    await waitFor(() => expect(server.called("POST", /\/connect$/)).toHaveLength(1));
+    gate.resolve();
+    await screen.findByRole("heading", { name: "App connected" });
+    expect(server.called("POST", /\/connect$/)).toHaveLength(1);
+    expect(server.called("POST", /\/connect$/)[0]?.body).toEqual({ user_code: "abcd-efgh", decision: "allow" });
+  });
+
+  test("a malformed answer that names the app of another account's code is still not decidable", async () => {
+    open(connectServer({ pending: true, decidable: false, client_name: "Leaked App", scopes: BASE }));
+    await screen.findByRole("heading", { name: "Different account" });
+    expect(screen.queryByText("Leaked App")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Connect|Allow|Deny/ })).toBeNull();
   });
 
   test("Not now is a deliberate, separate decision", async () => {

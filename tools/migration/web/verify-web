@@ -47,6 +47,9 @@ web="$work/repo/apps/web"
 step "web: install from the lockfile, typecheck, unit tests, audit and both production builds"
 (cd "$web" && bun install --frozen-lockfile && bun run typecheck && bun test && bun audit && bun run build)
 
+step "web: mutants of the account, CSRF, double-submit and consent invariants must each fail an assertion"
+(cd "$web" && bun run "$root/tools/migration/web/mutate.ts" "$web")
+
 step "web: the Go-served build is byte-for-byte reproducible and ships only the manifest's files"
 (cd "$web" && bun run build:go --out "$work/assets-a" && bun run build:go --out "$work/assets-b")
 diff -r "$work/assets-a" "$work/assets-b"

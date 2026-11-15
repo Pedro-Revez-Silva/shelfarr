@@ -1,0 +1,66 @@
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+type Mutant = { name: string; file: string; old: string; replacement: string; tests: string[] };
+
+const GO_AUTH = ["test/go-auth.test.tsx"];
+const GO_CONNECT = ["test/go-connect.test.tsx"];
+
+const mutants: Mutant[] = [
+  { name: "sign-in: a second submit while one is pending is sent", file: "src/go/SignInPage.tsx", old: "if (submitting.current) return;", replacement: "", tests: GO_AUTH },
+  { name: "sign-in: the login token is never refreshed before it expires", file: "src/go/SignInPage.tsx", old: "if (current.current.expiresAt - now() > REFRESH_MARGIN_MS) return current.current.value;", replacement: "if (current.current.expiresAt - now() > REFRESH_MARGIN_MS - 1e12) return current.current.value;", tests: GO_AUTH },
+  { name: "sign-in: the password is truncated", file: "src/go/SignInPage.tsx", old: "onSignedIn(await auth.login(username, password, value));", replacement: "onSignedIn(await auth.login(username, password.slice(0, 72), value));", tests: GO_AUTH },
+  { name: "sign-in: the failure is not moved into focus", file: "src/go/SignInPage.tsx", old: "if (failure) summary.current?.focus();", replacement: "", tests: GO_AUTH },
+  { name: "sign-in: fields are not marked invalid after rejected credentials", file: "src/go/SignInPage.tsx", old: "const invalid = failure?.credentials === true;", replacement: "const invalid = false;", tests: GO_AUTH },
+  { name: "sign-in: the password field refuses nothing but pasting is blocked", file: "src/go/SignInPage.tsx", old: 'autoComplete="current-password"', replacement: 'autoComplete="off"', tests: GO_AUTH },
+  { name: "sign-out: the session is not revoked", file: "src/go/GoApp.tsx", old: "await auth.logout(account, value);", replacement: "", tests: GO_AUTH },
+  { name: "mutation: a rejected token is not refreshed", file: "src/api/client.ts", old: 'if (kind === "csrf") this.deps.mutations?.rejected();', replacement: "", tests: GO_AUTH },
+  { name: "mutation: the account is not bound to a write", file: "src/api/client.ts", old: "const headers: Record<string, string> = { Accept: \"application/json\", [ACCOUNT_HEADER]: guard.account };", replacement: "const headers: Record<string, string> = { Accept: \"application/json\" };", tests: GO_AUTH.concat(GO_CONNECT) },
+  { name: "mutation: the CSRF token is not sent", file: "src/api/client.ts", old: 'if (token) headers["X-CSRF-Token"] = token;', replacement: 'if (token) headers["X-Token"] = token;', tests: GO_AUTH.concat(GO_CONNECT) },
+  { name: "consent: an uncertain answer is offered as a fresh decision", file: "src/go/ConnectPage.tsx", old: 'return state.kind === "deciding" ? { kind: "uncertain", code: state.code, grant: state.grant } : state;', replacement: 'return state.kind === "deciding" ? { kind: "decidable", code: state.code, grant: state.grant, notice: null } : state;', tests: GO_CONNECT },
+  { name: "consent: a second decision is sent while one is pending", file: "src/go/ConnectPage.tsx", old: 'if (deciding.current || state.kind !== "decidable") return;', replacement: 'if (state.kind !== "decidable" && state.kind !== "deciding") return;', tests: GO_CONNECT },
+  { name: "consent: a code of another account is decidable", file: "src/go/ConnectPage.tsx", old: "if (!grant.decidable || grant.client_name === undefined) return null;", replacement: "if (grant.client_name === undefined) return null;", tests: GO_CONNECT },
+  { name: "consent: loading the page decides", file: "src/go/ConnectPage.tsx", old: "if (state.kind === \"inspecting\") inspect(state.code);", replacement: "if (state.kind === \"inspecting\") { inspect(state.code); void api.decideConnection(state.code, \"allow\"); }", tests: GO_CONNECT },
+  { name: "consent: the permissions are not the offered scopes", file: "src/go/ConnectPage.tsx", old: "{grant.scopes.map((scope) => (", replacement: "{['library:read'].map((scope) => (", tests: GO_CONNECT },
+  { name: "consent: the upgrade wording is lost", file: "src/go/ConnectPage.tsx", old: 'const title = grant.upgrade ? "Allow requesting from your app" : "Connect your Shelfarr app";', replacement: 'const title = "Connect your Shelfarr app";', tests: GO_CONNECT },
+  { name: "consent: the code is taken from the first value", file: "src/go/ConnectPage.tsx", old: "const last = values[values.length - 1];", replacement: "const last = values[0];", tests: GO_CONNECT },
+  { name: "library: dead classic handoffs are shown in Go mode", file: "src/components/Navigation.tsx", old: 'const handoffs = mode === "rails";', replacement: 'const handoffs = mode === "rails" || mode === "go";', tests: GO_AUTH },
+  { name: "library: a reader link that would 404 is shown in Go mode", file: "src/components/DetailsPage.tsx", old: 'available && mode === "go" ? (', replacement: 'available && (mode as string) === "never" ? (', tests: GO_AUTH },
+  { name: "library: a refused format is shown as a generic server error", file: "src/api/client.ts", old: 'if (code?.startsWith("unsupported_")', replacement: 'if (false && code?.startsWith("unsupported_")', tests: GO_AUTH },
+  { name: "boot: an unknown view is accepted", file: "src/contract.ts", old: 'view: z.enum(goViews),', replacement: "view: z.string(),", tests: GO_AUTH },
+  { name: "boot: an account in the Go boot block is trusted", file: "src/contract.ts", old: "export const goBootSchema = z.object({", replacement: "export const goBootSchema = z.looseObject({", tests: GO_AUTH },
+];
+
+const root = process.argv[2];
+if (!root) throw new Error("usage: bun mutate.ts PRIVATE_WEB_COPY");
+
+let survived = 0;
+for (const mutant of mutants) {
+  const work = mkdtempSync(join(process.env["TMPDIR"] ?? "/var/tmp", "mut-"));
+  try {
+    for (const entry of readdirSync(root)) if (entry !== "node_modules" && entry !== "e2e") cpSync(join(root, entry), join(work, entry), { recursive: true });
+    symlinkSync(join(root, "node_modules"), join(work, "node_modules"));
+    const path = join(work, mutant.file);
+    const text = readFileSync(path, "utf8");
+    if (text.split(mutant.old).length !== 2) throw new Error(`mutation target occurs ${text.split(mutant.old).length - 1} times in ${mutant.file}: ${mutant.old}`);
+    writeFileSync(path, text.replace(mutant.old, () => mutant.replacement));
+    const typecheck = Bun.spawnSync(["bun", "x", "tsc", "--noEmit"], { cwd: work });
+    const compiles = typecheck.exitCode === 0;
+    const run = Bun.spawnSync(["bun", "test", ...mutant.tests], { cwd: work, env: { ...process.env, CI: "1" } });
+    const output = run.stdout.toString() + run.stderr.toString();
+    const assertion = /\(fail\)/.test(output) && /error:|expect\(|Expected|TestingLibraryElementError/.test(output);
+    if (!compiles) {
+      console.log(`INVALID  ${mutant.name}: the mutant does not typecheck, which proves nothing`);
+      survived += 1;
+    } else if (run.exitCode === 0 || !assertion) {
+      console.log(`SURVIVED ${mutant.name}`);
+      survived += 1;
+    } else {
+      console.log(`detected ${mutant.name}`);
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+console.log(`${mutants.length - survived}/${mutants.length} web mutants detected by an assertion`);
+process.exit(survived === 0 ? 0 : 1);
