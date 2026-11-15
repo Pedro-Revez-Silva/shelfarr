@@ -148,3 +148,23 @@ func TestBusyWritersAreReportedAsBusyNotAsMissing(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestOpenRefusesADatabaseWithoutWhatPairingReadsAndWrites(t *testing.T) {
+	for _, change := range []string{
+		`ALTER TABLE api_tokens DROP COLUMN connection_key`,
+		`ALTER TABLE api_tokens DROP COLUMN issued_via`,
+		`ALTER TABLE api_tokens DROP COLUMN token_prefix`,
+		`ALTER TABLE api_tokens DROP COLUMN name`,
+		`ALTER TABLE consumer_device_grants DROP COLUMN last_polled_at`,
+		`ALTER TABLE consumer_device_grants DROP COLUMN poll_interval`,
+		`ALTER TABLE consumer_device_grants DROP COLUMN scopes`,
+		`ALTER TABLE consumer_device_grants DROP COLUMN replaces_api_token_id`,
+		`DROP TABLE consumer_device_grants`,
+	} {
+		path := livetest.Create(t)
+		livetest.Exec(t, path, change)
+		if _, err := Open(context.Background(), path, Options{}); !errors.Is(err, ErrSchemaUnsupported) {
+			t.Errorf("%s: %v", change, err)
+		}
+	}
+}

@@ -426,6 +426,7 @@ module Migration
         token("poll-a-pending-before-expiry", "dev3a", at: at(600 - Rational(1, 1_000_000)))
         token("poll-b-at-expiry", "dev3b", at: at(600))
         token("poll-b-after-expiry", "dev3b", at: at(601))
+        decide("decide-at-expiry", "pair_one", "${user3a}", "allow", at: at(600))
         decide("decide-expired-code", "pair_one", "${user3b}", "allow", at: at(601))
         decide("decide-unknown-code", "pair_one", "BCDF-GHJK", "allow", at: at(602))
         decide("decide-malformed-code", "pair_one", "not a code", "allow", at: at(603))

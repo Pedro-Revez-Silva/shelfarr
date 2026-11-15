@@ -29,7 +29,6 @@ progress writes, which answer `PUT`.
 
 ### Explicitly refused (HTTP 501, `not_implemented_in_go_runtime`, before authentication, no side effects)
 
-Pairing and token creation (`POST auth/device`, `auth/token`), token revocation (`POST auth/revoke`),
 `discover`, `requests` (list, show, create, delete), `assets/:id/reading_order`, `read_along`
 (manifest, resources, audio), `transfer_grant` and `transfer`. Kobo and the browser HTML shell stay with Rails; the browser session and `/preview/api/v1` JSON are described in
 [Browser sessions and the preview JSON](#browser-sessions-and-the-preview-json). Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
@@ -77,7 +76,7 @@ database. A second Go instance exits `3`. **That lock does not fence Rails.** Ru
 runtime against the same database at the same time means two writers of `api_tokens`,
 `consumer_progresses` and `consumer_reading_states`; the guarded updates keep each transition atomic
 under SQLite's single writer, but one owning backend per write domain remains a handover prerequisite
-and this slice does not claim it. No other table is written, ever: no migration, no schema creation,
+and this slice does not claim it. No other table than those listed in each section is written: no migration, no schema creation,
 no key generation. Rails and Go writing the same account's place at the same time is unsupported and
 is not covered by any test; sequential use (Rails writes, then Go reads and continues, or the reverse) is
 what the verifier proves.
@@ -269,6 +268,118 @@ these invariants must each fail an assertion.
 
 Not proven: a real browser, TLS or proxy behaviour, any production data, OIDC, second factors, signup and recovery, PDF and CBZ pages,
 read-along, power loss, Rails and Go writing the same rows at once, and clock zones other than UTC.
+
+## Native pairing, token exchange and revoke
+
+Status: experimental, default-off, backend only. This slice lets the runtime run the native connection lifecycle
+that installed Android and iOS apps use, with the Rails wire and storage contract. **The browser part is JSON
+only.** The consent page the verification address names (`/consumer/connect`, an HTML view) is **not ported**: Rails
+keeps serving it, and the TypeScript consent UI is a later slice. Nothing here is a whole native pairing
+acceptance claim: no real browser, app or device took part.
+
+### What is served
+
+| Route | Authentication | Notes |
+| --- | --- | --- |
+| `POST /api/consumer/v1/auth/device` | public, per-address limit 20 per 3 min | `{client_name, scope?}` (JSON). An `Authorization` header asks to **upgrade** that connection. |
+| `POST /api/consumer/v1/auth/token` | public, per-address limit 120 per 1 min | `{device_code}` (JSON). |
+| `POST /api/consumer/v1/auth/revoke` | bearer, **no scope required** | Ends the whole connection. `204`. |
+| `GET`, `HEAD /preview/api/v1/connect?user_code=` | browser session, `X-Shelfarr-Account` | New. Describes a displayed code. Never decides. |
+| `POST /preview/api/v1/connect` | browser session, `X-Shelfarr-Account`, CSRF and `Origin` | New. `{user_code, decision: "allow" \| "deny"}`. |
+
+The three native routes answer `Cache-Control: private, no-store` and `Referrer-Policy: no-referrer`; they never read a
+cookie. Bodies are JSON objects of at most 64 KiB within `-body-timeout` (an empty body, or a JSON array, string or
+`null`, is an empty object, as in Rails). A `GET` on any of the three native routes is `404`, as in Rails.
+
+* **device** returns `{device_code, user_code, verification_uri, verification_uri_complete, expires_in: 600, interval: 5}`
+  exactly as Rails does. `device_code` is 32 random bytes as 64 lowercase hex characters; `user_code` is 8 characters of
+  `BCDFGHJKLMNPQRSTVWXYZ23456789` shown `XXXX-XXXX`; only their SHA-256 digests are stored. The verification addresses are
+  built **only** from `-browser-origin` (`501 browser_origin_not_configured` without it); `Host`, `Forwarded` and `X-Forwarded-*`
+  are never read, and only `user_code` appears in `verification_uri_complete`. Root mount only: a deployment under a sub-path is
+  unsupported, as for the browser foundation. Order, as in Rails: name (`400 invalid_request`: a string, not blank after Ruby
+  `strip` and `[[:space:]]`, at most 80 bytes), then the Authorization header (`401`, empty body, for any bearer that is invalid,
+  expired, revoked, ownerless, orphaned, of a deleted owner or without `library:read`; never a fallback to a fresh connection; a
+  blank header is no header), then `scope` (`400 invalid_scope`: absent, `null` or whitespace is `library:read progress:write`; the only extras
+  are the whole bundle `search:read requests:read requests:write`; anything else, privileged scopes included, is refused). The security
+  state of an upgrade (usable origin, same owner, owner not deleted, `library:read`) is **re-read inside the write transaction**.
+  Grants expired for more than a day are removed in the same transaction (`expires_at < now - 1 day`), nothing else.
+* **token** exchanges once, in one transaction on the grant row: expired or consumed `expired_token`, denied or deleted approver
+  `access_denied`, polling faster than the interval `slow_down` (`interval + 5`, at most 60), not yet approved
+  `authorization_pending`, then issue. Pending and `slow_down` bookkeeping commits although the answer is `400`. Exactly the same
+  precedence and the exact boundary instants as Rails (`expires_at <= now` is expired; a poll exactly `interval` seconds after the
+  last one is on time). Issuing inserts the `api_tokens` row (`issued_via consumer_device`, `shf_` plus 40 base58 characters
+  chosen by rejection sampling, SHA-256 digest, first-12 prefix, scopes JSON, 30-day expiry, owner, the connection key) and marks the
+  grant consumed **in the same commit**. The access token is returned once and never stored; a response lost after the commit
+  is **not recoverable**: the retry is `expired_token` (as in Rails) and the app starts again. For an upgrade the previous credential keeps working until the new one is
+  first used, so a lost response never strands the connection. A grant never grants administrator scopes, even for an administrator.
+* **revoke** revokes every token of the caller's `(user_id, connection_key)` (only the presented token when the key is blank, even for
+  whitespace keys) and denies every unconsumed grant that replaces any of them. Rails' `update_all` also rewrites `revoked_at` of
+  family members that were already revoked; Go does the same so the rows match. Automatic retirement of an adopted origin never
+  revokes the replacement.
+* **connect (browser JSON)**, session, allowlist, exact `X-Shelfarr-Account` and the Go CSRF/`Origin` guard from the browser slice apply.
+  `GET`/`HEAD` never decide. The answer is `{"account", "account_name", "grant": null | {"pending": true, "decidable": false} | {"pending": true, "decidable": true, "client_name", "upgrade", "requesting", "scopes", "expires_at"}}`:
+  an unknown, malformed, expired, decided or used code is `null`; a pending code of another account's connection discloses no
+  client name. `POST` answers `200 {"account", "decision": "allowed" \| "denied", "upgrade", "requesting"}`, `400 invalid_request`
+  (decision), `403 different_account` (nothing changes), `422 invalid_grant` (unknown, expired, used), plus the guard errors of the
+  browser slice. A valid session does not authorize anything by itself: only an explicit decision with CSRF does.
+
+### Rows written (the whole list)
+
+`consumer_device_grants` (insert, poll bookkeeping, decision, consumption, cleanup, denial by revoke) and `api_tokens` (insert on exchange, `connection_key`
+assignment on a legacy origin, `revoked_at`/`updated_at` by revoke, plus the adoption and `last_used_at` writes of the bearer lane).
+No migration, no new table, no queue, cable or cache. Required columns of `api_tokens` and `consumer_device_grants` are now checked at start
+(`database-schema`). One owning backend per table remains a handover prerequisite: Rails and Go writing these tables at the same time is
+unsupported and untested; sequential use in either direction is what the verifier proves.
+
+### Deliberate differences from Rails
+
+1. JSON object bodies only. Rails also accepts form or query parameters, which no installed client sends; Go answers `415` for another content
+   type and `400 invalid_json` (JSON) where Rails renders its HTML `400` for malformed JSON. An oversized body is `413 request_too_large` (Rails `413` too).
+2. Separate rate-limit buckets. Rails' two `rate_limit` rules share one cache key per address, so device creation and polling count against each other;
+   Go counts device creations (20 per 3 minutes) and polls (120 per minute) separately, per TCP peer address (no forwarded headers), in fixed windows. The
+   verifier replays the Rails limits with a frozen-clock counter that mirrors the documented windows.
+3. The verification address needs `-browser-origin`; Rails derives it from the request.
+4. A `GET`, `HEAD` or other verb on the three native routes is `404`, as in Rails.
+5. `401` for an upgrade whose origin credential became unusable while the request waited (Rails would create the grant and refuse at exchange).
+6. After a write timeout the runtime still has two seconds to write its `503 request_timeout` (the write deadline was the request deadline, so the client saw a closed connection instead).
+
+### Contract before and after
+
+```
+POST /api/consumer/v1/auth/device   {"client_name":"Pixel","scope":"library:read progress:write search:read requests:read requests:write"}   [Authorization: Bearer <current token>]
+  before  501 {"error":"not_implemented_in_go_runtime"}
+  after   200 {"device_code":"<64 hex>","user_code":"ABCD-EFGH","verification_uri":"<origin>/consumer/connect","verification_uri_complete":"<origin>/consumer/connect?user_code=ABCD-EFGH","expires_in":600,"interval":5}
+          400 invalid_request | invalid_scope   401 (empty)   429 slow_down   501 browser_origin_not_configured
+POST /api/consumer/v1/auth/token    {"device_code":"<64 hex>"}
+  before  501      after  200 {"access_token":"shf_...","token_type":"Bearer","scope":"...","expires_in":2592000}
+                          400 authorization_pending | slow_down | access_denied | expired_token   429 slow_down
+POST /api/consumer/v1/auth/revoke   Authorization: Bearer <token>
+  before  501      after  204   401
+GET  /preview/api/v1/connect?user_code=ABCD-EFGH      before 404   after 200 {"account","account_name","grant":...}
+POST /preview/api/v1/connect {"user_code","decision"}   before 404   after 200 | 400 | 403 different_account | 422 invalid_grant | guard errors
+```
+
+Rails behaviour, storage formats and the schema are unchanged. Go writes exactly the Rails forms (microsecond datetime text, `scopes` JSON
+or `NULL` for the base pair, SHA-256 digests, a UUID v4 connection key), so Rails reads, exchanges, authenticates, adopts and revokes everything Go
+wrote, and Go continues everything Rails wrote. Rolling back is stopping the Go runtime; reverting the commits removes the routes and the two
+bounded-grace and column checks without a migration.
+
+### Verification
+
+`tools/migration/pairing/verify-pairing` (CI job `go-pairing`) produces both bundles with the real Rails code, records 216 steps per fixture with the
+real application at a frozen clock (Rails device creation, polling, the real `/consumer/connect` consent through real sessions, exchange, upgrade,
+adoption, revoke, legacy scope storage, cleanup, deleted approvers and owners, the rate limit) together with **the per-step effect on the
+`consumer_device_grants` and `api_tokens` rows** (random values are validated structurally and against their persisted digests and connection lineage, never erased), and the race-instrumented executable
+must match status, headers, JSON and every row change at every step, and the final tables. It then runs Go against Rails-created pending, approved,
+denied, upgrade and family state and leaves Go-created state for the **real Rails models**, which exchange, decide, authenticate, adopt and revoke it
+(`verify_go_pairing.rb`). Real sockets and processes cover one exchange under 40 concurrent polls, 24 concurrent decisions, 15 concurrent creations, 20 concurrent adoptions, an
+explicit revoke against an adoption in both orders (parked inside the write lock), SIGKILL before and after the commit of creation, exchange, decision and revoke,
+a lost upgrade response, an externally held write lock, request deadlines, state changed while a write waited, CSRF, origin and account guards over cookie jars, the
+off switches, bounded bodies and concurrency, schema refusal, the production binary on real time with the seams' environment set, and a scan of every output and of the database files for
+plaintext secrets. Mutants of the critical invariants must each fail an assertion.
+
+Not proven: a real browser, the HTML consent page, a real app or device, TLS or proxy behaviour, production data, requests and acquisition, transfer grants, the legacy
+global-admin API, Rails and Go writing the same rows at once, power loss, clock zones other than UTC, and a deployment under a sub-path.
 
 ## Database access
 

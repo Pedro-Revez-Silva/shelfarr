@@ -3,6 +3,7 @@ package devicegrant
 import (
 	"bytes"
 	"errors"
+	"io"
 	"reflect"
 	"regexp"
 	"strings"
@@ -177,5 +178,18 @@ func TestFirstCharactersCountsCharactersNotBytes(t *testing.T) {
 	}
 	if got := FirstCharacters("ab", 32); got != "ab" {
 		t.Fatal(got)
+	}
+}
+
+func TestBiasedRandomBytesAreRejectedNotWrapped(t *testing.T) {
+	rejected := bytes.Repeat([]byte{255}, 80)
+	accepted := bytes.Repeat([]byte{0}, 80)
+	token, err := NewAccessToken(io.MultiReader(bytes.NewReader(rejected), bytes.NewReader(accepted)))
+	if err != nil || token != TokenPrefix+strings.Repeat("1", 40) {
+		t.Fatalf("%q %v", token, err)
+	}
+	user, err := NewCodes(io.MultiReader(bytes.NewReader(make([]byte, 32)), bytes.NewReader(bytes.Repeat([]byte{255}, 16)), bytes.NewReader(make([]byte, 16))))
+	if err != nil || user.User != strings.Repeat("B", 8) {
+		t.Fatalf("%q %v", user.User, err)
 	}
 }

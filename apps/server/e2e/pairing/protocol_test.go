@@ -762,11 +762,13 @@ func TestARuntimeWithoutTheGrantSchemaRefusesToStart(t *testing.T) {
 			"missing column": `ALTER TABLE consumer_device_grants DROP COLUMN last_polled_at`,
 		} {
 			exec1(t, copied.database, statement)
-			command := exec.Command(binaryPath, "-experimental", "-database", copied.database, "-lock-file", copied.lock, "-library-root", f.doc.BundleMediaRoot, "-listen", "127.0.0.1:0")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			command := exec.CommandContext(ctx, binaryPath, "-experimental", "-database", copied.database, "-lock-file", copied.lock, "-library-root", f.doc.BundleMediaRoot, "-listen", "127.0.0.1:0")
 			command.Env = []string{"SECRET_KEY_BASE_FILE=" + f.secretFile()}
 			output, err := command.CombinedOutput()
+			cancel()
 			if err == nil || !strings.Contains(string(output), "refused: database-schema") {
-				t.Fatalf("%s: %v %s", name, err, output)
+				t.Fatalf("%s: the runtime started or failed another way: %v %s", name, err, output)
 			}
 			exec1(t, copied.database, map[string]string{"missing table": `ALTER TABLE consumer_device_grants_moved RENAME TO consumer_device_grants`, "missing column": `ALTER TABLE consumer_device_grants ADD COLUMN last_polled_at datetime`}[name])
 		}
