@@ -5,6 +5,7 @@ import { AccountBar } from "./AccountBar";
 import { PrimaryNavigation } from "./Navigation";
 import { LockedScreen } from "./LockedScreen";
 import { useServices } from "../services";
+import { useAccountRevalidation } from "../revalidation";
 
 export function Shell() {
   const guard = useGuardState();
@@ -19,6 +20,7 @@ export function Shell() {
 
 function ActiveShell({ classicLibrary }: { classicLibrary: string }) {
   const session = useSession();
+  useAccountRevalidation();
 
   return (
     <div className="shell">

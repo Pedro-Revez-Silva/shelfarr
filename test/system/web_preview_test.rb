@@ -246,7 +246,7 @@ module WebPreviewFlows
       visit at("/preview/library/#{@ebook.id}")
       assert_selector "h1", text: "The Quiet Library"
       sign_in(users(:two), visit_first: false)
-      page.execute_script("window.dispatchEvent(new Event('visibilitychange'))")
+      page.execute_script("window.dispatchEvent(new Event('focus'))")
       assert_selector "h1", text: "The signed-in account changed", wait: 15
       assert_no_text "The Quiet Library"
       assert_no_selector "nav"

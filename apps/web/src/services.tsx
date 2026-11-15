@@ -11,6 +11,7 @@ export type Services = {
   api: ApiClient;
   queryClient: QueryClient;
   keys: QueryKeys;
+  revalidate: () => Promise<void>;
 };
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
@@ -53,7 +54,16 @@ export function createServices({ boot, csrfToken, fetcher }: ServiceInputs): Ser
     queryClient.clear();
   });
   const deps = fetcher ? { boot, guard, csrfToken, fetcher } : { boot, guard, csrfToken };
-  return { boot, guard, api: new ApiClient(deps), queryClient, keys: createQueryKeys(boot.account) };
+  const api = new ApiClient(deps);
+  const keys = createQueryKeys(boot.account);
+  const revalidate = () => {
+    if (!guard.isActive() || guard.hasPendingValidation()) return guard.settled();
+    const check = queryClient
+      .fetchQuery({ queryKey: keys.session, queryFn: ({ signal }) => api.session(signal), staleTime: 0 })
+      .then(() => undefined, () => undefined);
+    return guard.track(check);
+  };
+  return { boot, guard, api, queryClient, keys, revalidate };
 }
 
 const ServicesContext = createContext<Services | null>(null);

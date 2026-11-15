@@ -30,6 +30,7 @@ type RequestOptions<T> = {
   schema: z.ZodType<T>;
   signal?: AbortSignal | undefined;
   method?: "GET" | "PUT";
+  validatesAccount?: boolean;
   body?: unknown;
   account: (value: T) => string;
 };
@@ -51,7 +52,7 @@ export class ApiClient {
   }
 
   session(signal?: AbortSignal): Promise<Session> {
-    return this.request({ path: "/session", schema: sessionSchema, signal, account: (value) => value.account.id });
+    return this.request({ path: "/session", schema: sessionSchema, signal, validatesAccount: true, account: (value) => value.account.id });
   }
 
   library(filters: LibraryFilters, cursor: string | undefined, signal?: AbortSignal): Promise<LibraryPage> {
@@ -115,6 +116,7 @@ export class ApiClient {
     }
 
     const payload = await readJson(response);
+    if (!options.validatesAccount) await guard.settled();
     guard.assertActive();
 
     if (!response.ok) throw this.failure(response.status, payload);

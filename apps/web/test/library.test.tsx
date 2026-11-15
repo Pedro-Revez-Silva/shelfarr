@@ -247,3 +247,96 @@ describe("the library page", () => {
     await screen.findByText("That page is not part of this preview");
   });
 });
+
+describe("account revalidation", () => {
+  test("returning focus to a visible window checks the account and locks a switched tab", async () => {
+    const server = libraryServer({ "": page([summary({ title: "Ada's private book" })]) });
+    renderApp({ server });
+    await screen.findByRole("link", { name: "Ada's private book" });
+    const checks = server.called("GET", /\/api\/v1\/session$/).length;
+    server.on("GET", /\/api\/v1\/session$/, () => ({ status: 401, body: { error: "account_changed" } }));
+    window.dispatchEvent(new Event("blur"));
+    window.dispatchEvent(new Event("focus"));
+    await screen.findByRole("heading", { name: "The signed-in account changed" });
+    expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(checks + 1);
+    expect(screen.queryByText("Ada's private book")).toBeNull();
+  });
+
+  test("a page restored from the back-forward cache checks the account too", async () => {
+    const server = libraryServer({ "": page([summary()]) });
+    renderApp({ server });
+    await screen.findByRole("link", { name: "The Quiet Library" });
+    const checks = server.called("GET", /\/api\/v1\/session$/).length;
+    window.dispatchEvent(new Event("pageshow"));
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(checks + 1));
+  });
+
+  test("simultaneous focus events share one check", async () => {
+    const gate = deferred<void>();
+    const server = libraryServer({ "": page([summary()]) });
+    renderApp({ server });
+    await screen.findByRole("link", { name: "The Quiet Library" });
+    const checks = server.called("GET", /\/api\/v1\/session$/).length;
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      await gate.promise;
+      return { body: session() };
+    });
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("pageshow"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(checks + 1));
+    gate.resolve();
+  });
+
+  test("a response for the previous account that arrives while the check is pending is held and never shown", async () => {
+    const libraryGate = deferred<void>();
+    const sessionGate = deferred<void>();
+    const server = standardServer();
+    const { services } = renderApp({ server });
+    await screen.findByText("Ada Reader");
+    server.on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+      await libraryGate.promise;
+      return { body: page([summary({ title: "A private book after the switch" })]) };
+    });
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      await sessionGate.promise;
+      return { status: 401, body: { error: "account_changed" } };
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: "Audiobooks" }));
+    await waitFor(() => expect(server.called("GET", /type=audiobook/).length).toBeGreaterThan(0));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(services.guard.hasPendingValidation()).toBe(true));
+    libraryGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.queryByText("A private book after the switch")).toBeNull();
+    sessionGate.resolve();
+    await screen.findByRole("heading", { name: "The signed-in account changed" });
+    expect(screen.queryByText("A private book after the switch")).toBeNull();
+    expect(services.queryClient.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  test("a held response is delivered once the check confirms the account", async () => {
+    const libraryGate = deferred<void>();
+    const sessionGate = deferred<void>();
+    const server = standardServer();
+    const { services } = renderApp({ server });
+    await screen.findByText("Ada Reader");
+    server.on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+      await libraryGate.promise;
+      return { body: page([summary({ title: "Still Ada's book" })]) };
+    });
+    server.on("GET", /\/api\/v1\/session$/, async () => {
+      await sessionGate.promise;
+      return { body: session() };
+    });
+    await userEvent.setup().click(screen.getByRole("radio", { name: "Audiobooks" }));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(services.guard.hasPendingValidation()).toBe(true));
+    libraryGate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByText("Still Ada's book")).toBeNull();
+    sessionGate.resolve();
+    await screen.findByRole("link", { name: "Still Ada's book" });
+  });
+});

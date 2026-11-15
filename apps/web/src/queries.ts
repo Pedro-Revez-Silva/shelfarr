@@ -15,7 +15,7 @@ export function useSession() {
     queryKey: keys.session,
     queryFn: ({ signal }) => api.session(signal),
     staleTime: 15_000,
-    refetchOnWindowFocus: "always",
+    refetchOnWindowFocus: false,
   });
 }
 
