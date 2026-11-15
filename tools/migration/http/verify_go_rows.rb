@@ -67,7 +67,7 @@ class Verifier
   end
 
   def get(path, label)
-    @session.get(path, headers: { "Authorization" => "Bearer #{@tokens.fetch(label)}" })
+    @session.get(path, headers: { "Authorization" => "Bearer #{@tokens.fetch(label)}", "X-Shelfarr-Reader-Formats" => "epub,pdf,cbz" })
     [ @session.response.status, JSON.parse(@session.response.body) ]
   end
 
@@ -131,6 +131,30 @@ class Verifier
     @session.put("#{PREFIX}/library/#{row.book_id}/reading_status", params: JSON.generate(status: "finished"), headers: { "Authorization" => "Bearer #{@tokens.fetch(label)}", "Content-Type" => "application/json" })
     expect(@session.response.status == 200, "Rails could not set a status on a Go-written book")
     @counts[:rails_writes] += 2
+    verify_rails_page_writes_on_top
+  end
+
+  def verify_rails_page_writes_on_top
+    ConsumerProgress.includes(:user, :book).order(:id).each do |row|
+      label = label_for(row.user)
+      next unless label && !row.book.audiobook?
+
+      assets = Consumer::LibraryAssets.new(row.book, formats: Consumer::ReaderFormats::SUPPORTED)
+      asset = assets.find(row.asset_id)
+      next unless asset && %w[pdf cbz].include?(asset.format)
+
+      locator = if asset.format == "pdf"
+        { "href" => "document.pdf", "type" => "application/pdf", "locations" => { "position" => 2 } }
+      else
+        page = Consumer::LibraryAssets.new(row.book, formats: %w[cbz]).reading_order(asset.id).last.first
+        { "href" => page[:href], "type" => page[:media_type], "locations" => { "position" => 1 } }
+      end
+      body = JSON.generate(asset_id: asset.id, expected_version: row.version, client_mutation_id: SecureRandom.uuid, locator: locator)
+      @session.put("#{PREFIX}/library/#{row.book_id}/progress", params: body, headers: { "Authorization" => "Bearer #{@tokens.fetch(label)}", "Content-Type" => "application/json" })
+      parsed = JSON.parse(@session.response.body)
+      expect(@session.response.status == 200 && parsed.dig("progress", "version") == row.version + 1 && parsed.dig("progress", "locator") == locator, "Rails could not continue a Go-written #{asset.format} page")
+      @counts[:rails_page_writes] += 1
+    end
   end
 
   def report
