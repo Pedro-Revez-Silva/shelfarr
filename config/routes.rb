@@ -201,6 +201,17 @@ Rails.application.routes.draw do
   put "read/:id/progress", to: "consumer/library#progress", as: :consumer_progress
   put "read/:id/reading_status", to: "consumer/library#reading_status", as: :consumer_reading_status
 
+  get "preview", to: "web_preview/shell#index", as: :web_preview
+  get "preview/library", to: "web_preview/shell#show", as: :web_preview_library
+  get "preview/library/:id", to: "web_preview/shell#show", as: :web_preview_publication, constraints: { id: /[1-9]\d{0,18}/ }
+  scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
+    get "session", to: "sessions#show"
+    get "continue", to: "library#continue"
+    get "library", to: "library#index"
+    get "library/:id", to: "library#show"
+    put "library/:id/reading_status", to: "library#reading_status"
+  end
+
   namespace :integrations, defaults: { format: :json } do
     post "telegram/webhook", to: "telegram_webhooks#create"
   end

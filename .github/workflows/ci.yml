@@ -28,6 +28,24 @@ jobs:
           bun run build
           git diff --exit-code -- ../../vendor/javascript/consumer_reader_engine.js
 
+  web-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+      - name: Verify the static web preview
+        working-directory: apps/web
+        run: |
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun test
+          bun audit
+          bun run build
+
   quality:
     runs-on: ubuntu-latest
 
@@ -37,6 +55,17 @@ jobs:
 
       - name: Install native dependencies
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y iptables libvips
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Build the static web preview
+        working-directory: apps/web
+        run: |
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@26e5b7d197ebf60545ee9667bcbace0be11ccaec # v1.334.0
@@ -131,7 +160,7 @@ jobs:
         run: test/filesystem_contracts/cifs-smoke.sh
 
   container:
-    needs: [quality, companion, filesystem-contracts, web-reader]
+    needs: [quality, companion, filesystem-contracts, web-reader, web-preview]
     runs-on: ubuntu-latest
 
     steps:
