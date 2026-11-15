@@ -6,7 +6,10 @@ import (
 	"strings"
 )
 
-const apiPrefix = "/api/consumer/v1/"
+const (
+	apiPrefix     = "/api/consumer/v1/"
+	previewPrefix = "/preview/api/v1/"
+)
 
 type routeKind int
 
@@ -24,6 +27,14 @@ const (
 	routeAsset
 	routeExcluded
 	routeWrongMethod
+	routeBrowserSession
+	routeBrowserLibrary
+	routeBrowserContinue
+	routeBrowserPublication
+	routeBrowserStatus
+	routeAuthBootstrap
+	routeAuthLogin
+	routeAuthLogout
 )
 
 type route struct {
@@ -90,6 +101,9 @@ func classify(method, path string) route {
 	case "/readyz":
 		return supported(method, route{kind: routeReady, name: "readyz"})
 	}
+	if strings.HasPrefix(path, previewPrefix) {
+		return classifyPreview(method, strings.TrimPrefix(path, previewPrefix))
+	}
 	if !strings.HasPrefix(path, apiPrefix) {
 		return route{kind: routeNone}
 	}
@@ -130,4 +144,27 @@ func served(method string, found route, allowed ...string) route {
 		return route{kind: routeWrongMethod, name: found.name, allow: strings.Join(allowed, ", ")}
 	}
 	return found
+}
+
+func classifyPreview(method, rest string) route {
+	segments := strings.Split(rest, "/")
+	switch {
+	case rest == "session":
+		return supported(method, route{kind: routeBrowserSession, name: "browser_session"})
+	case rest == "library":
+		return supported(method, route{kind: routeBrowserLibrary, name: "browser_library"})
+	case rest == "continue":
+		return supported(method, route{kind: routeBrowserContinue, name: "browser_continue"})
+	case len(segments) == 2 && segments[0] == "library" && segmentOK(segments[1]):
+		return supported(method, route{kind: routeBrowserPublication, name: "browser_publication", id: segments[1]})
+	case len(segments) == 3 && segments[0] == "library" && segments[2] == "reading_status" && segmentOK(segments[1]):
+		return served(method, route{kind: routeBrowserStatus, name: "browser_reading_status", id: segments[1]}, http.MethodPut)
+	case rest == "auth/bootstrap":
+		return served(method, route{kind: routeAuthBootstrap, name: "auth_bootstrap"}, http.MethodGet)
+	case rest == "auth/login":
+		return served(method, route{kind: routeAuthLogin, name: "auth_login"}, http.MethodPost)
+	case rest == "auth/logout":
+		return served(method, route{kind: routeAuthLogout, name: "auth_logout"}, http.MethodPost)
+	}
+	return route{kind: routeNone}
 }

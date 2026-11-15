@@ -35,7 +35,7 @@ func run(args []string, stderr *os.File) int {
 	flags.SetOutput(stderr)
 	var config gohttp.Config
 	var roots listFlag
-	var secretFile, channels string
+	var secretFile, channels, previewUsers string
 	experimental := flags.Bool("experimental", false, "acknowledge that this runtime is experimental and not a production server")
 	flags.StringVar(&config.DatabasePath, "database", "", "absolute path of an existing compatible SQLite database")
 	flags.StringVar(&config.LockPath, "lock-file", "", "absolute path of the single-owner lock file")
@@ -45,6 +45,9 @@ func run(args []string, stderr *os.File) int {
 	flags.BoolVar(&config.AllowPublicBind, "allow-non-loopback", false, "permit a listen address that is not loopback")
 	flags.StringVar(&config.ServerVersion, "server-version", "unknown", "version reported by server.json")
 	flags.StringVar(&channels, "android-channels", "release", "Android channels reported by server.json")
+	flags.StringVar(&previewUsers, "preview-user-ids", "", "comma-separated user ids allowed to use the browser preview API (default: SHELFARR_WEB_PREVIEW_USER_IDS; off when empty)")
+	flags.StringVar(&config.BrowserOrigin, "browser-origin", "", "canonical browser origin, scheme://host[:port] with no path; required for sign-in and every browser write")
+	flags.IntVar(&config.MaxLoginWorkers, "max-login-workers", 0, "concurrent password checks")
 	flags.IntVar(&config.MaxMetadataRequests, "max-metadata-requests", 0, "concurrent metadata requests")
 	flags.IntVar(&config.MaxMediaStreams, "max-media-streams", 0, "concurrent media streams")
 	flags.DurationVar(&config.StreamWriteStall, "stream-write-stall", 0, "longest a media client may stall a single write")
@@ -61,6 +64,20 @@ func run(args []string, stderr *os.File) int {
 		return exitUsage
 	}
 	config.Clock = testClock()
+	configured := os.Getenv("SHELFARR_WEB_PREVIEW_USER_IDS")
+	if previewUsers != "" && configured != "" {
+		fmt.Fprintln(stderr, "refused: preview-user-ids-ambiguous")
+		return exitUsage
+	}
+	if previewUsers == "" {
+		previewUsers = configured
+	}
+	ids, wellFormed := gohttp.ParsePreviewUsers(previewUsers)
+	if !wellFormed {
+		fmt.Fprintln(stderr, "warning: preview-user-ids-malformed; the browser preview stays off")
+	}
+	config.PreviewUserIDs = ids
+	config.PasswordlessEnv = strings.EqualFold(os.Getenv("DISABLE_AUTH"), "true")
 	config.LibraryRoots = roots
 	config.AndroidChannels = gohttp.ParseAndroidChannels(channels)
 	secret, err := gohttp.ResolveSecretKeyBase(os.Getenv, secretFile)

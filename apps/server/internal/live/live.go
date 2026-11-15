@@ -29,7 +29,9 @@ var (
 var requiredColumns = map[string][]string{
 	"schema_migrations":       {"version"},
 	"settings":                {"key", "value", "value_type"},
-	"users":                   {"id", "username", "name", "role", "deleted_at"},
+	"users":                   {"id", "username", "name", "role", "deleted_at", "password_digest", "failed_login_count", "last_failed_login_at", "last_failed_login_ip", "locked_until", "otp_required", "otp_secret", "oidc_provider", "oidc_uid", "updated_at"},
+	"hardcover_connections":   {"user_id", "status"},
+	"sessions":                {"id", "user_id", "user_agent", "ip_address", "created_at", "updated_at"},
 	"api_tokens":              {"id", "user_id", "scopes", "token_digest", "revoked_at", "expires_at", "last_used_at", "updated_at", "replaces_api_token_id"},
 	"books":                   {"id", "title", "author", "description", "cover_url", "file_path", "book_type", "content_kind"},
 	"consumer_progresses":     {"id", "user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},

@@ -33,19 +33,23 @@ type bodyFailure struct {
 }
 
 func (a *App) readBody(w http.ResponseWriter, r *http.Request) ([]byte, *bodyFailure) {
+	return a.readLimitedBody(w, r, checkpoint.MaxBodyBytes)
+}
+
+func (a *App) readLimitedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, *bodyFailure) {
 	if r.ContentLength != 0 {
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 		if err != nil || mediaType != "application/json" {
 			return nil, &bodyFailure{http.StatusUnsupportedMediaType, "unsupported_media_type"}
 		}
 	}
-	if r.ContentLength > checkpoint.MaxBodyBytes {
+	if r.ContentLength > limit {
 		w.Header().Set("Connection", "close")
 		return nil, &bodyFailure{http.StatusRequestEntityTooLarge, "request_too_large"}
 	}
 	control := http.NewResponseController(w)
 	control.SetReadDeadline(time.Now().Add(a.config.BodyTimeout))
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, checkpoint.MaxBodyBytes))
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	var tooLarge *http.MaxBytesError
 	var network net.Error
 	switch {

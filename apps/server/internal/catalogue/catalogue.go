@@ -61,14 +61,18 @@ func normalisedLimit(param Param) int {
 	return min(max(number, 1), maxLimit)
 }
 
-func types(kind string) []int {
+func ReadingTypes(kind string, graphic bool) []int {
+	reading := []int{store.BookTypeEbook}
+	if graphic {
+		reading = append(reading, store.BookTypeComicbook)
+	}
 	switch kind {
 	case "ebook":
-		return []int{store.BookTypeEbook}
+		return reading
 	case "audiobook":
 		return []int{store.BookTypeAudiobook}
 	}
-	return []int{store.BookTypeEbook, store.BookTypeAudiobook}
+	return append(reading, store.BookTypeAudiobook)
 }
 
 var statusNames = []string{"unread", "in_progress", "finished"}
@@ -102,7 +106,7 @@ func (c Catalogue) Call(ctx context.Context, userID int64, params Params, format
 	}
 	digest := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	key := hex.EncodeToString(digest[:])
-	selection := live.CatalogueQuery{UserID: userID, Types: types(kind), Sort: sort, Limit: limit + 1}
+	selection := live.CatalogueQuery{UserID: userID, Types: ReadingTypes(kind, formats.Graphic()), Sort: sort, Limit: limit + 1}
 	if !params.Status.Blank() {
 		selection.Status = status
 	}

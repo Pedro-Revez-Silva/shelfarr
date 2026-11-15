@@ -11,7 +11,9 @@ import (
 const schema = `
 CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY);
 CREATE TABLE settings (id integer PRIMARY KEY, key varchar NOT NULL, value text, value_type varchar NOT NULL DEFAULT 'string');
-CREATE TABLE users (id integer PRIMARY KEY, username varchar NOT NULL, name varchar NOT NULL DEFAULT '', role integer NOT NULL DEFAULT 0, deleted_at datetime);
+CREATE TABLE users (id integer PRIMARY KEY AUTOINCREMENT, username varchar NOT NULL, name varchar NOT NULL DEFAULT '', role integer NOT NULL DEFAULT 0, deleted_at datetime, password_digest varchar NOT NULL DEFAULT '', failed_login_count integer NOT NULL DEFAULT 0, last_failed_login_at datetime, last_failed_login_ip varchar, locked_until datetime, otp_required boolean NOT NULL DEFAULT 0, otp_secret varchar, oidc_provider varchar, oidc_uid varchar, backup_codes text, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00');
+CREATE TABLE sessions (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, created_at datetime NOT NULL, ip_address varchar, updated_at datetime NOT NULL, user_agent varchar, user_id integer NOT NULL);
+CREATE TABLE hardcover_connections (id integer PRIMARY KEY, user_id integer NOT NULL, status varchar NOT NULL DEFAULT 'active');
 CREATE TABLE api_tokens (id integer PRIMARY KEY, user_id integer, name varchar NOT NULL DEFAULT 'token', scopes text NOT NULL DEFAULT '[]', token_digest varchar NOT NULL, token_prefix varchar NOT NULL DEFAULT 'shf_',
   revoked_at datetime, expires_at datetime, last_used_at datetime, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', replaces_api_token_id integer, connection_key varchar, issued_via varchar);
 CREATE UNIQUE INDEX index_api_tokens_on_token_digest ON api_tokens (token_digest);

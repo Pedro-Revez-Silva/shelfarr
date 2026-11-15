@@ -13,6 +13,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webpreview"
 )
 
 type outcome struct {
@@ -63,6 +64,10 @@ func mapFailure(w http.ResponseWriter, result *outcome, err error) {
 	case errors.Is(err, library.ErrReference), errors.Is(err, library.ErrUnsupportedPath), errors.Is(err, library.ErrUnsupportedRoot):
 		problem(w, result, http.StatusNotImplemented, "unsupported_library_layout")
 	case errors.Is(err, consumer.ErrUnsupportedValue), errors.Is(err, store.ErrUnsupported), errors.Is(err, store.ErrTimestamp), errors.Is(err, account.ErrUnsupportedScopes):
+		problem(w, result, http.StatusNotImplemented, "unsupported_stored_value")
+	case errors.Is(err, errUnsupportedKind):
+		problem(w, result, http.StatusNotImplemented, "unsupported_publication_kind")
+	case errors.Is(err, webpreview.ErrUnsupported):
 		problem(w, result, http.StatusNotImplemented, "unsupported_stored_value")
 	case errors.Is(err, errUnsupportedAsset):
 		problem(w, result, http.StatusNotImplemented, "unsupported_asset_format")

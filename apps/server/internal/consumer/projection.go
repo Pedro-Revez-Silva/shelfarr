@@ -21,6 +21,10 @@ func NewView(roots []string, progress map[int64]store.Progress, states map[int64
 	return View{inner: view{lister: library.Lister{Roots: roots}, progress: progress, states: states, declared: declared}}
 }
 
+func NewViewFor(roots, formats []string, progress map[int64]store.Progress, states map[int64]int, declared bool) View {
+	return View{inner: view{lister: library.Lister{Roots: roots, Formats: formats}, progress: progress, states: states, declared: declared}}
+}
+
 func (v View) Publication(book store.Book) (Publication, error) {
 	return v.inner.publication(book)
 }

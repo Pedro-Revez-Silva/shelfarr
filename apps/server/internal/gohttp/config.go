@@ -3,8 +3,10 @@ package gohttp
 import (
 	"errors"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -23,6 +25,15 @@ type Config struct {
 	AndroidChannels []string
 	Listen          string
 	AllowPublicBind bool
+
+	PreviewUserIDs  []string
+	BrowserOrigin   string
+	PasswordlessEnv bool
+
+	MaxLoginWorkers int
+	LoginAttempts   int
+	LoginWindow     time.Duration
+	LoginWait       time.Duration
 
 	MaxMetadataRequests int
 	MaxMediaStreams     int
@@ -52,6 +63,14 @@ func (c *Config) applyDefaults() {
 	set(&c.ShutdownTimeout, 20*time.Second)
 	set(&c.BusyTimeout, 5*time.Second)
 	set(&c.BodyTimeout, 5*time.Second)
+	set(&c.LoginWindow, 3*time.Minute)
+	set(&c.LoginWait, 2*time.Second)
+	if c.MaxLoginWorkers <= 0 {
+		c.MaxLoginWorkers = 4
+	}
+	if c.LoginAttempts <= 0 {
+		c.LoginAttempts = 10
+	}
 	if c.MaxMetadataRequests <= 0 {
 		c.MaxMetadataRequests = 64
 	}
@@ -82,7 +101,61 @@ func (c *Config) Validate() error {
 	if !validServerVersion(c.ServerVersion) {
 		return ErrConfig
 	}
+	if c.BrowserOrigin != "" {
+		origin, err := CanonicalOrigin(c.BrowserOrigin)
+		if err != nil {
+			return err
+		}
+		c.BrowserOrigin = origin
+	}
 	return validateListen(c.Listen, c.AllowPublicBind)
+}
+
+func CanonicalOrigin(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || strings.HasSuffix(value, "/") {
+		return "", ErrConfig
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", ErrConfig
+	}
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if host == "" || port == "" && strings.HasSuffix(parsed.Host, ":") || port == "80" && parsed.Scheme == "http" || port == "443" && parsed.Scheme == "https" {
+		port = ""
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return parsed.Scheme + "://" + host, nil
+}
+
+var previewUserID = regexp.MustCompile(`^[1-9][0-9]{0,18}$`)
+
+const maxPreviewUsers = 100
+
+func ParsePreviewUsers(raw string) ([]string, bool) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, true
+	}
+	entries := strings.Split(raw, ",")
+	if len(entries) > maxPreviewUsers {
+		return nil, false
+	}
+	var ids []string
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if !previewUserID.MatchString(entry) {
+			return nil, false
+		}
+		if !slices.Contains(ids, entry) {
+			ids = append(ids, entry)
+		}
+	}
+	return ids, true
 }
 
 func validServerVersion(value string) bool {

@@ -10,7 +10,10 @@ import (
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/bearer"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/catalogue"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/csrf"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/loginlimit"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/railsmsg"
 )
 
 var errRootNotAllowed = errors.New("library root is outside the configured roots")
@@ -25,6 +28,10 @@ type App struct {
 	streams       chan struct{}
 	logger        *slog.Logger
 	now           func() time.Time
+	cookies       railsmsg.Verifier
+	tokens        csrf.Tokens
+	limiter       *loginlimit.Limiter
+	previewIDs    map[string]bool
 }
 
 func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
@@ -34,6 +41,18 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 	listing, err := catalogue.New(database, config.SecretKeyBase)
 	if err != nil {
 		return nil, err
+	}
+	cookies, err := railsmsg.NewVerifier(config.SecretKeyBase, signedCookieSalt)
+	if err != nil {
+		return nil, err
+	}
+	tokens, err := csrf.New(config.SecretKeyBase)
+	if err != nil {
+		return nil, err
+	}
+	previewIDs := map[string]bool{}
+	for _, id := range config.PreviewUserIDs {
+		previewIDs[id] = true
 	}
 	return &App{
 		config:        config,
@@ -45,6 +64,10 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		streams:       make(chan struct{}, config.MaxMediaStreams),
 		logger:        logger,
 		now:           now,
+		cookies:       cookies,
+		tokens:        tokens,
+		limiter:       loginlimit.New(config.LoginAttempts, config.LoginWindow, config.MaxLoginWorkers),
+		previewIDs:    previewIDs,
 	}, nil
 }
 
@@ -161,6 +184,14 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.ready(w, r, result)
 	case routeServer:
 		a.server(w, result)
+	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus:
+		a.browserData(w, r, found, result)
+	case routeAuthBootstrap:
+		a.bootstrap(w, r, result)
+	case routeAuthLogin:
+		a.login(w, r, result)
+	case routeAuthLogout:
+		a.logout(w, r, result)
 	case routeMe, routeLibrary, routeContinue, routePublication, routeProgress, routeReadingStatus, routeAsset:
 		a.authenticated(w, r, found, result)
 	}
