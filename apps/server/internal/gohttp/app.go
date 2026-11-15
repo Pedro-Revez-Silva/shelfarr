@@ -1,0 +1,201 @@
+package gohttp
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/bearer"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/catalogue"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
+)
+
+var errRootNotAllowed = errors.New("library root is outside the configured roots")
+
+type App struct {
+	config        Config
+	db            *live.DB
+	auth          bearer.Authenticator
+	catalogue     catalogue.Catalogue
+	explicitRoots []string
+	metadata      chan struct{}
+	streams       chan struct{}
+	logger        *slog.Logger
+	now           func() time.Time
+}
+
+func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	listing, err := catalogue.New(database, config.SecretKeyBase)
+	if err != nil {
+		return nil, err
+	}
+	return &App{
+		config:        config,
+		db:            database,
+		auth:          bearer.Authenticator{DB: database, Now: now},
+		catalogue:     listing,
+		explicitRoots: explicitRoots,
+		metadata:      make(chan struct{}, config.MaxMetadataRequests),
+		streams:       make(chan struct{}, config.MaxMediaStreams),
+		logger:        logger,
+		now:           now,
+	}, nil
+}
+
+func setDefaultHeaders(header http.Header) {
+	header.Set("X-Frame-Options", "SAMEORIGIN")
+	header.Set("X-XSS-Protection", "0")
+	header.Set("X-Content-Type-Options", "nosniff")
+	header.Set("X-Permitted-Cross-Domain-Policies", "none")
+	header.Set("Referrer-Policy", "same-origin")
+}
+
+func (a *App) acquire(slots chan struct{}) bool {
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func release(slots chan struct{}) { <-slots }
+
+type statusWriter struct {
+	http.ResponseWriter
+	status  int
+	written int64
+}
+
+func (s *statusWriter) WriteHeader(status int) {
+	if s.status == 0 {
+		s.status = status
+	}
+	s.ResponseWriter.WriteHeader(status)
+}
+
+func (s *statusWriter) Write(data []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	count, err := s.ResponseWriter.Write(data)
+	s.written += int64(count)
+	return count, err
+}
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	found := classify(r.Method, r.URL.Path)
+	result := &outcome{}
+	recorder := &statusWriter{ResponseWriter: w}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler {
+				panic(recovered)
+			}
+			if recorder.status == 0 {
+				problem(recorder, result, http.StatusInternalServerError, "internal_error")
+			} else {
+				result.set(recorder.status, "internal_error")
+			}
+		}
+		a.logRequest(r, found, recorder, result, started)
+	}()
+	setDefaultHeaders(recorder.Header())
+	r.Body = http.MaxBytesReader(recorder, r.Body, 1<<10)
+	a.dispatch(recorder, r, found, result)
+}
+
+func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, result *outcome, started time.Time) {
+	status := recorder.status
+	if status == 0 {
+		status = result.status
+	}
+	level := slog.LevelInfo
+	if status >= 500 {
+		level = slog.LevelWarn
+	}
+	a.logger.LogAttrs(r.Context(), level, "request",
+		slog.String("method", r.Method), slog.String("route", found.name), slog.Int("status", status),
+		slog.Int64("bytes", recorder.written), slog.Int64("duration_ms", time.Since(started).Milliseconds()), slog.String("code", result.code))
+}
+
+func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
+	switch found.kind {
+	case routeNone:
+		problem(w, result, http.StatusNotFound, "not_found")
+		return
+	case routeWrongMethod:
+		w.Header().Set("Allow", "GET, HEAD")
+		problem(w, result, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	case routeExcluded:
+		problem(w, result, http.StatusNotImplemented, "not_implemented_in_go_runtime")
+		return
+	case routeUp:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	slots := a.metadata
+	if found.kind == routeAsset {
+		slots = a.streams
+	}
+	if !a.acquire(slots) {
+		w.Header().Set("Retry-After", "1")
+		problem(w, result, http.StatusServiceUnavailable, "server_busy")
+		return
+	}
+	defer release(slots)
+	ctx, cancel := context.WithTimeout(r.Context(), a.config.RequestTimeout)
+	defer cancel()
+	r = r.WithContext(ctx)
+	switch found.kind {
+	case routeReady:
+		a.ready(w, r, result)
+	case routeServer:
+		a.server(w, result)
+	case routeMe, routeLibrary, routeContinue, routePublication, routeAsset:
+		a.authenticated(w, r, found, result)
+	}
+}
+
+func (a *App) authenticated(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
+	header := w.Header()
+	header.Set("Cache-Control", "private, no-store")
+	header.Set("Referrer-Policy", "no-referrer")
+	principal, err := a.auth.Authenticate(r.Context(), strings.Join(r.Header.Values("Authorization"), ", "))
+	if err != nil {
+		mapFailure(w, result, err)
+		return
+	}
+	if principal == nil {
+		result.set(http.StatusUnauthorized, "unauthorized")
+		writeEmpty(w, http.StatusUnauthorized)
+		return
+	}
+	if !principal.HasScope("library:read") {
+		result.set(http.StatusForbidden, "insufficient_scope")
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient_scope", "required_scope": "library:read"})
+		return
+	}
+	switch found.kind {
+	case routeMe:
+		a.me(w, principal, result)
+	case routeLibrary:
+		a.library(w, r, principal, result)
+	case routeContinue:
+		a.continueReading(w, r, principal, result)
+	case routePublication:
+		a.publication(w, r, principal, found.id, result)
+	case routeAsset:
+		a.asset(w, r, principal, found, result)
+	}
+}

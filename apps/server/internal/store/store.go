@@ -24,6 +24,9 @@ const (
 	BookTypeAudiobook = 0
 	BookTypeEbook     = 1
 	BookTypeComicbook = 2
+
+	ContentKindBook    = 0
+	ContentKindGraphic = 1
 )
 
 type DB struct {

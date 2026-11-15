@@ -43,6 +43,8 @@ type errSkip struct{ cause error }
 
 func (e errSkip) Error() string { return "asset skipped" }
 
+var fixedLayoutLimits = map[string]int64{"pdf": 500 << 20, "cbz": 2 << 30}
+
 var errUnavailable = errors.New("publication media is unavailable")
 
 type boundary struct {
@@ -52,7 +54,8 @@ type boundary struct {
 }
 
 type Lister struct {
-	Roots []string
+	Roots   []string
+	Formats []string
 }
 
 func rubyExt(path string) string {
@@ -69,14 +72,35 @@ func extension(path string) string {
 	return strings.ToLower(strings.TrimPrefix(rubyExt(path), "."))
 }
 
-func mediaType(book store.Book, path string) (string, bool) {
+var readingTypes = map[string]string{
+	"epub": "application/epub+zip", "kepub": "application/epub+zip",
+	"pdf": "application/pdf", "cbz": "application/vnd.comicbook+zip",
+}
+
+var defaultFormats = []string{"epub"}
+
+func (l Lister) formats() []string {
+	if l.Formats == nil {
+		return defaultFormats
+	}
+	return l.Formats
+}
+
+func (l Lister) mediaType(book store.Book, path string) (string, bool) {
 	ext := extension(path)
 	if book.BookType == store.BookTypeAudiobook {
 		value, ok := audioTypes[ext]
 		return value, ok
 	}
-	if ext == "epub" || ext == "kepub" {
-		return "application/epub+zip", true
+	name := ext
+	if name == "kepub" {
+		name = "epub"
+	}
+	for _, format := range l.formats() {
+		if format == name {
+			value, ok := readingTypes[ext]
+			return value, ok
+		}
 	}
 	return "", false
 }
@@ -177,7 +201,7 @@ func (l Lister) candidates(book store.Book, bookPath string) ([]string, error) {
 		if !utf8.ValidString(path) {
 			return nil, errUnavailable
 		}
-		if _, ok := mediaType(book, path); ok {
+		if _, ok := l.mediaType(book, path); ok {
 			selected = append(selected, path)
 		}
 	}
@@ -226,7 +250,7 @@ func (l Lister) directoryFiles(book store.Book, start boundary) ([]string, error
 			}
 			if info.IsDir() {
 				pending = append(pending, pendingDirectory{path, current.depth + 1})
-			} else if _, ok := mediaType(book, path); ok {
+			} else if _, ok := l.mediaType(book, path); ok {
 				files = append(files, path)
 			}
 		}
@@ -250,10 +274,14 @@ func (l Lister) asset(book store.Book, bookPath, path string) (Asset, error) {
 	if err != nil {
 		return Asset{}, err
 	}
-	if assetFormat(book, path) == "epub" && stat.Size > maxEpubBytes {
+	format := assetFormat(book, path)
+	if format == "epub" && stat.Size > maxEpubBytes {
 		return Asset{}, errUnavailable
 	}
-	media, _ := mediaType(book, path)
+	if limit, limited := fixedLayoutLimits[format]; limited && stat.Size > limit {
+		return Asset{}, errSkip{}
+	}
+	media, _ := l.mediaType(book, path)
 	filename := filepath.Base(path)
 	if !utf8.ValidString(filename) {
 		return Asset{}, errSkip{}

@@ -89,6 +89,7 @@ type publicationBody struct {
 	Author        *string       `json:"author"`
 	Description   string        `json:"description"`
 	BookType      string        `json:"book_type"`
+	ContentKind   *string       `json:"content_kind,omitempty"`
 	CoverURL      *string       `json:"cover_url"`
 	Assets        []assetBody   `json:"assets"`
 	Progress      *progressBody `json:"progress"`
@@ -139,6 +140,7 @@ type view struct {
 	lister   library.Lister
 	progress map[int64]store.Progress
 	states   map[int64]int
+	declared bool
 }
 
 func (s Service) newView(ctx context.Context, principal *account.Principal) (view, error) {
@@ -223,6 +225,13 @@ func (v view) publication(book store.Book) (publicationBody, error) {
 	}
 	if book.BookType == store.BookTypeAudiobook {
 		body.BookType = "audiobook"
+	}
+	if v.declared {
+		kind := "book"
+		if book.BookType != store.BookTypeAudiobook && (book.BookType == store.BookTypeComicbook || book.ContentKind == store.ContentKindGraphic) {
+			kind = "graphic"
+		}
+		body.ContentKind = &kind
 	}
 	if hasProgress {
 		converted, err := progressRepresentation(progress)
