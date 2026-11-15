@@ -539,3 +539,27 @@ func TestAFileRewrittenBetweenMatchingAndInspectionIsNotReturnedUnderTheOldIdent
 		t.Fatalf("the old identity survived: %+v %v", again, err)
 	}
 }
+
+func TestAFileSwappedAfterItsBoundaryWasResolvedIsNotOpened(t *testing.T) {
+	space := newWorkspace(t)
+	current := space.bytes("W/current.pdf", padded(0, "%PDF-1.7"))
+	other := space.bytes("W/other.pdf", padded(0, "%PDF-1.7"))
+	currentInfo, err := os.Lstat(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherInfo, err := os.Lstat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	located := boundary{target: current, root: space.root}
+	file, err := openFixedLayout(located, currentInfo)
+	if err != nil {
+		t.Fatalf("the file the boundary named: %v", err)
+	}
+	file.Close()
+	var skip errSkip
+	if file, err := openFixedLayout(located, otherInfo); !errors.As(err, &skip) || file != nil {
+		t.Fatalf("a different file than the one the boundary resolved was opened: %v", err)
+	}
+}
