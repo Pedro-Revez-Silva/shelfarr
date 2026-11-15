@@ -101,7 +101,7 @@ module Migration
           request("#{label}-continue", "#{Cases::PREFIX}/continue?limit=20", bearer: "alice-full", headers: headers)
           request("#{label}-continue-bob", "#{Cases::PREFIX}/continue", bearer: "bob-full", headers: headers)
         end
-        ["epub,pdf,cbz", "pdf", "epub"].each_with_index do |value, index|
+        %w[epub,pdf,cbz pdf epub].each_with_index do |value, index|
           chain("fx-page-recent-#{index}", "limit=4", value)
           chain("fx-page-title-#{index}", "limit=5&sort=title", value)
           chain("fx-page-query-#{index}", "limit=3&q=fx&sort=title", value)
