@@ -563,3 +563,17 @@ func TestAFileSwappedAfterItsBoundaryWasResolvedIsNotOpened(t *testing.T) {
 		t.Fatalf("a different file than the one the boundary resolved was opened: %v", err)
 	}
 }
+
+func TestAFolderScanStopsWhenTheRequestIsCancelledEvenWhenItFindsNothing(t *testing.T) {
+	space := newWorkspace(t)
+	space.bytes("D/notes.txt", []byte("x"))
+	path := filepath.Join(space.root, "D")
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := (Lister{Roots: []string{space.root}, Formats: []string{"pdf", "cbz", "epub"}}).List(cancelled, comicbook(path), path); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v", err)
+	}
+	if _, err := (Lister{Roots: []string{space.root}, Formats: []string{"pdf"}}).Find(cancelled, comicbook(path), path, strings.Repeat("0", 64)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("%v", err)
+	}
+}

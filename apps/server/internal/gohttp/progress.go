@@ -204,23 +204,17 @@ func (a *App) confirmPlace(ctx context.Context, book store.Book, write checkpoin
 }
 
 func (a *App) confirmPage(ctx context.Context, book store.Book, asset library.Asset, place checkpoint.Place) (string, error) {
-	file, err := openVerified(book, asset)
+	pages, err := readPages(ctx, book, asset)
+	var invalid comic.Invalid
 	switch {
-	case errors.Is(err, media.ErrNoPinnedOpen):
+	case errors.Is(err, media.ErrNoPinnedOpen), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return "", err
 	case errors.Is(err, errAssetChanged):
 		return "This media edition changed while opening", nil
+	case errors.As(err, &invalid):
+		return "This comic archive is unsupported or unsafe", nil
 	case err != nil:
 		return "This media edition is unavailable", nil
-	}
-	defer file.Close()
-	pages, err := comic.Pages(ctx, file, asset.SizeBytes)
-	var invalid comic.Invalid
-	if errors.As(err, &invalid) {
-		return "This comic archive is unsupported or unsafe", nil
-	}
-	if err != nil {
-		return "", err
 	}
 	if place.Page > int64(len(pages)) || pages[place.Page-1].Href != place.Href || pages[place.Page-1].MediaType != place.MediaType {
 		return "This page is not page " + strconv.FormatInt(place.Page, 10) + " of the comic's reading order; refresh the publication", nil

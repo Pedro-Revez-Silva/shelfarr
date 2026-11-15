@@ -39,6 +39,13 @@ module Migration
       Z.build(Array.new(65) { |index| Z.page(format("%02d.png", index), "x", central: { size: 32 * 1024 * 1024 }, local: { size: 32 * 1024 * 1024 }) })
     end
 
+    def overlapping_entries
+      inner = Z.page("b.png", "inner image", method: 0)
+      embedded = Z.build([ inner ])[0, 30 + "b.png".bytesize + "inner image".bytesize]
+      outer = Z.page("a.png", "12345".b + embedded, method: 0)
+      Z.build([ outer, inner.merge(offset: 30 + "a.png".bytesize + 5) ])
+    end
+
     def refused
       png = Z.page("a.png")
       {
@@ -66,6 +73,8 @@ module Migration
         "strong-encryption" => Z.build([ Z.page("a.png", central: { flags: 0x40 }, local: { flags: 0x40 }) ]),
         "masked-headers" => Z.build([ Z.page("a.png", central: { flags: 0x2000 }, local: { flags: 0x2000 }) ]),
         "reserved-flag" => Z.build([ Z.page("a.png", central: { flags: 0x10 }, local: { flags: 0x10 }) ]),
+        "bzip2-equal-sizes" => Z.build([ Z.page("a.png", "abc", method: 0, central: { method: 12 }, local: { method: 12 }) ]),
+        "overlapping-with-consistent-headers" => overlapping_entries,
         "bzip2" => Z.build([ Z.page("a.png", central: { method: 12 }, local: { method: 12 }) ]),
         "stored-size-mismatch" => Z.build([ Z.page("a.png", "abc", method: 0, central: { compressed: 4 }, local: { compressed: 4 }) ]),
         "needed-version-too-new" => Z.build([ Z.page("a.png", central: { needed: 63 }, local: { needed: 63 }) ]),

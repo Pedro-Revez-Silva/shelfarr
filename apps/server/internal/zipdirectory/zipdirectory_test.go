@@ -144,6 +144,11 @@ func refusals() []refusal {
 		{"masked headers", build(withFlags(0x2000)), unsupported},
 		{"a reserved flag", build(withFlags(0x0010)), unsupported},
 		{"bzip2", build(method(12)), unsupported},
+		{"bzip2 with equal sizes", build(func() ziptest.Entry {
+			entry := ziptest.Raw("a.png", []byte("abc"), ziptest.Stored)
+			entry.Central.Method, entry.Local.Method = ziptest.U16(12), ziptest.U16(12)
+			return entry
+		}()), unsupported},
 		{"a stored entry whose sizes differ", build(func() ziptest.Entry {
 			entry := ziptest.Raw("a.png", []byte("abc"), ziptest.Stored)
 			entry.Central.Compressed, entry.Local.Compressed = ziptest.U32(4), ziptest.U32(4)
@@ -240,20 +245,34 @@ func TestEveryUnsafeOrUnsupportedArchiveIsRefusedWithItsReason(t *testing.T) {
 	}
 }
 
-func TestOverlappingExtentsAreRefused(t *testing.T) {
-	first := ziptest.Raw("a.png", bytes.Repeat([]byte("x"), 200), ziptest.Stored)
-	second := ziptest.Raw("b.png", bytes.Repeat([]byte("y"), 200), ziptest.Stored)
-	valid := ziptest.Build([]ziptest.Entry{first, second}, ziptest.End{})
-	if entries, err := read(valid); err != nil || len(entries) != 2 {
+func TestEntriesWhoseExtentsShareBytesAreRefusedEvenWithConsistentHeaders(t *testing.T) {
+	inner := ziptest.Raw("b.png", []byte("inner image"), ziptest.Stored)
+	standalone := ziptest.Build([]ziptest.Entry{inner}, ziptest.End{})
+	embedded := standalone[:30+len("b.png")+len("inner image")]
+	outer := ziptest.Raw("a.png", append([]byte("12345"), embedded...), ziptest.Stored)
+	innerOffset := uint32(30 + len("a.png") + 5)
+	inner.Offset = ziptest.U32(innerOffset)
+	var invalid Invalid
+	if _, err := read(ziptest.Build([]ziptest.Entry{outer, inner}, ziptest.End{})); !errors.As(err, &invalid) || invalid.Reason != "This archive's entries overlap" {
+		t.Fatalf("%v", err)
+	}
+	separate := ziptest.Raw("c.png", []byte("separate"), ziptest.Stored)
+	if entries, err := read(ziptest.Build([]ziptest.Entry{outer, separate}, ziptest.End{})); err != nil || len(entries) != 2 {
 		t.Fatalf("control: %v %v", entries, err)
 	}
-	second.Offset = ziptest.U32(0)
-	second.Local = ziptest.Header{Name: ziptest.Str("a.png")}
-	first.Central.Name = ziptest.Str("a.png")
-	second.Central.Name = ziptest.Str("b.png")
-	overlapping := ziptest.Build([]ziptest.Entry{first, second}, ziptest.End{})
-	if _, err := read(overlapping); err == nil {
-		t.Fatal("two entries sharing bytes were accepted")
+}
+
+func TestADirectoryScanStopsWhenTheContextIsCancelled(t *testing.T) {
+	data := manyEntries(100)
+	source := reader{ctx: context.Background(), file: bytes.NewReader(data), size: int64(len(data))}
+	_, count, directory, err := source.centralDirectory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if entries, err := parseDirectory(cancelled, directory, count); !errors.Is(err, context.Canceled) || entries != nil {
+		t.Fatalf("%v", err)
 	}
 }
 

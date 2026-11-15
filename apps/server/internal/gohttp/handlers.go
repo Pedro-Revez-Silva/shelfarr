@@ -304,17 +304,31 @@ func (a *App) findAsset(w http.ResponseWriter, r *http.Request, found route, for
 	return book, located.Asset, true
 }
 
-func (a *App) openAsset(w http.ResponseWriter, book store.Book, asset library.Asset, result *outcome) (*os.File, bool) {
+func (a *App) assetFailure(w http.ResponseWriter, result *outcome, err error) {
+	switch {
+	case errors.Is(err, media.ErrNoPinnedOpen), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		mapFailure(w, result, err)
+	default:
+		problem(w, result, http.StatusGone, "asset_unavailable")
+	}
+}
+
+func (a *App) openAsset(w http.ResponseWriter, result *outcome, book store.Book, asset library.Asset) (*os.File, bool) {
 	file, err := openVerified(book, asset)
 	if err != nil {
-		if errors.Is(err, media.ErrNoPinnedOpen) {
-			mapFailure(w, result, err)
-			return nil, false
-		}
-		problem(w, result, http.StatusGone, "asset_unavailable")
+		a.assetFailure(w, result, err)
 		return nil, false
 	}
 	return file, true
+}
+
+func readPages(ctx context.Context, book store.Book, asset library.Asset) ([]comic.Page, error) {
+	file, err := openVerified(book, asset)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return comic.Pages(ctx, file, asset.SizeBytes)
 }
 
 func (a *App) asset(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
@@ -322,7 +336,7 @@ func (a *App) asset(w http.ResponseWriter, r *http.Request, principal *account.P
 	if !ok {
 		return
 	}
-	file, ok := a.openAsset(w, *book, *chosen, result)
+	file, ok := a.openAsset(w, result, *book, *chosen)
 	if !ok {
 		return
 	}
@@ -350,19 +364,9 @@ func (a *App) readingOrder(w http.ResponseWriter, r *http.Request, principal *ac
 		problem(w, result, http.StatusGone, "asset_unavailable")
 		return
 	}
-	file, ok := a.openAsset(w, *book, *chosen, result)
-	if !ok {
-		return
-	}
-	defer file.Close()
-	pages, err := comic.Pages(r.Context(), file, chosen.SizeBytes)
-	var invalid comic.Invalid
-	if errors.As(err, &invalid) {
-		problem(w, result, http.StatusGone, "asset_unavailable")
-		return
-	}
+	pages, err := readPages(r.Context(), *book, *chosen)
 	if err != nil {
-		mapFailure(w, result, err)
+		a.assetFailure(w, result, err)
 		return
 	}
 	result.set(http.StatusOK, "")

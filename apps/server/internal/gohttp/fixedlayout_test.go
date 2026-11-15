@@ -1,7 +1,10 @@
 package gohttp
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/assetid"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/checkpoint"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/comic"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/livetest"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/ziptest"
 )
@@ -358,6 +366,80 @@ func TestACbzPlaceMustBeTheNthItemOfTheReadingOrderOfThatGeneration(t *testing.T
 		stored := decodeObject(t, recorder, http.StatusOK)["progress"].(map[string]any)
 		if stored["version"] != float64(position) || stored["asset_id"] != lib.cbzID {
 			t.Fatalf("%d: %v", position, stored)
+		}
+	}
+}
+
+func (h *harness) forgedAsset(book store.Book, path string) library.Asset {
+	h.t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	stat, err := assetid.StatOf(info)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return library.Asset{ID: assetid.ID(assetid.Input{BookID: book.ID, StoredPath: book.FilePath.String, CanonicalPath: path, Stat: stat}), Path: path, Root: h.root, Format: "cbz", SizeBytes: stat.Size}
+}
+
+func TestAnAssetThatStopsBeingAUsableArchiveAfterItWasMatchedIsRefusedWithRailsMessages(t *testing.T) {
+	h := newHarness(t, nil)
+	place := checkpoint.Place{Page: 1, Href: "p1.png", MediaType: "image/png"}
+	path := h.file("Racing.cbz", comicArchive("p1.png", "p2.png"))
+	book := store.Book{ID: 20, BookType: store.BookTypeComicbook, FilePath: sql.NullString{String: path, Valid: true}}
+	asset := h.forgedAsset(book, path)
+	cases := []struct {
+		name    string
+		prepare func()
+		place   checkpoint.Place
+		want    string
+	}{
+		{"the page is the first", func() {}, place, ""},
+		{"another page is named", func() {}, checkpoint.Place{Page: 2, Href: "p1.png", MediaType: "image/png"}, "This page is not page 2 of the comic's reading order; refresh the publication"},
+		{"a page beyond the list", func() {}, checkpoint.Place{Page: 3, Href: "p1.png", MediaType: "image/png"}, "This page is not page 3 of the comic's reading order; refresh the publication"},
+		{"the archive became unusable", func() {
+			os.WriteFile(path, []byte("no longer an archive"), 0o600)
+			asset = h.forgedAsset(book, path)
+		}, place, "This comic archive is unsupported or unsafe"},
+		{"the file changed after the identity was computed", func() { os.WriteFile(path, []byte("rewritten after matching, longer"), 0o600) }, place, "This media edition changed while opening"},
+		{"the file is gone", func() { os.Remove(path) }, place, "This media edition is unavailable"},
+	}
+	for _, test := range cases {
+		test.prepare()
+		message, err := h.app.confirmPage(context.Background(), book, asset, test.place)
+		if err != nil || message != test.want {
+			t.Errorf("%s: %q %v", test.name, message, err)
+		}
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	path = h.file("Fresh.cbz", comicArchive("p1.png"))
+	book.FilePath = sql.NullString{String: path, Valid: true}
+	if _, err := h.app.confirmPage(cancelled, book, h.forgedAsset(book, path), place); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled scan was reported as an archive problem: %v", err)
+	}
+}
+
+func TestAssetFailuresAreGoneUnlessTheRuntimeOrTheClientIsAtFault(t *testing.T) {
+	h := newHarness(t, nil)
+	for name, test := range map[string]struct {
+		err    error
+		status int
+		code   string
+	}{
+		"an archive that fails its check": {comic.Invalid{Reason: "x"}, http.StatusGone, "asset_unavailable"},
+		"a file that changed":             {errAssetChanged, http.StatusGone, "asset_unavailable"},
+		"a missing file":                  {os.ErrNotExist, http.StatusGone, "asset_unavailable"},
+		"no confined open":                {media.ErrNoPinnedOpen, http.StatusNotImplemented, "confined_open_unsupported"},
+		"a client that left":              {context.Canceled, 499, "client_closed"},
+		"a deadline":                      {context.DeadlineExceeded, http.StatusServiceUnavailable, "request_timeout"},
+	} {
+		recorder := httptest.NewRecorder()
+		result := &outcome{}
+		h.app.assetFailure(recorder, result, test.err)
+		if result.status != test.status || result.code != test.code {
+			t.Errorf("%s: %d %s", name, result.status, result.code)
 		}
 	}
 }
