@@ -29,11 +29,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const bundleEnvironment = "SHELFARR_COMPAT_BUNDLE"
+const (
+	bundleEnvironment        = "SHELFARR_COMPAT_BUNDLE"
+	upgradeBundleEnvironment = "SHELFARR_COMPAT_UPGRADE_BUNDLE"
+)
 
 var (
 	binary    string
 	pristine  string
+	upgraded  string
 	moduleDir string
 )
 
@@ -45,6 +49,10 @@ func setupAndRun(m *testing.M) int {
 	pristine = os.Getenv(bundleEnvironment)
 	if pristine == "" {
 		fmt.Fprintln(os.Stderr, bundleEnvironment+" must name a fixture bundle produced by tools/migration/produce_fixture.rb")
+		return 2
+	}
+	if upgraded = os.Getenv(upgradeBundleEnvironment); upgraded == "" {
+		fmt.Fprintln(os.Stderr, upgradeBundleEnvironment+" must name a bundle produced by tools/migration/produce_fixture.rb --mode stable-upgrade")
 		return 2
 	}
 	var err error
@@ -171,9 +179,14 @@ func writeFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 
 func newVariant(t *testing.T) *variant {
 	t.Helper()
+	return newVariantFrom(t, pristine)
+}
+
+func newVariantFrom(t *testing.T, source string) *variant {
+	t.Helper()
 	dir := filepath.Join(t.TempDir(), "variant")
 	current := &variant{t: t, dir: dir}
-	if err := json.Unmarshal(readFile(t, filepath.Join(pristine, "manifest.json")), &current.manifest); err != nil {
+	if err := json.Unmarshal(readFile(t, filepath.Join(source, "manifest.json")), &current.manifest); err != nil {
 		t.Fatal(err)
 	}
 	for name := range current.files() {
@@ -181,7 +194,7 @@ func newVariant(t *testing.T) *variant {
 		if strings.HasPrefix(name, "secrets/") {
 			mode = 0o600
 		}
-		writeFile(t, filepath.Join(dir, name), readFile(t, filepath.Join(pristine, name)), mode)
+		writeFile(t, filepath.Join(dir, name), readFile(t, filepath.Join(source, name)), mode)
 	}
 	if err := os.Chmod(filepath.Join(dir, "secrets"), 0o700); err != nil {
 		t.Fatal(err)

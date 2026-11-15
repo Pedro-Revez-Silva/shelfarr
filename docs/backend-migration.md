@@ -3,7 +3,10 @@
 Status: **M0, an experimental and unreachable proof.** Rails remains the only implementation that
 serves Shelfarr. Nothing in this slice is routed, packaged, started by the container, or reachable
 from the running application. It adds a command-line checker that reads isolated fixture bundles
-and a producer that creates those bundles from the real Rails code.
+and a producer that creates those bundles from the real Rails code. The producer has two modes:
+`current-schema` (the default) and `stable-upgrade`, which proves that a synthetic primary database
+with the schema of the released `v2026.11.05.1` survives the shipped migrations and is readable by
+the Go checker (see `Stable primary-database upgrade proof`). That proof is not a volume upgrade.
 
 ## Purpose
 
@@ -29,7 +32,8 @@ listed as explicit gaps in every report:
 - catalogue pagination and cursors (a library larger than one page is refused, not guessed);
 - token adoption (`replaces_api_token_id`) and `last_used_at` side effects (such tokens are refused);
 - Kobo, transfer grants, read-along, comic and PDF assets, reference-import symbolic links;
-- every write path, queue, scheduler and the stable-volume upgrade (see `Gaps`).
+- every write path, queue, scheduler and the full stable-volume upgrade and rollback: queue, cable
+  and cache databases, queued Ruby jobs, key files, packaging (see `Gaps`).
 
 ## Tool and dependency choices
 
@@ -59,6 +63,12 @@ apps/server/                Go module (not built, shipped or referenced by the R
   internal/compat/          the checks and the report
   e2e/                      executable tests, corrupted-bundle controls and mutants (build tag e2e)
 tools/migration/            independent Rails fixture producer and the verify script
+  lib/release_source.rb       pinned release objects read from local Git history
+  lib/released_records.rb     synthetic records written into the released schema
+  lib/database_snapshot.rb    type-exact snapshot of any SQLite file, read immutably
+  lib/upgrade_verification.rb the preservation and schema assertions
+  lib/stable_upgrade.rb       build, seal, migrate and verify the released database
+  lib/stable_upgrade_builder.rb  the stable-upgrade bundle, built on the current-schema builder
 docs/backend-migration.md   this document
 ```
 
@@ -273,6 +283,107 @@ notation are ignored; strings, `null` versus absent versus empty, ordering, nest
   compared);
 - per-account scoping of progress and reading state, checked with two accounts reading the same books.
 
+## Stable primary-database upgrade proof
+
+`tools/migration/produce_fixture.rb --out ABSOLUTE_NEW_DIRECTORY --mode stable-upgrade` proves one
+thing: **synthetic records written into the released `v2026.11.05.1` primary schema are preserved by the
+actual current Rails migrations, and the upgraded database is readable by the Go checker.** It does
+not prove a stable-volume upgrade or rollback, and no report may describe it as one. The default
+`current-schema` mode is unchanged and independent.
+
+### Release identity
+
+The release is pinned by Git object identity in `tools/migration/lib/release_source.rb`, not by a tag
+name: commit `96333c6674a21701f7229c1a51038dc3b117c1a0` (tag `v2026.11.05.1`), tree
+`c9a17fcfa4591898ac47a299e8fab09ecd2c15c1`, `db/schema.rb` blob
+`ac0c524fecaf0552a2721d1817c792448fd338f8`, `db/migrate` tree
+`65596153c4eb018fcc57fa563302af6ce94c52f4` (100 migrations, schema revision `20261102120000`). The
+objects are read from the repository's own history with `git` under a scrubbed environment and
+`GIT_NO_LAZY_FETCH`. The tool never fetches; a missing object is a refusal. No release code is
+executed except its `db/schema.rb`, whose blob identity is verified first. The tool also requires every
+shipped release migration in the checkout to be byte-identical (Git blob identity) to the release and
+every other migration to be newer than the release schema.
+
+### Flow
+
+1. The released `db/schema.rb` is loaded into the isolated primary database. It must dump back to the
+   released text, `schema_migrations` must equal the release's 100 versions, and no consumer table may
+   exist. Today's schema is never loaded.
+2. `ReleasedRecords` writes synthetic rows into the released tables by explicit original IDs: five users
+   (two roles, soft deletion, bcrypt cost-12 digests, one-time-password secrets in the current and the
+   legacy SHA-1 Active Record Encryption scheme, OIDC identity, lockout), legacy API tokens (revoked,
+   expired, ownerless, minimal), settings (paths and synthetic sensitive values, with `NULL` and empty
+   values), twelve books (file paths, symbolic-link path, blank and missing paths, Unicode), requests,
+   downloads (filesystem identities above 2^63 stored as text, 5 GB and 2^62 sizes), uploads, download
+   clients, acquisition providers, Hardcover and owned-library connections with encrypted fields, and one
+   full and one sparse record in every other released table. Identifiers 99 (books) and 50 (requests)
+   are created and deleted so the autoincrement counters are ahead of the highest row.
+3. The database is checkpointed and closed, a type-exact snapshot is taken, and a **sealed source copy**
+   (`db/released-source.sqlite3`, mode 0440) is made with the SQLite backup API. Its snapshot must equal
+   the working database's.
+4. The shipped migrations run one at a time with `MigrationContext#up` inside the private database, under
+   a deadline (120 seconds by default), and never dump `db/schema.rb`.
+5. The upgraded database is dumped and must equal the checkout's `db/schema.rb`, then compared with the
+   source (below), then probed for required defaults, then migrated a second time, which must change
+   nothing.
+6. The same builder that serves the default mode records Rails' own answers for the preserved and the new
+   records, and the Go checker reads the upgraded database.
+
+### Assertions on the data
+
+`UpgradeVerification` compares the source snapshot with the upgraded database using SQLite's own types
+(`typeof`), not Ruby's: integers, floats by IEEE bit pattern, text, blobs by bytes and `NULL`.
+
+| Invariant | Detail |
+| --- | --- |
+| Rows | Every released row is present with every released column identical (ID, digest, ciphertext, timestamps, integer enums, paths, identity text, settings); no row is added to a released table. |
+| Definitions | A released table's definition, columns, indexes and foreign keys are unchanged, except the intentional additions below. |
+| Schema | The tables are exactly the released tables plus the 13 tables added by the migrations; the dump equals the checkout's `db/schema.rb`. |
+| Versions | `schema_migrations` is the 100 released versions plus the 17 new ones, nothing lost. |
+| Counters | `sqlite_sequence` is unchanged, so a new row never reuses a released identifier. |
+| New tables | Empty after the migrations. |
+| Defaults | New rows get the migrations' defaults (`api_tokens.scopes`, `kobo_devices.store_coexistence`, `consumer_progresses.version`, `consumer_reading_states.status`). |
+| Database | `integrity_check` is `ok` and `user_version` is unchanged. |
+
+**Intentional changes to released tables, each asserted:**
+
+- `api_tokens` gains `issued_via`, `replaces_api_token_id` and `connection_key` (migrations
+  `20261109002000`, `20261109003000`) with no default; every released token must hold `NULL` in all three.
+- `api_tokens` gains `index_api_tokens_on_user_id_and_connection_key` and `books` gains
+  `index_books_on_consumer_title` (`20261107141000`); no row changes.
+
+The data statements inside three shipped migrations (`20261109001200`, `20261109030000`,
+`20261109220000`) act on tables that do not exist in the release, so they run over empty tables here;
+their row transformations are **not** exercised by released data.
+
+### Preserved records and post-upgrade cases
+
+Evidence keeps them apart. Records written before the upgrade are the preserved prior records. After the
+verification, the builder adds new consumer cases through the real Rails models: device-approved tokens,
+reading progress and reading states for the preserved users and books. The private
+`expected/stable-upgrade.json` lists the rows added after verification and every preserved row that
+real Rails changed afterwards. The only such change is `last_used_at` and `updated_at` on legacy tokens that
+Rails authenticated while recording responses; nothing else may change.
+
+### Failure and interruption
+
+A migration failure, an exhausted deadline or a verification failure ends the producer with exit code 3,
+one line naming the stage (`release`, `source`, `migration`, `verification`, `repeat`), the failing
+version and the exception class, no manifest (so the checker refuses the directory) and no values. SQLite
+DDL is transactional, so a failing migration rolls back by itself; the tests prove it for a real conflict
+(an existing `kobo_account_shares` table makes `20261109020000` fail: the 12 earlier versions stay, the
+failing migration leaves no column behind, released rows are untouched, and removing the conflict lets the
+remaining 5 apply) and for a process killed with `SIGKILL` at the `CREATE TABLE "kobo_tags"` statement of
+the last migration (the database recovers, 16 of the 17 new versions are recorded and the last is applied on resume). The
+deadline check runs between migrations; a migration that is already running is not interrupted.
+
+### Evidence kept in the bundle
+
+`expected/stable-upgrade.json` (private, never printed) records the release identity, the schema
+revisions and dump digests, the migrations applied, the sealed source digest, per-table preserved counts
+and the post-upgrade differences. The CLI's public report is unchanged: it still carries only checker-owned
+fields and the fixed gap list.
+
 ## Coverage
 
 `manifest.coverage.cases` lists every case and its digest stays in the private manifest. The current bundle
@@ -285,7 +396,7 @@ refusal (111 cases).
 
 | Gap | Status |
 | --- | --- |
-| `stable-volume-upgrade` | **missing.** The fixture is built from the current `db/schema.rb`, not by migrating a released stable volume. The consumer tables do not exist in the stable tag `v2026.11.05.1`, so this needs its own producer mode. |
+| `stable-volume-upgrade` | **partial.** `--mode stable-upgrade` proves the primary database of `v2026.11.05.1` survives the shipped migrations. The queue, cable and cache databases, queued Ruby jobs, key files, packaging and activity-preserving rollback are M2. The checker's public report still lists this gap as missing, because a volume has not been migrated. |
 | `catalogue-pagination` | missing; a list larger than 30 publications is refused. |
 | `token-adoption` | missing; replacement tokens are refused. |
 | `reference-imports` | missing; symbolic-link library entries are refused. |
@@ -297,10 +408,11 @@ refusal (111 cases).
 tools/migration/verify
 ```
 
-runs, in order: the Ruby isolation tests and RuboCop; two independent fixture productions with a
-check that the repository is untouched; a shape comparison of the two; `gofmt`, `go vet`, and
-`go test -race ./...`; the executable tests in `apps/server/e2e` against the first bundle; the
-race-instrumented executable against both bundles; byte-identical `linux/amd64` and `linux/arm64`
+runs, in order: the Ruby isolation tests, the release resolver and verifier tests, the stable-upgrade
+scenarios and RuboCop; two independent fixture productions and two independent stable-upgrade productions
+with a check that the repository is untouched; a shape comparison of each pair; `gofmt`, `go vet`, and
+`go test -race ./...`; the executable tests in `apps/server/e2e` against the first current-schema bundle and the first upgraded
+bundle; the race-instrumented executable against all four bundles; byte-identical `linux/amd64` and `linux/arm64`
 cross-builds with `CGO_ENABLED=0`; and a final check that nothing in the repository changed.
 
 Scratch lives under `$TMPDIR` (or `~/.cache/agent-tmp`), never in the repository, and never in a
@@ -330,12 +442,24 @@ RAM-backed `/tmp` or `/dev/shm`; the script refuses those and removes its own di
   timestamps, plain string ordering, prefix-sibling containment, unresolved symbolic links, hidden
   files, case-sensitive extensions and a book at the library root). Each mutant is compiled and run
   against the same bundle as the real build and must produce a different report;
+- **Stable-upgrade controls.** In Ruby, against the real migrations and database: loading today's schema over
+  the released data, skipping the migrations, an exhausted deadline, a failing migration, a killed process, and
+  fifteen tamperings of the upgraded database (changed value, changed SQLite type, swapped password digest,
+  truncated ciphertext, changed setting, lost or extra row, reset counter, dropped column or index, a value in
+  a new column or table, a lost new table, missing or lost versions) each fail the verifier with the named
+  finding. In Go, the same executable and mutants as above run, plus eleven tamperings of the upgraded bundle
+  (a released password digest, one-time-password secret, download-client key, book path, output root, deleted
+  flag, token digest, token scope or revocation, an unrecorded last migration, or the released database
+  presented as upgraded) that must fail exactly the intended checks, and an independent Go comparison of every
+  released row in the sealed source with the upgraded database that is itself shown to reject six kinds of loss
+  or change.
 - **No leakage**: the output of passing, failing and refused runs never contains any secret in
   `credentials.json`, the bundle path, the media path or a decrypted value.
 
 ## Rollback
 
-M0 adds files only: `apps/server/`, `tools/migration/`, and this document. It changes no route,
+M0 adds files only: `apps/server/`, `tools/migration/`, and this document; the stable-upgrade proof adds
+only files under `tools/migration/`, `apps/server/e2e/` and this document. It changes no route,
 schema, image, workflow, Docker default or application behaviour. To roll back, revert the commits
 that add those paths; nothing else depends on them.
 
