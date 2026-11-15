@@ -117,7 +117,6 @@ export class ApiClient {
     }
 
     const payload = await readJson(response);
-    guard.assertActive();
 
     if (!response.ok) throw this.failure(response.status, payload);
 
