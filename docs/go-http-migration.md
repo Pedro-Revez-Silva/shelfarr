@@ -22,6 +22,8 @@ progress writes, which answer `PUT`.
 | `/api/consumer/v1/continue` | bearer, `library:read` | In-progress publications. |
 | `/api/consumer/v1/library/:id` | bearer, `library:read` | One publication. |
 | `/api/consumer/v1/library/:id/assets/:asset_id` | bearer, `library:read` | EPUB, audiobook, PDF and CBZ bytes: `Range`, `If-Range`, `If-None-Match`, `HEAD`. PDF and CBZ are `attachment` under a restrictive document policy. |
+| `POST /api/consumer/v1/library/:id/assets/:asset_id/transfer_grant` | bearer, `library:read` | `201 {"url","expires_at"}`: a relative path that fetches this exact asset generation without the bearer (see [Background transfer grants](#background-transfer-grants)). |
+| `GET`, `HEAD /api/consumer/v1/library/:id/assets/:asset_id/transfer?grant=<opaque>` | the grant only | The bytes of `assets/:asset_id` with the same range, validator and fixed-layout behaviour; no `Authorization`, no cookie. |
 | `GET`, `HEAD /api/consumer/v1/library/:id/assets/:asset_id/reading_order` | bearer, `library:read` | The page list of one CBZ generation (see [Fixed-layout publications](#fixed-layout-publications-pdf-cbz-comics)). |
 | `GET`, `HEAD` `/api/consumer/v1/library/:id/progress` | bearer, `library:read` | `{"progress": null \| progress}` for the caller's own saved place. |
 | `PUT /api/consumer/v1/library/:id/progress` | bearer, `progress:write` | Compare-and-set save of a place (see Progress and reading status). `200` the stored progress, `409` the current one, `422` a refused checkpoint. |
@@ -30,11 +32,11 @@ progress writes, which answer `PUT`.
 
 ### Explicitly refused (HTTP 501, `not_implemented_in_go_runtime`, before authentication, no side effects)
 
-`discover`, `requests` (list, show, create, delete), `read_along`
-(manifest, resources, audio), `transfer_grant` and `transfer`. Kobo stays with Rails; the browser session and `/preview/api/v1` JSON are described in
+`discover`, `requests` (list, show, create, delete) and `read_along`
+(manifest, resources, audio). Kobo stays with Rails; the browser session and `/preview/api/v1` JSON are described in
 [Browser sessions and the preview JSON](#browser-sessions-and-the-preview-json). Anything else is `404`. A wrong verb on a served route is `405` with that route's own `Allow` list
 (`GET, HEAD`; `GET, HEAD, PUT` for progress; `PUT` for reading status), before authentication and without
-touching the credential.
+touching the credential. The two transfer routes answer every other verb `404`, as Rails does.
 
 ### Refused when a request asks for something this runtime cannot do
 
@@ -117,6 +119,119 @@ The write domain added by this slice is exactly `consumer_progresses` and `consu
   A write whose client left (or whose process was killed) before the commit stores nothing; one killed
   after the commit is stored and a retry of the same body returns it unchanged. This is SIGKILL
   testing, not power-loss testing.
+
+## Background transfer grants
+
+Status: experimental, default-off, no handover; the grant format is Rails' own, so Rails and this runtime accept each
+other's grants under the same `secret_key_base`. System download managers persist their requests and follow redirects
+unattended, so they must not hold the account bearer. The app asks for a grant with its bearer and hands the manager
+a URL that names one exact asset generation. This slice ports `Consumer::TransferGrant`, `LibraryController#transfer_grant`
+and `TransfersController#show`; it adds no schema, no table, no route Rails lacks and no `server.json` capability
+(`consumer_features` still lists no grants: Rails advertises none either).
+
+### The envelope, byte for byte
+
+```
+grant      = base64url(ciphertext) "--" base64url(nonce, 12 bytes) "--" base64url(tag, 16 bytes)      no padding
+key        = PBKDF2-HMAC-SHA256(secret_key_base, "shelfarr consumer transfer grant v1", 1000 iterations, 32 bytes)
+cipher     = AES-256-GCM, empty additional data, a fresh random 96-bit nonce per grant
+plaintext  = {"_rails":{"data":{"t":<token id>,"u":<user id>,"b":"<book id>","a":"<asset id>"},
+              "exp":"2026-11-16T10:00:00.987Z","pur":"consumer_transfer_grant"}}
+```
+
+This is `ActiveSupport::MessageEncryptor` (8.1.4.1) with `cipher: "aes-256-gcm"`, `serializer: :json`, `url_safe: true`, the
+Rails key generator (SHA-256, 1000 iterations) and JSON metadata, read back from real Rails output; it is not the
+signed-cookie or encrypted-column key. A grant minted by Go has the same plaintext as the grant Rails mints for the same
+claims at the same instant (the verifier compares them byte for byte) and the same length. Lifetime is `min(now + 24 h,
+issuing token expiry)`; `exp` is that instant truncated to milliseconds, the mint answer's `expires_at` truncated to seconds,
+and a grant is dead from `exp` itself (`now >= exp`), as in Rails. Rotating `secret_key_base` kills every grant; a missing or
+unusable key already refuses to start and no key is generated.
+
+Reading refuses, without saying why: a value outside `[A-Za-z0-9_-]{32,2048}`; a part missing, mis-sized or not canonical
+base64url; a failed tag; a purpose other than `consumer_transfer_grant`; no or a malformed `exp`, or `exp` reached;
+claims that are not exactly the four keys with `t` and `u` plain positive integers and `b` and `a` strings. Nothing is
+allocated from a declared size; the input is bounded before it is decoded.
+
+### Who may use a grant
+
+Every use re-reads `api_tokens` and `users`: the token `t` must exist, be unrevoked and unexpired at the moment of use, belong
+to user `u`, whose row must exist and not be soft-deleted, and still carry `library:read`. Nothing is cached, so a revocation,
+an expiry, a lost scope, a changed or deleted owner or a deleted token takes effect on the next request and restoring the row
+revives the grant. The grant must name the same book and asset as the path. It opens only that book's exact asset
+generation, with `GET` or `HEAD`; it is not a credential anywhere else (every other route, including the mint, ignores a
+`grant` parameter, and a grant sent as a bearer is `401`). The mint is the only request that authenticates the bearer and
+therefore the only one that records `api_tokens.last_used_at`/`updated_at` and the adoption of a replacement credential; a
+transfer writes nothing, so it also cannot move saved places or reading status. A grant minted by a token that has not yet
+adopted its parent keeps working, a grant of the retired parent dies with the parent's `revoked_at`.
+
+### Query grammar
+
+The transfer route reads `request.query_string` against `\Agrant=([^&;=]+)\z` and then the alphabet and length above. Anything
+else is `401 invalid_grant`: no query, `grant=`, a repeated, extra, leading, trailing or `;`-separated parameter, an encoded
+(`gr%61nt`), upper-case, array (`grant[]`) or nested (`x[grant]`) key, a padded, percent-encoded, `+`, over- or under-long value.
+`Authorization`, cookies and `X-Shelfarr-Reader-Formats` are never read: a valid grant with garbage credentials is `200`, a
+bad grant with a perfect bearer is `401`.
+
+### Answers
+
+| Request | Answer |
+| --- | --- |
+| mint, no or bad bearer | `401` (empty), as every bearer route |
+| mint, token without `library:read` | `403 {"error":"insufficient_scope","required_scope":"library:read"}` |
+| mint, unknown or non-acquired book | `404 {"error":"not_found"}` |
+| mint, asset that is not a current supported asset of that book, or whose file changed | `410 {"error":"asset_unavailable"}` |
+| mint, body over 64 KiB / not read within `-body-timeout` | `413 request_too_large` / `408 request_body_timeout` (after authentication) |
+| mint, `application/json` body that is not valid JSON | `400 {"error":"invalid_json"}`; any other body or none is ignored |
+| mint | `201 {"url":"/api/consumer/v1/library/:id/assets/:asset_id/transfer?grant=...","expires_at":"2026-11-16T10:00:00Z"}`; `Cache-Control: private, no-store`, `Referrer-Policy: no-referrer`, no `Location` |
+| transfer, any invalid, expired, mis-bound or no-longer-authorised grant | `401 {"error":"invalid_grant"}`, private, `no-referrer`; the same for `HEAD` without a body |
+| transfer, book no longer acquired / unknown | `404 {"error":"not_found"}` |
+| transfer, asset replaced, removed or malformed | `410 {"error":"asset_unavailable"}` |
+| transfer, valid | exactly the bearer asset answer: `200`/`206`/`304`/`416`, `ETag`, `Accept-Ranges`, `Content-Length`, `Content-Range`, `If-Range`, attachment and document policy for PDF and CBZ, no redirect |
+| transfer or mint, any other verb or a `.json` suffix | `404` |
+| transfer, all media slots busy | `503 server_busy` with `Retry-After` |
+
+A transfer takes a media-stream slot (`-max-media-streams`) like the bearer asset route; the mint takes a metadata slot. The file
+is the descriptor-pinned, root-confined, identity-checked open of the bearer route, and a client that leaves or stalls returns its
+slot exactly as there. A request already authorised when its token is revoked finishes; the next one is refused.
+
+### Rows written
+
+Mint: `api_tokens.last_used_at` and `updated_at` of the issuing token (and the documented adoption when it replaces a credential),
+nothing else. Transfer: nothing. No migration, no table, no file.
+
+### Contract before and after
+
+```
+POST /api/consumer/v1/library/9001/assets/<asset>/transfer_grant      Authorization: Bearer <library:read token>
+before  501 {"error":"not_implemented_in_go_runtime"}                  before authentication, no effect
+after   201 {"url":"/api/consumer/v1/library/9001/assets/<asset>/transfer?grant=<280 characters>","expires_at":"2026-11-16T10:00:00Z"}
+
+GET|HEAD /api/consumer/v1/library/9001/assets/<asset>/transfer?grant=<opaque>
+before  501 {"error":"not_implemented_in_go_runtime"}
+after   200/206/304/416 as the bearer asset route | 401 {"error":"invalid_grant"} | 404 {"error":"not_found"} | 410 {"error":"asset_unavailable"}
+
+grant minted by Rails  ->  accepted by Go, same secret, also after a Go restart        (rollforward)
+grant minted by Go     ->  accepted by Rails, same secret                                (rollback)
+```
+
+Rolling back to Rails needs no migration: grants in flight keep working, and the ones Go minted decrypt under Rails.
+
+### Deliberate differences from Rails
+
+1. **Transfer queries.** A percent-encoding error in an *unrelated* parameter (`?x%FF=1`) is `400` in Rails, which parses the query
+   before the controller runs; here the route is `401 invalid_grant`. A malformed query that carries a grant-like key is `401` in both
+   (Rails' `ConsumerGrantQueryGuard` answers before the application, with different headers: here the ordinary private answer). Rails'
+   guard and log filter also protect *other* routes (`/me?gr%61nt=%` is `400 invalid_request` in Rails); Go does not parse queries it
+   does not read, never logs a query, and answers those routes as before.
+2. **Mint bodies.** Rails answers an oversized mint body `413` before authentication; here it is read after authentication and the scope
+   check, like every other body in this runtime (documented difference 7). Only `application/json` is validated (`json.Valid`, which
+   accepts and rejects the same documents as Rails' parser for ordinary input); other media types are ignored.
+3. **Paths.** The URL is root-relative with no `SCRIPT_NAME` prefix, as `content_url` in this runtime; format suffixes (`.json`) are `404`.
+4. **Strict claims.** Rails would accept a claim `"t":"5"` or `5.0` (ActiveRecord casts it) or extra claims; only a holder of the key can
+   write one, neither Rails nor Go ever does, and Go refuses them.
+5. **Error bodies and headers.** Rails renders an exception page for its `404`s and answers a grant-like malformed query from a
+   middleware with fewer headers; the status code and the JSON `error` code are the compared contract, as in difference 2 of the
+   general list below.
 
 ## Browser sessions and the preview JSON
 
