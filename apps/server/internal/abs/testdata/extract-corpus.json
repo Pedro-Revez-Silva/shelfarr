@@ -1,0 +1,423 @@
+[
+ {
+  "name": "flat-basics",
+  "raw": {
+   "id": "li_1",
+   "title": "Dune",
+   "subtitle": "Book One",
+   "author": "Frank Herbert",
+   "narrator": "Scott Brick",
+   "seriesName": "Dune Saga",
+   "seriesSequence": "1",
+   "publisher": "Ace",
+   "language": "English",
+   "description": "Spice.",
+   "isbn": "9780441013593",
+   "asin": "B002V0QK4C",
+   "publishedYear": "1965"
+  }
+ },
+ {
+  "name": "abs-nested-media",
+  "raw": {
+   "id": "li_2",
+   "isMissing": false,
+   "media": {
+    "metadata": {
+     "title": "The Hobbit",
+     "subtitle": "There and Back Again",
+     "authorName": "J.R.R. Tolkien",
+     "narratorName": "Rob Inglis",
+     "seriesName": "Middle-earth #0",
+     "publisher": "Recorded Books",
+     "language": "en",
+     "description": "Bilbo.",
+     "isbn": "9780261102217",
+     "asin": "B0000000X",
+     "publishedYear": "1937"
+    }
+   }
+  }
+ },
+ {
+  "name": "missing-flag",
+  "raw": {
+   "id": "li_3",
+   "isMissing": true,
+   "title": "Gone"
+  }
+ },
+ {
+  "name": "missing-flag-string",
+  "raw": {
+   "id": "li_4",
+   "isMissing": "true",
+   "title": "Not exactly"
+  }
+ },
+ {
+  "name": "id-from-media",
+  "raw": {
+   "media": {
+    "id": "m_5",
+    "metadata": {
+     "title": "Media Id"
+    }
+   }
+  }
+ },
+ {
+  "name": "id-from-item",
+  "raw": {
+   "item": {
+    "id": "i_6"
+   },
+   "title": "Item Id"
+  }
+ },
+ {
+  "name": "numeric-id",
+  "raw": {
+   "id": 7,
+   "title": "Seven"
+  }
+ },
+ {
+  "name": "authors-array-hashes",
+  "raw": {
+   "id": "li_8",
+   "media": {
+    "metadata": {
+     "title": "Anthology",
+     "authors": [
+      {
+       "id": "a",
+       "name": "A. One"
+      },
+      {
+       "id": "b",
+       "fullName": "B. Two"
+      },
+      {
+       "author": "C. Three"
+      },
+      {
+       "nothing": 1
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "name": "authors-array-strings",
+  "raw": {
+   "id": "li_9",
+   "metadata": {
+    "title": "Strings",
+    "authors": [
+     "X",
+     "Y"
+    ]
+   }
+  }
+ },
+ {
+  "name": "authors-empty-names",
+  "raw": {
+   "id": "li_10",
+   "media": {
+    "authors": [
+     {
+      "id": "z"
+     }
+    ]
+   },
+   "title": "No names"
+  }
+ },
+ {
+  "name": "authors-string",
+  "raw": {
+   "id": "li_11",
+   "media": {
+    "authors": "Single Author"
+   },
+   "title": "String authors"
+  }
+ },
+ {
+  "name": "author-blank-precedence",
+  "raw": {
+   "id": "li_12",
+   "author": "  ",
+   "authorName": "Second",
+   "title": "Blank first"
+  }
+ },
+ {
+  "name": "narrators-array",
+  "raw": {
+   "id": "li_13",
+   "media": {
+    "metadata": {
+     "title": "Narrated",
+     "narrators": [
+      "N1",
+      "N2"
+     ]
+    }
+   }
+  }
+ },
+ {
+  "name": "narrators-hashes",
+  "raw": {
+   "id": "li_14",
+   "metadata": {
+    "title": "Narrated2",
+    "narrators": [
+     {
+      "name": "H1"
+     },
+     {
+      "fullName": "H2"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "series-array-name",
+  "raw": {
+   "id": "li_15",
+   "media": {
+    "metadata": {
+     "title": "S1",
+     "series": [
+      {
+       "id": "s",
+       "name": "Saga",
+       "sequence": "2"
+      },
+      {
+       "name": "Other",
+       "sequence": "9"
+      }
+     ]
+    }
+   }
+  }
+ },
+ {
+  "name": "series-nested",
+  "raw": {
+   "id": "li_16",
+   "metadata": {
+    "title": "S2",
+    "series": [
+     {
+      "series": {
+       "name": "Deep"
+      },
+      "sequence": "3.5"
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "series-string",
+  "raw": {
+   "id": "li_17",
+   "metadata": {
+    "title": "S3",
+    "series": "Plain Series"
+   }
+  }
+ },
+ {
+  "name": "series-sequence-number",
+  "raw": {
+   "id": "li_18",
+   "title": "S4",
+   "seriesSequence": 2,
+   "seriesName": "Numbered"
+  }
+ },
+ {
+  "name": "series-sequence-float",
+  "raw": {
+   "id": "li_19",
+   "metadata": {
+    "title": "S5",
+    "series": [
+     {
+      "name": "F",
+      "sequence": 1.5
+     }
+    ]
+   }
+  }
+ },
+ {
+  "name": "year-date",
+  "raw": {
+   "id": "li_20",
+   "title": "Y1",
+   "publishedDate": "2019-05-03"
+  }
+ },
+ {
+  "name": "year-number",
+  "raw": {
+   "id": "li_21",
+   "title": "Y2",
+   "publishedYear": 2001
+  }
+ },
+ {
+  "name": "year-long-digits",
+  "raw": {
+   "id": "li_22",
+   "title": "Y3",
+   "year": "12345"
+  }
+ },
+ {
+  "name": "year-none",
+  "raw": {
+   "id": "li_23",
+   "title": "Y4",
+   "publishedYear": "unknown"
+  }
+ },
+ {
+  "name": "year-blank",
+  "raw": {
+   "id": "li_24",
+   "title": "Y5",
+   "publishedYear": "  "
+  }
+ },
+ {
+  "name": "isbn-array",
+  "raw": {
+   "id": "li_25",
+   "title": "I1",
+   "isbn": [
+    "",
+    "9781",
+    "9782"
+   ]
+  }
+ },
+ {
+  "name": "isbn-number",
+  "raw": {
+   "id": "li_26",
+   "title": "I2",
+   "isbn": 9781234567890
+  }
+ },
+ {
+  "name": "isbn-blank",
+  "raw": {
+   "id": "li_27",
+   "title": "I3",
+   "isbn": ""
+  }
+ },
+ {
+  "name": "empty-title-wins",
+  "raw": {
+   "id": "li_28",
+   "title": "",
+   "media": {
+    "metadata": {
+     "title": "Ignored"
+    }
+   }
+  }
+ },
+ {
+  "name": "null-title-falls-through",
+  "raw": {
+   "id": "li_29",
+   "title": null,
+   "media": {
+    "metadata": {
+     "title": "Fallback"
+    }
+   }
+  }
+ },
+ {
+  "name": "false-title-falls-through",
+  "raw": {
+   "id": "li_30",
+   "title": false,
+   "book": {
+    "title": "Book Title"
+   }
+  }
+ },
+ {
+  "name": "book-nested",
+  "raw": {
+   "id": "li_31",
+   "book": {
+    "title": "B",
+    "author": "Booker",
+    "metadata": {
+     "publisher": "BP",
+     "authorName": "Ignored since author present"
+    }
+   }
+  }
+ },
+ {
+  "name": "metadata-wins-over-raw",
+  "raw": {
+   "id": "li_32",
+   "publisher": "raw",
+   "language": "fr",
+   "metadata": {
+    "publisher": "meta"
+   }
+  }
+ },
+ {
+  "name": "description-number",
+  "raw": {
+   "id": "li_33",
+   "title": "D",
+   "description": 12
+  }
+ },
+ {
+  "name": "unicode",
+  "raw": {
+   "id": "li_34",
+   "title": "Ünïcödé 📚",
+   "author": "李白",
+   "description": "line1\nline2"
+  }
+ },
+ {
+  "name": "title-only-media-title",
+  "raw": {
+   "id": "li_35",
+   "media": {
+    "title": "MT",
+    "subtitle": "MS"
+   }
+  }
+ },
+ {
+  "name": "empty-object-id-only",
+  "raw": {
+   "id": "li_36"
+  }
+ }
+]
