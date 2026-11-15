@@ -3,7 +3,6 @@ package gohttp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -30,7 +29,7 @@ const (
 	maxCookieValue    = 1024
 	maxLoginBody      = 4096
 	maxPassword       = 72
-	maxSessionAgeDays = 36500
+	maxSessionAgeDays = live.MaxSessionAgeDays
 	accountHeader     = "X-Shelfarr-Account"
 	csrfHeader        = "X-CSRF-Token"
 	dummyPasswordHash = "$2a$12$VM0I4YpCNVTn7yfNpwdUQOcI.FRtKt8l2Ml.EkAarbDyC.EUWmAWa"
@@ -448,11 +447,6 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 		mapFailure(w, result, err)
 		return
 	}
-	days, err := a.db.IntegerSetting(r.Context(), "session_max_age_days", 30)
-	if err != nil || days < 0 || days > maxSessionAgeDays {
-		mapFailure(w, result, errors.Join(err, store.ErrUnsupported))
-		return
-	}
 	created, err := a.db.CompleteLogin(r.Context(), credentials.ID, credentials.PasswordDigest, live.Client{UserAgent: r.UserAgent(), IP: clientIP(r)}, a.config.PasswordlessEnv, a.now)
 	if err != nil {
 		mapFailure(w, result, err)
@@ -476,7 +470,7 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 		a.loginRefused(w, result, http.StatusNotImplemented, "oidc_account_not_supported", "")
 		return
 	}
-	expires := created.Session.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)
+	expires := created.ExpiresAt
 	cookie, err := a.cookies.GenerateMessage(json.RawMessage(strconv.FormatInt(created.Session.ID, 10)), sessionPurpose, expires)
 	if err != nil {
 		problem(w, result, http.StatusInternalServerError, "internal_error")

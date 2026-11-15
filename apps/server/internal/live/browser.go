@@ -51,9 +51,12 @@ const (
 )
 
 type LoginResult struct {
-	Outcome LoginOutcome
-	Session SessionRow
+	Outcome   LoginOutcome
+	Session   SessionRow
+	ExpiresAt time.Time
 }
+
+const MaxSessionAgeDays = 36500
 
 func (d *DB) SessionByID(ctx context.Context, id int64) (*SessionRow, error) {
 	var row SessionRow
@@ -188,7 +191,15 @@ func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, cli
 	case state.oidcLinked:
 		return LoginResult{Outcome: LoginNeedsOIDC}, nil
 	}
+	lifetime, err := sessionLifetime(ctx, tx)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	stamp := TimestampText(now)
+	moment, err := store.ParseTimestamp(stamp)
+	if err != nil {
+		return LoginResult{}, err
+	}
 	if state.dirty() {
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET failed_login_count = 0, locked_until = NULL, last_failed_login_at = NULL, last_failed_login_ip = NULL, updated_at = ? WHERE id = ?`, stamp, userID); err != nil {
 			return LoginResult{}, Classify(err)
@@ -211,11 +222,21 @@ func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, cli
 	if err := fault.Hit(ctx, "login.committed"); err != nil {
 		return LoginResult{}, err
 	}
-	moment, err := store.ParseTimestamp(stamp)
-	if err != nil {
-		return LoginResult{}, err
+	return LoginResult{Outcome: LoginCreated, Session: SessionRow{ID: id, UserID: userID, CreatedAt: moment}, ExpiresAt: moment.Add(lifetime)}, nil
+}
+
+func sessionLifetime(ctx context.Context, tx *sql.Tx) (time.Duration, error) {
+	var row SettingRow
+	err := tx.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = 'session_max_age_days'`).Scan(&row.Value, &row.Type)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, Classify(err)
 	}
-	return LoginResult{Outcome: LoginCreated, Session: SessionRow{ID: id, UserID: userID, CreatedAt: moment}}, nil
+	row.Found = err == nil
+	days, err := integerSetting(row, 30)
+	if err != nil || days < 0 || days > MaxSessionAgeDays {
+		return 0, errors.Join(err, store.ErrUnsupported)
+	}
+	return time.Duration(days) * 24 * time.Hour, nil
 }
 
 func passwordlessIn(ctx context.Context, tx *sql.Tx, environment bool) (bool, error) {
@@ -307,6 +328,10 @@ func (d *DB) IntegerSetting(ctx context.Context, key string, fallback int) (int,
 	if err != nil {
 		return 0, err
 	}
+	return integerSetting(row, fallback)
+}
+
+func integerSetting(row SettingRow, fallback int) (int, error) {
 	if !row.Found || !row.Value.Valid {
 		return fallback, nil
 	}
