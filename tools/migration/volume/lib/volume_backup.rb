@@ -161,9 +161,9 @@ module Migration
                      "archive_sha256" => Digest::SHA256.file(File.join(out, FILES_ARCHIVE)).hexdigest,
                      "key_files_present" => Layout::KEY_FILES.select { |name| files.key?(name) } }
         temporary = File.join(out, "#{MANIFEST}.partial")
-        validate_restore_metadata!(manifest)
         content = JSON.pretty_generate(manifest)
         assert_manifest_size!(content.bytesize)
+        validate_restore_metadata!(JSON.parse(content))
         File.write(temporary, content, perm: 0o600)
         File.rename(temporary, File.join(out, MANIFEST))
       end
