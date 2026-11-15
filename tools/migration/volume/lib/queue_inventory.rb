@@ -28,10 +28,12 @@ module Migration
         SafeCopy.open(@storage, Layout::QUEUE, scratch: @scratch) do |database|
           rows = database.execute(<<~SQL)
             SELECT j.class_name, CASE WHEN j.finished_at IS NOT NULL THEN 'finished' ELSE COALESCE(#{state_case}, 'unassigned') END, COUNT(*)
-            FROM solid_queue_jobs j GROUP BY 1, 2 ORDER BY 1, 2 LIMIT #{CLASS_LIMIT}
+            FROM solid_queue_jobs j GROUP BY 1, 2 ORDER BY 1, 2
           SQL
           outcomes = rows.map { |class_name, state, count| Outcome.new(class_name: label(class_name), state: state, count: count, disposition: disposition(class_name, state)) }
-          { "outcomes" => outcomes.map { |outcome| outcome.to_h.transform_keys(&:to_s) }, "total" => outcomes.sum(&:count), "blocked_unsupported" => outcomes.select { |outcome| outcome.disposition == "blocked-unsupported-retained" }.sum(&:count) }
+          shown = outcomes.sort_by { |outcome| outcome.disposition == "blocked-unsupported-retained" ? 0 : 1 }.first(CLASS_LIMIT)
+          { "outcomes" => shown.sort_by { |outcome| [ outcome.class_name, outcome.state ] }.map { |outcome| outcome.to_h.transform_keys(&:to_s) }, "groups" => outcomes.size, "truncated" => outcomes.size > CLASS_LIMIT,
+            "total" => outcomes.sum(&:count), "blocked_unsupported" => outcomes.select { |outcome| outcome.disposition == "blocked-unsupported-retained" }.sum(&:count) }
         end
       end
 

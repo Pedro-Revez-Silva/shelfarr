@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "support/volume_test_case"
+require "digest"
 require_relative "support/synthetic_volume"
 
 module Migration
@@ -159,6 +160,39 @@ module Migration
         FileUtils.mkdir_p(fresh)
         error = assert_raises(BackupRefused) { backup.restore(snapshot: incomplete, target: fresh) }
         assert_match(/incomplete/, error.message)
+      end
+
+      def test_a_manifest_naming_a_database_outside_the_contract_is_refused_before_anything_is_written
+        volume, = seeded("beta")
+        directory = snapshot_directory(volume)
+        backup.snapshot(storage: volume.storage, out: directory)
+        crafted = File.join(volume.directory, "crafted")
+        FileUtils.cp_r(directory, crafted)
+        hostile = "x; touch injected; #"
+        File.binwrite(File.join(crafted, "databases", hostile), "hostile")
+        manifest = JSON.parse(File.read(File.join(crafted, "snapshot.json")))
+        manifest["databases"][hostile] = manifest.fetch("databases").fetch(Layout::PRIMARY).merge("sha256" => Digest::SHA256.hexdigest("hostile"))
+        File.write(File.join(crafted, "snapshot.json"), JSON.generate(manifest))
+        target = File.join(volume.directory, "never-written")
+        FileUtils.mkdir_p(target)
+        error = assert_raises(BackupRefused) { backup.restore(snapshot: crafted, target: target) }
+        assert_match(/outside the volume contract/, error.message)
+        assert_empty Dir.children(target)
+      end
+
+      def test_a_symbolic_link_in_place_of_a_database_or_sidecar_is_refused
+        volume, = seeded("beta")
+        outside = File.join(volume.directory, "elsewhere.sqlite3")
+        FileUtils.cp(File.join(volume.storage, Layout::CACHE), outside)
+        FileUtils.rm(File.join(volume.storage, Layout::CACHE))
+        File.symlink(outside, File.join(volume.storage, Layout::CACHE))
+        error = assert_raises(Refusal) { backup.snapshot(storage: volume.storage, out: snapshot_directory(volume)) }
+        assert_match(/symbolic link/, error.message)
+        assert_raises(UnsafeSource) { SafeCopy.open(volume.storage, Layout::CACHE, scratch: harness.scratch) { |_| nil } }
+        FileUtils.rm(File.join(volume.storage, Layout::CACHE))
+        FileUtils.cp(outside, File.join(volume.storage, Layout::CACHE))
+        File.symlink(outside, File.join(volume.storage, "#{Layout::CACHE}-wal"))
+        assert_raises(Refusal) { backup.snapshot(storage: volume.storage, out: snapshot_directory(volume)) }
       end
 
       def test_restore_refuses_a_target_mounted_by_an_active_container

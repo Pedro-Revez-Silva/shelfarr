@@ -50,6 +50,21 @@ module Migration
         %w[production.sqlite3:users[[2]]:row-lost production.sqlite3:notes:table-lost production.sqlite3:users#index_users_on_name:index-lost production.sqlite3:users.last_seen_at:column-lost].each { |line| assert_includes found, line }
       end
 
+      def test_a_redefined_index_and_a_redefined_column_are_reported_even_when_names_match
+        found = mutate do |copy|
+          copy.primary do |database|
+            database.execute("DROP INDEX index_users_on_name")
+            database.execute("CREATE INDEX index_users_on_name ON users (password_digest)")
+            database.execute("CREATE TABLE notes_rebuilt (body INTEGER NOT NULL DEFAULT 0)")
+            database.execute("INSERT INTO notes_rebuilt SELECT body FROM notes")
+            database.execute("DROP TABLE notes")
+            database.execute("ALTER TABLE notes_rebuilt RENAME TO notes")
+          end
+        end
+        assert_includes found, "production.sqlite3:users#index_users_on_name:index-changed"
+        assert_includes found, "production.sqlite3:notes.body:column-definition-changed"
+      end
+
       def test_a_type_change_is_a_value_change
         found = mutate { |copy| copy.primary { |database| database.execute("UPDATE users SET otp_secret = '' WHERE id = 2") } }
         assert_includes found, "production.sqlite3:users[[2]].otp_secret:value-changed"

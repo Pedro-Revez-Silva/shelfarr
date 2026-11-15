@@ -62,6 +62,9 @@ module Migration
         manifest = JSON.parse(File.read(path))
         raise BackupRefused, "refusing: unsupported snapshot format" unless manifest["format"] == FORMAT
 
+        unknown = manifest.fetch("databases").keys - Layout::DATABASES
+        raise BackupRefused, "refusing: the manifest names a database outside the volume contract" unless unknown.empty?
+
         manifest.fetch("databases").each do |name, entry|
           file = File.join(snapshot, DATABASE_DIRECTORY, name)
           raise BackupRefused, "refusing: snapshot database #{name} is missing" unless File.file?(file)
@@ -124,8 +127,9 @@ module Migration
       end
 
       def place_database(snapshot, target, name, entry)
-        script = "install -o #{Integer(entry.fetch('uid'))} -g #{Integer(entry.fetch('gid'))} -m #{format('%o', Integer(entry.fetch('mode')))} /snapshot/#{DATABASE_DIRECTORY}/#{name} /target/#{name}"
-        result = @docker.helper(volumes: [ [ snapshot, "/snapshot", "ro" ], [ target, "/target", "rw" ] ], script: script)
+        script = %(install -o "$1" -g "$2" -m "$3" "/snapshot/#{DATABASE_DIRECTORY}/$4" "/target/$4")
+        arguments = [ Integer(entry.fetch("uid")), Integer(entry.fetch("gid")), format("%o", Integer(entry.fetch("mode"))), name ]
+        result = @docker.helper(volumes: [ [ snapshot, "/snapshot", "ro" ], [ target, "/target", "rw" ] ], script: script, arguments: arguments)
         raise BackupRefused, "refusing: placing #{name} failed" unless result.success?
       end
 

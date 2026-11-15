@@ -153,6 +153,14 @@ module Migration
         assert_includes found, "production.sqlite3:users#index_users_on_username:index-lost"
       end
 
+      def test_a_same_named_index_with_a_different_definition_is_reported
+        found = mutate do |mutant|
+          sql(mutant, Layout::PRIMARY, "DROP INDEX index_users_on_username")
+          sql(mutant, Layout::PRIMARY, "CREATE INDEX index_users_on_username ON users (name)")
+        end
+        assert_equal [ "production.sqlite3:users#index_users_on_username:index-changed" ], found
+      end
+
       def test_no_violation_names_a_secret_or_a_job_argument
         found = mutate do |mutant|
           sql(mutant, Layout::PRIMARY, "DELETE FROM download_clients")

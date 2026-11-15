@@ -64,6 +64,18 @@ module Migration
         assert_empty Comparison.call(before, @volume.capture(@scratch), allowances: Contracts.strict)
       end
 
+      def test_unsupported_work_is_counted_even_when_more_groups_exist_than_the_detail_limit
+        @volume.queue do |database|
+          200.times { |index| database.execute("INSERT INTO solid_queue_jobs (class_name, queue_name) VALUES (?, 'default')", [ "A#{index}Job" ]) }
+          database.execute("INSERT INTO solid_queue_jobs (class_name, queue_name) VALUES ('ZZUnknownJob', 'default')")
+        end
+        result = report((0...200).map { |index| "A#{index}Job" } + [ "KnownJob" ])
+        assert_equal true, result.fetch("truncated")
+        assert_equal 4, result.fetch("blocked_unsupported")
+        assert_includes result.fetch("outcomes").map { |outcome| outcome["class_name"] }, "ZZUnknownJob"
+        assert_equal 207, result.fetch("total")
+      end
+
       def test_a_job_without_any_execution_is_reported_unassigned_not_lost
         @volume.queue { |database| database.execute("INSERT INTO solid_queue_jobs (id, class_name, queue_name) VALUES (7, 'KnownJob', 'default')") }
         assert_equal 1, report.fetch("outcomes").count { |outcome| outcome["state"] == "unassigned" && outcome["count"] == 1 }

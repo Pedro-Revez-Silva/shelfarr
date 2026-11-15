@@ -36,6 +36,9 @@ module Migration
         raise Refusal, "refusing: the volume directory does not exist" unless File.directory?(storage)
         raise Refusal, "refusing: the volume path crosses a symbolic link" unless File.realpath(storage) == File.expand_path(storage)
         raise Refusal, "refusing: the volume has no #{Layout::PRIMARY}" unless File.file?(File.join(storage, Layout::PRIMARY))
+
+        linked = Dir.children(storage).select { |name| File.symlink?(File.join(storage, name)) && (Layout.database?(name) || Layout.sidecar?(name) || Layout::KEY_FILES.include?(name)) }
+        raise Refusal, "refusing: #{linked.join(', ')} is a symbolic link; a link could point at a database another process holds open" unless linked.empty?
       end
 
       def assert_empty_target!(target)

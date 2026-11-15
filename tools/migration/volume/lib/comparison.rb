@@ -84,9 +84,15 @@ module Migration
         keyed = before.columns.any? { |column| column["pk"].positive? }
         before_columns = before.columns.map { |column| column["name"] }
         after_columns = after.columns.map { |column| column["name"] }
+        shared = before.columns.select { |column| after_columns.include?(column["name"]) }
+        shared.each do |column|
+          add(database, "#{subject}.#{column['name']}", "column-definition-changed") if after.columns.find { |candidate| candidate["name"] == column["name"] } != column
+        end
         (before_columns - after_columns).each { |column| add(database, "#{subject}.#{column}", "column-lost") }
         (after_columns - before_columns - Array(@allowances.added_columns[table])).each { |column| add(database, "#{subject}.#{column}", "column-added") }
         (before.indexes.keys - after.indexes.keys).each { |index| add(database, "#{subject}##{index}", "index-lost") }
+        before.indexes.each { |index, definition| add(database, "#{subject}##{index}", "index-changed") if after.indexes.key?(index) && after.indexes[index] != definition }
+        add(database, subject, "foreign-keys-changed") unless before.foreign_keys == after.foreign_keys
         mutable = Array(@allowances.mutable_columns[table])
         before.rows.each do |key, cells|
           row = after.rows[key]

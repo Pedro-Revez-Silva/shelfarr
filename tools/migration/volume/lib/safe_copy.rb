@@ -7,6 +7,8 @@ require_relative "scratch"
 
 module Migration
   module Volume
+    class UnsafeSource < StandardError; end
+
     module SafeCopy
       module_function
 
@@ -14,6 +16,8 @@ module Migration
         Dir.mktmpdir("m2-copy-", scratch) do |directory|
           [ "", "-wal" ].each do |suffix|
             source = File.join(storage, "#{name}#{suffix}")
+            raise UnsafeSource, "#{name}#{suffix} is a symbolic link" if File.symlink?(source)
+
             FileUtils.cp(source, File.join(directory, "#{name}#{suffix}")) if File.file?(source)
           end
           database = SQLite3::Database.new(File.join(directory, name))

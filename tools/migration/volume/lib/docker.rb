@@ -122,11 +122,11 @@ module Migration
         Command.run!(*arguments, stdin: source, timeout: timeout)
       end
 
-      def helper(volumes:, script:, timeout: 300, user: "0:0")
-        arguments = [ "docker", "run", "--rm", "--network", "none", "--label", "#{LABEL}=#{@project}", "--user", user ]
-        volumes.each { |source, target, mode| arguments.push("--volume", "#{source}:#{target}:#{mode}") }
-        arguments.push(HELPER_IMAGE, "sh", "-c", script)
-        Command.capture(*arguments, timeout: timeout)
+      def helper(volumes:, script:, arguments: [], timeout: 300, user: "0:0")
+        command = [ "docker", "run", "--rm", "--network", "none", "--label", "#{LABEL}=#{@project}", "--user", user ]
+        volumes.each { |source, target, mode| command.push("--volume", "#{source}:#{target}:#{mode}") }
+        command.push(HELPER_IMAGE, "sh", "-c", script, "sh", *arguments.map(&:to_s))
+        Command.capture(*command, timeout: timeout)
       end
 
       ACTIVE_STATES = %w[running paused restarting].freeze
