@@ -7,5 +7,5 @@ const { cleanup } = await import("@testing-library/react");
 afterEach(() => {
   cleanup();
   window.sessionStorage.clear();
-  window.history.replaceState(null, "");
+  window.history.replaceState(null, "", "/sub/preview/library");
 });
