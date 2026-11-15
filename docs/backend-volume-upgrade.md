@@ -110,7 +110,11 @@ key material is missing (unless `--environment-keys` declares environment keys);
 check; the output directory exists or is inside the volume. After copying, quiescence is checked again. Restore
 refuses a target that is not an empty plain directory or is mounted by an active container, a manifest that is
 missing (an interrupted snapshot never has one), a database inventory that omits the primary database,
-and any database or archive whose SHA-256 differs. These manifest checks run before the restore target is written.
+and any database or archive whose SHA-256 differs. JSON and the owner, mode, file and digest metadata used by
+restore are validated before the target is written. Manifests larger than 16 MiB are refused when reading or
+creating a snapshot; the reader applies that limit while reading.
+Extraction or filesystem failures can still leave a populated target. A nonzero result is not a completed restore;
+retry into another empty directory after correcting the failure.
 
 Databases are copied with SQLite's backup API from a private copy of the database and its `-wal` (never from the
 live file pair). Everything else goes into `files.tar` (GNU tar, numeric owners, nanosecond mtimes) written by a

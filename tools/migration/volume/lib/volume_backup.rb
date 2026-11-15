@@ -20,6 +20,8 @@ module Migration
       MANIFEST = "snapshot.json"
       FILES_ARCHIVE = "files.tar"
       DATABASE_DIRECTORY = "databases"
+      MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+      DIGEST = /\A[0-9a-f]{64}\z/
 
       def initialize(docker:, guard: nil, scratch: Scratch.root)
         @docker = docker
@@ -59,8 +61,10 @@ module Migration
         path = File.join(snapshot, MANIFEST)
         raise BackupRefused, "refusing: #{snapshot} has no #{MANIFEST}; the snapshot is incomplete" unless File.file?(path)
 
-        manifest = JSON.parse(File.read(path))
-        raise BackupRefused, "refusing: unsupported snapshot format" unless manifest["format"] == FORMAT
+        content = File.binread(path, MAX_MANIFEST_BYTES + 1)
+        assert_manifest_size!(content.bytesize)
+        manifest = JSON.parse(content)
+        raise BackupRefused, "refusing: unsupported snapshot format" unless manifest.is_a?(Hash) && manifest["format"] == FORMAT
 
         databases = manifest["databases"]
         raise BackupRefused, "refusing: snapshot must include the primary database" unless databases.is_a?(Hash) && databases.key?(Layout::PRIMARY)
@@ -68,6 +72,7 @@ module Migration
         unknown = databases.keys - Layout::DATABASES
         raise BackupRefused, "refusing: the manifest names a database outside the volume contract" unless unknown.empty?
 
+        validate_restore_metadata!(manifest)
         manifest.fetch("databases").each do |name, entry|
           file = File.join(snapshot, DATABASE_DIRECTORY, name)
           raise BackupRefused, "refusing: snapshot database #{name} is missing" unless File.file?(file)
@@ -77,9 +82,46 @@ module Migration
         raise BackupRefused, "refusing: snapshot archive fails its recorded digest" unless File.file?(archive) && Digest::SHA256.file(archive).hexdigest == manifest.fetch("archive_sha256")
 
         manifest
+      rescue JSON::ParserError
+        raise BackupRefused, "refusing: snapshot manifest is not valid JSON"
       end
 
       private
+
+      def validate_restore_metadata!(manifest)
+        databases = manifest.fetch("databases")
+        valid = databases.values.all? do |entry|
+          entry.is_a?(Hash) && valid_digest?(entry["sha256"]) && valid_integer?(entry["uid"], 4_294_967_294) &&
+            valid_integer?(entry["gid"], 4_294_967_294) && valid_integer?(entry["mode"], 0o7777)
+        end
+        files = manifest["files"]
+        valid &&= files.is_a?(Hash) && files.all? { |name, entry| valid_relative_path?(name) && valid_file_metadata?(entry) }
+        valid &&= valid_digest?(manifest["archive_sha256"])
+        raise BackupRefused, "refusing: snapshot restore metadata is invalid" unless valid
+      end
+
+      def valid_integer?(value, maximum)
+        value.is_a?(Integer) && value.between?(0, maximum)
+      end
+
+      def valid_digest?(value)
+        value.is_a?(String) && value.match?(DIGEST)
+      end
+
+      def valid_relative_path?(name)
+        name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0") && name.split("/", -1).none? { |part| [ "", ".", ".." ].include?(part) }
+      end
+
+      def valid_file_metadata?(entry)
+        return false unless entry.is_a?(Hash) && valid_integer?(entry["mode"], 0o7777)
+        return valid_digest?(entry["digest"]) if entry["kind"] == "file"
+
+        %w[directory symlink other].include?(entry["kind"]) && entry.key?("digest") && entry["digest"].nil?
+      end
+
+      def assert_manifest_size!(size)
+        raise BackupRefused, "refusing: snapshot manifest exceeds 16 MiB" if size > MAX_MANIFEST_BYTES
+      end
 
       def copy_databases(storage, out)
         raise BackupRefused, "refusing: #{Layout::PRIMARY} is required" unless File.file?(File.join(storage, Layout::PRIMARY))
@@ -119,7 +161,10 @@ module Migration
                      "archive_sha256" => Digest::SHA256.file(File.join(out, FILES_ARCHIVE)).hexdigest,
                      "key_files_present" => Layout::KEY_FILES.select { |name| files.key?(name) } }
         temporary = File.join(out, "#{MANIFEST}.partial")
-        File.write(temporary, JSON.pretty_generate(manifest), perm: 0o600)
+        validate_restore_metadata!(manifest)
+        content = JSON.pretty_generate(manifest)
+        assert_manifest_size!(content.bytesize)
+        File.write(temporary, content, perm: 0o600)
         File.rename(temporary, File.join(out, MANIFEST))
       end
 
