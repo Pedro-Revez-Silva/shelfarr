@@ -763,7 +763,7 @@ executable:
   startup refusals, single ownership, cursor and secret mismatch, 24 concurrent adoptions, request
   limits, absence of sensitive values from every output;
 * the real Rails models and controllers reading, projecting, isolating per account and continuing every
-  row Go wrote (`verify_go_rows.rb`, 452 checks per fixture, including Rails writing a PDF and a CBZ page on top of Go-written fixed-layout places, which fails when either is never exercised);
+  row Go wrote (`verify_go_rows.rb`, 454 checks per fixture, including Rails writing a PDF and a CBZ page on top of Go-written fixed-layout places, which fails when either is never exercised);
 * progress faults over real sockets and processes: generated EPUB and synthetic audio round trips and
   a restart, 24 concurrent first writes (one wins) and 12 concurrent updaters (none lost), a SIGKILL
   before and after the commit followed by a retry, a client that leaves while holding the write
