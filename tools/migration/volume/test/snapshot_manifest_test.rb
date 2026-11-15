@@ -120,16 +120,21 @@ module Migration
 
       def test_the_cli_refuses_incomplete_metadata_without_writing_the_target
         prepare_primary
+        archive = File.join(@directory, VolumeBackup::FILES_ARCHIVE)
+        File.open(archive, "wb") do |file|
+          Gem::Package::TarWriter.new(file) { |tar| tar.add_file_simple("artifact", 0o600, 7) { |entry| entry.write("content") } }
+        end
+        @manifest["archive_sha256"] = Digest::SHA256.file(archive).hexdigest
         @manifest.fetch("databases").fetch(Layout::PRIMARY).delete("uid")
         write_manifest
         target = File.join(@directory, "target")
         Dir.mkdir(target)
         command = File.expand_path("../volume", __dir__)
         output, error, status = Open3.capture3(RbConfig.ruby, command, "restore", "--snapshot", @directory, "--target", target)
+        assert_empty Dir.children(target)
         assert_equal 3, status.exitstatus, error
         assert_empty output
         assert_equal 1, error.lines.size
-        assert_empty Dir.children(target)
       end
 
       def test_oversized_manifests_are_refused_before_json_parsing

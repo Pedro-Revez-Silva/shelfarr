@@ -35,6 +35,22 @@ module Migration
         harness.stop(container)
       end
 
+      def test_a_primary_only_volume_round_trips_without_creating_secondary_databases
+        volume = SyntheticVolume.new(File.join(harness.scratch, "primary-only")).build
+        [ Layout::QUEUE, Layout::CABLE, Layout::CACHE ].each { |name| FileUtils.rm(File.join(volume.storage, name)) }
+        before = volume.capture(harness.scratch)
+        directory = File.join(volume.root, "snapshot")
+        manifest = backup.snapshot(storage: volume.storage, out: directory)
+        assert_equal [ Layout::PRIMARY ], manifest.fetch("databases").keys
+        target = File.join(volume.root, "restored")
+        Dir.mkdir(target)
+        backup.restore(snapshot: directory, target: target)
+        restored = VolumeState.capture(storage: target, scratch: harness.scratch)
+        assert_equal before.databases.fetch(Layout::PRIMARY).digest, restored.databases.fetch(Layout::PRIMARY).digest
+        [ Layout::QUEUE, Layout::CABLE, Layout::CACHE ].each { |name| assert_nil restored.databases.fetch(name) }
+        Layout::KEY_FILES.each { |name| assert_equal before.files.fetch(name).digest, restored.files.fetch(name).digest }
+      end
+
       def test_a_running_volume_is_never_snapshotted
         volume, = seeded("beta")
         container = harness.boot(volume, "beta")
