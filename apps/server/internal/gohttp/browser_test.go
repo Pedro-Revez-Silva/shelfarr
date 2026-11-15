@@ -692,3 +692,43 @@ func TestSecureCookiesFollowTheConfiguredScheme(t *testing.T) {
 		}
 	}
 }
+
+func TestAPasswordlessSettingFlippedBeforeTheWriteLockStillRefusesTheSession(t *testing.T) {
+	h := newBrowserHarness(t, nil)
+	digest := livetest.Query(t, h.path, `SELECT password_digest FROM users WHERE id = 1`)[0][0].(string)
+	login := func(environment bool) live.LoginOutcome {
+		result, err := h.app.db.CompleteLogin(t.Context(), 1, digest, live.Client{IP: "127.0.0.1"}, environment, h.clock.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Outcome
+	}
+	if login(false) != live.LoginCreated {
+		t.Fatal("a normal deployment refused")
+	}
+	if login(true) != live.LoginPasswordless {
+		t.Fatal("DISABLE_AUTH was not honoured under the lock")
+	}
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type) VALUES ('auth_disabled', 'true', 'boolean')`)
+	if login(false) != live.LoginPasswordless {
+		t.Fatal("the setting was not honoured under the lock")
+	}
+	if rows := livetest.Query(t, h.path, `SELECT COUNT(*) FROM sessions`); rows[0][0].(int64) != 1 {
+		t.Fatalf("sessions %v", rows)
+	}
+	livetest.Exec(t, h.path, `UPDATE settings SET value_type = 'string' WHERE key = 'auth_disabled'`)
+	if _, err := h.app.db.CompleteLogin(t.Context(), 1, digest, live.Client{}, false, h.clock.Now); err == nil {
+		t.Fatal("an ambiguous setting was read as false")
+	}
+}
+
+func TestUsernamesLongerThanOneHundredTwentyEightCharactersStillSignIn(t *testing.T) {
+	h := newBrowserHarness(t, nil)
+	long := strings.Repeat("a", 300)
+	livetest.Exec(t, h.path, `UPDATE users SET username = ? WHERE id = 2`, long)
+	client := h.client()
+	token, _ := client.bootstrap()
+	if recorder := client.login(" "+strings.ToUpper(long)+" ", bobPassword, token); recorder.Code != http.StatusOK {
+		t.Fatalf("answered %d %s", recorder.Code, recorder.Body.String())
+	}
+}

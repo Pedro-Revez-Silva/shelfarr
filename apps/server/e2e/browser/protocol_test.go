@@ -538,6 +538,24 @@ func TestBrowserLoginFaultsLeaveNoOrphansAndRefuseStaleCredentials(t *testing.T)
 		parked.stop()
 		exec1(t, copied.database, `UPDATE users SET password_digest = ? WHERE username = 'browser_member'`, hash(t, member, bcrypt.MinCost))
 
+		passwordlessDirectory := t.TempDir()
+		passwordless := startServer(t, f, copied, serverOptions{seam: true, faults: "login.checked=park", faultDir: passwordlessDirectory})
+		client = passwordless.browser()
+		token, _ = client.bootstrap()
+		outcome = make(chan result, 1)
+		go func() { outcome <- client.login("browser_member", member, token, nil) }()
+		waitFor(t, filepath.Join(passwordlessDirectory, "login.checked.reached"))
+		exec1(t, copied.database, `INSERT INTO settings (key, value, value_type, category, created_at, updated_at) VALUES ('auth_disabled', 'true', 'boolean', 'security', '2026-11-15 12:00:00', '2026-11-15 12:00:00') ON CONFLICT(key) DO UPDATE SET value = 'true', value_type = 'boolean'`)
+		os.WriteFile(filepath.Join(passwordlessDirectory, "login.checked.release"), nil, 0o600)
+		if response := <-outcome; response.status != http.StatusNotImplemented || response.code(t) != "sign_in_unsupported" {
+			t.Fatalf("a deployment that became passwordless during the check signed in: %d %s", response.status, response.body)
+		}
+		if after := count(t, copied.database, `SELECT COUNT(*) FROM sessions`); after != before {
+			t.Fatal("a passwordless deployment got a session")
+		}
+		exec1(t, copied.database, `UPDATE settings SET value = 'false' WHERE key = 'auth_disabled'`)
+		passwordless.stop()
+
 		lockWaiter := startServer(t, f, copied, serverOptions{})
 		client = lockWaiter.browser()
 		token, _ = client.bootstrap()

@@ -301,11 +301,18 @@ func parseCredentials(body []byte) (credentialsBody, bool) {
 	return credentialsBody{username: username.Text, password: password.Text}, true
 }
 
-var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{1,128}$`)
-
 func normalisedUsername(value string) (string, bool) {
 	name := strings.ToLower(strings.Trim(value, " \t\n\v\f\r\x00"))
-	return name, usernamePattern.MatchString(name)
+	if name == "" || len(name) > maxLoginBody {
+		return name, false
+	}
+	for index := 0; index < len(name); index++ {
+		character := name[index]
+		if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_') {
+			return name, false
+		}
+	}
+	return name, true
 }
 
 func (a *App) loginRefused(w http.ResponseWriter, result *outcome, status int, code, reason string) {
@@ -441,7 +448,7 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 		mapFailure(w, result, err)
 		return
 	}
-	created, err := a.db.CompleteLogin(r.Context(), credentials.ID, credentials.PasswordDigest, live.Client{UserAgent: r.UserAgent(), IP: clientIP(r)}, a.now)
+	created, err := a.db.CompleteLogin(r.Context(), credentials.ID, credentials.PasswordDigest, live.Client{UserAgent: r.UserAgent(), IP: clientIP(r)}, a.config.PasswordlessEnv, a.now)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -450,6 +457,10 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 	case live.LoginRefused:
 		a.security("login.refused", credentials.ID)
 		a.invalidCredentials(w, result)
+		return
+	case live.LoginPasswordless:
+		a.security("login.passwordless_unsupported", credentials.ID)
+		a.loginRefused(w, result, http.StatusNotImplemented, "sign_in_unsupported", "auth_disabled")
 		return
 	case live.LoginNeedsSecondFactor:
 		a.security("login.second_factor_unsupported", credentials.ID)

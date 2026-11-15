@@ -47,6 +47,7 @@ const (
 	LoginRefused
 	LoginNeedsSecondFactor
 	LoginNeedsOIDC
+	LoginPasswordless
 )
 
 type LoginResult struct {
@@ -154,7 +155,7 @@ func truncated(value string, limit int) any {
 	return value
 }
 
-func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, client Client, clock func() time.Time) (LoginResult, error) {
+func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, client Client, passwordlessEnv bool, clock func() time.Time) (LoginResult, error) {
 	tx, err := d.write.BeginTx(ctx, nil)
 	if err != nil {
 		return LoginResult{}, Classify(err)
@@ -164,6 +165,13 @@ func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, cli
 		return LoginResult{}, err
 	}
 	now := clock()
+	passwordless, err := passwordlessIn(ctx, tx, passwordlessEnv)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	if passwordless {
+		return LoginResult{Outcome: LoginPasswordless}, nil
+	}
 	state, found, err := readLockState(ctx, tx, userID)
 	if err != nil {
 		return LoginResult{}, Classify(err)
@@ -208,6 +216,28 @@ func (d *DB) CompleteLogin(ctx context.Context, userID int64, digest string, cli
 		return LoginResult{}, err
 	}
 	return LoginResult{Outcome: LoginCreated, Session: SessionRow{ID: id, UserID: userID, CreatedAt: moment}}, nil
+}
+
+func passwordlessIn(ctx context.Context, tx *sql.Tx, environment bool) (bool, error) {
+	if environment {
+		return true, nil
+	}
+	var value sql.NullString
+	var valueType string
+	err := tx.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = 'auth_disabled'`).Scan(&value, &valueType)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, Classify(err)
+	}
+	if !value.Valid || value.String == "" {
+		return false, nil
+	}
+	if valueType != "boolean" {
+		return false, store.ErrUnsupported
+	}
+	return !falseValues[value.String], nil
 }
 
 func (d *DB) RecordFailedLogin(ctx context.Context, userID int64, ip string, threshold int, lockout time.Duration, clock func() time.Time) error {
