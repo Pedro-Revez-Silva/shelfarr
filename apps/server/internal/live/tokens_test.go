@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -223,5 +224,49 @@ func TestExpiryIsEvaluatedAfterTheAdoptionLockIsAcquired(t *testing.T) {
 				t.Fatalf("calls=%d or a token changed", calls)
 			}
 		})
+	}
+}
+
+func TestTheClockIsReadOnlyOnceTheWriteLockIsHeld(t *testing.T) {
+	f := newTokens(t)
+	f.token(t, 1, 1, nil, "expires_at = '2026-11-15 09:30:16'")
+	f.token(t, 2, 1, 1, "")
+	holder, err := sql.Open("sqlite", "file:"+f.path+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	transaction, err := holder.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transaction.Exec(`UPDATE api_tokens SET name = 'held' WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	var released atomic.Bool
+	clock := func() time.Time {
+		if released.Load() {
+			return instant.Add(5 * time.Second)
+		}
+		return instant
+	}
+	type outcome struct {
+		adopted bool
+		err     error
+	}
+	done := make(chan outcome, 1)
+	database := open(t, f.path)
+	go func() {
+		adopted, err := database.RetireReplaced(context.Background(), f.lookup(t, 2), clock)
+		done <- outcome{adopted, err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	released.Store(true)
+	if err := transaction.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || got.adopted {
+		t.Fatalf("an adoption decided on the time before the wait: adopted=%v err=%v", got.adopted, got.err)
 	}
 }

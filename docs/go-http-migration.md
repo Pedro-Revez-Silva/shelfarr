@@ -111,7 +111,7 @@ or `501`, never served under the old identity.
 
 ## HTTP behaviour
 
-* Read-header 5s, read 15s, idle 60s, a write deadline equal to the request timeout (20s) for every non-streamed response, 32 KiB headers, no handler reads a request body; `net/http` discards at most 256 KiB of it before closing the connection.
+* Read-header 5s, read 15s, idle 60s, a write deadline equal to the request timeout (20s) for every non-streamed response, 32 KiB headers, no handler reads a request body; `net/http` drains a small unread body (threshold 256 KiB, plus one sentinel byte for chunked bodies) and closes the connection above it.
 * Metadata requests and media streams have separate bounded capacity (`-max-metadata-requests`, default
   64; `-max-media-streams`, default 8). A full pool answers `503 server_busy` with `Retry-After`; a
   stalled audiobook client therefore cannot starve the catalogue.
