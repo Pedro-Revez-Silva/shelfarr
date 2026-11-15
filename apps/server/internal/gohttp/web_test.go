@@ -217,6 +217,18 @@ func TestTheAssetsOptionMustBeAnAbsoluteCleanFolderBeforeTheFilesystemIsTouched(
 	}
 }
 
+func TestAMissingAssetsFolderIsRefusedBeforeTheDatabaseIsOpened(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "library")
+	os.MkdirAll(root, 0o700)
+	config := Config{DatabasePath: filepath.Join(base, "missing.sqlite3"), LockPath: filepath.Join(base, "lock"), LibraryRoots: []string{root}, SecretKeyBase: testSecret, Listen: "127.0.0.1:0", PreviewUserIDs: []string{"1"}, WebAssetsDir: filepath.Join(base, "nope")}
+	err := Run(context.Background(), config, slog.New(slog.NewJSONHandler(&buffer{}, nil)), nil)
+	var started StartError
+	if !errors.As(err, &started) || started.Code != "web-assets" {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestRunRefusesToStartWithABadAssetsFolderInsteadOfServingACatchAll(t *testing.T) {
 	bad := t.TempDir()
 	webassetstest.Write(t, bad)
