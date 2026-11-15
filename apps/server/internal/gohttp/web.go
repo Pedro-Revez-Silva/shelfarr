@@ -99,7 +99,7 @@ func classifyWeb(method, path string) (route, bool) {
 }
 
 func (a *App) serveWeb(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	if !a.previewConfigured() || found.kind == routeWebAsset && !a.web.bundle.Has(found.id) {
+	if found.kind == routeWebAsset && !a.web.bundle.Has(found.id) {
 		w.Header().Set("Cache-Control", "private, no-store")
 		problem(w, result, http.StatusNotFound, "not_found")
 		return

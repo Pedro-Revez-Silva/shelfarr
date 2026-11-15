@@ -396,8 +396,8 @@ about the existing commands changes: `-experimental`, a well-formed per-user all
 `SHELFARR_WEB_PREVIEW_USER_IDS`; unset or malformed stays off even for a signed-out visitor), the canonical
 `-browser-origin` (sign-in and every write need it; without it the sign-in screen says so) and
 `-web-assets-dir ABSOLUTE_DIRECTORY`, the output of `bun run build:go --out DIRECTORY` in `apps/web`. A relative or
-unclean path is refused before the file system is touched, a missing, symbolic-linked, FIFO, oversized, tampered or
-inconsistent directory is `refused: web-assets` (exit `2`) and nothing listens; the working directory is never read and
+unclean path is refused before the file system is touched, a missing directory, or one with a symbolic-linked, FIFO, oversized, tampered or
+inconsistent file, is `refused: web-assets` (exit `2`) and nothing listens; the working directory is never read and
 no catch-all is ever served. Packaging: the experimental overlay image carries the same build in
 `/usr/local/share/shelfarr/web`; the Rails `ENTRYPOINT` and `CMD` are unchanged.
 

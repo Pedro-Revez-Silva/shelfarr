@@ -132,6 +132,32 @@ describe("the native connection consent page", () => {
     expect(screen.queryByRole("button", { name: /Connect|Allow|Deny/ })).toBeNull();
   });
 
+  test("a decision that completes after the page moved on to another code never changes that code's screen", async () => {
+    const gate = deferred<void>();
+    const server = libraryServer(() => signedIn(ACCOUNT, "session-token"))
+      .on("GET", /\/api\/v1\/connect\?user_code=aaaa-aaaa$/, () => inspected(grant({ client_name: "App A" })))
+      .on("GET", /\/api\/v1\/connect\?user_code=bbbb-bbbb$/, () => inspected(grant({ client_name: "App B" })))
+      .on("POST", /\/api\/v1\/connect$/, async () => {
+        await gate.promise;
+        return { body: { account: ACCOUNT, decision: "allowed", upgrade: false, requesting: false } };
+      });
+    open(server, "aaaa-aaaa");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Connect app" }));
+    await waitFor(() => expect(server.called("POST", /\/connect$/)).toHaveLength(1));
+    act(() => {
+      window.history.pushState(null, "", "/consumer/connect?user_code=bbbb-bbbb");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await screen.findByText("App B");
+    gate.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText("App B")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "App connected" })).toBeNull();
+    expect(window.location.search).toBe("?user_code=bbbb-bbbb");
+    expect(screen.getByRole("button", { name: "Connect app" }).hasAttribute("disabled")).toBe(false);
+    expect(server.called("POST", /\/connect$/)).toHaveLength(1);
+  });
+
   test("Not now is a deliberate, separate decision", async () => {
     const server = connectServer(grant({ upgrade: true, requesting: true, scopes: REQUESTING })).on("POST", /\/api\/v1\/connect$/, () => ({ body: { account: ACCOUNT, decision: "denied", upgrade: true, requesting: true } }));
     open(server);

@@ -118,8 +118,9 @@ module Migration
         listed = JSON.parse(container(image, architecture, "cat #{directory}/manifest.json").output).fetch("files").transform_values { |entry| entry.fetch("sha256") }
         found = container(image, architecture, "cd #{directory} && sha256sum $(ls | grep -v '^manifest.json$')").output.lines.to_h { |line| line.split.then { |digest, name| [ name, digest ] } }
         record("web-assets-match-their-manifest", architecture, mode, !listed.empty? && listed == found, "#{found.size} files")
-        refused = container(image, architecture, "/usr/local/bin/shelfarr-http -experimental -database /nonexistent -lock-file /nonexistent -library-root /usr/local -web-assets-dir /nonexistent 2>&1; echo exit=$?")
-        record("shelfarr-http-refuses-a-missing-assets-folder", architecture, mode, refused.output.include?("refused:") && refused.output.include?("exit=2"), refused.output.lines.last.to_s.strip[0, 80])
+        refused = Volume::Command.capture("docker", "run", "--rm", "--network", "none", "--platform", "linux/#{architecture}", "--env", "SECRET_KEY_BASE=#{'s' * 64}", "--entrypoint", "/usr/local/bin/shelfarr-http", image,
+                                          "-experimental", "-database", "/nonexistent/db.sqlite3", "-lock-file", "/nonexistent/lock", "-library-root", "/usr/local", "-web-assets-dir", "/nonexistent", timeout: 600)
+        record("shelfarr-http-refuses-a-missing-assets-folder", architecture, mode, refused.output == "refused: web-assets\n" && refused.status.exitstatus == 2, refused.output.lines.last.to_s.strip[0, 80])
       end
 
       def image_config(image)

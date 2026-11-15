@@ -169,7 +169,10 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
           await auth.logout(account, value);
         } catch (error) {
           const gone = error instanceof ApiError && (error.kind === "signed_out" || error.kind === "account_changed");
-          if (!gone) return false;
+          if (!gone) {
+            if (error instanceof ApiError && error.kind === "csrf") await csrf.refresh();
+            return false;
+          }
         }
         onEnded({ notice: SIGNED_OUT, focus: true });
         services.guard.lock("signed_out");

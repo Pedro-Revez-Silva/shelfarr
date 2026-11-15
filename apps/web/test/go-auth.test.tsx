@@ -270,6 +270,25 @@ describe("account safety on the Go runtime", () => {
     expect(screen.getByRole("link", { name: "The Quiet Library" })).toBeTruthy();
   });
 
+  test("a sign-out whose token was replaced elsewhere refreshes the token and succeeds on the next explicit attempt, never by itself", async () => {
+    let current = "session-token-1";
+    let issued = 1;
+    const server = libraryServer(() => signedIn(ACCOUNT, current))
+      .on("POST", /\/auth\/logout$/, (request) => (request.headers["x-csrf-token"] === current ? { body: { authenticated: false } } : error(422, "invalid_csrf")));
+    renderGo({ server });
+    await screen.findByRole("link", { name: "The Quiet Library" });
+    issued += 1;
+    current = `session-token-${issued}`;
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByText("Could not sign out. Try again.");
+    expect(server.called("POST", /\/auth\/logout$/)).toHaveLength(1);
+    await waitFor(() => expect(server.called("GET", /\/auth\/bootstrap$/).length).toBeGreaterThanOrEqual(2));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(server.called("POST", /\/auth\/logout$/)).toHaveLength(2));
+    expect(server.called("POST", /\/auth\/logout$/)[1]?.headers["x-csrf-token"]).toBe(current);
+  });
+
   test("another tab signing in as someone else stops this page and recovery builds a fresh one for the new account", async () => {
     let account = ACCOUNT;
     const server = libraryServer(() => signedIn(account))

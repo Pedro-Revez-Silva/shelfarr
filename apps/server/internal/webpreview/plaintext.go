@@ -33,7 +33,7 @@ func PlainText(value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	text = strings.ReplaceAll(text, " ", "&nbsp;")
+	text = strings.ReplaceAll(text, "\u00a0", "&nbsp;")
 	text = runs.ReplaceAllString(text, " ")
 	text = lineEdges.ReplaceAllString(text, "\n")
 	text = blankLines.ReplaceAllString(text, "\n\n")

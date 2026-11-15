@@ -178,9 +178,11 @@ func TestWithoutTheAllowlistTheScreensAreNotFoundEvenSignedOut(t *testing.T) {
 	for name, users := range map[string][]string{"unset": nil, "empty": {}} {
 		h, listed := webHarness(t, func(config *Config) { config.PreviewUserIDs = users })
 		for _, path := range []string{"/preview", "/preview/library", "/preview/library/1", "/consumer/connect", "/consumer/connect?user_code=ABCD-EFGH", "/preview/assets/" + listed.Entry.Script} {
-			recorder := h.client().send(http.MethodGet, path, "", nil)
-			if recorder.Code != http.StatusNotFound || errorCode(t, recorder) != "not_found" || recorder.Header().Get("Content-Security-Policy") != "" {
-				t.Errorf("%s %s: %d %s", name, path, recorder.Code, recorder.Body.String())
+			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete} {
+				recorder := h.client().send(method, path, "", nil)
+				if recorder.Code != http.StatusNotFound || recorder.Header().Get("Allow") != "" || recorder.Header().Get("Content-Security-Policy") != "" || method != http.MethodHead && errorCode(t, recorder) != "not_found" {
+					t.Errorf("%s %s %s: %d %s", name, method, path, recorder.Code, recorder.Body.String())
+				}
 			}
 		}
 	}

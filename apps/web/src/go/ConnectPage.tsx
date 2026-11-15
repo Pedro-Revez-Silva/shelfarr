@@ -100,10 +100,12 @@ export function ConnectPage() {
   const [accountName, setName] = useState<string | null>(null);
   const deciding = useRef(false);
   const controller = useRef<AbortController | null>(null);
+  const navigation = useRef(0);
 
   const inspect = useCallback(
     (code: string, notice?: string) => {
       controller.current?.abort();
+      navigation.current += 1;
       const next = new AbortController();
       controller.current = next;
       dispatch({ type: "inspect", code });
@@ -134,6 +136,7 @@ export function ConnectPage() {
       if (code) inspect(code);
       else {
         controller.current?.abort();
+        navigation.current += 1;
         dispatch({ type: "entry" });
       }
     };
@@ -150,13 +153,16 @@ export function ConnectPage() {
       if (deciding.current || state.kind !== "decidable") return;
       deciding.current = true;
       const code = state.code;
+      const issued = navigation.current;
       dispatch({ type: "decide", decision: choice });
       api.decideConnection(code, choice).then(
         (result) => {
+          if (issued !== navigation.current) return;
           deciding.current = false;
           dispatch({ type: "decided", decision: result.decision, upgrade: result.upgrade, requesting: result.requesting });
         },
         (error: unknown) => {
+          if (issued !== navigation.current) return;
           deciding.current = false;
           if (!guard.isActive()) return;
           const kind = failureKind(error);

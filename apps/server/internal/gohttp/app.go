@@ -173,6 +173,11 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	if found.web && a.web == nil {
 		found = route{kind: routeNone}
 	}
+	if found.web && !a.previewConfigured() {
+		w.Header().Set("Cache-Control", "private, no-store")
+		problem(w, result, http.StatusNotFound, "not_found")
+		return
+	}
 	switch found.kind {
 	case routeNone:
 		problem(w, result, http.StatusNotFound, "not_found")
