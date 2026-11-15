@@ -99,14 +99,15 @@ module Migration
       end
 
       def migrate(budget: @deadline)
-        raise Failed.new("migration", "the deadline must be a finite number of seconds") unless budget.is_a?(Numeric) && budget.to_f.finite?
+        raise Failed.new("migration", "the deadline must be a finite number of seconds") unless budget.is_a?(Numeric) && budget.real? && budget.to_f.finite?
 
+        budget = budget.to_f
         context = migration_context
         applied = []
         started = clock
         with_watchdog(budget) do
           pending_versions(context).each do |version|
-            raise Failed.new("migration", "deadline of #{budget} seconds exceeded", applied: applied) if clock - started > budget
+            raise Failed.new("migration", "deadline of #{format('%g', budget)} seconds exceeded", applied: applied) if clock - started > budget
 
             begin
               context.up(version)
@@ -115,7 +116,7 @@ module Migration
             end
             applied << version.to_s
           end
-          raise Failed.new("migration", "deadline of #{budget} seconds exceeded", applied: applied) if clock - started > budget
+          raise Failed.new("migration", "deadline of #{format('%g', budget)} seconds exceeded", applied: applied) if clock - started > budget
         end
         applied
       end
@@ -178,7 +179,7 @@ module Migration
       SH
 
       def with_watchdog(budget)
-        watchdog = budget.positive? ? Process.spawn("sh", "-c", WATCHDOG, "watchdog", budget.to_s, Process.pid.to_s, pgroup: true, in: :close, out: :close) : nil
+        watchdog = budget.positive? ? Process.spawn("sh", "-c", WATCHDOG, "watchdog", format("%.9g", budget), Process.pid.to_s, pgroup: true, in: :close, out: :close) : nil
         yield
       ensure
         stop_watchdog(watchdog)

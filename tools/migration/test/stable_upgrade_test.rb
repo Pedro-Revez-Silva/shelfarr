@@ -104,7 +104,8 @@ class StableUpgradeTest < Minitest::Test
   def test_a_fractional_budget_is_enforced_at_full_precision
     facts = drive("fractional-budget-overrun")
     assert_equal 9, facts.fetch("signal")
-    assert_operator facts.fetch("seconds"), :<, 3
+    assert_operator facts.fetch("seconds"), :>=, 0.5
+    assert_operator facts.fetch("seconds"), :<, 0.9
   end
 
   def test_an_exhausted_deadline_stops_before_any_migration_and_leaves_the_released_database_untouched

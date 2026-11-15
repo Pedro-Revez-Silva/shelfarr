@@ -109,7 +109,7 @@ facts =
   when "fractional-budget-overrun"
     run.define_singleton_method(:migration_context) { fake_context(30) }
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    pid = fork { run.migrate(budget: 0.5) }
+    pid = fork { run.migrate(budget: Rational(1, 2)) }
     _, status = Process.wait2(pid)
     { "signal" => status.termsig, "seconds" => Process.clock_gettime(Process::CLOCK_MONOTONIC) - started }
   when "reload-current-schema"
