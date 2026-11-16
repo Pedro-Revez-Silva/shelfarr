@@ -45,8 +45,9 @@ class DownloadMonitorJob < ApplicationJob
       Download.active.exists?
     end
 
+    # Solid Cache still issues DELETE when the key is already gone.
     def clear_schedule!
-      Rails.cache.delete(SCHEDULE_CACHE_KEY)
+      Rails.cache.delete(SCHEDULE_CACHE_KEY) if Rails.cache.exist?(SCHEDULE_CACHE_KEY)
     end
 
     def monitor_job_pending?(excluding_active_job_id: nil)
