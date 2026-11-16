@@ -40,13 +40,12 @@ class DownloadMonitorJob < ApplicationJob
       RemoteResult::Failed.new(error)
     end
 
-    # The scan only reads active downloads, and the recurring clock finds a new one on the next tick.
     def monitoring_required?
       Download.active.exists?
     end
 
     def clear_schedule!
-      Rails.cache.delete(SCHEDULE_CACHE_KEY)
+      Rails.cache.delete(SCHEDULE_CACHE_KEY) if Rails.cache.exist?(SCHEDULE_CACHE_KEY)
     end
 
     def monitor_job_pending?(excluding_active_job_id: nil)
