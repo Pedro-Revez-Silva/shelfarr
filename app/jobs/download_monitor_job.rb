@@ -40,14 +40,9 @@ class DownloadMonitorJob < ApplicationJob
       RemoteResult::Failed.new(error)
     end
 
+    # The scan only reads active downloads, and the recurring clock finds a new one on the next tick.
     def monitoring_required?
-      return true if DownloadClient.enabled.exists?
-      return true if Download.active.where(download_type: [ "direct", "dispatching" ]).exists?
-
-      Download.active
-        .where(download_type: [ nil, "" ])
-        .includes(:search_result)
-        .any? { |download| download.search_result&.direct_download? }
+      Download.active.exists?
     end
 
     def clear_schedule!

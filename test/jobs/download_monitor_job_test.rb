@@ -51,9 +51,10 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   end
 
   test "does not reschedule when monitoring is not required" do
-    DownloadClient.destroy_all
+    @download.update!(status: :completed)
     clear_enqueued_jobs
 
+    assert @qbittorrent.enabled?
     assert_not DownloadMonitorJob.monitoring_required?
     DownloadMonitorJob.perform_later
 
@@ -61,6 +62,30 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       DownloadMonitorJob.perform_now
     end
     assert_equal 0, enqueued.size
+  end
+
+  test "an idle scheduled tick with an enabled client does not scan or write the clock" do
+    @download.update!(status: :completed)
+    assert @qbittorrent.enabled?
+    assert_not Download.active.exists?
+    DownloadMonitorJob.clear_schedule!
+
+    scans = 0
+    clock_writes = []
+    record_write = lambda do |_name, _start, _finish, _id, payload|
+      key = payload[:key].to_s
+      clock_writes << key if key.include?(DownloadMonitorJob::SCHEDULE_CACHE_KEY)
+    end
+    job = DownloadMonitorJob.new
+
+    ActiveSupport::Notifications.subscribed(record_write, "cache_write.active_support") do
+      job.stub(:monitor_active_downloads, -> { scans += 1 }) do
+        job.perform(scheduled: true)
+      end
+    end
+
+    assert_equal 0, scans
+    assert_empty clock_writes
   end
 
   test "does not enqueue another monitor after checking" do
@@ -1338,6 +1363,10 @@ end
 class DownloadMonitorReadyLeaseTest < ActiveJob::TestCase
   self.use_transactional_tests = false
 
+  def run
+    Request.suppressing_turbo_broadcasts { super }
+  end
+
   setup do
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -1353,11 +1382,20 @@ class DownloadMonitorReadyLeaseTest < ActiveJob::TestCase
       priority: 0,
       enabled: true
     )
+    # The overlap probe only runs when a scan starts, which requires an active download.
+    @download = requests(:pending_request).downloads.create!(
+      name: "Ready lease download",
+      status: :downloading,
+      external_id: "ready-lease",
+      download_type: "torrent",
+      download_client: @client
+    )
   end
 
   teardown do
     DownloadMonitorJob.clear_schedule!
     Rails.cache = @original_cache
+    @download&.destroy
     @client&.destroy
   end
 
