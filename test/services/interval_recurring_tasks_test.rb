@@ -173,6 +173,34 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     assert_equal [ 7.days.to_i ], gaps.uniq, expression
   end
 
+  test "day schedules stay on calendar slots across daylight saving time" do
+    zone = ActiveSupport::TimeZone["America/New_York"]
+    weekly = 7.days.to_i
+    daily = 1.day.to_i
+    every_two_days = 2.days.to_i
+
+    with_env("TZ" => "America/New_York") do
+      Time.use_zone(zone) do
+        # Spring forward leaves 601_200s between these Sunday midnights, and 23h between the daily ones.
+        assert IntervalRecurringTasks.due?(at(zone, "2026-03-08 00:01:00"), weekly, now: at(zone, "2026-03-15 00:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-03-15 00:01:00"), weekly, now: at(zone, "2026-03-15 00:02:00"))
+        assert IntervalRecurringTasks.due?(at(zone, "2026-03-08 00:01:00"), daily, now: at(zone, "2026-03-09 00:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-03-08 00:01:00"), every_two_days, now: at(zone, "2026-03-09 00:00:00"))
+        assert IntervalRecurringTasks.due?(at(zone, "2026-03-08 00:01:00"), every_two_days, now: at(zone, "2026-03-10 00:00:00"))
+
+        # Fall back adds an hour. That longer day is still one slot, so the run does not repeat.
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-11-01 00:01:00"), daily, now: at(zone, "2026-11-01 03:00:00"))
+        assert IntervalRecurringTasks.due?(at(zone, "2026-11-01 00:01:00"), daily, now: at(zone, "2026-11-02 00:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-11-02 00:01:00"), daily, now: at(zone, "2026-11-02 12:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-10-31 00:01:00"), every_two_days, now: at(zone, "2026-11-01 00:00:00"))
+        assert IntervalRecurringTasks.due?(at(zone, "2026-10-31 00:01:00"), every_two_days, now: at(zone, "2026-11-02 00:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-11-01 00:01:00"), weekly, now: at(zone, "2026-11-01 03:00:00"))
+        assert IntervalRecurringTasks.due?(at(zone, "2026-11-01 00:01:00"), weekly, now: at(zone, "2026-11-08 00:00:00"))
+        assert_not IntervalRecurringTasks.due?(at(zone, "2026-11-08 00:01:00"), weekly, now: at(zone, "2026-11-08 03:00:00"))
+      end
+    end
+  end
+
   test "multi-day intervals keep their elapsed gap across a month boundary" do
     from = Time.utc(2026, 1, 1)
     to = Time.utc(2026, 3, 15)
@@ -186,6 +214,10 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
   end
 
   private
+
+  def at(zone, text)
+    zone.parse(text)
+  end
 
   def task(key)
     SolidQueue::RecurringTask.find_by!(key: key)

@@ -34,7 +34,7 @@ class IntervalRecurringTasks
 
     # Sub-day crons use the finest grid whose gap is at least the interval.
     # Multi-day month grids restart on the 1st, so 7 days is weekly and
-    # other multi-day values tick daily. The due-check keeps that elapsed gap.
+    # other multi-day values tick daily. The due-check keeps that spacing.
     def schedule_for(interval_seconds)
       minutes = [ (interval_seconds.to_f / 60).ceil, 1 ].max
       expression = expression_for(minutes)
@@ -48,6 +48,7 @@ class IntervalRecurringTasks
 
     # A late start records the next minute, so the following slot looks early
     # against that timestamp. Comparing slots keeps the configured spacing.
+    # Local midnights are not a fixed number of seconds apart across DST.
     def due?(last_at, interval_seconds, now: Time.current)
       return true unless last_at.respond_to?(:beginning_of_minute)
 
@@ -56,8 +57,14 @@ class IntervalRecurringTasks
       now_minute = now.beginning_of_minute
       return false if now_minute <= last_minute
 
-      interval_minutes = (seconds / 60.0).ceil
-      schedule_slot(now_minute, seconds) >= schedule_slot(last_minute, seconds) + interval_minutes.minutes
+      previous_slot = schedule_slot(last_minute, seconds)
+      current_slot = schedule_slot(now_minute, seconds)
+      minutes = (seconds / 60.0).ceil
+      if minutes >= 24 * 60
+        calendar_days_between(previous_slot, current_slot) >= calendar_day_count(minutes)
+      else
+        current_slot >= previous_slot + minutes.minutes
+      end
     end
 
     private
@@ -125,8 +132,16 @@ class IntervalRecurringTasks
       elsif minutes < 24 * 60
         hour_cron((minutes / 60.0).ceil)
       else
-        day_cron((minutes / (24.0 * 60)).ceil)
+        day_cron(calendar_day_count(minutes))
       end
+    end
+
+    def calendar_day_count(minutes)
+      (minutes / (24.0 * 60)).ceil
+    end
+
+    def calendar_days_between(earlier, later)
+      (later.in_time_zone.to_date - earlier.in_time_zone.to_date).to_i
     end
 
     def minute_cron(step)
