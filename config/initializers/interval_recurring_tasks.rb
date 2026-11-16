@@ -13,5 +13,8 @@ Rails.application.config.after_initialize do
     next
   end
 
-  IntervalRecurringTasks.sync_all! if ready
+  # Puma loads this initializer and then starts bin/jobs, which loads it again.
+  # Catch up only in the scheduler so a restart enqueues one run per task.
+  scheduler = File.basename($PROGRAM_NAME) == "jobs"
+  IntervalRecurringTasks.sync_all!(catch_up: scheduler) if ready
 end

@@ -3,6 +3,8 @@
 require "test_helper"
 
 class IntervalRecurringTasksTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   cover "IntervalRecurringTasks*"
 
   TASK_KEYS = %w[health_check audiobookshelf_library_sync].freeze
@@ -112,16 +114,105 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
 
   test "sub-day schedules do not fire before the interval elapses" do
     [ 60, 90, 120, 300, 420, 600, 2_400, 3_600, 5_400, 7_200, 86_399 ].each do |seconds|
+      minutes = (seconds / 60.0).ceil
+      expected = minutes * 60
       expression = IntervalRecurringTasks.schedule_for(seconds)
       cron = Fugit.parse(expression)
       assert_instance_of Fugit::Cron, cron, expression
 
       gap = minimum_cron_gap(cron)
-      expected = (seconds / 60.0).ceil * 60
-      assert_operator gap, :>=, expected, "#{seconds}s -> #{expression} (#{gap.inspect})"
-      assert_operator gap, :<=, expected + (expected / 2.0),
-        "#{seconds}s -> #{expression} is coarser than the setting"
+      assert_operator gap, :<=, expected, "#{seconds}s -> #{expression} is coarser than the setting"
+      assert_operator gap, :>=, 60, expression
+      next if minutes >= 24 * 60
+
+      from = Time.utc(2026, 6, 1)
+      gaps = accepted_run_gaps(seconds, from: from, to: from + (expected * 4), late_by: 0)
+      assert_equal [ expected ], gaps.uniq, "#{seconds}s -> #{expression}"
     end
+  end
+
+  test "intervals without an exact cron keep the requested cadence on a finer tick" do
+    {
+      31.minutes.to_i => "every minute",
+      75.minutes.to_i => "every 15 minutes"
+    }.each do |seconds, expression|
+      assert_equal expression, IntervalRecurringTasks.schedule_for(seconds), "#{seconds}s"
+
+      from = Time.utc(2026, 6, 1)
+      gaps = accepted_run_gaps(seconds, from: from, to: from + (seconds * 4), late_by: 0)
+      assert_equal [ seconds ], gaps.uniq, expression
+    end
+
+    # A start one minute after the slot still meets the next 75-minute boundary.
+    assert IntervalRecurringTasks.due?(
+      Time.utc(2026, 6, 1, 0, 1, 0),
+      75.minutes.to_i,
+      now: Time.utc(2026, 6, 1, 1, 15, 0)
+    )
+    assert_not IntervalRecurringTasks.due?(
+      Time.utc(2026, 6, 1, 0, 1, 0),
+      75.minutes.to_i,
+      now: Time.utc(2026, 6, 1, 1, 0, 0)
+    )
+    assert IntervalRecurringTasks.due?(
+      Time.utc(2026, 6, 1, 0, 0, 0),
+      31.minutes.to_i,
+      now: Time.utc(2026, 6, 1, 0, 31, 0)
+    )
+    assert_not IntervalRecurringTasks.due?(
+      Time.utc(2026, 6, 1, 0, 0, 0),
+      31.minutes.to_i,
+      now: Time.utc(2026, 6, 1, 0, 30, 0)
+    )
+    assert IntervalRecurringTasks.due?(
+      Time.utc(2026, 6, 1, 0, 1, 0),
+      31.minutes.to_i,
+      now: Time.utc(2026, 6, 1, 0, 32, 0)
+    )
+  end
+
+  test "scheduler startup catch-up runs an overdue task and skips one that is not due" do
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+    SettingsService.set(:health_check_interval, 7.days.to_i)
+    SettingsService.set(:audiobookshelf_library_sync_interval, 1.hour.to_i)
+
+    travel_to Time.utc(2026, 11, 15, 0, 5, 0) do
+      assert_no_enqueued_jobs only: [ HealthCheckJob, AudiobookshelfLibrarySyncJob ] do
+        IntervalRecurringTasks.sync_all!
+      end
+
+      seed_health_checks(Time.utc(2026, 11, 8, 0, 1, 0))
+      write_library_sync_at(Time.utc(2026, 11, 15, 0, 1, 0))
+
+      assert_enqueued_with(job: HealthCheckJob, args: [ { scheduled: true } ]) do
+        assert_enqueued_with(job: AudiobookshelfLibrarySyncJob, args: [ { scheduled: true } ]) do
+          IntervalRecurringTasks.sync_all!(catch_up: true)
+        end
+      end
+
+      assert_equal 6, run_scheduled_health_check
+      assert_equal 0, run_scheduled_library_sync
+
+      seed_health_checks(Time.utc(2026, 11, 15, 0, 1, 0))
+      write_library_sync_at(Time.utc(2026, 11, 14, 23, 0, 0))
+      assert_equal 0, run_scheduled_health_check
+      assert_equal 1, run_scheduled_library_sync
+
+      clear_enqueued_jobs
+      SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+      assert_no_enqueued_jobs only: AudiobookshelfLibrarySyncJob do
+        assert_enqueued_jobs 1, only: HealthCheckJob do
+          IntervalRecurringTasks.sync_all!(catch_up: true)
+        end
+      end
+    end
+
+    initializer = Rails.root.join("config/initializers/interval_recurring_tasks.rb").read
+    assert_match(/File\.basename\(\$PROGRAM_NAME\) == "jobs"/, initializer)
+    assert_match(/sync_all!\(catch_up: scheduler\)/, initializer)
+  ensure
+    Rails.cache = original_cache if original_cache
   end
 
   test "a library sync interval below one minute still waits a full minute" do
@@ -241,8 +332,53 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     gaps
   end
 
+  def seed_health_checks(checked_at)
+    SystemHealth.delete_all
+    SystemHealth::SERVICES.each do |service|
+      SystemHealth.create!(
+        service: service,
+        status: :healthy,
+        last_check_at: checked_at,
+        message: "ok"
+      )
+    end
+  end
+
+  def write_library_sync_at(time)
+    Rails.cache.write(AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY, time)
+  end
+
+  def run_scheduled_health_check
+    checks = 0
+    job = HealthCheckJob.new
+    %i[
+      check_indexer
+      check_download_clients
+      check_download_paths
+      check_output_paths
+      check_audiobookshelf
+      check_hardcover
+    ].each do |name|
+      job.define_singleton_method(name) { checks += 1 }
+    end
+    job.perform(scheduled: true)
+    checks
+  end
+
+  def run_scheduled_library_sync
+    syncs = 0
+    service = Object.new
+    service.define_singleton_method(:sync!) { syncs += 1 }
+    LibraryPlatformClient.stub(:configured?, true) do
+      AudiobookshelfLibrarySyncService.stub(:new, service) do
+        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+      end
+    end
+    syncs
+  end
+
   # A minute after the slot is a worker that started late.
-  def accepted_run_gaps(interval_seconds, from:, to:)
+  def accepted_run_gaps(interval_seconds, from:, to:, late_by: 1.minute)
     SettingsService.set(:audiobookshelf_library_sync_interval, interval_seconds)
     cron = Fugit.parse(IntervalRecurringTasks.schedule_for(interval_seconds))
     last_run = nil
@@ -263,7 +399,7 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
       end
       if due
         accepted << tick
-        last_run = tick + 1.minute
+        last_run = tick + late_by
       end
       cursor = tick
     end
