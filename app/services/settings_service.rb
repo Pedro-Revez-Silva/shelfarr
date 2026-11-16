@@ -161,7 +161,7 @@ class SettingsService
     audiobookshelf_audiobook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for audiobook duplicate detection (comma-separated). Delivery still goes to the Audiobook Library above." },
     audiobookshelf_ebook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for ebook duplicate detection (comma-separated). Delivery still goes to the Ebook Library above." },
     audiobookshelf_comicbook_scan_library_ids: { type: "string", default: "", category: "audiobookshelf", description: "Additional library IDs to scan for Comics & Manga duplicate detection (comma-separated). Delivery still goes to the Comics & Manga Library above." },
-    audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs" },
+    audiobookshelf_library_sync_interval: { type: "integer", default: 3600, category: "audiobookshelf", description: "Seconds between automatic library inventory sync jobs. The recurring job follows this interval. Zero disables it." },
 
     audiobook_output_path: { type: "string", default: "/audiobooks", category: "paths", description: "Directory for completed audiobooks" },
     ebook_output_path: { type: "string", default: "/ebooks", category: "paths", description: "Directory for completed ebooks" },
@@ -204,7 +204,7 @@ class SettingsService
     comic_vine_api_key: { type: "string", default: "", category: "comic_vine", description: "Comic Vine API key for Comics & Manga metadata" },
     comic_vine_search_limit: { type: "integer", default: 10, category: "comic_vine", description: "Maximum number of Comic Vine search results to return" },
 
-    health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (minimum: 60; default: 300)" },
+    health_check_interval: { type: "integer", default: 300, category: "health", description: "Seconds between system health checks (minimum: 60; default: 300). The recurring job follows this interval." },
 
     auto_select_enabled: { type: "boolean", default: false, category: "auto_select", description: "Automatically select the best search result without admin intervention" },
     auto_select_min_seeders: { type: "integer", default: 1, category: "auto_select", description: "Minimum seeders required for auto-selection (torrent only)" },
@@ -505,7 +505,7 @@ class SettingsService
         end
       end
 
-      Setting.transaction do
+      saved = Setting.transaction do
         setting = Setting.find_or_initialize_by(key: key.to_s)
         previous_value = setting.persisted? ? setting.typed_value : definition[:default]
         setting.value_type = definition[:type]
@@ -514,14 +514,17 @@ class SettingsService
         setting.typed_value = value
         setting.save!
 
-        current_value = setting.typed_value
+        saved_value = setting.typed_value
         StoreProviderRegistry.setting_changed!(
           key,
           previous_value: previous_value,
-          current_value: current_value
+          current_value: saved_value
         )
-        current_value
+        saved_value
       end
+
+      IntervalRecurringTasks.sync_setting!(key)
+      saved
     end
 
     def for_category(category)
