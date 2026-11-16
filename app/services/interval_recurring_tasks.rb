@@ -6,6 +6,8 @@ require "fugit"
 # A static every-minute tick still inserts a Solid Queue job on every skip,
 # and a running scheduler only notices dynamic tasks that are deleted and
 # created again, so changing an interval replaces the row.
+# Solid Queue only plans the next future tick, so startup of bin/jobs enqueues
+# one scheduled run. The job's due-check performs overdue work and skips the rest.
 class IntervalRecurringTasks
   TASKS = {
     "health_check" => {
@@ -22,8 +24,9 @@ class IntervalRecurringTasks
   }.freeze
 
   class << self
-    def sync_all!
+    def sync_all!(catch_up: false)
       TASKS.each_key { |key| sync_task!(key) }
+      enqueue_catch_up! if catch_up
     end
 
     def sync_setting!(setting_key)
@@ -32,7 +35,9 @@ class IntervalRecurringTasks
       sync_task!(key) if key
     end
 
-    # Sub-day crons use the finest grid whose gap is at least the interval.
+    # Exact sub-day intervals keep a matching cron. Anything else uses the
+    # coarsest uniform tick that divides it, and the due-check keeps the
+    # requested spacing instead of rounding the interval up.
     # Multi-day month grids restart on the 1st, so 7 days is weekly and
     # other multi-day values tick daily. The due-check keeps that spacing.
     def schedule_for(interval_seconds)
@@ -127,13 +132,33 @@ class IntervalRecurringTasks
     end
 
     def expression_for(minutes)
-      if minutes < 60
-        minute_cron(minutes)
-      elsif minutes < 24 * 60
-        hour_cron((minutes / 60.0).ceil)
-      else
-        day_cron(calendar_day_count(minutes))
-      end
+      return day_cron(calendar_day_count(minutes)) if minutes >= 24 * 60
+
+      cron_for_tick(tick_minutes(minutes))
+    end
+
+    # Largest repeating cron step that divides the interval. 75 minutes
+    # ticks every 15; 31 minutes has no coarser step than one minute.
+    def tick_minutes(minutes)
+      minutes.downto(1).find { |step| (minutes % step).zero? && uniform_tick?(step) }
+    end
+
+    def uniform_tick?(step)
+      return true if step <= 1
+      return (60 % step).zero? if step < 60
+
+      hours, remainder = step.divmod(60)
+      remainder.zero? && (hours == 1 || (24 % hours).zero?)
+    end
+
+    def cron_for_tick(step)
+      return "every minute" if step <= 1
+      return "every #{step} minutes" if step < 60
+
+      hours = step / 60
+      return "every hour" if hours == 1
+
+      "every #{hours} hours"
     end
 
     def calendar_day_count(minutes)
@@ -142,25 +167,6 @@ class IntervalRecurringTasks
 
     def calendar_days_between(earlier, later)
       (later.in_time_zone.to_date - earlier.in_time_zone.to_date).to_i
-    end
-
-    def minute_cron(step)
-      return "every minute" if step <= 1
-
-      slots = stepped_slots(step, 60)
-      return "every hour" if slots == [ 0 ]
-      return "every #{step} minutes" if slots == (0...60).step(step).to_a
-
-      "#{slots.join(",")} * * * *"
-    end
-
-    def hour_cron(step)
-      slots = stepped_slots(step, 24)
-      return "every day" if slots == [ 0 ]
-      return "every hour" if step == 1
-      return "every #{step} hours" if (24 % step).zero? && slots == (0...24).step(step).to_a
-
-      "0 #{slots.join(",")} * * *"
     end
 
     def day_cron(days)
@@ -174,11 +180,12 @@ class IntervalRecurringTasks
       Fugit.parse(schedule_for(interval_seconds)).previous_time(time + 1.second).to_t
     end
 
-    # Drop the last slot when the wrap back to zero would be shorter than step.
-    def stepped_slots(step, modulus)
-      slots = (0...modulus).step(step).to_a
-      slots.pop if slots.length > 1 && (modulus % step) != 0
-      slots.empty? ? [ 0 ] : slots
+    def enqueue_catch_up!
+      TASKS.each_value do |config|
+        next if desired_schedule(config).nil?
+
+        config[:job_class].constantize.perform_later(scheduled: true)
+      end
     end
   end
 end
