@@ -159,13 +159,10 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
     interval = SettingsService.get(:audiobookshelf_library_sync_interval, default: 3600).to_i
     return false if interval <= 0
 
-    last_attempt = Rails.cache.read(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY)
-    return true unless last_attempt.respond_to?(:beginning_of_minute)
-
-    interval = [ interval, 60 ].max
-    interval_minutes = (interval / 1.minute.to_f).ceil
-
-    last_attempt.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+    IntervalRecurringTasks.due?(
+      Rails.cache.read(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY),
+      interval
+    )
   end
 
   def record_scheduled_attempt!

@@ -53,23 +53,46 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
   end
 
-  test "scheduled checks honor the configured interval on minute boundaries" do
+  test "scheduled checks follow the interval slot when the previous check started late" do
     SettingsService.set(:health_check_interval, 600)
+    checked_at = Time.zone.parse("2026-08-26 11:51:00")
+    SystemHealth::SERVICES.each do |service|
+      SystemHealth.create!(
+        service: service,
+        status: :not_configured,
+        last_check_at: checked_at
+      )
+    end
+
+    travel_to Time.zone.parse("2026-08-26 11:59:00") do
+      assert_not HealthCheckJob.new.send(:scheduled_health_check_due?)
+    end
 
     travel_to Time.zone.parse("2026-08-26 12:00:00") do
-      SystemHealth::SERVICES.each do |service|
-        SystemHealth.create!(
-          service: service,
-          status: :not_configured,
-          last_check_at: 9.minutes.ago
-        )
-      end
+      assert HealthCheckJob.new.send(:scheduled_health_check_due?)
 
-      job = HealthCheckJob.new
-      assert_not job.send(:scheduled_health_check_due?)
+      SystemHealth.update_all(last_check_at: Time.zone.parse("2026-08-26 11:50:00"))
+      assert HealthCheckJob.new.send(:scheduled_health_check_due?)
+    end
+  end
 
-      SystemHealth.update_all(last_check_at: 10.minutes.ago)
-      assert job.send(:scheduled_health_check_due?)
+  test "a health check that starts a minute late still runs on the next tick" do
+    SettingsService.set(:health_check_interval, 300)
+    SystemHealth::SERVICES.each do |service|
+      SystemHealth.create!(
+        service: service,
+        status: :healthy,
+        last_check_at: Time.zone.parse("2026-08-26 10:01:00"),
+        message: "ok"
+      )
+    end
+
+    travel_to Time.zone.parse("2026-08-26 10:04:00") do
+      assert_not HealthCheckJob.new.send(:scheduled_health_check_due?)
+    end
+
+    travel_to Time.zone.parse("2026-08-26 10:05:00") do
+      assert HealthCheckJob.new.send(:scheduled_health_check_due?)
     end
   end
 

@@ -56,10 +56,7 @@ class HealthCheckJob < ApplicationJob
 
     interval = SettingsService.get(:health_check_interval, default: 300).to_i
     interval = [ interval, SettingsService::MIN_HEALTH_CHECK_INTERVAL ].max
-    interval_minutes = (interval / 1.minute.to_f).ceil
-    last_full_check = health_records.minimum(:last_check_at)
-
-    last_full_check.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+    IntervalRecurringTasks.due?(health_records.minimum(:last_check_at), interval)
   end
 
   def run_check_for(service)

@@ -109,23 +109,52 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     sync_service.verify
   end
 
-  test "scheduled syncs honor the configured interval on minute boundaries" do
+  test "scheduled syncs follow the interval slot when the previous run started late" do
     SettingsService.set(:audiobookshelf_library_sync_interval, 600)
+    job = AudiobookshelfLibrarySyncJob.new
 
-    travel_to Time.zone.parse("2026-08-26 12:00:00") do
-      job = AudiobookshelfLibrarySyncJob.new
+    travel_to Time.zone.parse("2026-08-26 11:59:00") do
       Rails.cache.write(
         AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
-        9.minutes.ago
+        Time.zone.parse("2026-08-26 11:51:00")
       )
       assert_not job.send(:sync_due?)
+    end
+
+    travel_to Time.zone.parse("2026-08-26 12:00:00") do
+      Rails.cache.write(
+        AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
+        Time.zone.parse("2026-08-26 11:51:00")
+      )
+      assert job.send(:sync_due?)
 
       Rails.cache.write(
         AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
-        10.minutes.ago
+        Time.zone.parse("2026-08-26 11:50:00")
       )
       assert job.send(:sync_due?)
     end
+  end
+
+  test "a library sync that starts a minute late still runs on the next hour" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
+    syncs = 0
+    service = Object.new
+    service.define_singleton_method(:sync!) { syncs += 1 }
+
+    AudiobookshelfLibrarySyncService.stub(:new, service) do
+      travel_to Time.zone.parse("2026-08-26 10:01:00") do
+        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+      end
+      travel_to Time.zone.parse("2026-08-26 11:00:00") do
+        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+      end
+      travel_to Time.zone.parse("2026-08-26 11:00:30") do
+        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
+      end
+    end
+
+    assert_equal 2, syncs
   end
 
   test "zero interval disables scheduled syncs" do
