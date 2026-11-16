@@ -132,6 +132,59 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     assert_operator minimum_gap(sync), :>=, 1.minute.to_i
   end
 
+  test "library sync reconciliation waits until the settings transaction commits" do
+    IntervalRecurringTasks.sync_all!
+    library_id = task("audiobookshelf_library_sync").id
+
+    Setting.transaction do
+      SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+      kept = SolidQueue::RecurringTask.find_by(key: "audiobookshelf_library_sync")
+      assert_equal library_id, kept&.id, "reconciled before the settings transaction committed"
+    end
+
+    assert_nil SolidQueue::RecurringTask.find_by(key: "audiobookshelf_library_sync")
+  end
+
+  test "a rejected settings save keeps the library sync recurring task" do
+    SettingsService.set(:health_check_interval, 600)
+    SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
+    library_id = task("audiobookshelf_library_sync").id
+
+    error = assert_raises(ArgumentError) do
+      Setting.transaction do
+        SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+        SettingsService.set(:health_check_interval, 30)
+      end
+    end
+
+    assert_match(/at least 60/, error.message)
+    assert_equal 3600, SettingsService.get(:audiobookshelf_library_sync_interval)
+    assert_equal 600, SettingsService.get(:health_check_interval)
+    kept = SolidQueue::RecurringTask.find_by(key: "audiobookshelf_library_sync")
+    assert kept, "rolled-back settings save deleted the library sync task"
+    assert_equal library_id, kept.id
+    assert_equal "every hour", kept.schedule
+  end
+
+  test "a seven day interval stays weekly across a month boundary" do
+    expression = IntervalRecurringTasks.schedule_for(7.days.to_i)
+    gaps = cron_gaps(Fugit.parse(expression), Time.utc(2026, 1, 1), Time.utc(2026, 3, 15))
+
+    assert_equal [ 7.days.to_i ], gaps.uniq, expression
+  end
+
+  test "multi-day intervals keep their elapsed gap across a month boundary" do
+    from = Time.utc(2026, 1, 1)
+    to = Time.utc(2026, 3, 15)
+
+    [ 2, 3, 6, 7, 8, 14 ].each do |days|
+      seconds = days.days.to_i
+      gaps = accepted_run_gaps(seconds, from: from, to: to)
+      assert gaps.any?, "no runs for #{days} days"
+      assert_equal [ seconds ], gaps.uniq, "#{days} days -> #{IntervalRecurringTasks.schedule_for(seconds)}"
+    end
+  end
+
   private
 
   def task(key)
@@ -143,14 +196,47 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
   end
 
   def minimum_cron_gap(cron)
-    cursor = cron.next_time(Time.utc(2026, 1, 1, 0, 0, 0)).to_t
-    finish = cursor + 3.days
+    cron_gaps(cron, Time.utc(2026, 1, 1, 0, 0, 0), Time.utc(2026, 1, 1, 0, 0, 0) + 3.days).min
+  end
+
+  def cron_gaps(cron, from, to)
+    cursor = from
     gaps = []
-    while cursor < finish
-      nxt = cron.next_time(cursor).to_t
-      gaps << (nxt - cursor).round
+    while (nxt = cron.next_time(cursor).to_t) < to
+      gaps << (nxt - cursor).round if cursor > from
       cursor = nxt
     end
-    gaps.min
+    gaps
+  end
+
+  # A minute after the slot is a worker that started late.
+  def accepted_run_gaps(interval_seconds, from:, to:)
+    SettingsService.set(:audiobookshelf_library_sync_interval, interval_seconds)
+    cron = Fugit.parse(IntervalRecurringTasks.schedule_for(interval_seconds))
+    last_run = nil
+    accepted = []
+    cursor = from
+    job = AudiobookshelfLibrarySyncJob.new
+    cache = ActiveSupport::Cache::MemoryStore.new
+    original_cache = Rails.cache
+    Rails.cache = cache
+    while (tick = cron.next_time(cursor).to_t) < to
+      due = travel_to(tick) do
+        if last_run
+          cache.write(AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY, last_run)
+        else
+          cache.delete(AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY)
+        end
+        job.send(:sync_due?)
+      end
+      if due
+        accepted << tick
+        last_run = tick + 1.minute
+      end
+      cursor = tick
+    end
+    accepted.each_cons(2).map { |earlier, later| (later - earlier).round }
+  ensure
+    Rails.cache = original_cache if original_cache
   end
 end

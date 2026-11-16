@@ -520,10 +520,14 @@ class SettingsService
           previous_value: previous_value,
           current_value: saved_value
         )
+        # Queue rows live in another database, so reconcile only after this
+        # settings transaction commits. A rollback must leave the task in place.
+        Setting.connection.current_transaction.after_commit do
+          IntervalRecurringTasks.sync_setting!(key)
+        end
         saved_value
       end
 
-      IntervalRecurringTasks.sync_setting!(key)
       saved
     end
 
