@@ -275,6 +275,119 @@ class MetadataServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "a too-short open library query does not degrade the provider or skip a later search" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_enabled, false)
+    SettingsService.set(:google_books_enabled, false)
+    SettingsService.set(:open_library_enabled, true)
+
+    VCR.turned_off do
+      short_search = stub_openlibrary_query("Du", status: 422)
+      later_search = stub_openlibrary_query("Dune", docs: [
+        {
+          "key" => "/works/OL893415W",
+          "title" => "Dune",
+          "author_name" => [ "Frank Herbert" ],
+          "first_publish_year" => 1965
+        }
+      ])
+
+      reported_failure = false
+      MetadataService.each_provider_search("Du") do |_provider, results, failed|
+        reported_failure = failed
+        assert_empty results
+      end
+
+      status = MetadataProviderStatus.find_by!(provider: "openlibrary")
+      assert status.available?, "short query left Open Library #{status.status}: #{status.last_error}"
+      assert_not_equal "degraded", status.status
+      assert_not reported_failure
+      assert_not_requested short_search
+      assert_equal "unknown", status.status
+      assert_equal 0, status.failure_count
+      assert_nil status.rate_limited_until
+
+      results = MetadataService.search("Dune")
+
+      assert_requested later_search
+      assert_equal "openlibrary", results.first.source
+      assert_equal "Dune", results.first.title
+      assert_equal "healthy", status.reload.status
+      assert status.available?
+    end
+  end
+
+  test "an open library query rejection does not degrade the provider" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_enabled, false)
+    SettingsService.set(:google_books_enabled, false)
+    SettingsService.set(:open_library_enabled, true)
+
+    VCR.turned_off do
+      rejected = stub_openlibrary_query("Dune", status: 422)
+      later_search = stub_openlibrary_query("Dune Messiah", docs: [
+        {
+          "key" => "/works/OL893415W",
+          "title" => "Dune Messiah",
+          "author_name" => [ "Frank Herbert" ],
+          "first_publish_year" => 1969
+        }
+      ])
+
+      reported_failure = false
+      MetadataService.each_provider_search("Dune") do |_provider, results, failed|
+        reported_failure = failed
+        assert_empty results
+      end
+
+      status = MetadataProviderStatus.find_by!(provider: "openlibrary")
+      assert status.available?, "query rejection left Open Library #{status.status}: #{status.last_error}"
+      assert_not reported_failure
+      assert_equal 0, status.failure_count
+      assert_nil status.rate_limited_until
+      assert_requested rejected
+
+      results = MetadataService.search("Dune Messiah")
+
+      assert_requested later_search
+      assert_equal "Dune Messiah", results.first.title
+      assert_equal "healthy", status.reload.status
+    end
+  end
+
+  test "an open library server error still degrades the provider and skips the next search" do
+    SettingsService.set(:metadata_source, "auto")
+    SettingsService.set(:hardcover_enabled, false)
+    SettingsService.set(:google_books_enabled, false)
+    SettingsService.set(:open_library_enabled, true)
+
+    VCR.turned_off do
+      stub_openlibrary_query("Dune", status: 500)
+      later_search = stub_openlibrary_query("Dune Messiah", docs: [
+        {
+          "key" => "/works/OL893415W",
+          "title" => "Dune Messiah",
+          "author_name" => [ "Frank Herbert" ],
+          "first_publish_year" => 1969
+        }
+      ])
+
+      MetadataService.search("Dune")
+
+      status = MetadataProviderStatus.find_by!(provider: "openlibrary")
+      assert_equal "degraded", status.status
+      assert_not status.available?
+      assert_equal 1, status.failure_count
+      assert_match "500", status.last_error
+
+      results = MetadataService.search("Dune Messiah")
+
+      assert_empty results
+      assert_not_requested later_search
+      assert_not status.reload.available?
+    end
+  end
+
   test "search_provider keeps array callers while exposing skipped outcomes" do
     SettingsService.set(:metadata_source, "google_books")
     MetadataProviderStatus.create!(
@@ -791,10 +904,14 @@ class MetadataServiceTest < ActiveSupport::TestCase
   end
 
   def stub_openlibrary_search(docs)
+    stub_openlibrary_query("harry potter", docs: docs)
+  end
+
+  def stub_openlibrary_query(query, status: 200, docs: [])
     stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
-      .with(query: hash_including("q" => "harry potter"))
+      .with(query: hash_including("q" => query))
       .to_return(
-        status: 200,
+        status: status,
         headers: { "Content-Type" => "application/json" },
         body: { "docs" => docs }.to_json
       )
