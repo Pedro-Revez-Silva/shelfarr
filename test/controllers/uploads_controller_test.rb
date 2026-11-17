@@ -277,6 +277,36 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "You cannot upload files for this request.", flash[:alert]
   end
 
+  test "create accepts an fb2 ebook upload" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    file = fixture_file_upload("test_ebook.fb2", "application/x-fictionbook+xml")
+
+    assert_difference "Upload.count", 1 do
+      assert_enqueued_with(job: UploadProcessingJob) do
+        post uploads_url, params: { file: file }
+      end
+    end
+
+    assert_redirected_to uploads_path
+    assert_equal "File uploaded successfully. Processing started.", flash[:notice]
+    upload = Upload.order(:created_at).last
+    assert_equal "test_ebook.fb2", upload.original_filename
+    assert_equal "application/x-fictionbook+xml", upload.content_type
+    assert upload.ebook_file?
+  end
+
+  test "new offers fb2 in the ebook file picker" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+
+    get new_upload_url
+
+    assert_response :success
+    assert_select "input[type=file][accept*='.fb2']"
+    assert_match(/Ebooks:.*\bfb2\b/, response.body)
+  end
+
   test "create accepts m4a audiobook uploads for regular users when enabled" do
     SettingsService.set(:allow_user_uploads, true)
     sign_in_as(@user)

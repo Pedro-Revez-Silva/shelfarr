@@ -7,7 +7,7 @@ require "logger"
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
-  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
+  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu fb2].freeze
   EBOOK_COVER_EXTENSIONS = %w[jpg jpeg png webp].freeze
   AUDIOBOOK_COVER_EXTENSIONS = %w[bmp gif jpeg jpg png webp].freeze
   # SABnzbd (and some torrent clients) report a completed file path instead of
@@ -1144,6 +1144,9 @@ class PostProcessingJob < ApplicationJob
       head.start_with?("Rar!\x1A\x07\x00") || head.start_with?("Rar!\x1A\x07\x01\x00")
     when "djvu"
       head.start_with?("AT&TFORM") && %w[DJVU DJVM].include?(head.byteslice(12, 4))
+    when "fb2"
+      # FictionBook is XML. A leading UTF-8 BOM is optional.
+      head.b.delete_prefix("\xEF\xBB\xBF".b).include?("<FictionBook")
     when "jpg", "jpeg"
       head.start_with?("\xFF\xD8\xFF".b)
     when "png"
