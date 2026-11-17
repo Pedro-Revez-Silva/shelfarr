@@ -150,6 +150,10 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
     assert_equal :ebook, ReleaseParserService.detect_format("Book.Title.MOBI")
   end
 
+  test "detect_format identifies ebook from FB2" do
+    assert_equal :ebook, ReleaseParserService.detect_format("Book.Title.FB2")
+  end
+
   test "detect_format returns nil for unknown format" do
     assert_nil ReleaseParserService.detect_format("Book.Title")
   end
@@ -181,6 +185,17 @@ class ReleaseParserServiceTest < ActiveSupport::TestCase
 
   test "detect_extensions returns all supported extensions found" do
     assert_equal [ "epub", "pdf" ], ReleaseParserService.detect_extensions("Book Title EPUB PDF")
+  end
+
+  test "detects FB2 in a mixed release title" do
+    title = "Author - Title [FB2/PDF/EPUB, RUS]"
+
+    assert_equal :ebook, ReleaseParserService.detect_format(title)
+    assert_equal "fb2", ReleaseParserService.detect_primary_extension(title)
+    extensions = ReleaseParserService.detect_extensions(title)
+    assert_includes extensions, "fb2"
+    assert_includes extensions, "pdf"
+    assert_includes extensions, "epub"
   end
 
   test "detect_primary_extension returns first extension in title order" do

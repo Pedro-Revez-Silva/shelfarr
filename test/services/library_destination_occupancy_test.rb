@@ -135,6 +135,30 @@ class LibraryDestinationOccupancyTest < ActiveSupport::TestCase
     assert_not LibraryDestinationOccupancy.occupied?(library_path: File.join(@root, "BOOK"), book: audiobook)
   end
 
+  test "an fb2 file occupies an ebook destination" do
+    File.binwrite(File.join(@folder, "book.fb2"), "<FictionBook></FictionBook>")
+    ebook = Book.new(title: "The Final Empire", author: "Brandon Sanderson", book_type: :ebook)
+
+    assert LibraryDestinationOccupancy.occupied?(library_path: @folder, book: ebook)
+  end
+
+  test "an fb2 counts as the ebook beside an audiobook of the same work" do
+    File.binwrite(File.join(@folder, "book.fb2"), "<FictionBook></FictionBook>")
+    Book.create!(
+      title: "The Final Empire",
+      author: "Brandon Sanderson",
+      book_type: :audiobook,
+      file_path: @folder
+    )
+    ebook = Book.new(
+      title: "The Final Empire",
+      author: "Brandon Sanderson",
+      book_type: :ebook
+    )
+
+    assert LibraryDestinationOccupancy.occupied?(library_path: @folder, book: ebook)
+  end
+
   test "same-format files remain a collision beside a tracked companion" do
     File.binwrite(File.join(@folder, "existing.epub"), "ebook")
     File.binwrite(File.join(@folder, "existing.m4b"), "audio")

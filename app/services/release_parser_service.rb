@@ -186,6 +186,7 @@ class ReleaseParserService
   EBOOK_PATTERNS = [
     /\bebook\b/i,
     /\bepub\b/i,
+    /\bfb2\b/i,
     /\bmobi\b/i,
     /\bazw3?\b/i,
     /\bpdf\b/i
@@ -204,6 +205,7 @@ class ReleaseParserService
     "m4a" => /\bm4a\b/i,
     "mp3" => /\bmp3\b/i,
     "epub" => /\bepub\b/i,
+    "fb2" => /\bfb2\b/i,
     "pdf" => /\bpdf\b/i,
     "mobi" => /\bmobi\b/i,
     "azw3" => /\bazw3\b/i,

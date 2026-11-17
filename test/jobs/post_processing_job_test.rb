@@ -4264,6 +4264,65 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.djvu"))
   end
 
+  test "imports an FB2-only ebook download without Grimmory configured" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Russian Book.fb2"))
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+    SettingsService.set(:library_platform, "audiobookshelf")
+    SettingsService.set(:grimmory_url, "")
+    SettingsService.set(:grimmory_username, "")
+    SettingsService.set(:grimmory_password, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert File.exist?(File.join(expected_dest, "Test Author - Test Audiobook.fb2"))
+  end
+
+  test "rejects an fb2 download that is not FictionBook content" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    File.binwrite(File.join(@temp_source, "Notes.fb2"), "<?xml version=\"1.0\"?><html><body>not a book</body></html>")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    assert_not @request.reload.completed?
+    assert_match(/invalid ebook content/i, @request.issue_description)
+  end
+
+  test "keeps an FB2 file when the release also contains other ebook formats" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Book.epub"))
+    write_valid_ebook_file(File.join(@temp_source, "Book.pdf"))
+    write_valid_ebook_file(File.join(@temp_source, "Book.fb2"))
+    File.write(File.join(@temp_source, "release.nfo"), "notes")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [
+      "Test Author - Test Audiobook.epub",
+      "Test Author - Test Audiobook.fb2",
+      "Test Author - Test Audiobook.pdf"
+    ], Dir.children(expected_dest).sort
+    assert_not File.exist?(File.join(expected_dest, "release.nfo"))
+  end
+
   test "imports an ebook when the release folder contains a non UTF-8 nfo" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
@@ -6530,6 +6589,13 @@ class PostProcessingJobTest < ActiveJob::TestCase
       File.binwrite(path, "%PDF-1.7\n")
     when "djvu"
       File.binwrite(path, "AT&TFORM\0\0\0\0DJVM")
+    when "fb2"
+      File.binwrite(path, "\xEF\xBB\xBF".b + <<~XML)
+        <?xml version="1.0" encoding="utf-8"?>
+        <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+          <description><title-info><book-title>Test</book-title></title-info></description>
+        </FictionBook>
+      XML
     else
       raise "Unsupported test ebook extension: #{path}"
     end
