@@ -338,7 +338,7 @@ class SequenceMarker
 
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
     # Folding matches TitleKey: keep letters with no ASCII approximation, and
-    # split on Unicode letters so a CJK author is a token instead of disappearing.
+    # split on Unicode letters and numerals so a CJK author stays a token.
     def normalized_source_tokens(text)
       folded = +""
       starts = []
@@ -359,7 +359,7 @@ class SequenceMarker
       end
 
       tokens = []
-      folded.scan(/[\p{L}\p{Nd}]+/) do
+      folded.scan(/[\p{L}\p{N}]+/) do
         match = Regexp.last_match
         tokens << [
           TitleKey.new(match[0]).canonical,

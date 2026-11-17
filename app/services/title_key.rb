@@ -58,11 +58,12 @@ class TitleKey
   end
 
   # Exact phrases split on every non-letter, including underscores. Unicode
-  # letters count, so a Cyrillic word is not discarded as punctuation. Marker
-  # parsing keeps apostrophes, wrapped years, and dots, so "Don't" stays one
-  # word, "(1894)" is not a volume, and "C. G." is not a roman numeral.
+  # letters and numerals count, so a Cyrillic word is not discarded and "Ⅱ"
+  # stays attached to a title. Marker parsing keeps apostrophes, wrapped
+  # years, and dots, so "Don't" stays one word, "(1894)" is not a volume,
+  # and "C. G." is not a roman numeral.
   def self.normalize_boundaries(text, preserve: "")
-    text.to_s.gsub(/[^\p{L}\p{Nd}]/) { |char| preserve.include?(char) ? char : " " }
+    text.to_s.gsub(/[^\p{L}\p{N}]/) { |char| preserve.include?(char) ? char : " " }
   end
 
   def self.normalize_marker_boundaries(text)
@@ -71,12 +72,13 @@ class TitleKey
 
   # "?" means the transliterator has no ASCII approximation. Keep that letter
   # so Cyrillic and CJK stay searchable. Accented Latin still folds ("ß" -> "ss").
-  # NFC runs first so a decomposed "u" + diaeresis folds like "ü".
+  # NFKC composes "ü" and rewrites a compatibility numeral ("Ⅱ" -> "II").
+  # Casefold maps final sigma ("ς") onto "σ".
   def self.fold(text)
-    text.to_s.unicode_normalize(:nfc).gsub(/[^\x00-\x7F]/) { |char|
+    text.to_s.unicode_normalize(:nfkc).gsub(/[^\x00-\x7F]/) { |char|
       transliterated = ActiveSupport::Inflector.transliterate(char)
       transliterated == "?" ? char : transliterated
-    }.downcase
+    }.downcase(:fold)
   end
 
   private
@@ -96,7 +98,7 @@ class TitleKey
   end
 
   def punctuationless(text)
-    self.class.fold(text).gsub(/[^\p{L}\p{Nd}\s]/, "").squish
+    self.class.fold(text).gsub(/[^\p{L}\p{N}\s]/, "").squish
   end
 
   def number_tokens(text)
