@@ -1025,6 +1025,9 @@ class SearchJob < ApplicationJob
 
       attempts << build_search_attempt(:author_title, [ book.author, preferred_title, language_hint ])
       normalized_search_queries(preferred_title).each do |normalized|
+        # A blank key would leave only the language hint ("RU").
+        next if normalized.blank?
+
         attempts << build_search_attempt(:normalized_title, [ normalized, language_hint ])
       end
 
@@ -1161,7 +1164,7 @@ class SearchJob < ApplicationJob
     prepared = title.to_s.gsub(/\([^)]*\)|\[[^\]]*\]/, " ")
     stripped = TitleKey.new(SequenceMarker.strip(prepared)).spaced
     words = TitleKey.new(prepared).spaced
-    [ words, stripped ].compact_blank.uniq.presence || [ "" ]
+    [ words, stripped ].compact_blank.uniq
   end
 
   def numeric_title_variants(title)

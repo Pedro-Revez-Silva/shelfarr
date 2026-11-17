@@ -25,6 +25,35 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "matches each cyrillic title to its own book" do
+    knights = Book.create!(
+      title: "Рыцари Сорока Островов",
+      author: "Сергей Лукьяненко",
+      book_type: :audiobook
+    )
+    war = Book.create!(
+      title: "Война и мир",
+      author: "Лев Толстой",
+      book_type: :audiobook
+    )
+
+    found_war = BookMatcherService.match(
+      title: "Война и мир",
+      author: "Лев Толстой",
+      book_type: :audiobook
+    )
+    found_knights = BookMatcherService.match(
+      title: "рыцари сорока островов",
+      author: "сергей лукьяненко",
+      book_type: :audiobook
+    )
+
+    assert_equal war, found_war.book
+    assert found_war.exact?
+    assert_equal knights, found_knights.book
+    assert found_knights.exact?
+  end
+
   test "matches high Roman volumes with their translated Arabic markers" do
     book = Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
 

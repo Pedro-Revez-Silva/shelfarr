@@ -1035,6 +1035,55 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "does not query indexers with only the language hint for a cyrillic title" do
+    SettingsService.set(:indexer_search_scope, "broad")
+    SettingsService.set(:anna_archive_enabled, false)
+    book = Book.create!(
+      title: "Рыцари Сорока Островов",
+      author: "Сергей Лукьяненко",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "ru")
+
+    queries = SearchJob.new.send(:generic_indexer_attempts, request).map(&:query)
+
+    assert queries.any? { |query| query.include?("Рыцари") }, queries.inspect
+    assert_not_includes queries, "RU"
+
+    issued = []
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search}).to_return do |req|
+        issued << req.uri.query_values["query"]
+        { status: 200, headers: { "Content-Type" => "application/json" }, body: [].to_json }
+      end
+
+      SearchJob.perform_now(request.id)
+    end
+
+    assert issued.any? { |query| query.to_s.include?("Рыцари") }, issued.inspect
+    assert issued.none? { |query| query.to_s.casecmp?("RU") }, issued.inspect
+  end
+
+  test "does not search with only the language hint when the normalized title is blank" do
+    book = Book.create!(title: "!!!", author: "Example Author", book_type: :audiobook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "ru")
+
+    queries = SearchJob.new.send(:generic_indexer_attempts, request).map(&:query)
+
+    assert queries.any? { |query| query.include?("!!!") }, queries.inspect
+    assert_not_includes queries, "RU"
+  end
+
+  test "still searches a title that is only the language tag" do
+    book = Book.create!(title: "RU", author: "Example Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "ru")
+
+    queries = SearchJob.new.send(:generic_indexer_attempts, request).map(&:query)
+
+    assert_includes queries, "RU"
+    assert_includes queries, "RU Example Author"
+  end
+
   test "adds language-tagged and hint-free attempts for non-English comic issues" do
     book = Book.create!(
       title: "Saga - #7 - The Chapter",
