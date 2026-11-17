@@ -258,11 +258,7 @@ func startServer(t *testing.T, f fixture, copied runtimeCopy, options serverOpti
 		environment = append(environment, "SECRET_KEY_BASE_FILE="+f.secretFile())
 	}
 	environment = append(environment, options.env...)
-	for _, inherited := range os.Environ() {
-		if strings.HasPrefix(inherited, runMarkerName+"=") {
-			environment = append(environment, inherited)
-		}
-	}
+	environment = append(environment, runnerEnvironment()...)
 	executable := binaryPath
 	if options.seam {
 		executable = seamBinaryPath
@@ -422,10 +418,20 @@ func accountDigest(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func runnerEnvironment() []string {
+	var inherited []string
+	for _, variable := range os.Environ() {
+		if strings.HasPrefix(variable, runMarkerName+"=") || strings.HasPrefix(variable, "GOMAXPROCS=") {
+			inherited = append(inherited, variable)
+		}
+	}
+	return inherited
+}
+
 func runBinary(t *testing.T, environment []string, arguments []string) (string, int) {
 	t.Helper()
 	command := exec.Command(binaryPath, arguments...)
-	command.Env = append([]string{"PATH=" + os.Getenv("PATH")}, environment...)
+	command.Env = append(append([]string{"PATH=" + os.Getenv("PATH")}, environment...), runnerEnvironment()...)
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	err := command.Start()

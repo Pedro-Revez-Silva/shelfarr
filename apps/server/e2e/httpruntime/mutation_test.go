@@ -160,7 +160,7 @@ var mutants = []mutant{
 	{name: "transfer: the grant query may carry other parameters", file: "internal/transfergrant/transfergrant.go", edit: edit{"value, found := strings.CutPrefix(rawQuery, queryKey)", "_, value, found := strings.Cut(rawQuery, queryKey)"}, unit: "./internal/transfergrant/", scenario: differential},
 	{name: "transfer: a grant opens another book", file: "internal/gohttp/transfer.go", edit: edit{"!ok || claims.BookID != found.id ||", "!ok ||"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 	{name: "transfer: a grant opens another asset", file: "internal/gohttp/transfer.go", edit: edit{"|| claims.AssetID != found.assetID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: an unreadable scope encoding is an error instead of a refusal", file: "internal/bearer/bearer.go", edit: edit{"if errors.Is(err, account.ErrUnsupportedScopes) {", "if false && errors.Is(err, account.ErrUnsupportedScopes) {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
+	{name: "transfer: a scope list with a non-text element carries no scope", file: "internal/account/account.go", edit: edit{"if text, isText := element.(string); isText {\n\t\t\t\titems = append(items, text)\n\t\t\t}", "text, isText := element.(string)\n\t\t\tif !isText {\n\t\t\t\treturn false\n\t\t\t}\n\t\t\titems = append(items, text)"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: a refused media pool answers a grant in the open", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeTransfer {\n\t\tsetTransferPrivacy(w.Header())\n\t}\n", ""}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: a mint does not check that the asset is current when it opens it", file: "internal/gohttp/transfer.go", edit: edit{"\tfile, ok := a.openAsset(w, result, *book, *chosen)\n\tif !ok {\n\t\treturn\n\t}\n\tfile.Close()\n", ""}, scenario: "TestAMintRechecks"},
 	{name: "transfer: a grant opens for a token that changed owner", file: "internal/bearer/bearer.go", edit: edit{"|| token.UserID.Int64 != claims.UserID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
@@ -215,6 +215,8 @@ func copyModule(t *testing.T, destination string) {
 }
 
 func TestMutantsAreDetected(t *testing.T) {
+	fixtures(t)
+	deadline, _ := t.Deadline()
 	for _, candidate := range mutants {
 		t.Run(candidate.name, func(t *testing.T) {
 			t.Parallel()
@@ -231,18 +233,18 @@ func TestMutantsAreDetected(t *testing.T) {
 			if err := os.WriteFile(path, []byte(strings.Replace(string(original), candidate.edit.old, candidate.edit.new, 1)), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if output, err := childRunner.build(directory); err != nil {
+			if output, err := childRunner.build(directory, deadline); err != nil {
 				t.Fatalf("the mutant does not compile, which proves nothing: %s", output)
 			}
 			var steps []mutantStep
 			if candidate.unit != "" {
 				steps = append(steps, func() (verdict, string) {
-					return childRunner.test(directory, "./"+strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false)
+					return childRunner.test(directory, "./"+strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false, deadline)
 				})
 			}
 			if candidate.scenario != "" {
 				steps = append(steps, func() (verdict, string) {
-					return childRunner.test(directory, "./e2e/httpruntime/", candidate.scenario, true)
+					return childRunner.test(directory, "./e2e/httpruntime/", candidate.scenario, true, deadline)
 				})
 			}
 			if killed, evidence := firstDetection(steps); !killed {

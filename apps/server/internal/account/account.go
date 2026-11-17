@@ -119,6 +119,10 @@ func ScopeList(encoded string) ([]string, error) {
 	default:
 		return nil, ErrUnsupportedScopes
 	}
+	return splitScopes(items), nil
+}
+
+func splitScopes(items []string) []string {
 	seen := map[string]bool{}
 	scopes := []string{}
 	for _, item := range items {
@@ -131,7 +135,26 @@ func ScopeList(encoded string) ([]string, error) {
 			}
 		}
 	}
-	return scopes, nil
+	return scopes
+}
+
+func StoredScopeIncludes(encoded, scope string) bool {
+	var parsed any
+	if json.Unmarshal([]byte(encoded), &parsed) != nil {
+		return false
+	}
+	var items []string
+	switch value := parsed.(type) {
+	case string:
+		items = []string{value}
+	case []any:
+		for _, element := range value {
+			if text, isText := element.(string); isText {
+				items = append(items, text)
+			}
+		}
+	}
+	return contains(splitScopes(items), scope)
 }
 
 func Authenticate(ctx context.Context, directory Directory, authorization string, now time.Time) (*Principal, error) {

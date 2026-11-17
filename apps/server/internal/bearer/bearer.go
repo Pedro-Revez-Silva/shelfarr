@@ -2,7 +2,6 @@ package bearer
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/account"
@@ -60,13 +59,5 @@ func (a Authenticator) AuthorizeGrant(ctx context.Context, claims transfergrant.
 	if err != nil || user == nil || user.Deleted {
 		return false, err
 	}
-	scopes, err := account.ScopeList(token.Scopes)
-	if errors.Is(err, account.ErrUnsupportedScopes) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	principal := account.Principal{Scopes: scopes}
-	return principal.HasScope(transfergrant.Scope), nil
+	return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil
 }

@@ -168,6 +168,7 @@ func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
 		"deleted token":   {`DELETE FROM api_tokens WHERE id = 1`, `INSERT INTO api_tokens (id, user_id, token_digest, scopes) VALUES (1, 1, 'restored', '["library:read"]')`},
 		"spaced scope":    {`UPDATE api_tokens SET scopes = '["progress:write", "search:read"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '"search:read library:read"' WHERE id = 1`},
 		"scope null":      {`UPDATE api_tokens SET scopes = 'null' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
+		"scope with null": {`UPDATE api_tokens SET scopes = '[null, "progress:write"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '[null, 5, "library:read"]' WHERE id = 1`},
 		"scope object":    {`UPDATE api_tokens SET scopes = '{"library:read":true}' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
 		"admin scope too": {`UPDATE api_tokens SET scopes = '["requests:admin"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["requests:admin","library:read"]' WHERE id = 1`},
 	} {

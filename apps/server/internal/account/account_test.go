@@ -159,3 +159,16 @@ func TestPasswordMatchesRefusesCostsAboveTheCeilingWithoutDoingTheWork(t *testin
 		t.Fatal("refusal took bcrypt time")
 	}
 }
+
+func TestAStoredScopeIsFoundOnlyAmongTheTextsRailsNormalises(t *testing.T) {
+	for encoded, want := range map[string]bool{
+		`["library:read"]`: true, `"library:read"`: true, `"search:read library:read"`: true, `["search:read,library:read"]`: true,
+		`[null, "library:read"]`: true, `[5, true, "library:read"]`: true, `[{"a": 1}, "library:read"]`: true,
+		`null`: false, `[]`: false, `{"library:read": true}`: false, `[["library:read"]]`: false, `5`: false, `not json`: false,
+		`["progress:write"]`: false, `["library:readx"]`: false, `["LIBRARY:READ"]`: false,
+	} {
+		if got := StoredScopeIncludes(encoded, "library:read"); got != want {
+			t.Errorf("%s: %v", encoded, got)
+		}
+	}
+}
