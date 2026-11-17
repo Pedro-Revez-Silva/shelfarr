@@ -380,6 +380,35 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert score.breakdown[:auto_select_allowed]
   end
 
+  test "does not accept a cjk sequel distinguished only by a unicode numeral" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "刘慈欣 - 三体Ⅱ：黑暗森林 [CHS] M4B", seeders: 50),
+      @request
+    )
+
+    assert_operator score.breakdown[:title], :<, 100, score.breakdown.inspect
+    assert_operator score.total, :<, threshold, score.breakdown.inspect
+    assert_not score.high_confidence?, score.total.to_s
+  end
+
+  test "scores greek titles that differ only by final sigma as the same title" do
+    @book.update!(author: "Όμηρος", book_type: :ebook)
+
+    [ [ "ΦΩΣ", "Φως" ], [ "Φως", "ΦΩΣ" ] ].each do |book_title, release_title|
+      @book.update!(title: book_title)
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: "#{release_title} - Όμηρος", seeders: 50),
+        @request
+      )
+
+      assert_equal 100, score.breakdown[:title], "#{book_title} vs #{release_title} #{score.breakdown.inspect}"
+    end
+  end
+
   test "preserves exact title and author matches with curly apostrophes" do
     [ "'", "’", "‘" ].each do |apostrophe|
       @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")

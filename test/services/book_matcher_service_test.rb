@@ -54,6 +54,27 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert found_knights.exact?
   end
 
+  test "does not create a duplicate when greek final sigma is the only difference" do
+    existing = Book.create!(title: "ΦΩΣ", author: "Όμηρος", book_type: :ebook)
+
+    result = BookMatcherService.match(
+      title: "Φως",
+      author: "Όμηρος",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing, result.book
+
+    assert_no_difference("Book.count") do
+      assert_equal existing, BookMatcherService.find_or_create_book(
+        title: "Φως",
+        author: "Όμηρος",
+        book_type: :ebook
+      )
+    end
+  end
+
   test "matches high Roman volumes with their translated Arabic markers" do
     book = Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
 
