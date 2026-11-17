@@ -9,12 +9,14 @@ class SequenceMarker
   # de: band, teil, buch
   # es/it/pt: tomo, parte, libro, livro, volumen
   # nl: deel, boek
+  # ru: том (volume), часть (part), книга (book), выпуск (installment)
   MARKER_WORDS = %w[
     book part vol volume
     tome partie livre
     band teil buch
     tomo parte libro livro volumen
     deel boek
+    том часть книга выпуск
   ].freeze
   NEUTRAL_MARKER = "volume"
   NUMBER_WORDS = {
@@ -335,30 +337,43 @@ class SequenceMarker
     end
 
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
+    # Folding matches TitleKey: keep letters with no ASCII approximation, and
+    # split on Unicode letters so a CJK author is a token instead of disappearing.
     def normalized_source_tokens(text)
       folded = +""
-      offsets = []
-      text.each_char.with_index do |char, index|
-        next if char.match?(TITLE_QUOTE_CHARACTERS)
+      starts = []
+      ends = []
+      offset = 0
 
-        ActiveSupport::Inflector.transliterate(char).downcase.each_char do |out|
-          folded << out
-          offsets << index
+      text.to_s.grapheme_clusters.each do |cluster|
+        source_start = offset
+        offset += cluster.length
+        source_end = offset
+        next if quote_cluster?(cluster)
+
+        TitleKey.fold(cluster).each_char do |char|
+          folded << char
+          starts << source_start
+          ends << source_end
         end
       end
 
       tokens = []
-      folded.scan(/[a-z0-9]+/) do
+      folded.scan(/[\p{L}\p{Nd}]+/) do
         match = Regexp.last_match
         tokens << [
           TitleKey.new(match[0]).canonical,
-          offsets[match.begin(0)],
-          offsets[match.end(0) - 1] + 1,
+          starts.fetch(match.begin(0)),
+          ends.fetch(match.end(0) - 1),
           match[0],
           folded[match.end(0)] == "."
         ]
       end
       tokens
+    end
+
+    def quote_cluster?(cluster)
+      cluster.each_char.all? { |char| char.match?(TITLE_QUOTE_CHARACTERS) }
     end
 
     def spans_overlap?(left, right)

@@ -323,6 +323,42 @@ class UploadProcessingJobTest < ActiveJob::TestCase
     assert File.exist?(@upload.file_path)
   end
 
+  test "does not attach an uploaded russian volume to a different numbered volume" do
+    existing = Book.create!(
+      title: "Война и мир. Том 1",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+    filename = "Лев Толстой - Война и мир. Том 2.epub"
+    ebook_file = File.join(@temp_source, filename)
+    File.write(ebook_file, "volume two")
+
+    upload = Upload.create!(
+      user: @user,
+      original_filename: filename,
+      file_path: ebook_file,
+      file_size: File.size(ebook_file),
+      status: :pending
+    )
+
+    assert_difference "Book.ebooks.count", 1 do
+      MetadataService.stub(:search, []) do
+        UploadProcessingJob.perform_now(upload.id)
+      end
+    end
+
+    upload.reload
+    existing.reload
+
+    assert upload.completed?, upload.error_message
+    assert upload.ebook?
+    assert_not_equal existing, upload.book
+    assert_nil existing.file_path
+    assert_equal "Война И Мир. Том 2", upload.book.title
+    assert_equal "Лев Толстой", upload.book.author
+    assert_nil existing.acquisition_reservation_token
+  end
+
   test "handles ebook uploads" do
     VCR.turned_off do
       stub_open_library_search("Dune Frank Herbert")
