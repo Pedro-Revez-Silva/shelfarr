@@ -69,6 +69,16 @@ class TitleKey
     normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[].")
   end
 
+  # "?" means the transliterator has no ASCII approximation. Keep that letter
+  # so Cyrillic and CJK stay searchable. Accented Latin still folds ("ß" -> "ss").
+  # NFC runs first so a decomposed "u" + diaeresis folds like "ü".
+  def self.fold(text)
+    text.to_s.unicode_normalize(:nfc).gsub(/[^\x00-\x7F]/) { |char|
+      transliterated = ActiveSupport::Inflector.transliterate(char)
+      transliterated == "?" ? char : transliterated
+    }.downcase
+  end
+
   private
 
   def apostrophe_forms
@@ -82,24 +92,11 @@ class TitleKey
   end
 
   def tokenize(text)
-    self.class.normalize_boundaries(folded(text)).squish
+    self.class.normalize_boundaries(self.class.fold(text)).squish
   end
 
   def punctuationless(text)
-    folded(text).gsub(/[^\p{L}\p{Nd}\s]/, "").squish
-  end
-
-  # "?" means the transliterator has no ASCII approximation. Keep that letter
-  # so Cyrillic and CJK stay searchable. Accented Latin still folds ("ß" -> "ss").
-  def folded(text)
-    transliterate_known(text).downcase
-  end
-
-  def transliterate_known(text)
-    text.to_s.unicode_normalize(:nfc).gsub(/[^\x00-\x7F]/) do |char|
-      transliterated = ActiveSupport::Inflector.transliterate(char)
-      transliterated == "?" ? char : transliterated
-    end
+    self.class.fold(text).gsub(/[^\p{L}\p{Nd}\s]/, "").squish
   end
 
   def number_tokens(text)

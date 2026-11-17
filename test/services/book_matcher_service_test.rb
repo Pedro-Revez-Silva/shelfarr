@@ -382,6 +382,30 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "does not match a different russian volume of the same work" do
+    existing = Book.create!(
+      title: "Война и мир. Том 1",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+
+    conflict = BookMatcherService.match(
+      title: "Война и мир. Том 2",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+    same = BookMatcherService.match(
+      title: "Война и мир. Том 1",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+
+    assert conflict.no_match?, "got #{conflict.match_type} with score #{conflict.score}"
+    assert_nil conflict.book
+    assert same.exact?, "got #{same.match_type} with score #{same.score}"
+    assert_equal existing, same.book
+  end
+
   test "does not match different numbered volumes" do
     Book.create!(
       title: "Attack on Titan Vol 2",
@@ -446,6 +470,10 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
       "The Witcher Volumen 2",
       "The Witcher Deel 2",
       "The Witcher Boek 2",
+      "The Witcher Том 2",
+      "The Witcher Часть 2",
+      "The Witcher Книга 2",
+      "The Witcher Выпуск 2",
       "The Witcher Tome II",
       "The Witcher Part. 2",
       "The Witcher Volume 2",

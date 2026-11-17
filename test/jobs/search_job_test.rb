@@ -3269,6 +3269,10 @@ class SearchJobTest < ActiveJob::TestCase
       "The Witcher Volumen 2",
       "The Witcher Deel 2",
       "The Witcher Boek 2",
+      "The Witcher Том 2",
+      "The Witcher Часть 2",
+      "The Witcher Книга 2",
+      "The Witcher Выпуск 2",
       "The Witcher Tome II",
       "The Witcher Part. 2",
       "The Witcher Volume 2"

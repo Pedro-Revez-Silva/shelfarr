@@ -225,6 +225,39 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     assert_not_includes SequenceMarker.neutralize(source), "100"
   end
 
+  test "reads russian volume part and book markers and rejects conflicting numbers" do
+    assert_equal [ "1" ], SequenceMarker.numbers("Война и мир. Том 1")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том 2")
+    assert_equal [ "2" ], SequenceMarker.numbers("ВОЙНА И МИР. ТОМ 2")
+    assert_equal [ "2" ], SequenceMarker.numbers("Книга2")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том II")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том-2")
+    assert_equal [ "3" ], SequenceMarker.numbers("Тихий Дон. Часть 3")
+    assert_equal [ "4" ], SequenceMarker.numbers("Сборник. Выпуск 4")
+    assert_equal "Война и мир. volume 2", SequenceMarker.neutralize("Война и мир. Том 2")
+    assert SequenceMarker.conflict?("Война и мир. Том 1", "Война и мир. Том 2")
+    assert SequenceMarker.conflict?("Война и мир. Книга 1", "Война и мир. Часть 2")
+    assert_not SequenceMarker.conflict?("Война и мир. Том 1", "Война и мир. Volume 1")
+    assert_not SequenceMarker.conflict?("Война и мир. Том 2", "Война и мир. Книга 2")
+
+    [ "Книга джунглей", "Том Сойер", "В том числе", "часть речи" ].each do |title|
+      assert_empty SequenceMarker.numbers(title), title
+      assert_equal title, SequenceMarker.neutralize(title), title
+    end
+  end
+
+  test "removes a cjk author credit that precedes a short title" do
+    source = SequenceMarker.without_author_credit(
+      "刘慈欣 - 三体 [CHS] M4B",
+      author: "刘慈欣",
+      protected_title: "三体"
+    )
+
+    assert_not_includes source, "刘慈欣"
+    assert_includes source, "三体"
+    assert_includes source, "[CHS]"
+  end
+
   test "reads an abbreviated roman volume before a language code" do
     release = "Victor.Hugo.-.Les.Miserables.T.V.FR.EPUB"
 

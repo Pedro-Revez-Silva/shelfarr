@@ -363,6 +363,23 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert tagged.breakdown[:auto_select_allowed]
   end
 
+  test "scores an author-first cjk release of a short title" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "刘慈欣 - 三体 [CHS] M4B", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_equal 100, score.breakdown[:author], score.breakdown.inspect
+    assert_includes score.detected_languages, "zh"
+    assert_equal :audiobook, score.detected_format
+    assert score.high_confidence?, score.total
+    assert score.breakdown[:auto_select_allowed]
+  end
+
   test "preserves exact title and author matches with curly apostrophes" do
     [ "'", "’", "‘" ].each do |apostrophe|
       @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")
