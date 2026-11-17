@@ -333,6 +333,36 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal native.breakdown[:title], ascii.breakdown[:title]
   end
 
+  test "scores cyrillic titles and authors that do not fold to ASCII" do
+    assert_equal "spass in der kuche", TitleKey.new("Spaß in der Küche").canonical
+    assert_equal "рыцари сорока островов", TitleKey.new("Рыцари Сорока Островов").canonical
+    assert_equal "сергей лукьяненко", TitleKey.new("Сергей Лукьяненко").canonical
+
+    @book.update!(title: "Рыцари Сорока Островов", author: "Сергей Лукьяненко", book_type: :audiobook)
+    @request.update!(language: "ru")
+
+    verbatim = ReleaseScorer.score(
+      @request.search_results.new(title: "Сергей Лукьяненко - Рыцари сорока островов MP3", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, verbatim.breakdown[:title], verbatim.breakdown.inspect
+    assert_equal 100, verbatim.breakdown[:author], verbatim.breakdown.inspect
+
+    tagged = ReleaseScorer.score(
+      @request.search_results.new(
+        title: "Сергей.Лукьяненко.-.Рыцари.сорока.островов.RU.M4B".unicode_normalize(:nfd),
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_equal 100, tagged.breakdown[:title], tagged.breakdown.inspect
+    assert_equal 100, tagged.breakdown[:author], tagged.breakdown.inspect
+    assert tagged.high_confidence?, tagged.total
+    assert tagged.breakdown[:auto_select_allowed]
+  end
+
   test "preserves exact title and author matches with curly apostrophes" do
     [ "'", "’", "‘" ].each do |apostrophe|
       @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")

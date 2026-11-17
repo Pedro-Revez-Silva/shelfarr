@@ -57,11 +57,12 @@ class TitleKey
     canonical.length < 4
   end
 
-  # Exact phrases split on every non-letter, including underscores. Marker
+  # Exact phrases split on every non-letter, including underscores. Unicode
+  # letters count, so a Cyrillic word is not discarded as punctuation. Marker
   # parsing keeps apostrophes, wrapped years, and dots, so "Don't" stays one
   # word, "(1894)" is not a volume, and "C. G." is not a roman numeral.
   def self.normalize_boundaries(text, preserve: "")
-    text.to_s.gsub(/[^A-Za-z0-9]/) { |char| preserve.include?(char) ? char : " " }
+    text.to_s.gsub(/[^\p{L}\p{Nd}]/) { |char| preserve.include?(char) ? char : " " }
   end
 
   def self.normalize_marker_boundaries(text)
@@ -81,16 +82,24 @@ class TitleKey
   end
 
   def tokenize(text)
-    self.class.normalize_boundaries(
-      ActiveSupport::Inflector.transliterate(text).downcase
-    ).squish
+    self.class.normalize_boundaries(folded(text)).squish
   end
 
   def punctuationless(text)
-    ActiveSupport::Inflector.transliterate(text)
-      .downcase
-      .gsub(/[^a-z0-9\s]/, "")
-      .squish
+    folded(text).gsub(/[^\p{L}\p{Nd}\s]/, "").squish
+  end
+
+  # "?" means the transliterator has no ASCII approximation. Keep that letter
+  # so Cyrillic and CJK stay searchable. Accented Latin still folds ("ß" -> "ss").
+  def folded(text)
+    transliterate_known(text).downcase
+  end
+
+  def transliterate_known(text)
+    text.to_s.unicode_normalize(:nfc).gsub(/[^\x00-\x7F]/) do |char|
+      transliterated = ActiveSupport::Inflector.transliterate(char)
+      transliterated == "?" ? char : transliterated
+    end
   end
 
   def number_tokens(text)
