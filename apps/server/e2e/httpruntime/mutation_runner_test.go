@@ -185,11 +185,12 @@ func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, 
 func classifyMutantRun(ran runResult) (verdict, string) {
 	failures, completed := 0, false
 	for _, line := range strings.Split(ran.output, "\n") {
-		if !strings.HasPrefix(line, frame) {
+		marker := strings.LastIndex(line, frame)
+		if marker < 0 {
 			continue
 		}
 		completed = false
-		switch body := strings.TrimPrefix(line, frame); {
+		switch body := line[marker+len(frame):]; {
 		case strings.HasPrefix(body, "--- FAIL: "):
 			failures++
 		case body == "FAIL" || body == "PASS":
@@ -300,6 +301,12 @@ func TestB(t *testing.T) {}`, detected},
 		"an assertion that mentions every alarm": {`package probe
 import ("fmt"; "testing")
 func TestA(t *testing.T) { fmt.Println("panic: test timed out after 1s\n[setup failed]\nsignal: killed"); t.Fatal("build failed") }`, detected},
+		"an assertion after output without a newline": {`package probe
+import ("fmt"; "testing")
+func TestA(t *testing.T) { fmt.Print("no newline"); t.Fatal("wrong") }`, detected},
+		"a pass after output without a newline": {`package probe
+import ("fmt"; "testing")
+func TestA(t *testing.T) { fmt.Print("no newline") }`, survived},
 		"a pass": {`package probe
 import "testing"
 func TestA(t *testing.T) {}`, survived},

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type edit struct {
@@ -223,6 +224,7 @@ func TestMutantsAreDetected(t *testing.T) {
 		}
 	}
 	deadline := stageDeadline(t)
+	proveTheUnmutatedModulePassesEveryMutantRun(t, deadline)
 	for _, candidate := range mutants {
 		t.Run(candidate.name, func(t *testing.T) {
 			t.Parallel()
@@ -265,4 +267,47 @@ func tail(text string) string {
 		return text[len(text)-2000:]
 	}
 	return text
+}
+
+type mutantCommand struct {
+	packagePath string
+	pattern     string
+	tagged      bool
+}
+
+func mutantCommands() []mutantCommand {
+	seen := map[mutantCommand]bool{}
+	var commands []mutantCommand
+	for _, candidate := range mutants {
+		for _, command := range []mutantCommand{{"./" + strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false}, {"./e2e/httpruntime/", candidate.scenario, true}} {
+			if command.packagePath == "./" || command.tagged && command.pattern == "" || seen[command] {
+				continue
+			}
+			seen[command] = true
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
+func proveTheUnmutatedModulePassesEveryMutantRun(t *testing.T, deadline time.Time) {
+	t.Helper()
+	directory := t.TempDir()
+	copyModule(t, directory)
+	if output, err := childRunner.build(directory, deadline); err != nil {
+		t.Fatalf("the unmutated module does not build: %s", output)
+	}
+	t.Run("unmutated", func(t *testing.T) {
+		for _, command := range mutantCommands() {
+			t.Run(command.packagePath+" "+command.pattern, func(t *testing.T) {
+				t.Parallel()
+				if outcome, evidence := childRunner.test(directory, command.packagePath, command.pattern, command.tagged, deadline); outcome != survived {
+					t.Fatalf("this run fails without any mutation, so it cannot prove a mutant: %s", evidence)
+				}
+			})
+		}
+	})
+	if t.Failed() {
+		t.FailNow()
+	}
 }
