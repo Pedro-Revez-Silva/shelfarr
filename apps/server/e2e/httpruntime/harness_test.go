@@ -258,6 +258,11 @@ func startServer(t *testing.T, f fixture, copied runtimeCopy, options serverOpti
 		environment = append(environment, "SECRET_KEY_BASE_FILE="+f.secretFile())
 	}
 	environment = append(environment, options.env...)
+	for _, inherited := range os.Environ() {
+		if strings.HasPrefix(inherited, runMarkerName+"=") {
+			environment = append(environment, inherited)
+		}
+	}
 	executable := binaryPath
 	if options.seam {
 		executable = seamBinaryPath

@@ -23,7 +23,7 @@ case "$(ruby -e 'print RUBY_VERSION')" in
   *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
 esac
 
-step() { printf '\n== %s\n' "$*"; }
+step() { printf '\n== [%ss] %s\n' "$SECONDS" "$*"; }
 
 clean_env() {
   env -i HOME="$HOME" PATH="$PATH" LANG=C.UTF-8 TMPDIR="$work" "$@"
@@ -80,7 +80,8 @@ for pair in current:current-schema upgrade:stable-upgrade; do
 done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"
-env "${fixtures[@]}" go test -tags e2e -count=1 -timeout 150m -parallel 4 -run TestMutantsAreDetected ./e2e/httpruntime/
+mutant_parallel=$(( $(nproc) > 2 ? $(nproc) / 2 : 1 ))
+env "${fixtures[@]}" go test -tags e2e -count=1 -timeout 35m -parallel "$mutant_parallel" -run TestMutantsAreDetected ./e2e/httpruntime/
 
 step "go: the unchanged read-only checker still accepts both bundles"
 go build -o "$work/compat" ./cmd/shelfarr-compat

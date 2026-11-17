@@ -3,15 +3,11 @@
 package httpruntime
 
 import (
-	"bytes"
-	"context"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 type edit struct {
@@ -235,54 +231,25 @@ func TestMutantsAreDetected(t *testing.T) {
 			if err := os.WriteFile(path, []byte(strings.Replace(string(original), candidate.edit.old, candidate.edit.new, 1)), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if build := exec.Command("go", "build", "./..."); true {
-				build.Dir = directory
-				if output, err := build.CombinedOutput(); err != nil {
-					t.Fatalf("the mutant does not compile, which proves nothing: %s", output)
-				}
+			if output, err := childRunner.build(directory); err != nil {
+				t.Fatalf("the mutant does not compile, which proves nothing: %s", output)
 			}
-			var detections []string
+			var steps []mutantStep
 			if candidate.unit != "" {
-				detections = append(detections, runMutantTests(t, directory, "./"+strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false))
+				steps = append(steps, func() (verdict, string) {
+					return childRunner.test(directory, "./"+strings.TrimPrefix(candidate.unit, "./"), candidate.unitRun, false)
+				})
 			}
 			if candidate.scenario != "" {
-				detections = append(detections, runMutantTests(t, directory, "./e2e/httpruntime/", candidate.scenario, true))
+				steps = append(steps, func() (verdict, string) {
+					return childRunner.test(directory, "./e2e/httpruntime/", candidate.scenario, true)
+				})
 			}
-			for _, detected := range detections {
-				if detected != "" {
-					return
-				}
+			if killed, evidence := firstDetection(steps); !killed {
+				t.Fatal(evidence)
 			}
-			t.Fatal("no assertion failed for this mutant")
 		})
 	}
-}
-
-func runMutantTests(t *testing.T, directory, packagePath, scenario string, tagged bool) string {
-	t.Helper()
-	arguments := []string{"test", "-count=1"}
-	if tagged {
-		arguments = append(arguments, "-tags", "e2e")
-	}
-	if scenario != "" {
-		arguments = append(arguments, "-run", scenario)
-	}
-	arguments = append(arguments, packagePath)
-	context, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-	defer cancel()
-	command := exec.CommandContext(context, "go", arguments...)
-	command.Dir = directory
-	var output bytes.Buffer
-	command.Stdout, command.Stderr = &output, &output
-	err := command.Run()
-	text := output.String()
-	if err == nil {
-		return ""
-	}
-	if strings.Contains(text, "build failed") || strings.Contains(text, "[setup failed]") || !strings.Contains(text, "--- FAIL") && !strings.Contains(text, "panic:") {
-		t.Fatalf("the run failed without an assertion failing:\n%s", tail(text))
-	}
-	return "detected"
 }
 
 func tail(text string) string {

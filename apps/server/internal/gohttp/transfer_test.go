@@ -154,6 +154,8 @@ func TestAGrantNeverTouchesOrAdoptsTheCredentialAndNeverMovesReadingState(t *tes
 }
 
 func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
+	shelf := newTransferShelf(t, nil)
+	livetest.Exec(t, shelf.h.path, `INSERT INTO users (id, username, name) VALUES (2, 'bob', 'Bob')`)
 	for name, change := range map[string][2]string{
 		"revoked":         {`UPDATE api_tokens SET revoked_at = '2026-01-01 00:00:00' WHERE id = 1`, `UPDATE api_tokens SET revoked_at = NULL WHERE id = 1`},
 		"expired":         {`UPDATE api_tokens SET expires_at = '2020-01-01 00:00:00' WHERE id = 1`, `UPDATE api_tokens SET expires_at = NULL WHERE id = 1`},
@@ -170,8 +172,6 @@ func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
 		"admin scope too": {`UPDATE api_tokens SET scopes = '["requests:admin"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["requests:admin","library:read"]' WHERE id = 1`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			shelf := newTransferShelf(t, nil)
-			livetest.Exec(t, shelf.h.path, `INSERT INTO users (id, username, name) VALUES (2, 'bob', 'Bob')`)
 			if status, _ := shelf.status(t); status != http.StatusOK {
 				t.Fatalf("baseline %d", status)
 			}
