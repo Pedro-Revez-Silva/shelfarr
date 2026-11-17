@@ -421,7 +421,7 @@ func accountDigest(raw string) string {
 func runnerEnvironment() []string {
 	var inherited []string
 	for _, variable := range os.Environ() {
-		if strings.HasPrefix(variable, runMarkerName+"=") || strings.HasPrefix(variable, "GOMAXPROCS=") {
+		if strings.HasPrefix(variable, "GOMAXPROCS=") {
 			inherited = append(inherited, variable)
 		}
 	}

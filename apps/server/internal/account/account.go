@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/strictjson"
 )
 
 const MaxBcryptCost = 14
@@ -100,21 +100,20 @@ func contains(values []string, wanted string) bool {
 }
 
 func ScopeList(encoded string) ([]string, error) {
-	var parsed any
-	if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
+	parsed, err := strictjson.Parse([]byte(encoded))
+	if err != nil {
 		return []string{}, nil
 	}
 	var items []string
-	switch value := parsed.(type) {
-	case string:
-		items = []string{value}
-	case []any:
-		for _, element := range value {
-			text, ok := element.(string)
-			if !ok {
+	switch parsed.Kind {
+	case strictjson.String:
+		items = []string{parsed.Text}
+	case strictjson.Array:
+		for _, element := range parsed.Items {
+			if element.Kind != strictjson.String {
 				return nil, ErrUnsupportedScopes
 			}
-			items = append(items, text)
+			items = append(items, element.Text)
 		}
 	default:
 		return nil, ErrUnsupportedScopes
@@ -136,25 +135,6 @@ func splitScopes(items []string) []string {
 		}
 	}
 	return scopes
-}
-
-func StoredScopeIncludes(encoded, scope string) bool {
-	var parsed any
-	if json.Unmarshal([]byte(encoded), &parsed) != nil {
-		return false
-	}
-	var items []string
-	switch value := parsed.(type) {
-	case string:
-		items = []string{value}
-	case []any:
-		for _, element := range value {
-			if text, isText := element.(string); isText {
-				items = append(items, text)
-			}
-		}
-	}
-	return contains(splitScopes(items), scope)
 }
 
 func Authenticate(ctx context.Context, directory Directory, authorization string, now time.Time) (*Principal, error) {

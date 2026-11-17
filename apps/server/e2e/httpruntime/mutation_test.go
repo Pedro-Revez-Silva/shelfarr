@@ -160,14 +160,14 @@ var mutants = []mutant{
 	{name: "transfer: the grant query may carry other parameters", file: "internal/transfergrant/transfergrant.go", edit: edit{"value, found := strings.CutPrefix(rawQuery, queryKey)", "_, value, found := strings.Cut(rawQuery, queryKey)"}, unit: "./internal/transfergrant/", scenario: differential},
 	{name: "transfer: a grant opens another book", file: "internal/gohttp/transfer.go", edit: edit{"!ok || claims.BookID != found.id ||", "!ok ||"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 	{name: "transfer: a grant opens another asset", file: "internal/gohttp/transfer.go", edit: edit{"|| claims.AssetID != found.assetID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: a scope list with a non-text element carries no scope", file: "internal/account/account.go", edit: edit{"if text, isText := element.(string); isText {\n\t\t\t\titems = append(items, text)\n\t\t\t}", "text, isText := element.(string)\n\t\t\tif !isText {\n\t\t\t\treturn false\n\t\t\t}\n\t\t\titems = append(items, text)"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
+	{name: "transfer: a scope array holding something other than text is approximated", file: "internal/account/account.go", edit: edit{"if element.Kind != strictjson.String {", "if false && element.Kind != strictjson.String {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: a refused media pool answers a grant in the open", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeTransfer {\n\t\tsetTransferPrivacy(w.Header())\n\t}\n", ""}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: a mint does not check that the asset is current when it opens it", file: "internal/gohttp/transfer.go", edit: edit{"\tfile, ok := a.openAsset(w, result, *book, *chosen)\n\tif !ok {\n\t\treturn\n\t}\n\tfile.Close()\n", ""}, scenario: "TestAMintRechecks"},
 	{name: "transfer: a grant opens for a token that changed owner", file: "internal/bearer/bearer.go", edit: edit{"|| token.UserID.Int64 != claims.UserID {", "{"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: a deleted account's grant still opens", file: "internal/bearer/bearer.go", edit: edit{"user == nil || user.Deleted {\n\t\treturn false, err\n\t}\n\treturn account", "user == nil {\n\t\treturn false, err\n\t}\n\treturn account"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: a grant outlives the loss of library:read", file: "internal/bearer/bearer.go", edit: edit{"return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil", "return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope) || true, nil"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: a use records the credential as used", file: "internal/bearer/bearer.go", edit: edit{"return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil", "a.DB.TouchToken(ctx, token.ID, a.Now())\n\treturn account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
-	{name: "transfer: a use adopts the replacement credential", file: "internal/bearer/bearer.go", edit: edit{"return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil", "a.DB.RetireReplaced(ctx, *token, a.Now)\n\treturn account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil"}, scenario: differential},
+	{name: "transfer: a deleted account's grant still opens", file: "internal/bearer/bearer.go", edit: edit{"user == nil || user.Deleted {", "user == nil {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a grant outlives the loss of library:read", file: "internal/bearer/bearer.go", edit: edit{"return account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil", "return account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope) || true, nil"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a use records the credential as used", file: "internal/bearer/bearer.go", edit: edit{"return account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil", "a.DB.TouchToken(ctx, token.ID, a.Now())\n\treturn account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
+	{name: "transfer: a use adopts the replacement credential", file: "internal/bearer/bearer.go", edit: edit{"return account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil", "a.DB.RetireReplaced(ctx, *token, a.Now)\n\treturn account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil"}, scenario: differential},
 	{name: "transfer: the route answers POST", file: "internal/gohttp/routes.go", edit: edit{"if method != http.MethodGet && method != http.MethodHead {\n\t\treturn route{kind: routeNone}", "if method != http.MethodGet && method != http.MethodHead && method != http.MethodPost {\n\t\treturn route{kind: routeNone}"}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
 	{name: "transfer: a transfer is not admitted as a media stream", file: "internal/gohttp/app.go", edit: edit{"if found.kind == routeAsset || found.kind == routeTransfer {", "if found.kind == routeAsset {"}, unit: "./internal/gohttp/", unitRun: transferUnitTests},
 	{name: "transfer: an answer is cacheable", file: "internal/gohttp/transfer.go", edit: edit{`header.Set("Cache-Control", "private, no-store")`, `header.Set("Cache-Control", "private")`}, unit: "./internal/gohttp/", unitRun: transferUnitTests, scenario: differential},
@@ -215,8 +215,14 @@ func copyModule(t *testing.T, destination string) {
 }
 
 func TestMutantsAreDetected(t *testing.T) {
-	fixtures(t)
-	deadline, _ := t.Deadline()
+	for _, f := range fixtures(t) {
+		for _, required := range []string{filepath.Join(f.dir, f.doc.Database), f.secretFile(), f.doc.BundleMediaRoot, f.doc.ExtraMediaRoot} {
+			if _, err := os.Stat(required); err != nil {
+				t.Fatalf("the %s fixture is incomplete, so no mutant run could prove anything", f.name)
+			}
+		}
+	}
+	deadline := stageDeadline(t)
 	for _, candidate := range mutants {
 		t.Run(candidate.name, func(t *testing.T) {
 			t.Parallel()

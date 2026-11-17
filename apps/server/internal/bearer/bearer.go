@@ -59,5 +59,9 @@ func (a Authenticator) AuthorizeGrant(ctx context.Context, claims transfergrant.
 	if err != nil || user == nil || user.Deleted {
 		return false, err
 	}
-	return account.StoredScopeIncludes(token.Scopes, transfergrant.Scope), nil
+	scopes, err := account.ScopeList(token.Scopes)
+	if err != nil {
+		return false, err
+	}
+	return account.Principal{Scopes: scopes}.HasScope(transfergrant.Scope), nil
 }

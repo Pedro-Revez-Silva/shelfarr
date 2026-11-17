@@ -166,10 +166,8 @@ func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
 		"deleted owner":   {`UPDATE users SET deleted_at = '2026-01-01 00:00:00' WHERE id = 1`, `UPDATE users SET deleted_at = NULL WHERE id = 1`},
 		"missing owner":   {`UPDATE api_tokens SET user_id = 99 WHERE id = 1`, `UPDATE api_tokens SET user_id = 1 WHERE id = 1`},
 		"deleted token":   {`DELETE FROM api_tokens WHERE id = 1`, `INSERT INTO api_tokens (id, user_id, token_digest, scopes) VALUES (1, 1, 'restored', '["library:read"]')`},
+		"surrogate scope": {`UPDATE api_tokens SET scopes = '["\uD800", "library:read"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
 		"spaced scope":    {`UPDATE api_tokens SET scopes = '["progress:write", "search:read"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '"search:read library:read"' WHERE id = 1`},
-		"scope null":      {`UPDATE api_tokens SET scopes = 'null' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
-		"scope with null": {`UPDATE api_tokens SET scopes = '[null, "progress:write"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '[null, 5, "library:read"]' WHERE id = 1`},
-		"scope object":    {`UPDATE api_tokens SET scopes = '{"library:read":true}' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["library:read"]' WHERE id = 1`},
 		"admin scope too": {`UPDATE api_tokens SET scopes = '["requests:admin"]' WHERE id = 1`, `UPDATE api_tokens SET scopes = '["requests:admin","library:read"]' WHERE id = 1`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -188,6 +186,14 @@ func TestEveryUseRechecksTheLiveTokenOwnerAndScope(t *testing.T) {
 				t.Fatalf("the restored state was not seen: %d", status)
 			}
 		})
+	}
+	for _, unmodelled := range []string{`null`, `{"library:read":true}`, `[null, "library:read"]`, `[1e400, "library:read"]`} {
+		livetest.Exec(t, shelf.h.path, `UPDATE api_tokens SET scopes = ? WHERE id = 1`, unmodelled)
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			if got := shelf.fetch(method, nil); got.Code != http.StatusNotImplemented || method == http.MethodGet && errorCode(t, got) != "unsupported_stored_value" {
+				t.Errorf("%s scopes %s: %d", method, unmodelled, got.Code)
+			}
+		}
 	}
 }
 

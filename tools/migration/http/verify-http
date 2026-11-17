@@ -23,8 +23,9 @@ case "$(ruby -e 'print RUBY_VERSION')" in
   *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
 esac
 
-job_budget_seconds=3300
+job_budget_seconds=3000
 after_mutants_seconds=720
+mutant_build_seconds=120
 step() { printf '\n== [%ss] %s\n' "$SECONDS" "$*"; }
 
 clean_env() {
@@ -83,7 +84,7 @@ done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"
 mutant_parallel=$(( $(nproc) > 2 ? $(nproc) / 2 : 1 ))
-mutant_seconds=$(( job_budget_seconds - SECONDS - after_mutants_seconds ))
+mutant_seconds=$(( job_budget_seconds - SECONDS - after_mutants_seconds - mutant_build_seconds ))
 if [ "$mutant_seconds" -lt 600 ]; then
   echo "only ${mutant_seconds}s of the ${job_budget_seconds}s job budget are left for the mutants" >&2
   exit 1

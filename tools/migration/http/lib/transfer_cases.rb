@@ -187,9 +187,11 @@ module Migration
           sql_step("transfer-string-scope-sql", "UPDATE api_tokens SET scopes = '\"search:read library:read\"' WHERE id = #{id.call('xfer-string-scope')}")
           fetch_grant("transfer-string-scope-after", url, at: after(90))
           sql_step("transfer-null-element-scope-sql", "UPDATE api_tokens SET scopes = '[null, 5, \"library:read\"]' WHERE id = #{id.call('xfer-string-scope')}")
-          fetch_grant("transfer-null-element-scope-after", url, at: after(100))
+          fetch_grant("transfer-null-element-scope-after", url, at: after(100), **UNMODELLED_SCOPES)
           sql_step("transfer-null-element-without-scope-sql", "UPDATE api_tokens SET scopes = '[null, \"progress:write\"]' WHERE id = #{id.call('xfer-string-scope')}")
-          fetch_grant("transfer-null-element-without-scope-after", url, at: after(110))
+          fetch_grant("transfer-null-element-without-scope-after", url, at: after(110), **UNMODELLED_SCOPES)
+          sql_step("transfer-unparseable-scope-sql", "UPDATE api_tokens SET scopes = '[\"\\uD800\", \"library:read\"]' WHERE id = #{id.call('xfer-string-scope')}")
+          fetch_grant("transfer-unparseable-scope-after", url, at: after(115))
           sql_step("transfer-garbage-scope-sql", "UPDATE api_tokens SET scopes = 'not json' WHERE id = #{id.call('xfer-string-scope')}")
           fetch_grant("transfer-garbage-scope-after", url, at: after(120))
         end
@@ -261,6 +263,7 @@ module Migration
         fetch_grant("transfer-binding-string-scopes-fetch", @cases.last["minted_url"])
       end
 
+      UNMODELLED_SCOPES = { go: { "status" => 501, "code" => "unsupported_stored_value" } }.freeze
       MALFORMED_QUERY = { go: { "status" => 401, "code" => "invalid_grant" } }.freeze
 
       def transfer_query_grammar

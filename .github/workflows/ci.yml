@@ -66,6 +66,7 @@ jobs:
           go-version-file: apps/server/go.mod
           cache-dependency-path: apps/server/go.sum
       - name: Verify Go HTTP parity and fault handling
+        timeout-minutes: 50
         env:
           SHELFARR_MIGRATION_SCRATCH: ${{ runner.temp }}/shelfarr-go-http
         run: tools/migration/http/verify-http

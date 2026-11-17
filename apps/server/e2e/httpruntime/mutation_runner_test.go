@@ -5,16 +5,18 @@ package httpruntime
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type verdict int
@@ -35,31 +37,67 @@ const (
 	mutantRunTimeout = 10 * time.Minute
 	cleanupMargin    = 30 * time.Second
 	alarmMargin      = 20 * time.Second
-	runMarkerName    = "SHELFARR_MUTANT_RUN"
+	frame            = "\x16"
 )
 
 var (
-	childRunner = mutantRunner{timeout: mutantRunTimeout, budget: mutantRunTimeout + alarmMargin, shortest: 30 * time.Second}
-	runCounter  atomic.Int64
+	childRunner    = mutantRunner{timeout: mutantRunTimeout, budget: mutantRunTimeout + alarmMargin, shortest: 30 * time.Second}
+	processStarted = time.Now()
 )
 
-func sweepRun(marker string) {
-	entries, _ := os.ReadDir("/proc")
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid == os.Getpid() {
-			continue
+func stageDeadline(t *testing.T) time.Time {
+	deadline, _ := t.Deadline()
+	if timeout, ok := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration); ok && timeout > 0 {
+		if started := processStarted.Add(timeout); deadline.IsZero() || started.Before(deadline) {
+			deadline = started
 		}
-		environment, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
-		if err != nil {
-			continue
-		}
-		for _, variable := range bytes.Split(environment, []byte{0}) {
-			if string(variable) == marker {
-				syscall.Kill(pid, syscall.SIGKILL)
-				break
+	}
+	return deadline
+}
+
+func sessionOf(pid int) (int, bool) {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0, false
+	}
+	end := bytes.LastIndexByte(stat, ')')
+	if end < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	if len(fields) < 4 || fields[0] == "Z" {
+		return 0, false
+	}
+	session, err := strconv.Atoi(fields[3])
+	return session, err == nil
+}
+
+func killSession(session int) {
+	for round := 0; round < 5; round++ {
+		entries, _ := os.ReadDir("/proc")
+		found := false
+		for _, entry := range entries {
+			pid, err := strconv.Atoi(entry.Name())
+			if err != nil || pid == os.Getpid() {
+				continue
 			}
+			if member, ok := sessionOf(pid); !ok || member != session {
+				continue
+			}
+			descriptor, err := unix.PidfdOpen(pid, 0)
+			if err != nil {
+				continue
+			}
+			if member, ok := sessionOf(pid); ok && member == session {
+				unix.PidfdSendSignal(descriptor, unix.SIGKILL, nil, 0)
+				found = true
+			}
+			unix.Close(descriptor)
 		}
+		if !found {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -72,24 +110,32 @@ func (r mutantRunner) limits(deadline time.Time) (time.Duration, time.Duration, 
 	return timeout, budget, timeout >= r.shortest
 }
 
-func (r mutantRunner) run(directory string, budget time.Duration, arguments ...string) (string, error, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-	marker := runMarkerName + "=" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(runCounter.Add(1), 10)
-	command := exec.CommandContext(ctx, "go", arguments...)
+type runResult struct {
+	output    string
+	exitCode  int
+	err       error
+	exhausted bool
+}
+
+func runInSession(ctx context.Context, directory, program string, arguments ...string) runResult {
+	command := exec.CommandContext(ctx, program, arguments...)
 	command.Dir = directory
-	command.Env = append(os.Environ(), "GOMAXPROCS=4", marker)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Env = append(os.Environ(), "GOMAXPROCS=4")
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
 	command.WaitDelay = 10 * time.Second
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	err := command.Run()
 	if command.Process != nil {
-		syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		killSession(command.Process.Pid)
 	}
-	sweepRun(marker)
-	return output.String(), err, ctx.Err()
+	result := runResult{output: output.String(), exitCode: -1, err: err, exhausted: ctx.Err() != nil}
+	var exit *exec.ExitError
+	if command.ProcessState != nil && (err == nil || errors.As(err, &exit)) {
+		result.exitCode = command.ProcessState.ExitCode()
+	}
+	return result
 }
 
 func (r mutantRunner) build(directory string, deadline time.Time) (string, error) {
@@ -97,11 +143,13 @@ func (r mutantRunner) build(directory string, deadline time.Time) (string, error
 	if !enough {
 		return "no time is left in the stage for the build", context.DeadlineExceeded
 	}
-	text, err, exhausted := r.run(directory, budget, "build", "-p", "2", "./...")
-	if exhausted != nil {
-		return "the build exhausted its budget", exhausted
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	result := runInSession(ctx, directory, "go", "build", "-p", "2", "./...")
+	if result.exhausted {
+		return "the build exhausted its budget", context.DeadlineExceeded
 	}
-	return text, err
+	return result.output, result.err
 }
 
 func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, deadline time.Time) (verdict, string) {
@@ -109,88 +157,55 @@ func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, 
 	if !enough {
 		return unproven, "no time is left in the stage for this run"
 	}
-	arguments := []string{"test", "-json", "-count=1", "-p", "2", "-timeout", timeout.String()}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	binary := filepath.Join(directory, ".mutant-tests", strconv.FormatInt(time.Now().UnixNano(), 36)+".test")
+	compile := []string{"test", "-c", "-p", "2", "-o", binary}
 	if tagged {
-		arguments = append(arguments, "-tags", "e2e")
+		compile = append(compile, "-tags", "e2e")
 	}
+	built := runInSession(ctx, directory, "go", append(compile, packagePath)...)
+	switch {
+	case built.exhausted:
+		return unproven, "the test build exhausted its budget:\n" + tail(built.output)
+	case built.err != nil:
+		return unproven, "the tests do not build:\n" + tail(built.output)
+	}
+	if _, err := os.Stat(binary); err != nil {
+		return unproven, "the package has no tests to run"
+	}
+	arguments := []string{"-test.v=test2json", "-test.count=1", "-test.timeout=" + timeout.String()}
 	if pattern != "" {
-		arguments = append(arguments, "-run", pattern)
+		arguments = append(arguments, "-test.run="+pattern)
 	}
-	arguments = append(arguments, packagePath)
-	text, err, exhausted := r.run(directory, budget, arguments...)
-	return classifyMutantRun(text, err, exhausted)
+	ran := runInSession(ctx, filepath.Join(directory, packagePath), binary, arguments...)
+	return classifyMutantRun(ran)
 }
 
-type testEvent struct {
-	Action string
-	Test   string
-	Output string
-}
-
-type runSummary struct {
-	failedTests int
-	alarm       bool
-	abnormal    bool
-	output      strings.Builder
-}
-
-func summarise(text string) *runSummary {
-	summary := &runSummary{}
-	started, finished := map[string]bool{}, map[string]bool{}
-	for _, line := range strings.Split(text, "\n") {
-		var event testEvent
-		if json.Unmarshal([]byte(line), &event) != nil || event.Action == "" {
-			if strings.TrimSpace(line) != "" {
-				summary.output.WriteString(line + "\n")
-			}
+func classifyMutantRun(ran runResult) (verdict, string) {
+	failures, completed := 0, false
+	for _, line := range strings.Split(ran.output, "\n") {
+		if !strings.HasPrefix(line, frame) {
 			continue
 		}
-		switch event.Action {
-		case "build-fail":
-			summary.abnormal = true
-		case "run":
-			started[event.Test] = true
-		case "pass", "skip":
-			finished[event.Test] = true
-		case "fail":
-			finished[event.Test] = true
-			if event.Test != "" && started[event.Test] {
-				summary.failedTests++
-			}
-		case "output", "build-output":
-			summary.output.WriteString(event.Output)
-			if strings.HasPrefix(event.Output, "panic: test timed out after") {
-				summary.alarm = true
-			}
-			if event.Test == "" && (strings.Contains(event.Output, "[setup failed]") || strings.Contains(event.Output, "[build failed]")) {
-				summary.abnormal = true
-			}
+		completed = false
+		switch body := strings.TrimPrefix(line, frame); {
+		case strings.HasPrefix(body, "--- FAIL: "):
+			failures++
+		case body == "FAIL" || body == "PASS":
+			completed = true
 		}
 	}
-	for test := range started {
-		if !finished[test] {
-			summary.abnormal = true
-		}
-	}
-	return summary
-}
-
-func classifyMutantRun(text string, err, exhausted error) (verdict, string) {
-	summary := summarise(text)
-	evidence := tail(summary.output.String())
+	evidence := tail(ran.output)
 	switch {
-	case exhausted != nil:
+	case ran.exhausted:
 		return unproven, "the run exhausted its budget and was cancelled:\n" + evidence
-	case summary.alarm:
-		return unproven, "a test hit the Go timeout, which proves nothing:\n" + evidence
-	case summary.abnormal:
-		return unproven, "the run did not build, set up or terminate normally:\n" + evidence
-	case err == nil && summary.failedTests == 0:
+	case ran.exitCode == 0 && completed && failures == 0:
 		return survived, ""
-	case err != nil && summary.failedTests > 0:
+	case ran.exitCode == 1 && completed && failures > 0:
 		return detected, ""
 	}
-	return unproven, "the run failed without an assertion failing:\n" + evidence
+	return unproven, "the run did not finish with a failed assertion (exit " + strconv.Itoa(ran.exitCode) + "):\n" + evidence
 }
 
 type mutantStep func() (verdict, string)
@@ -246,9 +261,31 @@ func writeProbeModule(t *testing.T, test string) string {
 	return directory
 }
 
-func TestAMutantRunNeverCountsATimeoutOrACancellationAsADetection(t *testing.T) {
-	runner := mutantRunner{timeout: 2 * time.Second, budget: 60 * time.Second}
+func alive(pid int) bool {
+	_, ok := sessionOf(pid)
+	return ok
+}
+
+func childPid(t *testing.T, pidFile string) int {
+	t.Helper()
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal("the child of the probe was never started")
+	}
+	pid, _ := strconv.Atoi(string(data))
+	return pid
+}
+
+const startChild = `
+	child := exec.Command("sleep", "300")
+	child.Start()
+	os.WriteFile(PIDFILE, []byte(strconv.Itoa(child.Process.Pid)), 0o600)
+`
+
+func TestAMutantIsKilledOnlyByAnAssertionInARunThatFinishedNormally(t *testing.T) {
+	runner := mutantRunner{timeout: 3 * time.Second, budget: 60 * time.Second}
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	child := strings.ReplaceAll(startChild, "PIDFILE", strconv.Quote(pidFile))
 	cases := map[string]struct {
 		source string
 		want   verdict
@@ -256,12 +293,19 @@ func TestAMutantRunNeverCountsATimeoutOrACancellationAsADetection(t *testing.T) 
 		"an assertion failure": {`package probe
 import "testing"
 func TestA(t *testing.T) { t.Fatal("wrong") }`, detected},
-		"a panic": {`package probe
+		"a failing parallel subtest beside passing tests": {`package probe
 import "testing"
-func TestA(t *testing.T) { panic("boom") }`, detected},
+func TestA(t *testing.T) { t.Run("sub", func(t *testing.T) { t.Parallel(); t.Error("wrong") }) }
+func TestB(t *testing.T) {}`, detected},
+		"an assertion that mentions every alarm": {`package probe
+import ("fmt"; "testing")
+func TestA(t *testing.T) { fmt.Println("panic: test timed out after 1s\n[setup failed]\nsignal: killed"); t.Fatal("build failed") }`, detected},
 		"a pass": {`package probe
 import "testing"
 func TestA(t *testing.T) {}`, survived},
+		"a panic without an assertion": {`package probe
+import "testing"
+func TestA(t *testing.T) { panic("boom") }`, unproven},
 		"a hang that meets the Go alarm": {`package probe
 import "testing"
 func TestA(t *testing.T) { select {} }`, unproven},
@@ -272,17 +316,14 @@ func TestB(t *testing.T) { select {} }`, unproven},
 		"a compile error": {`package probe
 import "testing"
 func TestA(t *testing.T) { undefined() }`, unproven},
-		"an assertion that mentions a failed build": {`package probe
-import "testing"
-func TestA(t *testing.T) { t.Fatal("build failed [setup failed] panic: test timed out after") }`, detected},
-		"a TestMain that exits after printing a panic": {`package probe
+		"a TestMain that fakes a failure and exits": {`package probe
 import ("fmt"; "os"; "testing")
-func TestMain(m *testing.M) { fmt.Println("panic: nothing ran"); os.Exit(1) }
+func TestMain(m *testing.M) { fmt.Println("=== RUN   TestA\n--- FAIL: TestA (0.00s)\nFAIL"); os.Exit(1) }
 func TestA(t *testing.T) {}`, unproven},
-		"a TestMain that prints a failure line and exits": {`package probe
-import ("fmt"; "os"; "testing")
-func TestMain(m *testing.M) { fmt.Println("--- FAIL: TestA (0.00s)"); os.Exit(1) }
-func TestA(t *testing.T) {}`, unproven},
+		"a TestMain that exits with another status after the tests": {`package probe
+import ("os"; "testing")
+func TestMain(m *testing.M) { m.Run(); os.Exit(3) }
+func TestA(t *testing.T) { t.Error("wrong") }`, unproven},
 		"a panic before any test runs": {`package probe
 import "testing"
 var _ = func() int { panic("init") }()
@@ -291,13 +332,13 @@ func TestA(t *testing.T) {}`, unproven},
 import ("os"; "syscall"; "testing")
 func TestA(t *testing.T) { t.Error("wrong") }
 func TestB(t *testing.T) { syscall.Kill(os.Getpid(), syscall.SIGKILL) }`, unproven},
+		"a process killed after its last test": {`package probe
+import ("os"; "syscall"; "testing")
+func TestMain(m *testing.M) { m.Run(); syscall.Kill(os.Getpid(), syscall.SIGKILL) }
+func TestA(t *testing.T) { t.Error("wrong") }`, unproven},
 		"a hang with a surviving child": {`package probe
 import ("os"; "os/exec"; "strconv"; "testing")
-func TestA(t *testing.T) {
-	child := exec.Command("sleep", "300")
-	child.Start()
-	os.WriteFile("` + pidFile + `", []byte(strconv.Itoa(child.Process.Pid)), 0o600)
-	select {}
+func TestA(t *testing.T) {` + child + `	select {}
 }`, unproven},
 	}
 	for name, test := range cases {
@@ -306,43 +347,29 @@ func TestA(t *testing.T) {
 			t.Errorf("%s: verdict %d, want %d\n%s", name, got, test.want, evidence)
 		}
 	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal("the child of the hanging test was never started")
-	}
-	pid, _ := strconv.Atoi(string(data))
-	if syscall.Kill(pid, 0) == nil {
+	if pid := childPid(t, pidFile); alive(pid) {
 		syscall.Kill(pid, syscall.SIGKILL)
 		t.Fatal("a process started by a timed-out mutant run survived it")
 	}
 }
 
-func TestAMutantRunThatExhaustsItsBudgetIsCancelledWithItsProcessGroup(t *testing.T) {
-	runner := mutantRunner{timeout: time.Hour, budget: alarmMargin + 2*time.Second}
+func TestAMutantRunThatExhaustsItsBudgetIsCancelledWithItsWholeSession(t *testing.T) {
+	runner := mutantRunner{timeout: time.Hour, budget: alarmMargin + 5*time.Second}
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	directory := writeProbeModule(t, `package probe
 import ("os"; "os/exec"; "strconv"; "testing"; "time")
 func TestMain(m *testing.M) {
-	_ = m
-	child := exec.Command("sleep", "300")
-	child.Start()
-	os.WriteFile("`+pidFile+`", []byte(strconv.Itoa(child.Process.Pid)), 0o600)
-	time.Sleep(time.Hour)
+	_ = m`+strings.ReplaceAll(startChild, "PIDFILE", strconv.Quote(pidFile))+`	time.Sleep(time.Hour)
 }
 func TestA(t *testing.T) {}`)
 	started := time.Now()
 	got, evidence := runner.test(directory, ".", "", false, time.Time{})
-	if got != unproven || !strings.Contains(evidence, "exhausted its budget") || time.Since(started) > alarmMargin+30*time.Second {
+	if got != unproven || !strings.Contains(evidence, "exhausted its budget") || time.Since(started) > alarmMargin+40*time.Second {
 		t.Fatalf("verdict %d after %s: %s", got, time.Since(started), evidence)
 	}
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal("the child of the hanging test was never started")
-	}
-	pid, _ := strconv.Atoi(string(data))
-	if syscall.Kill(pid, 0) == nil {
+	if pid := childPid(t, pidFile); alive(pid) {
 		syscall.Kill(pid, syscall.SIGKILL)
-		t.Fatal("cancelling a mutant run left its process group running")
+		t.Fatal("cancelling a mutant run left a process of its session running")
 	}
 }
 
@@ -370,29 +397,45 @@ func TestAMutantRunIsBoundedByWhatIsLeftOfTheStage(t *testing.T) {
 	if verdict, evidence := runner.test(t.TempDir(), ".", "", false, time.Now().Add(time.Minute)); verdict != unproven || !strings.Contains(evidence, "no time is left") {
 		t.Fatalf("a run was started without the time to finish it: %d %s", verdict, evidence)
 	}
+	if test, _ := t.Deadline(); !test.IsZero() && stageDeadline(t).After(test) {
+		t.Fatalf("the stage deadline %v is later than the test deadline %v", stageDeadline(t), test)
+	}
 }
 
-func TestTheSweepKillsOnlyProcessesThatCarryTheExactRunMarker(t *testing.T) {
-	marker := runMarkerName + "=" + strconv.Itoa(os.Getpid()) + "-sweep"
-	start := func(variable string) *exec.Cmd {
-		command := exec.Command("sleep", "60")
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), variable}
-		if err := command.Start(); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { command.Process.Kill(); command.Wait() })
-		return command
+func TestTheSweepKillsEveryProcessOfTheRunsSessionAndNothingElse(t *testing.T) {
+	leader := exec.Command("sh", "-c", "sleep 60 & echo $!; wait")
+	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
 	}
-	owned := start(marker)
-	unrelated := start("UNRELATED=" + marker)
-	longer := start(marker + "0")
-	sweepRun(marker)
-	if state, _ := owned.Process.Wait(); state == nil || state.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
-		t.Fatal("the process that carries the marker survived the sweep")
+	leader.Stdout = writer
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
 	}
-	for name, command := range map[string]*exec.Cmd{"a variable ending in the marker": unrelated, "a longer marker": longer} {
-		if err := command.Process.Signal(syscall.Signal(0)); err != nil {
-			t.Errorf("%s was killed: %v", name, err)
-		}
+	writer.Close()
+	outsider := exec.Command("sleep", "60")
+	outsider.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := outsider.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		outsider.Process.Kill()
+		outsider.Wait()
+	})
+	line := make([]byte, 32)
+	count, _ := reader.Read(line)
+	member, _ := strconv.Atoi(strings.TrimSpace(string(line[:count])))
+	if member == 0 {
+		t.Fatal("the session member was never started")
+	}
+	killSession(leader.Process.Pid)
+	leader.Wait()
+	if alive(member) {
+		syscall.Kill(member, syscall.SIGKILL)
+		t.Fatal("a process of the session survived the sweep")
+	}
+	if !alive(outsider.Process.Pid) {
+		t.Fatal("the sweep killed a process of another session")
 	}
 }

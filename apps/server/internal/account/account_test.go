@@ -160,15 +160,20 @@ func TestPasswordMatchesRefusesCostsAboveTheCeilingWithoutDoingTheWork(t *testin
 	}
 }
 
-func TestAStoredScopeIsFoundOnlyAmongTheTextsRailsNormalises(t *testing.T) {
-	for encoded, want := range map[string]bool{
-		`["library:read"]`: true, `"library:read"`: true, `"search:read library:read"`: true, `["search:read,library:read"]`: true,
-		`[null, "library:read"]`: true, `[5, true, "library:read"]`: true, `[{"a": 1}, "library:read"]`: true,
-		`null`: false, `[]`: false, `{"library:read": true}`: false, `[["library:read"]]`: false, `5`: false, `not json`: false,
-		`["progress:write"]`: false, `["library:readx"]`: false, `["LIBRARY:READ"]`: false,
+func TestScopesThatRailsCannotParseAreEmptyAndScopesThisRuntimeDoesNotModelAreRefused(t *testing.T) {
+	deep := strings.Repeat("[", 101) + strings.Repeat("]", 101)
+	for encoded, want := range map[string][]string{
+		`["\uD800", "library:read"]`: {}, `[` + deep + `, "library:read"]`: {}, `not json`: {}, `["library:read",]`: {},
+		`"search:read library:read"`: {"search:read", "library:read"}, `["a,b", "b c"]`: {"a", "b", "c"},
 	} {
-		if got := StoredScopeIncludes(encoded, "library:read"); got != want {
-			t.Errorf("%s: %v", encoded, got)
+		got, err := ScopeList(encoded)
+		if err != nil || strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Errorf("%.40s: %v %v", encoded, got, err)
+		}
+	}
+	for _, encoded := range []string{`null`, `5`, `{"library:read": true}`, `[null, "library:read"]`, `[1e400, "library:read"]`, `[["library:read"]]`} {
+		if _, err := ScopeList(encoded); !errors.Is(err, ErrUnsupportedScopes) {
+			t.Errorf("%s was not refused: %v", encoded, err)
 		}
 	}
 }

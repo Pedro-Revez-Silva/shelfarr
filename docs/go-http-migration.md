@@ -155,7 +155,7 @@ allocated from a declared size; the input is bounded before it is decoded.
 ### Who may use a grant
 
 Every use re-reads `api_tokens` and `users`: the token `t` must exist, be unrevoked and unexpired at the moment of use, belong
-to user `u`, whose row must exist and not be soft-deleted, and still carry `library:read`, read as Rails normalises the column: the text of a JSON string or of the string elements of a JSON array, split on commas and whitespace (so `[null, "library:read"]` still carries it, while `null`, an object or a nested array carries nothing and the grant is `401`). Nothing is cached, so a revocation,
+to user `u`, whose row must exist and not be soft-deleted, and still carry `library:read`, read exactly as for the bearer: a JSON string or an array of strings, split on commas and whitespace; a column Rails cannot parse either (a lone surrogate escape, nesting beyond 100 levels) carries no scope, so the grant is `401`, and any other stored form (`null`, a number, an object, an array holding something other than strings) is `501 unsupported_stored_value`, never a delivery (see the deliberate differences below). Nothing is cached, so a revocation,
 an expiry, a lost scope, a changed or deleted owner or a deleted token takes effect on the next request and restoring the row
 revives the grant. The grant must name the same book and asset as the path. It opens only that book's exact asset
 generation, with `GET` or `HEAD`; it is not a credential anywhere else (every other route, including the mint, ignores a
@@ -227,9 +227,10 @@ Rolling back to Rails needs no migration: grants in flight keep working, and the
    check, like every other body in this runtime (documented difference 7). Only `application/json` is validated (`json.Valid`, which
    accepts and rejects the same documents as Rails' parser for ordinary input); other media types are ignored.
 3. **Paths.** The URL is root-relative with no `SCRIPT_NAME` prefix, as `content_url` in this runtime; format suffixes (`.json`) are `404`.
-4. **Strict claims.** Rails would accept a claim `"t":"5"` or `5.0` (ActiveRecord casts it) or extra claims; only a holder of the key can
+4. **Unmodelled scope columns.** Rails normalises any JSON in `api_tokens.scopes` (`[null, "library:read"]` and `{"library:read,x":1}` carry `library:read` there); this runtime models only strings and arrays of strings, for grants exactly as for the bearer, and answers anything else `501 unsupported_stored_value` instead of approximating Rails' normalisation. No scope list Rails or this runtime writes takes that form.
+5. **Strict claims.** Rails would accept a claim `"t":"5"` or `5.0` (ActiveRecord casts it) or extra claims; only a holder of the key can
    write one, neither Rails nor Go ever does, and Go refuses them.
-5. **Error bodies and headers.** Rails renders an exception page for its `404`s and answers a grant-like malformed query from a
+6. **Error bodies and headers.** Rails renders an exception page for its `404`s and answers a grant-like malformed query from a
    middleware with fewer headers; the status code and the JSON `error` code are the compared contract, as in difference 2 of the
    general list below.
 
@@ -884,10 +885,10 @@ executable:
   bytes, carries the same claims and dies at the same moment, and a private library whose file Go saw replaced and whose book Go saw
   removed gives Rails the same `410` and `404`;
 * transfer grants against the untagged shipped executable at real time: a Rails-minted grant served and served again after a restart,
-  Go grants surviving a restart and refused under another secret, live revocation and restoration, an aborted client returning its slot,
-  stalled clients bounded and concurrent transfers during a revocation; and against the build with the clock and fault seams: the expiry
-  boundary to the microsecond, an in-flight transfer finishing after a revocation while the next one is refused, an injected panic and
-  hostile queries leaving no grant in the log, and a mint whose file is replaced between listing and opening;
+  Go grants surviving a restart and refused under another secret, live revocation and restoration, stalled clients bounded and
+  concurrent transfers during a revocation; and against the build with the clock and fault seams: the expiry boundary to the
+  microsecond, an in-flight transfer finishing after a revocation while the next one is refused, an aborted client returning its slot,
+  an injected panic and hostile queries leaving no grant in the log, and a mint whose file is replaced between listing and opening;
 * faults: generated EPUB fetched intact and generated audio seeked, replaced, rewritten, deleted and
   symbolic-link-swapped assets, traversal attempts, client disconnect, stalled clients with a live
   catalogue, busy SQLite, live WAL commits and external revocation, shutdown during a transfer,
@@ -912,7 +913,7 @@ executable:
   times, isolation, locator comparison, status independence, future tolerance, traversal, version
   range, asset identity, body size, body deadline, content type, conflict and malformed-body answers, and for fixed-layout
   files: format negotiation and cursor identity, attachment and document policy, PDF header and size boundaries, identity
-  re-checks, every ZIP refusal, page limits, natural order and Unicode folding, reading-order guards and page-place validation, and for transfer grants: expiry boundary and millisecond truncation, purpose, salt, random nonce, claim types, lifetime, grammar, book and asset binding, live revocation, scope, owner and deleted-user rechecks, no touch and no adoption on use, verb routing, stream admission, privacy headers, mint body bounds and the asset recheck when the mint opens the file), each of which must fail an assertion, and each must compile. A mutant counts as killed only when `go test -json` reports a test that started and then failed; a run that hits the Go test alarm, leaves a started test unfinished (a killed or exiting process), fails to build or set up, exhausts its own budget or has too little of the stage left to finish never counts. Every run is bounded (`-p 2`, `GOMAXPROCS=4` for the go command, its tests and the servers they start, its own process group), ends before the stage alarm, and afterwards every process that carries its exact run marker is killed. A unit assertion that kills a mutant ends it before its scenario runs. The stage runs `nproc / 2` mutants at a time within what is left of a 55 minute budget for the whole script after reserving the checks that follow it, so the 60 minute CI job never cuts it off silently.
+  re-checks, every ZIP refusal, page limits, natural order and Unicode folding, reading-order guards and page-place validation, and for transfer grants: expiry boundary and millisecond truncation, purpose, salt, random nonce, claim types, lifetime, grammar, book and asset binding, live revocation, scope, owner and deleted-user rechecks, no touch and no adoption on use, verb routing, stream admission, privacy headers, mint body bounds and the asset recheck when the mint opens the file), each of which must fail an assertion, and each must compile. Each mutant run compiles its test binary (`go test -c -p 2`) and runs it directly; it counts as a kill only when that binary exits with status 1 after `testing` itself reported a failed test and its final `FAIL` line. A run that hits the Go test alarm, panics, is killed, exits otherwise, fails to build, exhausts its own budget or has too little of the stage left never counts, and a fixture that is not complete stops the stage before any mutant. Every run is bounded (`GOMAXPROCS=4` for the commands, their tests and the servers those start), runs in its own session that is killed as a whole afterwards (and only that session), and ends before the stage alarm, which is counted from the start of the test process. A unit assertion that kills a mutant ends it before its scenario runs. The script holds a 50 minute budget, the CI step's `timeout-minutes` inside the 60 minute job; the stage gets what is left after reserving its compilation and the checks that follow it.
 
 It also checks that the source bundles keep their digests, that the unchanged M0 checker still
 accepts both, that the `linux/amd64` and `linux/arm64` builds are byte-reproducible and that the
