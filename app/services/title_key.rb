@@ -81,16 +81,26 @@ class TitleKey
   end
 
   def tokenize(text)
-    self.class.normalize_boundaries(
-      ActiveSupport::Inflector.transliterate(text).downcase
-    ).squish
+    fold_scripts(text).gsub(/[^\p{L}\p{N}]/, " ").squish
   end
 
   def punctuationless(text)
-    ActiveSupport::Inflector.transliterate(text)
-      .downcase
-      .gsub(/[^a-z0-9\s]/, "")
-      .squish
+    fold_scripts(text).gsub(/[^\p{L}\p{N}\s]/, "").squish
+  end
+
+  # "ü" becomes "u", but Cyrillic and Han have no approximation. Keeping
+  # those letters avoids an empty key that cannot match the release name.
+  def fold_scripts(text)
+    text.to_s.each_char.map { |char| fold_character(char) }.join.downcase
+  end
+
+  def fold_character(char)
+    transliterated = ActiveSupport::Inflector.transliterate(char, "")
+    return transliterated if transliterated.match?(/[A-Za-z0-9]/)
+    return char if char.match?(/[\p{L}\p{N}]/)
+
+    # A decomposed "ü" is "u" plus a mark. Dropping the mark keeps it equal to "u".
+    char.match?(/\p{M}/) ? "" : char
   end
 
   def number_tokens(text)

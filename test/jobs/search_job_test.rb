@@ -3241,6 +3241,34 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "buchi neri", job.send(:normalized_search_title, "Buchi neri")
   end
 
+  test "does not query indexers with only the language hint for a cyrillic title" do
+    book = Book.create!(
+      title: "Рыцари Сорока Островов",
+      author: "Сергей Лукьяненко",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "ru")
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+    queries = attempts.map(&:query)
+
+    assert_includes queries, "Рыцари Сорока Островов RU"
+    assert_includes queries, "Рыцари Сорока Островов Сергей Лукьяненко RU"
+    assert_not_includes queries, "RU"
+    assert_equal "рыцари сорока островов", SearchJob.new.send(:normalized_search_title, book.title)
+  end
+
+  test "skips normalized indexer attempts when the title normalizes to blank" do
+    book = Book.create!(title: "???", author: "Example Author", book_type: :audiobook)
+    request = Request.create!(book: book, user: users(:one), status: :pending, language: "ru")
+
+    attempts = SearchJob.new.send(:generic_indexer_attempts, request)
+
+    assert_empty attempts.select { |attempt| attempt.query == "RU" }
+    assert_nil attempts.find { |attempt| attempt.name == :normalized_title }
+    assert_equal "", SearchJob.new.send(:normalized_search_title, book.title)
+  end
+
   test "normalized search title folds punctuation before reading volume markers" do
     job = SearchJob.new
 

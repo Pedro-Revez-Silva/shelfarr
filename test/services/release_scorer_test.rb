@@ -333,6 +333,37 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal native.breakdown[:title], ascii.breakdown[:title]
   end
 
+  test "scores cyrillic titles and authors that transliteration would erase" do
+    book = Book.create!(
+      title: "Рыцари Сорока Островов",
+      author: "Сергей Лукьяненко",
+      book_type: :audiobook
+    )
+    request = Request.create!(book: book, user: @user, status: :pending, language: "ru")
+    verbatim = ReleaseScorer.score(
+      SearchResult.new(title: "Сергей Лукьяненко - Рыцари сорока островов: MP3", seeders: 50),
+      request
+    )
+    tagged = ReleaseScorer.score(
+      SearchResult.new(title: "Сергей Лукьяненко - Рыцари сорока островов Russian Audiobook M4B", seeders: 50),
+      request
+    )
+
+    assert_equal 100, verbatim.breakdown[:title]
+    assert_equal 100, verbatim.breakdown[:author]
+    assert_operator verbatim.total, :>, 20
+    assert_equal 100, tagged.breakdown[:title]
+    assert_equal 100, tagged.breakdown[:author]
+    assert tagged.high_confidence?
+    assert tagged.breakdown[:auto_select_allowed]
+    assert_equal "рыцари сорока островов", TitleKey.new(book.title).canonical
+    assert_equal "сергей лукьяненко", TitleKey.new(book.author).canonical
+    assert_equal "三体", TitleKey.new("三体").canonical
+    assert_equal "刘慈欣", TitleKey.new("刘慈欣").canonical
+    assert_equal TitleKey.new("Spass in der Kuche").canonical, TitleKey.new("Spaß in der Küche").canonical
+    assert_equal TitleKey.new("Jurgen Weiss").canonical, TitleKey.new("Jürgen Weiß".unicode_normalize(:nfd)).canonical
+  end
+
   test "preserves exact title and author matches with curly apostrophes" do
     [ "'", "’", "‘" ].each do |apostrophe|
       @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")
