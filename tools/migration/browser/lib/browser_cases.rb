@@ -22,6 +22,19 @@ module Migration
         "x < y > z &amp;amp; <unknown-tag attr=\"1\">custom</unknown-tag> \u2028 line separator"
       ].freeze
       SESSION_COLUMNS = %w[id user_id user_agent ip_address created_at updated_at].freeze
+      ACCOUNT_NAMES = [
+        "", "   ", "\t\n", "\u00a0\u3000", "\u0085", "\u2028", "\u200b", "\ufeff", "\u180e", "\u001c", "Zo\u00eb \u{1F4DA} \u2728", "  padded  ", "tab\tand\nline",
+        "a\u0000b", "\u05e9\u05dc\u05d5\u05dd", "x" * 2000
+      ].freeze
+      ACCOUNT_PASSWORDS = [
+        %w[Abcdefghijk1 Abcdefghijk1], [ "Aa1#{"\u00e9" * 9}", "Aa1#{"\u00e9" * 9}" ], [ "Aa1#{"x" * 69}", "Aa1#{"x" * 69}" ], [ "Aa1#{"x" * 70}", "Aa1#{"x" * 70}" ],
+        [ "x" * 80, "x" * 80 ], %w[abc abc], %w[Ab1 zz], %w[abcdefghijk1 abcdefghijk1], %w[ABCDEFGHIJK1 ABCDEFGHIJK1], %w[Abcdefghijkl Abcdefghijkl],
+        [ "Abcdefghijk1\nzz", "Abcdefghijk1\nzz" ], [ "Abcd\tefghijk1\r", "Abcd\tefghijk1\r" ], [ "Abcdefghijk1\u2028", "Abcdefghijk1\u2028" ],
+        [ "Abcdefghijk\u0661", "Abcdefghijk\u0661" ], [ "\u00c0\u00c9\u00ce\u00d5\u00dc\u00c7\u00e0\u00e9\u00ee\u00f5\u00fc1", "\u00c0\u00c9\u00ce\u00d5\u00dc\u00c7\u00e0\u00e9\u00ee\u00f5\u00fc1" ],
+        %w[Abcdefghijk1 Abcdefghijk2], [ "Abcdefghijk1", "" ], [ " Abcdefghijk1 ", " Abcdefghijk1 " ], [ "Aa1#{"\u{1F4DA}" * 17}", "Aa1#{"\u{1F4DA}" * 17}" ],
+        [ "Aa1#{"\u{1F4DA}" * 18}", "Aa1#{"\u{1F4DA}" * 18}" ], [ "", "" ], [ "", "Abcdefghijk1" ], [ " " * 12, " " * 12 ], [ "\u3000" * 20, "\u3000" * 20 ],
+        [ "Abcdefghijk1\u0000", "Abcdefghijk1\u0000" ]
+      ].freeze
       USER_COLUMNS = %w[id failed_login_count last_failed_login_at last_failed_login_ip locked_until updated_at].freeze
 
       def initialize(paths:, bundle:)
@@ -44,6 +57,7 @@ module Migration
         seed_people
         configure_preview
         seed_sessions
+        seed_account_people
         checkpoint_and_copy
         run_browser_scenarios
         write_browser_outputs
@@ -83,7 +97,7 @@ module Migration
         %w[alice bob carol].each { |name| @people[name] = { user: users.fetch(name), password: credentials.fetch(name).fetch("password") } }
         {
           "browser_admin" => { role: :admin }, "browser_member" => {}, "browser_oidc" => { oidc_provider: "synthetic", oidc_uid: SecureRandom.hex(8) },
-          "browser_outsider" => {}, "browser_lockable" => {}
+          "browser_outsider" => {}, "browser_lockable" => {}, "browser_account" => {}, "browser_legacy" => {}
         }.each do |name, extra|
           secret = password
           @people[name] = { user: User.create!({ username: name, name: name.tr("_", " ").capitalize, password: secret }.merge(extra)), password: secret }
@@ -169,6 +183,79 @@ module Migration
         @steps << { "kind" => "logout", "name" => name, "persona" => persona, "status" => session.response.status, "sessions_after" => database_rows("sessions", SESSION_COLUMNS) }
       end
 
+      def seed_account_people
+        legacy = @people.fetch("browser_legacy")
+        digest = BCrypt::Password.create(legacy.fetch(:password), cost: 10).to_s.sub(/\A\$2a\$/, "$2y$")
+        legacy.fetch(:user).update_columns(password_digest: digest)
+        raise "Rails cannot read the legacy digest" unless User.find(legacy.fetch(:user).id).authenticate(legacy.fetch(:password))
+        account = @people.fetch("browser_account").fetch(:user)
+        make_session("account-elsewhere", account, created_at: NOON - 2.minutes)
+        make_session("account-elsewhere-b", account, created_at: NOON - 1.minute)
+        make_session("legacy-elsewhere", legacy.fetch(:user), created_at: NOON - 1.minute)
+        issue("account-app", account, %w[library:read progress:write])
+        issue("legacy-app", legacy.fetch(:user), %w[library:read])
+        @account = { "rules" => account_rules, "production_bcrypt_cost" => BCrypt::Engine::DEFAULT_COST }
+      end
+
+      def rails_errors(user_id, attributes)
+        user = User.find(user_id)
+        user.assign_attributes(attributes)
+        user.valid? ? {} : user.errors.to_hash.transform_keys(&:to_s)
+      rescue ArgumentError
+        "raises"
+      end
+
+      def account_rules
+        member = @people.fetch("browser_account").fetch(:user).id
+        oidc = @people.fetch("browser_oidc").fetch(:user).id
+        names = ACCOUNT_NAMES.map { |name| { "kind" => "name", "name" => name, "rails" => rails_errors(member, name: name) } }
+        passwords = ACCOUNT_PASSWORDS.flat_map do |password, confirmation|
+          [ [ member, false ], [ oidc, true ] ].map do |user_id, linked|
+            { "kind" => "password", "password" => password, "confirmation" => confirmation, "oidc" => linked,
+              "rails" => rails_errors(user_id, password: password, password_confirmation: confirmation) }
+          end
+        end
+        names + passwords
+      end
+
+      def account_rails_session(person)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.host! "www.example.com"
+        travel_to(NOON, with_usec: true) { session.post "/session", params: { username: person.fetch(:user).username, password: person.fetch(:password) } }
+        raise "Rails did not sign the account persona in" unless session.response.location == "http://www.example.com/"
+        session
+      end
+
+      def account_scenarios
+        person = @people.fetch("browser_account")
+        user = person.fetch(:user)
+        rails = account_rails_session(person)
+        current = Session.where(user_id: user.id).maximum(:id)
+        others = Session.where.not(user_id: user.id).order(:id).pluck(:id)
+        tokens = token_state
+        travel_to(NOON + 1.second, with_usec: true) { rails.patch "/profile", params: { user: { name: "   " } } }
+        blank_status = rails.response.status
+        travel_to(NOON + 2.seconds, with_usec: true) { rails.patch "/profile", params: { user: { name: "Zo\u00eb \u{1F4DA}" } } }
+        renamed = User.find(user.id).name
+        digest = User.find(user.id).password_digest
+        changed = "Rails-Changed-#{SecureRandom.hex(6)}-Aa1"
+        travel_to(NOON + 3.seconds, with_usec: true) do
+          rails.patch "/profile/update_password", params: { current_password: "Wrong-#{SecureRandom.hex(4)}-Zz9", user: { password: changed, password_confirmation: changed } }
+        end
+        wrong = { "status" => rails.response.status, "says_incorrect" => rails.response.body.include?("Current password is incorrect"), "digest_kept" => User.find(user.id).password_digest == digest }
+        travel_to(NOON + 4.seconds, with_usec: true) do
+          rails.patch "/profile/update_password", params: { current_password: person.fetch(:password), user: { password: changed, password_confirmation: changed } }
+        end
+        stored = User.find(user.id)
+        @account["rails_effects"] = {
+          "blank_name_status" => blank_status, "renamed" => renamed, "wrong_current" => wrong, "change_status" => rails.response.status,
+          "own_sessions_after" => Session.where(user_id: user.id).order(:id).pluck(:id) == [ current ],
+          "other_sessions_kept" => Session.where.not(user_id: user.id).order(:id).pluck(:id) == others,
+          "tokens_unchanged" => token_state == tokens, "new_password_authenticates" => stored.authenticate(changed).present?,
+          "updated_at" => database_rows("users", %w[updated_at], where: "WHERE id = #{user.id}").first.fetch("updated_at")
+        }
+      end
+
       def seed_sessions
         fresh = NOON - 3.minutes
         make_session("alice", @people["alice"][:user], created_at: fresh)
@@ -200,6 +287,7 @@ module Migration
         fixed_layout_browser_scenarios
         login_scenarios
         logout_scenarios
+        account_scenarios
         @rails_final = { "sessions" => database_rows("sessions", SESSION_COLUMNS), "users" => database_rows("users", USER_COLUMNS) }
       end
 
@@ -333,7 +421,7 @@ module Migration
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
                      "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
-                     "reader_books" => @reader_books.transform_values(&:id), "steps" => @steps }
+                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }

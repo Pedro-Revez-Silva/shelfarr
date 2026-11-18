@@ -39,6 +39,10 @@ const (
 	restart      = "TestBrowserSessionsSurviveARestart"
 	cookies      = "TestBrowserBodiesAndCookies"
 	markup       = "TestBrowserDescriptionMarkup"
+	rules        = "TestAccountRulesMatchTheRailsModel"
+	effects      = "TestAccountChangesOverRealHTTPHaveTheRailsEffects"
+	recheck      = "TestAccountPasswordChangesRecheckEverythingInsideTheWrite"
+	racing       = "TestConcurrentAccountChangesNeverLoseOrMixAWrite"
 )
 
 func one(old, replacement string) []edit { return []edit{{old, replacement}} }
@@ -117,6 +121,27 @@ var mutants = []mutant{
 	{name: "assets: an oversized manifest is read", file: "internal/webassets/webassets.go", edits: one("if err != nil || int64(len(body)) > limit {", "if err != nil {"), unit: "./internal/webassets/"},
 	{name: "assets: the total size is unbounded", file: "internal/webassets/webassets.go", edits: one("if total > limit {", "if total > limit && false {"), unit: "./internal/webassets/"},
 	{name: "projection: the account is not part of the status isolation", file: "internal/live/queries.go", edits: one("func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {", "func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {\n\tuserID = 0"), unit: "./internal/gohttp/", scenario: differential},
+	{name: "account: a password change keeps the account's other sessions", file: "internal/live/account.go", edits: one("`DELETE FROM sessions WHERE user_id = ? AND id != ?`", "`DELETE FROM sessions WHERE user_id = ? AND id != ? AND 0`"), unit: "./internal/gohttp/", scenario: effects},
+	{name: "account: a password change also ends this session", file: "internal/live/account.go", edits: one("`DELETE FROM sessions WHERE user_id = ? AND id != ?`", "`DELETE FROM sessions WHERE user_id = ? AND ? > 0`"), unit: "./internal/gohttp/", scenario: effects},
+	{name: "account: a password change ends other accounts' sessions", file: "internal/live/account.go", edits: one("`DELETE FROM sessions WHERE user_id = ? AND id != ?`", "`DELETE FROM sessions WHERE user_id >= 0 * ? AND id != ?`"), unit: "./internal/gohttp/", scenario: effects},
+	{name: "account: a digest changed during the check is overwritten", file: "internal/live/account.go", edits: one("if record.digest != checked.Digest || record.oidcLinked() != checked.OIDCLinked {", "if record.oidcLinked() != checked.OIDCLinked {"), scenario: recheck},
+	{name: "account: a sign-in link added during the check is ignored", file: "internal/live/account.go", edits: one("if record.digest != checked.Digest || record.oidcLinked() != checked.OIDCLinked {", "if record.digest != checked.Digest {"), scenario: recheck},
+	{name: "account: the session is not rechecked inside the write", file: "internal/live/account.go", edits: one("\tif !holds {\n", "\tif false {\n"), scenario: recheck},
+	{name: "account: a deleted account is not rechecked inside the write", file: "internal/live/account.go", edits: one("\tif !found || record.deleted {\n\t\treturn accountRecord{}, ErrSessionEnded", "\tif !found {\n\t\treturn accountRecord{}, ErrSessionEnded"), scenario: recheck},
+	{name: "account: an unchanged name is written again", file: "internal/live/account.go", edits: one("if name != record.name {", "if true {"), unit: "./internal/gohttp/"},
+	{name: "account: a blank name is saved", file: "internal/live/account.go", edits: one("\tfound.Merge(account.NameErrors(name))\n", "\n"), unit: "./internal/gohttp/", scenario: effects},
+	{name: "account: a stored record Rails would refuse is saved", file: "internal/live/account.go", edits: one("found := account.UsernameErrors(record.username)", "found := account.FieldErrors{}"), unit: "./internal/gohttp/"},
+	{name: "account: a wrong current password is accepted", file: "internal/gohttp/browser_account.go", edits: one("if !matches || len(change.current) > maxPassword {", "if false && !matches || len(change.current) > maxPassword {"), unit: "./internal/gohttp/", scenario: effects},
+	{name: "account: password changes are not rate limited", file: "internal/gohttp/browser_account.go", edits: one("a.now()); !allowed {\n\t\ta.security(\"password.rate_limited\"", "a.now()); false && !allowed {\n\t\ta.security(\"password.rate_limited\""), unit: "./internal/gohttp/"},
+	{name: "account: the body is not bounded", file: "internal/gohttp/browser_account.go", edits: one("const maxAccountBody = maxLoginBody", "const maxAccountBody = 1 << 30"), unit: "./internal/gohttp/"},
+	{name: "account: the password change skips the CSRF check", file: "internal/gohttp/browser_data.go", edits: one(" || found.kind == routeBrowserPassword", ""), unit: "./internal/gohttp/"},
+	{name: "account: the name change skips the CSRF check", file: "internal/gohttp/browser_data.go", edits: one(" || found.kind == routeBrowserProfile", ""), unit: "./internal/gohttp/"},
+	{name: "account: the strength rules are skipped for every account", file: "internal/account/rules.go", edits: one("\tif oidcLinked {\n\t\treturn found\n\t}", "\tif true {\n\t\treturn found\n\t}"), unit: "./internal/account/", scenario: rules},
+	{name: "account: the confirmation is not compared", file: "internal/account/rules.go", edits: one("if password != confirmation {", "if false {"), unit: "./internal/account/", scenario: rules},
+	{name: "account: digits outside ASCII count as digits", file: "internal/account/rules.go", edits: one("func isASCIIDigit(r rune) bool { return r >= '0' && r <= '9' }", "func isASCIIDigit(r rune) bool { return unicode.IsDigit(r) }"), scenario: rules},
+	{name: "account: new passwords use the library's default cost", file: "internal/account/rules.go", edits: one("PasswordCost          = 12", "PasswordCost          = 10"), unit: "./internal/account/", scenario: rules},
+	{name: "account: the password minimum counts bytes", file: "internal/account/rules.go", edits: one("if utf8.RuneCountInString(password) < MinPasswordCharacters {", "if len(password) < MinPasswordCharacters {"), scenario: rules},
+	{name: "web: the account screen is not served", file: "internal/gohttp/web.go", edits: one("\tcase path == webAccountPath:\n", "\tcase false:\n"), unit: "./internal/gohttp/"},
 }
 
 func copyModule(t *testing.T, destination string) {
