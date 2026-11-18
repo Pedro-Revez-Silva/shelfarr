@@ -130,9 +130,17 @@ func newRunMarker() string {
 	return runMarkerName + "=" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(runCounter.Add(1), 10) + "-" + hex.EncodeToString(random)
 }
 
+var processTable = "/proc"
+
 func stopRun(marker string) bool {
+	emptyScans := 0
 	for round := 0; round < 40; round++ {
-		entries, _ := os.ReadDir("/proc")
+		entries, err := os.ReadDir(processTable)
+		if err != nil {
+			emptyScans = 0
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
 		members := 0
 		for _, entry := range entries {
 			pid, err := strconv.Atoi(entry.Name())
@@ -151,7 +159,9 @@ func stopRun(marker string) bool {
 			}
 			unix.Close(descriptor)
 		}
-		if members == 0 {
+		if members > 0 {
+			emptyScans = 0
+		} else if emptyScans++; emptyScans == 2 {
 			return true
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -578,12 +588,27 @@ func TestA(t *testing.T) { t.Fatal("wrong") }`)
 func TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing(t *testing.T) {
 	t.Setenv(runMarkerName, "probe")
 	missing := fixture{name: "probe", dir: t.TempDir(), doc: casesDocument{Database: "missing.sqlite3"}}
-	skipped := false
-	t.Run("missing database", func(t *testing.T) {
-		defer func() { skipped = t.Skipped() }()
-		newRuntimeCopy(t, missing)
-	})
-	if !skipped {
-		t.Fatal("a fixture that cannot be copied was not skipped under a mutant run")
+	unwritable := filepath.Join(t.TempDir(), "absent")
+	for name, prepare := range map[string]func(t *testing.T){
+		"a missing database":                    func(t *testing.T) {},
+		"a private directory that cannot exist": func(t *testing.T) { t.Setenv("TMPDIR", unwritable) },
+	} {
+		skipped := false
+		t.Run(name, func(t *testing.T) {
+			defer func() { skipped = t.Skipped() }()
+			prepare(t)
+			newRuntimeCopy(t, missing)
+		})
+		if !skipped {
+			t.Errorf("%s was not skipped under a mutant run", name)
+		}
+	}
+}
+
+func TestACleanUpThatCannotReadTheProcessTableIsNeverClean(t *testing.T) {
+	processTable = filepath.Join(t.TempDir(), "absent")
+	t.Cleanup(func() { processTable = "/proc" })
+	if stopRun(newRunMarker()) {
+		t.Fatal("a clean-up that could not list processes reported that none were left")
 	}
 }
