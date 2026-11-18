@@ -1015,7 +1015,7 @@ and need no migration.
   members, unchanged names, record validity, session scope, tokens untouched, cost-14 ceiling, OIDC rules, rate limit and
   that no password or digest reaches the answer or the log.
 * `tools/migration/browser/verify-browser`: the Rails capture records `User` validation verdicts over a corpus of 16 names
-  and 50 password cases (both for a password account and an OIDC account) and the effects of a real Rails password change;
+  and 52 password cases (both for a password account and an OIDC account) and the effects of a real Rails password change;
   the real Go executable must give the same verdicts (8 documented differences above) over HTTP, the same session and
   token effects, a `$2y$10$` digest upgrade, recheck and conflict handling (password checked with no write lock held, a
   digest, OIDC link, session or account changed while parked, an injected failure before and inside the transaction, a

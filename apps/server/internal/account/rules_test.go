@@ -19,6 +19,7 @@ func TestNewPasswordRulesFollowRails(t *testing.T) {
 	}{
 		{"valid", "Abcdefghijk1", "Abcdefghijk1", false, FieldErrors{}},
 		{"twelve characters, more bytes", "Aa1ééééééééé", "Aa1ééééééééé", false, FieldErrors{}},
+		{"thirteen bytes, eight characters", "Aa1ééééé", "Aa1ééééé", false, FieldErrors{"password": {MessageTooShort}}},
 		{"exactly 72 bytes", "Aa1" + strings.Repeat("x", 69), "Aa1" + strings.Repeat("x", 69), false, FieldErrors{}},
 		{"73 bytes", "Aa1" + strings.Repeat("x", 70), "Aa1" + strings.Repeat("x", 70), false, FieldErrors{"password": {MessageTooLong}}},
 		{"too long and weak", strings.Repeat("x", 80), strings.Repeat("x", 80), false, FieldErrors{"password": {MessageTooLong, MessageWeak}}},

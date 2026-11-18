@@ -126,7 +126,7 @@ var mutants = []mutant{
 	{name: "account: a password change ends other accounts' sessions", file: "internal/live/account.go", edits: one("`DELETE FROM sessions WHERE user_id = ? AND id != ?`", "`DELETE FROM sessions WHERE user_id >= 0 * ? AND id != ?`"), unit: "./internal/gohttp/", scenario: effects},
 	{name: "account: a digest changed during the check is overwritten", file: "internal/live/account.go", edits: one("if record.digest != checked.Digest || record.oidcLinked() != checked.OIDCLinked {", "if record.oidcLinked() != checked.OIDCLinked {"), scenario: recheck},
 	{name: "account: a sign-in link added during the check is ignored", file: "internal/live/account.go", edits: one("if record.digest != checked.Digest || record.oidcLinked() != checked.OIDCLinked {", "if record.digest != checked.Digest {"), scenario: recheck},
-	{name: "account: the session is not rechecked inside the write", file: "internal/live/account.go", edits: one("\tif !holds {\n", "\tif false {\n"), scenario: recheck},
+	{name: "account: the session is not rechecked inside the write", file: "internal/live/account.go", edits: one("\tif !holds {\n", "\tif !holds && false {\n"), scenario: recheck},
 	{name: "account: a deleted account is not rechecked inside the write", file: "internal/live/account.go", edits: one("\tif !found || record.deleted {\n\t\treturn accountRecord{}, ErrSessionEnded", "\tif !found {\n\t\treturn accountRecord{}, ErrSessionEnded"), scenario: recheck},
 	{name: "account: an unchanged name is written again", file: "internal/live/account.go", edits: one("if name != record.name {", "if true {"), unit: "./internal/gohttp/"},
 	{name: "account: a blank name is saved", file: "internal/live/account.go", edits: one("\tfound.Merge(account.NameErrors(name))\n", "\n"), unit: "./internal/gohttp/", scenario: effects},
@@ -140,7 +140,7 @@ var mutants = []mutant{
 	{name: "account: the confirmation is not compared", file: "internal/account/rules.go", edits: one("if password != confirmation {", "if false {"), unit: "./internal/account/", scenario: rules},
 	{name: "account: digits outside ASCII count as digits", file: "internal/account/rules.go", edits: one("func isASCIIDigit(r rune) bool { return r >= '0' && r <= '9' }", "func isASCIIDigit(r rune) bool { return unicode.IsDigit(r) }"), scenario: rules},
 	{name: "account: new passwords use the library's default cost", file: "internal/account/rules.go", edits: one("PasswordCost          = 12", "PasswordCost          = 10"), unit: "./internal/account/", scenario: rules},
-	{name: "account: the password minimum counts bytes", file: "internal/account/rules.go", edits: one("if utf8.RuneCountInString(password) < MinPasswordCharacters {", "if len(password) < MinPasswordCharacters {"), scenario: rules},
+	{name: "account: the password minimum counts bytes", file: "internal/account/rules.go", edits: one("if utf8.RuneCountInString(password) < MinPasswordCharacters {", "if utf8.RuneCountInString(password) < 0 || len(password) < MinPasswordCharacters {"), scenario: rules},
 	{name: "web: the account screen is not served", file: "internal/gohttp/web.go", edits: one("\tcase path == webAccountPath:\n", "\tcase false:\n"), unit: "./internal/gohttp/"},
 }
 

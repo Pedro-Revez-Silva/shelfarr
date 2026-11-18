@@ -27,7 +27,7 @@ module Migration
         "a\u0000b", "\u05e9\u05dc\u05d5\u05dd", "x" * 2000
       ].freeze
       ACCOUNT_PASSWORDS = [
-        %w[Abcdefghijk1 Abcdefghijk1], [ "Aa1#{"\u00e9" * 9}", "Aa1#{"\u00e9" * 9}" ], [ "Aa1#{"x" * 69}", "Aa1#{"x" * 69}" ], [ "Aa1#{"x" * 70}", "Aa1#{"x" * 70}" ],
+        %w[Abcdefghijk1 Abcdefghijk1], [ "Aa1#{"\u00e9" * 9}", "Aa1#{"\u00e9" * 9}" ], [ "Aa1#{"\u00e9" * 5}", "Aa1#{"\u00e9" * 5}" ], [ "Aa1#{"x" * 69}", "Aa1#{"x" * 69}" ], [ "Aa1#{"x" * 70}", "Aa1#{"x" * 70}" ],
         [ "x" * 80, "x" * 80 ], %w[abc abc], %w[Ab1 zz], %w[abcdefghijk1 abcdefghijk1], %w[ABCDEFGHIJK1 ABCDEFGHIJK1], %w[Abcdefghijkl Abcdefghijkl],
         [ "Abcdefghijk1\nzz", "Abcdefghijk1\nzz" ], [ "Abcd\tefghijk1\r", "Abcd\tefghijk1\r" ], [ "Abcdefghijk1\u2028", "Abcdefghijk1\u2028" ],
         [ "Abcdefghijk\u0661", "Abcdefghijk\u0661" ], [ "\u00c0\u00c9\u00ce\u00d5\u00dc\u00c7\u00e0\u00e9\u00ee\u00f5\u00fc1", "\u00c0\u00c9\u00ce\u00d5\u00dc\u00c7\u00e0\u00e9\u00ee\u00f5\u00fc1" ],

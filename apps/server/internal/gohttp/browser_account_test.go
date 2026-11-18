@@ -184,7 +184,7 @@ func TestBlankNamesAndInvalidBodiesWriteNothing(t *testing.T) {
 	if recorder := client.send(http.MethodPut, "/preview/api/v1/account/profile", `{"name":"a","name":"Last"}`, headers); recorder.Code != http.StatusOK || userColumn(t, h.path, "name", 1) != "Last" {
 		t.Fatalf("a repeated member is not read as JSON.parse reads it: %d", recorder.Code)
 	}
-	oversized := `{"name":"` + strings.Repeat("x", maxAccountBody) + `"}`
+	oversized := `{"name":"` + strings.Repeat("x", 4096) + `"}`
 	if recorder := client.send(http.MethodPut, "/preview/api/v1/account/profile", oversized, headers); recorder.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized %d", recorder.Code)
 	}
