@@ -18,12 +18,14 @@ class TitleKey
     "XV" => "15"
   }.freeze
 
-  # Quotes are removed before transliteration, which would otherwise turn
-  # curly apostrophes into "?". Apostrophes specifically can also be a word
-  # break; that form is kept only for exact title phrases.
-  QUOTE_CHARACTERS = "'\"`´’‘"
-  APOSTROPHE_PATTERN = /['`´’‘]/
-  private_constant :QUOTE_CHARACTERS, :APOSTROPHE_PATTERN, :ROMAN_NUMBER_TOKENS
+  # Quotes and apostrophes are removed before folding. An apostrophe can also
+  # split a word; that form is kept only for exact title phrases. U+02BB and
+  # U+02BC are modifier letters, so NFKC leaves them inside a name
+  # ("OʼConnor") unless they are removed with the other apostrophes.
+  APOSTROPHE_CHARACTERS = "`'´’‘\u02BB\u02BC"
+  QUOTE_CHARACTERS = "#{APOSTROPHE_CHARACTERS}\""
+  APOSTROPHE_PATTERN = /[#{APOSTROPHE_CHARACTERS}]/
+  private_constant :APOSTROPHE_CHARACTERS, :QUOTE_CHARACTERS, :APOSTROPHE_PATTERN, :ROMAN_NUMBER_TOKENS
 
   def initialize(text)
     @text = text.to_s
@@ -79,6 +81,10 @@ class TitleKey
       transliterated = ActiveSupport::Inflector.transliterate(char)
       transliterated == "?" ? char : transliterated
     }.downcase(:fold)
+  end
+
+  def self.quote_character?(character)
+    QUOTE_CHARACTERS.include?(character)
   end
 
   private

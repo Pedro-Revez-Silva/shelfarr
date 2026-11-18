@@ -104,10 +104,21 @@ class SequenceMarker
   ).freeze
   private_constant :SEPARATOR_PATTERN
 
-  # TitleKey deletes these before tokenizing, so "Shakespeare's" and
-  # "Shakespeares" are the same span.
-  TITLE_QUOTE_CHARACTERS = /['"`´’‘]/
-  private_constant :TITLE_QUOTE_CHARACTERS
+  # A publication year after a title is not a sequel ("(1894)", ".2026.").
+  PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
+  CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
+  # No trailing anchor: punctuationless keys glue the marker to the subtitle
+  # ("第2部：黑暗森林" -> "第2部黑暗森林").
+  CJK_VOLUME_PREFIX = /
+    \A第
+    (?<number>\d+|[ivxlcdm]+|[#{CHINESE_NUMERALS}]+)
+    [部卷巻]?
+  /x
+  # "cd" is a disc label, and it is also the Roman numeral 400.
+  NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
+  GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
+  private_constant :PUBLICATION_YEAR, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+    :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX
 
   class << self
     def separate_marker_punctuation(text)
@@ -162,6 +173,16 @@ class SequenceMarker
 
       shared = [ left_numbers.size, right_numbers.size ].min
       shared.times.any? { |index| left_numbers[index] != right_numbers[index] }
+    end
+
+    # Folded TitleKey tokens. A bare numeral immediately after an unnumbered
+    # title is another book ("三体 Ⅱ" folds to "三体 2"). Digits, Roman
+    # numerals, and 第N部/卷 count. A publication year does not.
+    def leading_sequel_numeral?(tokens)
+      words = Array(tokens)
+      return false if words.empty?
+
+      numeric_sequel_token?(words.first) || cjk_volume_prefix?(words)
     end
 
     private
@@ -339,6 +360,8 @@ class SequenceMarker
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
     # Folding matches TitleKey: keep letters with no ASCII approximation, and
     # split on Unicode letters and numerals so a CJK author stays a token.
+    # TitleKey deletes apostrophes, including modifier letters, so
+    # "Shakespeare's" and "Shakespeares" are the same span.
     def normalized_source_tokens(text)
       folded = +""
       starts = []
@@ -373,7 +396,71 @@ class SequenceMarker
     end
 
     def quote_cluster?(cluster)
-      cluster.each_char.all? { |char| char.match?(TITLE_QUOTE_CHARACTERS) }
+      cluster.each_char.all? { |char| TitleKey.quote_character?(char) }
+    end
+
+    def numeric_sequel_token?(token)
+      text = token.to_s
+      whole_sequel_numeral?(text) || glued_sequel_numeral?(text)
+    end
+
+    def whole_sequel_numeral?(text)
+      return false if text.match?(PUBLICATION_YEAR)
+      return text.to_i.positive? if text.match?(/\A\d+\z/)
+      return false if NON_SEQUEL_ROMAN_TOKENS.include?(text)
+      return false if text.length < 2 && text != "i"
+
+      ROMAN_VALUES.key?(text)
+    end
+
+    # The punctuationless key deletes the colon, so "Ⅱ：黑暗森林" becomes
+    # "ii黑暗森林". A digit or Roman prefix of that token is still the sequel.
+    def glued_sequel_numeral?(text)
+      if (digits = text[/\A\d+/])
+        return false unless digits.length < text.length
+        return false if digits.match?(PUBLICATION_YEAR)
+        return false if text[digits.length..].match?(GLUED_NUMERAL_SUFFIX)
+
+        return digits.to_i.positive?
+      end
+
+      roman = longest_leading_roman(text)
+      return false if roman.nil? || roman.length == text.length
+
+      text[roman.length..].match?(/\A[^\p{ASCII}]/)
+    end
+
+    def longest_leading_roman(text)
+      letters = text[/\A[ivxlcdm]+/]
+      return if letters.blank?
+
+      letters.length.downto(1) do |size|
+        candidate = letters[0, size]
+        next if NON_SEQUEL_ROMAN_TOKENS.include?(candidate)
+        next if candidate.length < 2 && candidate != "i"
+        return candidate if ROMAN_VALUES.key?(candidate)
+      end
+
+      nil
+    end
+
+    def cjk_volume_prefix?(tokens)
+      first = tokens.first.to_s
+      if (match = first.match(CJK_VOLUME_PREFIX))
+        return sequel_number_body?(match[:number])
+      end
+      return false unless first == "第"
+
+      sequel_number_body?(tokens[1])
+    end
+
+    def sequel_number_body?(token)
+      text = token.to_s
+      return false if text.blank?
+      return true if text.match?(/\A\d+\z/) && text.to_i.positive?
+      return true if text.match?(/\A[#{CHINESE_NUMERALS}]+\z/)
+
+      ROMAN_VALUES.key?(text)
     end
 
     def spans_overlap?(left, right)

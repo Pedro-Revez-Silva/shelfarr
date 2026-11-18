@@ -243,6 +243,33 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     end
   end
 
+  test "strips an author whose apostrophe is a modifier letter" do
+    releases = [
+      "Wise Blood - Flannery OConnor English EPUB",
+      "Wise Blood - Flannery O'Connor English EPUB",
+      "Wise Blood - Flannery O\u02BCConnor English EPUB",
+      "Wise Blood - Flannery O\u02BBConnor English EPUB"
+    ]
+    authors = [
+      "Flannery O\u02BCConnor",
+      "Flannery O\u02BBConnor",
+      "Flannery O'Connor",
+      "Flannery OConnor"
+    ]
+
+    authors.product(releases).each do |author, release|
+      source = SequenceMarker.without_author_credit(
+        release,
+        author: author,
+        protected_title: "Wise Blood"
+      )
+
+      assert_includes source, "Wise Blood", "#{author.inspect} in #{release}"
+      assert_not_includes source, "Connor", "#{author.inspect} in #{release}"
+      assert_not_includes source, "Flannery", "#{author.inspect} in #{release}"
+    end
+  end
+
   test "removes a cjk author credit that precedes a short title" do
     source = SequenceMarker.without_author_credit(
       "刘慈欣 - 三体 [CHS] M4B",
