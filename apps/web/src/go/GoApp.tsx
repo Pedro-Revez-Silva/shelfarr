@@ -4,6 +4,7 @@ import { AccountGuard } from "../api/account-guard";
 import { ApiError } from "../api/errors";
 import { PageHeading, markPageNavigated } from "../components/PageHeading";
 import type { Bootstrap, GoBoot } from "../contract";
+import { ReaderApp } from "../reader/ReaderApp";
 import { createAppRouter } from "../router";
 import { createServices, ServicesProvider } from "../services";
 import { useDocumentTitle } from "../title";
@@ -78,7 +79,7 @@ export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch 
           auth={auth}
           token={state.token}
           availability={state.availability}
-          intro={boot.view === "connect" ? "Sign in to approve or decline the connection you started in your Shelfarr app. You will come straight back to it." : "Sign in to browse your library."}
+          intro={introFor(boot.view)}
           notice={state.notice}
           focusHeading={state.focus}
           onSignedIn={signedIn}
@@ -88,6 +89,12 @@ export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch 
     case "signed_in":
       return <SignedIn key={epoch} boot={boot} auth={auth} account={state.account} token={state.token} expiresIn={state.expiresIn} fetcher={fetcher} onEnded={(options) => void load(options)} />;
   }
+}
+
+function introFor(view: GoBoot["view"]): string {
+  if (view === "connect") return "Sign in to approve or decline the connection you started in your Shelfarr app. You will come straight back to it.";
+  if (view === "reader") return "Sign in to open this book. You will come straight back to it.";
+  return "Sign in to browse your library.";
 }
 
 function fromBootstrap(result: Bootstrap, options: Load): AuthState {
@@ -146,7 +153,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
       mutations: csrf.lifecycle,
       ...(fetcher ? { fetcher } : {}),
     });
-    const router = boot.view === "connect" ? null : createAppRouter({ basepath: boot.mount });
+    const router = boot.view === "connect" || boot.view === "reader" ? null : createAppRouter({ basepath: boot.mount });
     return { csrf, services, router };
   });
   const { csrf, services, router } = built;
@@ -188,9 +195,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
       {router ? (
         <App services={services} router={router} />
       ) : (
-        <ServicesProvider services={services}>
-          <ConnectPage />
-        </ServicesProvider>
+        <ServicesProvider services={services}>{boot.view === "reader" ? <ReaderApp engine={boot.reader_engine} /> : <ConnectPage />}</ServicesProvider>
       )}
     </GoSessionProvider>
   );

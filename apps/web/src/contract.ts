@@ -113,7 +113,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect"] as const;
+export const goViews = ["library", "details", "connect", "reader"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const goBootSchema = z.object({
@@ -122,6 +122,7 @@ export const goBootSchema = z.object({
   view: z.enum(goViews),
   mount: sitePath,
   api: sitePath,
+  reader_engine: sitePath.optional(),
 });
 export type GoBoot = z.infer<typeof goBootSchema>;
 
@@ -178,3 +179,70 @@ export const libraryFiltersSchema = z.object({
   sort: z.enum(librarySorts).optional().catch(undefined),
 });
 export type LibraryFilters = z.infer<typeof libraryFiltersSchema>;
+
+const assetIdentifier = z.string().min(1).max(128);
+
+export const locatorSchema = z.looseObject({
+  href: z.string(),
+  type: z.string().optional(),
+  locations: z
+    .looseObject({
+      progression: z.number().optional(),
+      totalProgression: z.number().optional(),
+      position: z.number().optional(),
+      cfi: z.string().optional(),
+      fragments: z.array(z.unknown()).nullable().optional(),
+    })
+    .optional(),
+});
+export type Locator = z.infer<typeof locatorSchema>;
+
+export const storedProgressSchema = z.object({
+  asset_id: assetIdentifier,
+  locator: locatorSchema.nullable(),
+  position_seconds: z.number().nonnegative().nullable(),
+  version: z.number().int().positive(),
+  observed_at: timestamp.nullable(),
+  updated_at: timestamp,
+  client_mutation_id: z.string(),
+});
+export type StoredProgress = z.infer<typeof storedProgressSchema>;
+
+export const readerAssetSchema = z.object({
+  id: assetIdentifier,
+  filename: z.string(),
+  format: z.string(),
+  media_type: z.string(),
+  size_bytes: z.number().int().nonnegative(),
+  position: z.number().int().nonnegative(),
+  url: sitePath,
+});
+export type ReaderAsset = z.infer<typeof readerAssetSchema>;
+
+export const readerPublicationSchema = z.object({
+  id: identifier,
+  title: z.string(),
+  author: z.string().nullable(),
+  book_type: z.enum(publicationTypes),
+  content_kind: z.enum(["book", "graphic"]),
+  reading_status: readingStatusSchema,
+  assets: z.array(readerAssetSchema),
+  other_formats: z.array(z.string()),
+  progress: storedProgressSchema.nullable(),
+});
+export type ReaderPublication = z.infer<typeof readerPublicationSchema>;
+
+export const readerEnvelopeSchema = z.object({ account: identifier, publication: readerPublicationSchema });
+
+export const progressEnvelopeSchema = z.object({ account: identifier, progress: storedProgressSchema.nullable() });
+
+export const progressConflictSchema = z.object({ account: identifier, error: z.literal("progress_conflict"), progress: storedProgressSchema.nullable() });
+
+export type ProgressPlace = { asset_id: string; locator: Locator; position_seconds?: never } | { asset_id: string; position_seconds: number; locator?: never };
+
+export type ProgressRequest = ProgressPlace & {
+  observed_at: string;
+  expected_version: number;
+  client_mutation_id: string;
+  resolve_conflict?: true;
+};

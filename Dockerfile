@@ -34,6 +34,7 @@ WORKDIR /web/apps/web
 COPY apps/web/package.json apps/web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY apps/web ./
+COPY app/javascript/consumer_progress_sync.js app/javascript/consumer_epub_places.js /web/app/javascript/
 RUN bun run typecheck && bun run build
 
 FROM base AS build

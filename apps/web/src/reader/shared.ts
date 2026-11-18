@@ -1,0 +1,11 @@
+export * as places from "../../../../app/javascript/consumer_epub_places.js";
+export { ListeningCheckpoints, plausibleObservedAt, samePlace } from "../../../../app/javascript/consumer_progress_sync.js";
+export type {
+  EpubBook,
+  EpubContents,
+  EpubLocation,
+  EpubNavItem,
+  EpubRendition,
+  Purifier,
+} from "../../../../app/javascript/consumer_epub_places.js";
+export type { ListeningPlace } from "../../../../app/javascript/consumer_progress_sync.js";

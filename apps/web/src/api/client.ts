@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import {
   continueSchema,
   errorEnvelopeSchema,
@@ -14,6 +14,14 @@ import {
   type Session,
 } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
+import {
+  progressConflictSchema,
+  progressEnvelopeSchema,
+  readerEnvelopeSchema,
+  type ProgressRequest,
+  type ReaderPublication,
+  type StoredProgress,
+} from "../contract";
 import type { AccountGuard } from "./account-guard";
 import { ApiError, type FailureKind } from "./errors";
 
@@ -40,8 +48,14 @@ type RequestOptions<T> = {
   method?: "GET" | "PUT" | "POST";
   verifying?: boolean;
   body?: unknown;
+  keepalive?: boolean;
+  conflict?: z.ZodType<T>;
   account: (value: T) => string;
 };
+
+export type ProgressAnswer = { kind: "saved"; progress: StoredProgress } | { kind: "conflict"; progress: StoredProgress | null };
+
+type ProgressBody = { account: string; error?: "progress_conflict"; progress: StoredProgress | null };
 
 const FAILURE_BY_CODE: Record<string, FailureKind> = {
   signed_out: "signed_out",
@@ -50,6 +64,7 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   invalid_csrf: "csrf",
   invalid_request: "invalid",
   invalid_reading_status: "invalid",
+  invalid_progress: "invalid",
   different_account: "different_account",
   invalid_grant: "invalid_grant",
   rate_limited: "rate_limited",
@@ -107,6 +122,32 @@ export class ApiClient {
     return envelope.publication;
   }
 
+  async reader(id: string, signal?: AbortSignal): Promise<ReaderPublication> {
+    const envelope = await this.request({ path: `/library/${encodeURIComponent(id)}/reader`, schema: readerEnvelopeSchema, signal, account: (value) => value.account });
+    return envelope.publication;
+  }
+
+  async progress(id: string, signal?: AbortSignal): Promise<StoredProgress | null> {
+    const envelope = await this.request({ path: `/library/${encodeURIComponent(id)}/progress`, schema: progressEnvelopeSchema, signal, account: (value) => value.account });
+    return envelope.progress;
+  }
+
+  async saveProgress(id: string, body: ProgressRequest, options: { signal?: AbortSignal; keepalive?: boolean } = {}): Promise<ProgressAnswer> {
+    const answer = await this.request<ProgressBody>({
+      path: `/library/${encodeURIComponent(id)}/progress`,
+      schema: progressEnvelopeSchema,
+      conflict: progressConflictSchema,
+      method: "PUT",
+      body,
+      signal: options.signal,
+      keepalive: options.keepalive ?? false,
+      account: (value) => value.account,
+    });
+    if (answer.error === "progress_conflict") return { kind: "conflict", progress: answer.progress };
+    if (!answer.progress) throw new ApiError("contract", "The server saved a place without returning it");
+    return { kind: "saved", progress: answer.progress };
+  }
+
   inspectConnection(code: string, signal?: AbortSignal): Promise<ConnectInspect> {
     const query = new URLSearchParams({ user_code: code });
     return this.request({ path: `/connect${suffix(query)}`, schema: connectInspectSchema, signal, account: (value) => value.account });
@@ -140,6 +181,7 @@ export class ApiClient {
     try {
       const init: RequestInit = { method: options.method ?? "GET", headers, credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "same-origin" };
       if (options.signal) init.signal = options.signal;
+      if (options.keepalive) init.keepalive = true;
       if (options.body !== undefined) init.body = JSON.stringify(options.body);
       response = await (this.deps.fetcher ?? fetch)(`${boot.api}${options.path}`, init);
     } catch (error) {
@@ -149,7 +191,8 @@ export class ApiClient {
 
     const payload = await readJson(response);
 
-    if (!response.ok) throw this.failure(response.status, payload, response);
+    const conflict = options.conflict !== undefined && response.status === 409;
+    if (!response.ok && !conflict) throw this.failure(response.status, payload, response);
 
     if (!options.verifying) {
       const trusted = await untilAborted(guard.untilSettled(), options.signal);
@@ -160,7 +203,7 @@ export class ApiClient {
       }
     }
 
-    const parsed = options.schema.safeParse(payload);
+    const parsed = (conflict && options.conflict ? options.conflict : options.schema).safeParse(payload);
     if (!parsed.success) throw new ApiError("contract", "The server answered with an unexpected shape", response.status);
     if (options.account(parsed.data) !== guard.account) {
       guard.lock("account_changed");

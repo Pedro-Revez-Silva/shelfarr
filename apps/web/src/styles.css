@@ -1048,3 +1048,186 @@ thead th {
 .auth-card .lede strong {
   color: var(--ink);
 }
+
+.reader {
+  --reader-target: 44px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 var(--gutter) env(safe-area-inset-bottom, 0px);
+}
+.reader .button {
+  min-height: var(--reader-target);
+  min-width: var(--reader-target);
+}
+.reader-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 20px;
+  padding-block: 8px 4px;
+}
+.reader-back {
+  margin-bottom: 0;
+  font-size: 0.9375rem;
+}
+.reader-title {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+.reader-title h1 {
+  font-family: var(--serif);
+  font-size: clamp(1.25rem, 2.4vw + 0.75rem, 1.75rem);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+.reader-author {
+  color: var(--muted);
+}
+.reader-main {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.reader-missing {
+  max-width: 36rem;
+  margin: 15vh auto 0;
+  padding: 0 var(--gutter);
+}
+.reader-toolbar,
+.page-controls,
+.player-buttons,
+.player-options,
+.player-track-buttons,
+.save-status,
+.save-status-actions,
+.text-size {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.reader-toolbar {
+  justify-content: space-between;
+  padding-block: 4px 8px;
+}
+.reader-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.reader-field > span {
+  flex: none;
+}
+.reader-field select {
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: var(--reader-target);
+  max-width: 26rem;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.text-size-value {
+  min-width: 3.5em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.reader-notice,
+.reader-error {
+  margin-block: 4px 8px;
+}
+.epub {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+.epub-stage {
+  position: relative;
+  height: clamp(320px, 100dvh - 268px, 1100px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.epub-viewport {
+  position: absolute;
+  inset: 12px clamp(8px, 3vw, 40px);
+}
+.epub-opening {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+}
+.page-controls {
+  justify-content: space-between;
+  padding-block: 10px;
+}
+.page-controls .button {
+  flex: 1 1 9rem;
+  max-width: 16rem;
+}
+.epub-location {
+  flex: 1 1 12rem;
+  text-align: center;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.player {
+  display: grid;
+  gap: 18px;
+  max-width: 40rem;
+  padding-block: 12px 24px;
+}
+.player-track-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.player-seek {
+  display: grid;
+  gap: 6px;
+}
+.player-seek input[type="range"] {
+  inline-size: 100%;
+  min-block-size: var(--reader-target);
+  accent-color: var(--accent);
+}
+.player-times {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.player-play {
+  min-width: 8rem;
+}
+.player-state {
+  color: var(--muted);
+}
+.reader-footer {
+  padding-block: 8px max(10px, env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+}
+.save-status-text {
+  flex: 1 1 18rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.save-status--attention .save-status-text {
+  color: var(--ink);
+  font-weight: 550;
+}
+@media (forced-colors: active) {
+  .epub-stage,
+  .reader-footer {
+    border-color: CanvasText;
+  }
+}

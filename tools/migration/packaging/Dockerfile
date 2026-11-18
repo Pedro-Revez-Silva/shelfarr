@@ -10,6 +10,8 @@ COPY apps/web/package.json apps/web/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY apps/web ./
 COPY apps/design/assets/fonts /source/apps/design/assets/fonts
+COPY app/javascript/consumer_progress_sync.js app/javascript/consumer_epub_places.js /source/app/javascript/
+COPY vendor/javascript/consumer_reader_engine.js /source/vendor/javascript/
 RUN bun run build:go --out /out/web
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS go-build

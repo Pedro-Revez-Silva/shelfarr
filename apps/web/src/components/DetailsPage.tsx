@@ -1,5 +1,6 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import type { PublicationDetail } from "../contract";
+import { goReaderLink } from "../reader/links";
 import { failureKind } from "../api/errors";
 import { usePublication } from "../queries";
 import { useServices } from "../services";
@@ -76,7 +77,8 @@ function primaryLabel(publication: PublicationDetail): string {
 
 function Details({ publication }: { publication: PublicationDetail }) {
   const available = publication.availability === "available";
-  const { mode } = useServices();
+  const { mode, boot } = useServices();
+  const readerLink = mode === "go" ? goReaderLink(publication, boot.mount) : publication.reader_url;
   return (
     <article className="details" aria-labelledby="publication-heading">
       <BackToLibrary />
@@ -87,10 +89,10 @@ function Details({ publication }: { publication: PublicationDetail }) {
           <PageHeading id="publication-heading">{publication.title}</PageHeading>
           {publication.author ? <p className="details-author">{publication.author}</p> : null}
 
-          {available && mode === "go" ? (
+          {available && !readerLink ? (
             <div className="primary-action">
               <p className="notice" role="note">
-                Opening this {publication.action === "listen" ? "audiobook" : "book"} is not available on this experimental server yet. Your saved place is kept and you can still set its status below.
+                Opening this {publication.format_label === "Comic" ? "comic" : "PDF"} is not available in this experimental reader yet; it opens EPUBs and audiobooks. Your saved place is kept and you can still set its status below.
               </p>
               {publication.progress || publication.reading_status !== "unread" ? <p className="progress-label">{publication.progress_label}</p> : null}
               {publication.progress?.fraction != null && publication.reading_status === "in_progress" ? (
@@ -99,7 +101,7 @@ function Details({ publication }: { publication: PublicationDetail }) {
             </div>
           ) : available ? (
             <div className="primary-action">
-              <a className="button button--primary button--large" href={publication.reader_url}>
+              <a className="button button--primary button--large" href={readerLink ?? publication.reader_url}>
                 {primaryLabel(publication)}
                 <span className="sr-only"> {publication.title} in the {publication.action === "listen" ? "player" : "reader"}</span>
               </a>

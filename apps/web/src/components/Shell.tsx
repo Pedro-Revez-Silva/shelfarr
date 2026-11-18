@@ -54,7 +54,7 @@ function ActiveShell({ classicLibrary }: { classicLibrary: string | null }) {
       <main id="main" className="shell-main">
         {go ? (
           <p className="pilot-note" role="note">
-            This experimental server lets you browse your library and set reading status. Reading, listening and downloads are not available here yet.
+            This experimental server lets you browse your library, read EPUBs and listen to audiobooks while online, and set reading status. PDFs, comics, downloads and offline reading are not available here yet.
           </p>
         ) : null}
         <Outlet />

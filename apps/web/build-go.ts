@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 const FONT_DIRECTORY = resolve(import.meta.dir, "../design/assets/fonts");
 const FONTS = ["Newsreader-Regular", "Newsreader-SemiBold"];
+const READER_ENGINE = resolve(import.meta.dir, "../../vendor/javascript/consumer_reader_engine.js");
 
 function option(name: string): string {
   const index = process.argv.indexOf(name);
@@ -70,12 +71,16 @@ bodies.set(scriptName.name, script);
 bodies.set(styleName.name, styleBytes);
 files[scriptName.name] = { sha256: scriptName.sha256, size: script.byteLength };
 files[styleName.name] = { sha256: styleName.sha256, size: styleBytes.byteLength };
+const engine = new Uint8Array(await readFile(READER_ENGINE));
+const engineName = addressed("reader-engine", engine, ".js");
+bodies.set(engineName.name, engine);
+files[engineName.name] = { sha256: engineName.sha256, size: engine.byteLength };
 
 await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 for (const [name, body] of bodies) await writeFile(join(outdir, name), body);
 const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)));
-await writeFile(join(outdir, "manifest.json"), `${JSON.stringify({ version: 1, entry: { script: scriptName.name, style: styleName.name }, files: sorted }, null, 2)}\n`);
+await writeFile(join(outdir, "manifest.json"), `${JSON.stringify({ version: 1, entry: { script: scriptName.name, style: styleName.name, reader_engine: engineName.name }, files: sorted }, null, 2)}\n`);
 await rm(staging, { recursive: true, force: true });
 
 for (const name of (await readdir(outdir)).sort()) console.log(name);

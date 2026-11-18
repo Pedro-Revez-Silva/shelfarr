@@ -348,13 +348,22 @@ describe("account safety on the Go runtime", () => {
 });
 
 describe("the Library on the Go runtime", () => {
-  test("never offers a reader link that would 404 and says why", async () => {
+  test("opens an EPUB in the Go reader and never offers the Rails reader link that would 404", async () => {
     const server = libraryServer(() => signedIn()).on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ reader_url: "/read/7" }) } }));
     renderGo({ server, view: "details", url: "/preview/library/7" });
     await screen.findByRole("heading", { level: 1, name: "The Quiet Library" });
     expect(document.querySelector('a[href="/read/7"]')).toBeNull();
-    expect(screen.getAllByRole("note").some((note) => note.textContent?.includes("not available on this experimental server yet"))).toBe(true);
+    expect(screen.getByRole("link", { name: "Start reading The Quiet Library in the reader" }).getAttribute("href")).toBe("/preview/library/7/read");
     expect(document.title).toBe("The Quiet Library · Shelfarr");
+  });
+
+  test("says honestly that a PDF cannot be opened in the browser and offers no reader link", async () => {
+    const pdf = detail({ reader_url: "/read/7", format_label: "PDF", files: [{ id: "b".repeat(64), filename: "A Book.pdf", format: "pdf", media_type: "application/pdf", size_bytes: 4096, position: 0, page_count: null }] });
+    const server = libraryServer(() => signedIn()).on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: pdf } }));
+    renderGo({ server, view: "details", url: "/preview/library/7" });
+    await screen.findByRole("heading", { level: 1, name: "The Quiet Library" });
+    expect(document.querySelector('a[href="/read/7"], a[href="/preview/library/7/read"]')).toBeNull();
+    expect(screen.getAllByRole("note").some((note) => note.textContent?.includes("Opening this PDF is not available in this experimental reader yet"))).toBe(true);
   });
 
   test("changing reading status uses a fresh session token and is not retried on a rejected token", async () => {
