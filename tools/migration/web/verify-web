@@ -39,9 +39,11 @@ bundle_digest() {
 }
 
 step "web: a private copy of the sources, so no build output lands in the repository"
-mkdir -p "$work/repo/apps/design/assets"
+mkdir -p "$work/repo/apps/design/assets" "$work/repo/app/javascript" "$work/repo/vendor/javascript"
 cp -R "$root/apps/web" "$work/repo/apps/web"
 cp -R "$root/apps/design/assets/fonts" "$work/repo/apps/design/assets/fonts"
+cp "$root/app/javascript/consumer_progress_sync.js" "$root/app/javascript/consumer_epub_places.js" "$work/repo/app/javascript/"
+cp "$root/vendor/javascript/consumer_reader_engine.js" "$work/repo/vendor/javascript/"
 web="$work/repo/apps/web"
 
 step "web: install from the lockfile, typecheck, unit tests, audit and both production builds"
@@ -54,6 +56,9 @@ step "web: the Go-served build is byte-for-byte reproducible and ships only the 
 (cd "$web" && bun run build:go --out "$work/assets-a" && bun run build:go --out "$work/assets-b")
 diff -r "$work/assets-a" "$work/assets-b"
 test "$(find "$work/assets-a" -type f | wc -l)" -le 33
+engine="$(sed -n 's/.*"reader_engine": "\(reader-engine\.[0-9a-f]*\.js\)".*/\1/p' "$work/assets-a/manifest.json")"
+test -n "$engine"
+cmp "$work/assets-a/$engine" "$root/vendor/javascript/consumer_reader_engine.js"
 ! find "$work/assets-a" -name '*.map' | grep -q .
 echo "assets reproducible: $(cd "$work/assets-a" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 
@@ -101,6 +106,11 @@ mkdir -p "$out"
     SHELFARR_E2E_ASSETS="$work/assets-a" SHELFARR_E2E_OUT="$out" PULSE_SINK="$PULSE_SINK" TMPDIR="$work/t" ${SHELFARR_E2E_CHROMIUM:+SHELFARR_E2E_CHROMIUM="$SHELFARR_E2E_CHROMIUM"} \
     bun test --timeout 120000
 )
+
+step "rails: the real Rails application reads, replays and continues the reading and listening places Go wrote"
+test -f "$out/reader-rows.sqlite3"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/web/verify_reader_rows.rb --bundle "$work/bundle-current" --cases "$work/browser-current" \
+  --database "$out/reader-rows.sqlite3" --rows "$out/reader-rows.json" --out "$work/reader-rails")
 
 step "the source bundle was not modified by the browser run, and the repository is untouched"
 test "$current_before" = "$(bundle_digest "$work/bundle-current")" || { echo "bundle-current changed" >&2; exit 1; }

@@ -622,9 +622,10 @@ global-admin API, Rails and Go writing the same rows at once, power loss, clock 
 
 Status: **experimental, default-off.** With one extra explicit option the Go runtime also serves the static
 TypeScript/React screens the pilot needs, so a browser can sign in, deliberately approve or decline a native app
-connection and browse the existing Library and details without Rails. Nothing else is ported: reading, listening,
-downloads, offline, PWA, Discover, requests and administration stay with Rails and are shown as unavailable, never as
-dead links. No JavaScript runtime is involved at serving time.
+connection and browse the existing Library and details without Rails. Reading EPUBs and listening to audiobooks online
+were added later (see [Online EPUB reader and audiobook player](#online-epub-reader-and-audiobook-player-opt-in)).
+Downloads, offline, PWA, PDF and comic rendering, Discover, requests and administration stay with Rails and are shown as
+unavailable, never as dead links. No JavaScript runtime is involved at serving time.
 
 ### Switching it on
 
@@ -644,6 +645,7 @@ no catch-all is ever served. Packaging: the experimental overlay image carries t
 | --- | --- |
 | `GET`, `HEAD /preview` | `303` to `/preview/library`. |
 | `GET`, `HEAD /preview/library`, `/preview/library/{id}` | The HTML shell (`id` is `[1-9][0-9]{0,18}`). One static document per view, identical signed in or out; direct loads, reloads and Back/Forward work. |
+| `GET`, `HEAD /preview/library/{id}/read` | The reader shell, with its own policy (see the reader section). `404` when the asset build has no reader engine. |
 | `GET`, `HEAD /consumer/connect` | The shell for the consent screen. The path is exactly the native `verification_uri`, and `?user_code=` the `verification_uri_complete`. |
 | `GET`, `HEAD /preview/assets/{name}` | A file listed in the verified manifest. |
 | any other method on those paths | `405`, `Allow: GET, HEAD`, no side effect (a `POST /consumer/connect` approves nothing). |
@@ -693,13 +695,13 @@ maps, no listing, no manifest download.
   `form-action 'none'` blocks a native submission, so the pages show a plain `noscript` message instead.
 * Root mount only: no sub-path, proxy-prefix or Safari support is claimed or tested; only headless Chromium and a
   real SQLite file were exercised.
-* Reading, listening, downloads, offline use, the PWA and its `/read` worker, Discover, requests and administration are
-  later slices and appear as unavailable.
+* Downloads, offline use, the PWA and its `/read` worker, PDF and comic rendering, read-along, Discover, requests and
+  administration are later slices and appear as unavailable.
 
 ### Contract before and after
 
 * New (all additive): the option `-web-assets-dir`; the exit-`2` code `refused: web-assets`; the routes in the table
-  above; the manifest format `{version:1, entry:{script,style}, files:{name:{sha256,size}}}`; the boot block
+  above; the manifest format `{version:1, entry:{script,style,reader_engine?}, files:{name:{sha256,size}}}`; the boot block
   `{"version":1,"runtime":"go","view":"library|details|connect","mount":"/preview","api":"/preview/api/v1"}`.
 * Unchanged: every native `/api/consumer/v1` route and answer, every `/preview/api/v1` JSON shape, the cookies, the
   CSRF tokens, the Rails preview shell and its boot block `{version, account, mount, api, classic_library}` (the
@@ -727,6 +729,104 @@ Stop passing `-web-assets-dir` (or the allowlist): every route above returns to 
 migrating. Reverting the commits removes `internal/webassets`, `internal/gohttp/web.go`, `apps/web/src/go`, the
 Go-mode components and the verifier; the `golang.org/x/net` dependency goes with them. Existing Go sessions stay valid
 for Rails and for the previous Go build.
+
+## Online EPUB reader and audiobook player (opt-in)
+
+Status: **experimental, default-off, online only.** Behind the same four switches as the browser screens, a signed-in,
+allowlisted account can open an EPUB or an audiobook from Library or Details, read or listen in the browser and keep its
+place in the existing `consumer_progresses` row. Nothing here is offline: no worker, cache, outbox, download or install
+claim, and the Rails `/read` PWA identity, worker scope, outbox keys and downloads are untouched.
+
+### What is served
+
+| Route | Authentication | Answer |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/library/{id}/read` | none (static shell) | The reader shell. Policy: `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; img-src 'self' https: blob: data:; media-src 'self'; connect-src 'self'; frame-src 'self'; manifest-src 'none'; form-action 'none'; base-uri 'self'; frame-ancestors 'self'; object-src 'none'`. Boot block adds `reader_engine`. |
+| `GET`, `HEAD /preview/api/v1/library/{id}/reader` | session, `X-Shelfarr-Account` | `{account, publication:{id, title, author, book_type, content_kind, reading_status, assets:[{id, filename, format, media_type, size_bytes, position, url}], other_formats:[...], progress: null \| progress}}`. Assets are the EPUB and audio files only; PDF and CBZ appear in `other_formats`. `progress` is the full native representation (locator, `position_seconds`, `version`, `observed_at`, `updated_at`, `client_mutation_id`). Writes nothing. |
+| `GET`, `HEAD /preview/api/v1/library/{id}/progress` | session, `X-Shelfarr-Account` | `{account, progress: null \| progress}`. |
+| `PUT /preview/api/v1/library/{id}/progress` | session, `X-Shelfarr-Account`, exact `Origin`, Go CSRF | The native compare-and-set body and rules, unchanged (same code path as `PUT /api/consumer/v1/library/{id}/progress`). `200 {account, progress}`, `409 {account, error:"progress_conflict", progress}`, `422 invalid_progress`. |
+| `GET`, `HEAD /preview/api/v1/accounts/{account}/library/{id}/assets/{asset}` | session; the path account must equal the session's | EPUB or audio bytes of that exact generation through the existing confined, pinned, identity-checked streaming: `Range`, `If-Range`, `If-None-Match`, `HEAD`, strong `ETag`, `Cache-Control: private, no-store`, `Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Content-Disposition: inline` and the document policy `default-src 'none'; sandbox; ...`. |
+
+An audio element cannot send `X-Shelfarr-Account`, so media addresses carry the account id in the path. It is an
+identity guard, not a secret: every request (each range included) re-reads the session and is refused
+`401 account_changed` when the path account is not the signed-in one, so a tab left open after another tab signed in as
+someone else cannot fetch the new account's media, and its own old addresses stop working. Refusals are always JSON with
+the same privacy headers and never a redirect. `Sec-Fetch-Site` other than `same-origin` or `none` is
+`403 cross_site_refused` before the session is read. The browser routes never read `Authorization`; the native routes
+never read cookies. PDF and CBZ asset ids are `410 asset_unavailable` here; their native delivery is unchanged.
+
+### Reader and player behaviour
+
+* The reader is the static TypeScript app. EPUBs are rendered by the same pinned EPUB.js and DOMPurify bundle the Rails
+  reader ships (`vendor/javascript/consumer_reader_engine.js`, copied byte for byte into the asset build as
+  `reader-engine.<digest>.js` and loaded only by the reader view). The page-naming, picture-page, fraction-restore,
+  sanitising and frame-settling logic moved from the Rails controller into `app/javascript/consumer_epub_places.js`,
+  which both readers import; the listening rules are the existing `ListeningCheckpoints`.
+* Book sections stay sanitised strings rendered by EPUB.js into a sandboxed frame (`allow-same-origin` only) with the
+  section policy `script-src 'none'`; scripts, forms, frames, inline handlers and outside addresses are removed or
+  blocked, and only the book's own `blob:` pictures are kept. The relaxed style, font and image sources exist only on
+  the reader document; the Library policy is unchanged.
+* Visible controls on desktop and phone: Back, chapter list, smaller/larger text, previous/next page and the location.
+  Arrow and Page keys turn pages from the page or the book, never from inputs, selects, sliders or editable text. The
+  player has Play/Pause, back 15 s, forward 30 s, a position slider, track list and previous/next track, and speed;
+  Space plays or pauses outside other controls. System media controls are out of scope.
+* Opening, restoring, reflowing, resizing, text size and focus never save. A page turn, chapter choice, pause, seek or
+  track change saves at the time of that action (`observed_at`), sent a moment later with the version the page knows.
+  Play after a pause rewinds five seconds once and does not save or re-date the place until playback passes it again;
+  playing on across a track change saves the next track.
+* Answers: a success updates the known version; a conflict with a plausibly later place elsewhere is offered ("Go to
+  that place") and never overwritten; an earlier one is rebased automatically (at most five times) with the original
+  activity time; an undated or unmappable one waits for an explicit choice (keeping this device sends
+  `resolve_conflict: true` with the choice time). A network failure or `5xx` keeps the exact request and is resent only
+  by Retry, unchanged (same mutation id, activity time and expected version); a refused token is refreshed and also
+  waits for Retry. `signed_out`/`account_changed` lock the page, stop the player and nothing more is sent.
+* A saved place in another file or an earlier edition opens the EPUB at its beginning, says so, and is kept until a
+  turn. Manual reading status is a separate row and is never changed by reading.
+
+### Contract before and after
+
+```
+GET /preview/library/77/read                                        before 404 JSON   after 200 reader shell (reader policy)
+GET /preview/api/v1/library/77/reader        X-Shelfarr-Account: 5  before 404        after 200 {"account":"5","publication":{...,"assets":[{"id":"<asset>",...,"url":"/preview/api/v1/accounts/5/library/77/assets/<asset>"}],"other_formats":[],"progress":null}}
+GET /preview/api/v1/library/77/progress      X-Shelfarr-Account: 5  before 404        after 200 {"account":"5","progress":null}
+PUT /preview/api/v1/library/77/progress      + Origin, X-CSRF-Token before 404        after 200 {"account":"5","progress":{...,"version":1}} | 409 {"account":"5","error":"progress_conflict","progress":{...}} | 422
+GET /preview/api/v1/accounts/5/library/77/assets/<asset>            before 404        after 200/206/304 bytes | 401 account_changed | 401 signed_out | 403 cross_site_refused | 410 asset_unavailable
+manifest.json entry                                                 before {script, style}                   after {script, style, reader_engine}   (optional; a build without it serves no reader)
+Go boot block (reader view only)                                    after adds "reader_engine":"/preview/assets/reader-engine.<digest>.js"
+```
+
+Unchanged: every native route and answer, the existing preview JSON (`reader_url` keeps its Rails `/read/:id`
+meaning; Go reader links are derived in the client as `/preview/library/{id}/read`), cookies, CSRF tokens, schema and
+stored formats. Rows written: only `consumer_progresses`, through the native compare-and-set; Rails reads, replays and
+continues them (verified with the real application).
+
+### Rollback
+
+Stop passing `-web-assets-dir` (or the allowlist): the reader shell and every route above answer the JSON `404` again.
+Places saved by the reader are ordinary Rails rows with their activity times and mutation ids; Rails' reader, the
+native apps and the previous Go build read and continue them. Reverting the commits removes the reader routes, the
+reader view and `consumer_epub_places.js` (the Rails controller would need its previous inline code back, which the
+revert restores). No migration either way.
+
+### Verification and limits
+
+`tools/migration/web/verify-web` adds: Go tests for the reader, progress and media routes (account path, signed out,
+bearer, cross-site, PDF, other book, ranges, headers, CSRF/origin/account on writes, native routes still refusing
+cookies); unit tests and mutants for the save rules, keys, links and player; the asset build check that the shipped
+engine equals the vendored one; real headless Chromium (muted, owned null sink) against the production binary with
+synthetic EPUB, image-only manga, mixed text/picture and silent multi-track WAV fixtures produced by real Rails: opening
+without writing, turns by button, key, frame key and chapter with action times, reload/resize/text size silence,
+Back to details and Library with filters and scroll, manga pictures checked by screen pixels with a distinct place per
+page and another app's fraction restored, a text place beside a picture, a stale edition, status independence, refused
+token, lost answers before and after commit, later/earlier/undated conflicts, another tab switching account, an ended
+session, the hostile chapter (no script, no outside fetch), the player's pause, seek, resume rewind, replay, track
+change, speed and natural track transition, axe and screenshots on desktop and phone, light and dark, 100% and 200%
+text, and keyboard order; then `tools/migration/web/verify_reader_rows.rb` boots the real Rails application on the rows
+Go wrote and reads, replays and continues them.
+
+Not proven: Safari, Firefox, real devices, screen readers, audible output (the test audio is silent and the browser
+muted), offline use, very large books (the reader refuses EPUBs over 32 MiB like Rails), and Rails and Go writing the
+same place at the same moment.
 
 ## Database access
 

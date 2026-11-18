@@ -149,7 +149,7 @@ describe("the existing Library and details screens served by Go", () => {
     await context.close();
   });
 
-  test("Go mode shows no dead links or buttons for reading, listening, discovery or administration", async () => {
+  test("Go mode links EPUBs to the Go reader and shows no dead links for PDFs, discovery or administration", async () => {
     const { context, page } = await signedIn("browser_admin");
     const hrefs = () => page.locator("a[href]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("href") ?? "").filter((href) => !href.startsWith("#")));
     for (const href of await hrefs()) expect(href.startsWith("/preview/")).toBe(true);
@@ -157,7 +157,13 @@ describe("the existing Library and details screens served by Go", () => {
     await page.goto(`${server.origin}/preview/library/${book}`);
     await page.getByRole("heading", { level: 1, name: "alpha" }).waitFor();
     for (const href of await hrefs()) expect(href.startsWith("/preview/")).toBe(true);
-    expect(await page.getByText("not available on this experimental server yet").count()).toBeGreaterThan(0);
+    expect(await page.getByRole("link", { name: /^(Start reading|Continue reading|Read again) alpha in the reader$/ }).getAttribute("href")).toBe(`/preview/library/${book}/read`);
+    const pdf = server.query<{ id: number }>("SELECT id FROM books WHERE title = 'FX Pdf' AND file_path IS NOT NULL LIMIT 1")[0]?.id;
+    await page.goto(`${server.origin}/preview/library/${pdf}`);
+    await page.getByRole("heading", { level: 1, name: "FX Pdf" }).waitFor();
+    for (const href of await hrefs()) expect(href.startsWith("/preview/")).toBe(true);
+    expect(await page.locator(`a[href$="/read"]`).count()).toBe(0);
+    expect(await page.getByText("Opening this PDF is not available in this experimental reader yet").count()).toBe(1);
     await context.close();
   });
 });

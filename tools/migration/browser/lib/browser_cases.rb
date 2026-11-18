@@ -6,6 +6,7 @@ require "fileutils"
 require "json"
 require "securerandom"
 require_relative "../../http/lib/http_cases"
+require_relative "reader_media"
 
 module Migration
   module Browser
@@ -39,6 +40,7 @@ module Migration
         seed_fixed_layout_library
         seed_fixed_layout_progress
         seed_markup_descriptions
+        seed_reader_library
         seed_people
         configure_preview
         seed_sessions
@@ -56,6 +58,19 @@ module Migration
       def seed_markup_descriptions
         @markup_books = Book.acquired.where(book_type: %i[ebook audiobook]).order(:id).last(MARKUP_DESCRIPTIONS.size)
         @markup_books.zip(MARKUP_DESCRIPTIONS).each { |book, description| book.update_columns(description: description) }
+      end
+
+      def seed_reader_library
+        root = File.join(@paths.media, "reader")
+        stamp = Time.at(1_700_400_000, 456, :nsec)
+        @reader_books = {
+          "text" => create_book("Reader Text Sampler", :ebook, write_bytes(File.join(root, "Reader Text Sampler.epub"), ReaderMedia.text_epub, stamp), author: "R. Sampler"),
+          "manga" => create_book("Reader Harbor Sketches", :ebook, write_bytes(File.join(root, "Reader Harbor Sketches.epub"), ReaderMedia.manga_epub, stamp + 1), author: "M. Panel"),
+          "mixed" => create_book("Reader Mixed Pages", :ebook, write_bytes(File.join(root, "Reader Mixed Pages.epub"), ReaderMedia.mixed_epub, stamp + 2), author: "P. Mixed")
+        }
+        spoken = File.join(root, "Reader Spoken Sampler")
+        [ 24, 18, 12 ].each_with_index { |seconds, index| write_bytes(File.join(spoken, "Part #{index + 1}.wav"), ReaderMedia.silent_wav(seconds), stamp + 3 + index) }
+        @reader_books["audio"] = create_book("Reader Spoken Sampler", :audiobook, spoken, author: "S. Voice")
       end
 
       def seed_people
@@ -313,7 +328,8 @@ module Migration
         File.write(File.join(@paths.out, "secrets", "personas.json"), JSON.pretty_generate("personas" => @personas, "passwords" => @secrets), perm: 0o600)
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
-                     "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id }, "steps" => @steps }
+                     "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
+                     "reader_books" => @reader_books.transform_values(&:id), "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }

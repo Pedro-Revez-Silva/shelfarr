@@ -11,6 +11,7 @@ export type Fixture = {
   serverVersion: string;
   previewUsers: string;
   users: Record<string, number>;
+  readerBooks: Record<"text" | "manga" | "mixed" | "audio", number>;
   passwords: Record<string, string>;
   personas: Record<string, { cookie: string; user_id: number; session_id: number | null }>;
 };
@@ -33,6 +34,7 @@ export function loadFixture(): Fixture {
     serverVersion: cases.server_version,
     previewUsers: cases.preview_user_ids,
     users: cases.users,
+    readerBooks: cases.reader_books,
     passwords: secrets.passwords,
     personas: secrets.personas,
   };

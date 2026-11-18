@@ -86,6 +86,20 @@ describe("rendered pages in light and dark, on desktop and phone, at 100% and 20
       await context.close();
     });
 
+    test(`the EPUB reader and the audiobook player: ${JSON.stringify(variant)}`, async () => {
+      const { context, page: view, seen } = await page(variant);
+      await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.manga}/read`);
+      await signIn(view, "browser_member", fixture.passwords["browser_member"] ?? "");
+      await view.locator(".epub-location").filter({ hasText: /^Page \d+ of \d+ · Chapter \d+$/ }).waitFor({ timeout: 30_000 });
+      await audit(view, "reader", variant);
+      await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.audio}/read`);
+      await view.getByText("Paused").waitFor({ timeout: 20_000 });
+      await audit(view, "player", variant);
+      expect(await policyViolations(view)).toEqual([]);
+      expect(unexpectedConsole(seen)).toEqual([]);
+      await context.close();
+    });
+
     test(`every consent state: ${JSON.stringify(variant)}`, async () => {
       const own = await startServer({ fixture, extraArguments: ["-login-attempts", "1000"] });
       const native = new NativeClient(own.origin);
@@ -147,6 +161,38 @@ describe("keyboard use", () => {
     await view.getByLabel("Password", { exact: true }).fill(fixture.passwords["browser_member"] ?? "");
     await view.keyboard.press("Enter");
     await view.locator(".book-card").first().waitFor();
+    await context.close();
+  });
+
+  test("the reader's controls are reached by Tab in reading order and operated by Enter, Space and arrows", async () => {
+    const { context, page: view } = await page({ viewport: "desktop", scheme: "light", zoom: 100 });
+    await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.text}/read`);
+    await signIn(view, "browser_member", fixture.passwords["browser_member"] ?? "");
+    await view.locator(".epub-location").filter({ hasText: /^Page 1 of \d+ · Chapter 1$/ }).waitFor({ timeout: 30_000 });
+    const stops: string[] = [];
+    const active = () => view.evaluate(() => {
+      const element = document.activeElement;
+      if (!element || element === document.body) return "BODY";
+      const label = element.getAttribute("aria-label") ?? (element.id ? document.querySelector(`label[for="${element.id}"]`)?.textContent : null) ?? element.closest("label")?.querySelector("span")?.textContent ?? element.textContent;
+      return `${element.tagName}:${(label ?? "").replace(/\s+/g, " ").trim()}`;
+    });
+    await view.keyboard.press("Tab");
+    stops.push(await active());
+    for (let step = 0; step < 6; step += 1) {
+      await view.keyboard.press("Tab");
+      stops.push(await active());
+    }
+    expect(stops).toEqual(["A:←Back to the book", "SELECT:Chapter", "BUTTON:Smaller", "BUTTON:Larger", "IFRAME:", "BUTTON:← Previous page", "BUTTON:Next page →"]);
+    const ring = await view.evaluate(() => getComputedStyle(document.activeElement as Element).outlineStyle);
+    expect(ring).not.toBe("none");
+    await view.keyboard.press("Enter");
+    await view.locator(".epub-location").filter({ hasText: /^Page 2 of \d+ · Chapter 1$/ }).waitFor();
+    await view.keyboard.press("Space");
+    await view.locator(".epub-location").filter({ hasText: /^Page 3 of \d+ · Chapter 1$/ }).waitFor();
+    await view.keyboard.press("Shift+Tab");
+    expect(await active()).toBe("BUTTON:← Previous page");
+    await view.keyboard.press("ArrowLeft");
+    await view.locator(".epub-location").filter({ hasText: /^Page 2 of \d+ · Chapter 1$/ }).waitFor();
     await context.close();
   });
 

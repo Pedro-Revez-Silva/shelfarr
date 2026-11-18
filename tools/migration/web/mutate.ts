@@ -1,10 +1,11 @@
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 type Mutant = { name: string; file: string; old: string; replacement: string; tests: string[] };
 
 const GO_AUTH = ["test/go-auth.test.tsx"];
 const GO_CONNECT = ["test/go-connect.test.tsx"];
+const READER = ["test/reader.test.ts"];
 
 const mutants: Mutant[] = [
   { name: "sign-in: a second submit while one is pending is sent", file: "src/go/SignInPage.tsx", old: "if (submitting.current) return;", replacement: "", tests: GO_AUTH },
@@ -27,7 +28,16 @@ const mutants: Mutant[] = [
   { name: "consent: the upgrade wording is lost", file: "src/go/ConnectPage.tsx", old: 'const title = grant.upgrade ? "Allow requesting from your app" : "Connect your Shelfarr app";', replacement: 'const title = "Connect your Shelfarr app";', tests: GO_CONNECT },
   { name: "consent: the code is taken from the first value", file: "src/go/ConnectPage.tsx", old: "const last = values[values.length - 1];", replacement: "const last = values[0];", tests: GO_CONNECT },
   { name: "library: dead classic handoffs are shown in Go mode", file: "src/components/Navigation.tsx", old: 'const handoffs = mode === "rails";', replacement: 'const handoffs = mode === "rails" || mode === "go";', tests: GO_AUTH },
-  { name: "library: a reader link that would 404 is shown in Go mode", file: "src/components/DetailsPage.tsx", old: 'available && mode === "go" ? (', replacement: 'available && (mode as string) === "never" ? (', tests: GO_AUTH },
+  { name: "library: the Rails reader link that would 404 is shown in Go mode", file: "src/components/DetailsPage.tsx", old: 'const readerLink = mode === "go" ? goReaderLink(publication, boot.mount) : publication.reader_url;', replacement: "const readerLink = mode === \"go\" ? (publication.reader_url || goReaderLink(publication, boot.mount)) : publication.reader_url;", tests: GO_AUTH },
+  { name: "reader: a PDF is offered to the browser reader", file: "src/reader/links.ts", old: 'publication.files.some((file) => file.format === "epub")', replacement: "publication.files.length > 0", tests: READER.concat(GO_AUTH) },
+  { name: "reader: a 409 conflict is taken as a saved place", file: "src/api/client.ts", old: "(conflict && options.conflict ? options.conflict : options.schema)", replacement: "options.schema", tests: READER },
+  { name: "reader: Retry sends a new mutation instead of the uncertain one", file: "src/reader/progress.ts", old: "    this.held = null;\n    void this.send(request, false);", replacement: "    this.held = null;\n    void this.send({ ...request, client_mutation_id: this.options.uuid() }, false);", tests: READER },
+  { name: "reader: the activity time is the upload time", file: "src/reader/progress.ts", old: "void this.send({ ...next.place, observed_at: next.observedAt,", replacement: "void this.send({ ...next.place, observed_at: new Date(this.options.now()).toISOString(),", tests: READER },
+  { name: "reader: a later place from another device is overwritten", file: "src/reader/progress.ts", old: "if (!remote || (remoteTime !== null && localTime > remoteTime)) {", replacement: "if (!remote || remoteTime !== null) {", tests: READER },
+  { name: "reader: saving continues after the account changed", file: "src/reader/progress.ts", old: "return !this.stopped && this.options.guard.isActive();", replacement: "return !this.stopped;", tests: READER },
+  { name: "reader: arrows typed in an editing control turn pages", file: "src/reader/keys.ts", old: "if (!plain(event) || within(event.target, EDITING)) return null;", replacement: "if (!plain(event)) return null;", tests: READER },
+  { name: "player: Play after a pause does not rewind", file: "src/reader/audio.ts", old: "const from = this.checkpoints.resume(audio.currentTime);", replacement: "const from = audio.currentTime;", tests: READER },
+  { name: "player: a refused play is not shown", file: "src/reader/audio.ts", old: 'problem: error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "failed"', replacement: 'problem: null', tests: READER },
   { name: "library: a refused format is shown as a generic server error", file: "src/api/client.ts", old: 'if (code?.startsWith("unsupported_")', replacement: 'if (false && code?.startsWith("unsupported_")', tests: GO_AUTH },
   { name: "boot: an unknown view is accepted", file: "src/contract.ts", old: 'view: z.enum(goViews),', replacement: "view: z.string(),", tests: GO_AUTH },
   { name: "boot: an account in the Go boot block is trusted", file: "src/contract.ts", old: "export const goBootSchema = z.object({", replacement: "export const goBootSchema = z.looseObject({", tests: GO_AUTH },
@@ -38,8 +48,11 @@ if (!root) throw new Error("usage: bun mutate.ts PRIVATE_WEB_COPY");
 
 let survived = 0;
 for (const mutant of mutants) {
-  const work = mkdtempSync(join(process.env["TMPDIR"] ?? "/var/tmp", "mut-"));
+  const base = mkdtempSync(join(process.env["TMPDIR"] ?? "/var/tmp", "mut-"));
+  const work = join(base, "apps", "web");
   try {
+    mkdirSync(work, { recursive: true });
+    cpSync(join(root, "../../app/javascript"), join(base, "app", "javascript"), { recursive: true });
     for (const entry of readdirSync(root)) if (entry !== "node_modules" && entry !== "e2e") cpSync(join(root, entry), join(work, entry), { recursive: true });
     symlinkSync(join(root, "node_modules"), join(work, "node_modules"));
     const path = join(work, mutant.file);
@@ -61,7 +74,7 @@ for (const mutant of mutants) {
       console.log(`detected ${mutant.name}`);
     }
   } finally {
-    rmSync(work, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
   }
 }
 console.log(`${mutants.length - survived}/${mutants.length} web mutants detected by an assertion`);

@@ -171,6 +171,13 @@ SPA itself can move to `/` or `/read` only with the transition described in
   the real API and database, including the hand-off to the existing EPUB reader and audiobook
   player and the saved place that comes back to the preview.
 
+## Go-served reader (later slice)
+
+When the experimental Go runtime serves these screens, Details and "Keep going" link EPUBs and audiobooks to an online
+reader and player at `/preview/library/:id/read` instead of the Rails `/read/:id` (the JSON `reader_url` keeps its Rails
+meaning; the Go link is derived in the client). PDFs and comics stay honestly unavailable there. See
+[`go-http-migration.md`](go-http-migration.md#online-epub-reader-and-audiobook-player-opt-in). Under Rails nothing changes.
+
 ## Not in this slice
 
 Full frontend parity, Go authentication or write ownership, moving `/read` or the PWA identity,
