@@ -35,9 +35,27 @@ type readerFixture struct {
 }
 
 type readerEnvelope struct {
-	Account     string            `json:"account"`
-	Publication readerPublication `json:"publication"`
+	Account     string `json:"account"`
+	Publication struct {
+		BookType     string   `json:"book_type"`
+		OtherFormats []string `json:"other_formats"`
+		Progress     any      `json:"progress"`
+		Assets       []struct {
+			ID        string `json:"id"`
+			Filename  string `json:"filename"`
+			Format    string `json:"format"`
+			MediaType string `json:"media_type"`
+			SizeBytes int64  `json:"size_bytes"`
+			Position  int    `json:"position"`
+			URL       string `json:"url"`
+		} `json:"assets"`
+	} `json:"publication"`
 }
+
+const (
+	expectedReaderPolicy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; img-src 'self' https: blob: data:; media-src 'self'; connect-src 'self'; frame-src 'self'; manifest-src 'none'; form-action 'none'; base-uri 'self'; frame-ancestors 'self'; object-src 'none'"
+	expectedMediaPolicy  = "default-src 'none'; sandbox; frame-ancestors 'none'; form-action 'none'; base-uri 'none'"
+)
 
 func newReaderFixture(t *testing.T) *readerFixture {
 	t.Helper()
@@ -233,7 +251,7 @@ func TestBrowserMediaIsBoundToTheAccountInItsAddressAndNeverRedirects(t *testing
 	}
 	want := map[string]string{
 		"Content-Type": "application/epub+zip", "Cache-Control": "private, no-store", "Cross-Origin-Resource-Policy": "same-origin", "X-Content-Type-Options": "nosniff",
-		"Accept-Ranges": "bytes", "ETag": `"` + f.epub + `"`, "Content-Security-Policy": documentPolicy, "Referrer-Policy": "no-referrer",
+		"Accept-Ranges": "bytes", "ETag": `"` + f.epub + `"`, "Content-Security-Policy": expectedMediaPolicy, "Referrer-Policy": "no-referrer",
 	}
 	for name, value := range want {
 		if header.Get(name) != value {
@@ -293,12 +311,12 @@ func TestTheReaderShellHasItsOwnScopedPolicyAndExistsOnlyWithAReaderEngine(t *te
 	h := newBrowserHarness(t, func(config *Config) { config.WebAssetsDir = directory })
 	client := h.client()
 	recorder := client.send(http.MethodGet, "/preview/library/7/read", "", nil)
-	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Security-Policy") != readerPolicy || recorder.Header().Get("Cache-Control") != "private, no-store" {
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Security-Policy") != expectedReaderPolicy || recorder.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("reader shell: %d %v", recorder.Code, recorder.Header())
 	}
 	boot := regexp.MustCompile(`<script type="application/json" id="shelfarr-boot">(.*)</script>`).FindStringSubmatch(recorder.Body.String())
-	var decodedBoot webBoot
-	if boot == nil || json.Unmarshal([]byte(boot[1]), &decodedBoot) != nil || decodedBoot != (webBoot{Version: 1, Runtime: "go", View: "reader", Mount: "/preview", API: "/preview/api/v1", ReaderEngine: "/preview/assets/" + listed.Entry.ReaderEngine}) {
+	var decodedBoot map[string]any
+	if boot == nil || json.Unmarshal([]byte(boot[1]), &decodedBoot) != nil || fmt.Sprint(decodedBoot) != fmt.Sprint(map[string]any{"version": float64(1), "runtime": "go", "view": "reader", "mount": "/preview", "api": "/preview/api/v1", "reader_engine": "/preview/assets/" + listed.Entry.ReaderEngine}) {
 		t.Errorf("reader boot: %v", boot)
 	}
 	if engine := client.send(http.MethodGet, "/preview/assets/"+listed.Entry.ReaderEngine, "", nil); engine.Code != http.StatusOK || engine.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {
