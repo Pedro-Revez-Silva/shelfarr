@@ -19,11 +19,21 @@ var (
 const webContinueLimit = 3
 
 func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	session, ok := a.guard(w, r, result, true)
+	media := found.kind == routeBrowserMedia
+	if media && a.previewConfigured() && !sameOriginFetch(r) {
+		problem(w, result, http.StatusForbidden, "cross_site_refused")
+		return
+	}
+	session, ok := a.guard(w, r, result, !media)
 	if !ok {
 		return
 	}
-	if (found.kind == routeBrowserStatus || found.kind == routeBrowserDecide) && !a.mutationAllowed(w, r, *session, result) {
+	if media && found.account != session.account() {
+		problem(w, result, http.StatusUnauthorized, "account_changed")
+		return
+	}
+	mutation := found.kind == routeBrowserStatus || found.kind == routeBrowserDecide || found.kind == routeBrowserProgress && r.Method == http.MethodPut
+	if mutation && !a.mutationAllowed(w, r, *session, result) {
 		return
 	}
 	switch found.kind {
@@ -41,6 +51,12 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.connectInspect(w, r, *session, result)
 	case routeBrowserDecide:
 		a.connectDecide(w, r, *session, result)
+	case routeBrowserReader:
+		a.webReader(w, r, *session, found.id, result)
+	case routeBrowserProgress:
+		a.webProgress(w, r, *session, found.id, result)
+	case routeBrowserMedia:
+		a.webMedia(w, r, found, result)
 	}
 }
 

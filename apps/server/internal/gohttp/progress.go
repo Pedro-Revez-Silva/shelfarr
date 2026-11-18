@@ -122,6 +122,10 @@ func (a *App) progress(w http.ResponseWriter, r *http.Request, principal *accoun
 }
 
 func (a *App) respondStored(w http.ResponseWriter, result *outcome, status int, code string, progress *store.Progress) {
+	a.respondStoredFor(w, result, status, code, progress, "")
+}
+
+func (a *App) respondStoredFor(w http.ResponseWriter, result *outcome, status int, code string, progress *store.Progress, account string) {
 	var representation *consumer.Progress
 	if progress != nil {
 		converted, err := consumer.NewProgress(*progress)
@@ -136,34 +140,15 @@ func (a *App) respondStored(w http.ResponseWriter, result *outcome, status int, 
 	if code != "" {
 		body["error"] = code
 	}
+	if account != "" {
+		body["account"] = account
+	}
 	writeJSON(w, status, body)
 }
 
 func (a *App) updateProgress(w http.ResponseWriter, r *http.Request, principal *account.Principal, rawID string, result *outcome) {
-	document, ok := a.decode(w, r, result)
+	saved, ok := a.saveCheckpoint(w, r, principal.UserID, rawID, result)
 	if !ok {
-		return
-	}
-	book, ok := a.checkpointBook(w, r, rawID, result)
-	if !ok {
-		return
-	}
-	write, err := document.Progress(book.BookType == store.BookTypeAudiobook, a.now())
-	var invalid checkpoint.Invalid
-	if errors.As(err, &invalid) {
-		writeInvalid(w, result, "invalid_progress", invalid.Message)
-		return
-	}
-	if message, failure := a.confirmPlace(r.Context(), *book, write); failure != nil {
-		mapFailure(w, result, failure)
-		return
-	} else if message != "" {
-		writeInvalid(w, result, "invalid_progress", message)
-		return
-	}
-	saved, err := a.db.SaveProgress(r.Context(), principal.UserID, book.ID, write, a.now)
-	if err != nil {
-		mapFailure(w, result, err)
 		return
 	}
 	if saved.Outcome == live.ProgressConflict {
@@ -171,6 +156,36 @@ func (a *App) updateProgress(w http.ResponseWriter, r *http.Request, principal *
 		return
 	}
 	a.respondStored(w, result, http.StatusOK, "", saved.Progress)
+}
+
+func (a *App) saveCheckpoint(w http.ResponseWriter, r *http.Request, userID int64, rawID string, result *outcome) (live.ProgressResult, bool) {
+	document, ok := a.decode(w, r, result)
+	if !ok {
+		return live.ProgressResult{}, false
+	}
+	book, ok := a.checkpointBook(w, r, rawID, result)
+	if !ok {
+		return live.ProgressResult{}, false
+	}
+	write, err := document.Progress(book.BookType == store.BookTypeAudiobook, a.now())
+	var invalid checkpoint.Invalid
+	if errors.As(err, &invalid) {
+		writeInvalid(w, result, "invalid_progress", invalid.Message)
+		return live.ProgressResult{}, false
+	}
+	if message, failure := a.confirmPlace(r.Context(), *book, write); failure != nil {
+		mapFailure(w, result, failure)
+		return live.ProgressResult{}, false
+	} else if message != "" {
+		writeInvalid(w, result, "invalid_progress", message)
+		return live.ProgressResult{}, false
+	}
+	saved, err := a.db.SaveProgress(r.Context(), userID, book.ID, write, a.now)
+	if err != nil {
+		mapFailure(w, result, err)
+		return live.ProgressResult{}, false
+	}
+	return saved, true
 }
 
 func writeInvalid(w http.ResponseWriter, result *outcome, code, message string) {

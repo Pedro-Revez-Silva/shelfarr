@@ -18,6 +18,8 @@ const (
 	webConnectPath   = "/consumer/connect"
 	webBootVersion   = 1
 	webContentPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https:; connect-src 'self'; manifest-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'; object-src 'none'"
+	readerPolicy     = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline' blob:; font-src 'self' blob: data:; img-src 'self' https: blob: data:; media-src 'self'; connect-src 'self'; frame-src 'self'; manifest-src 'none'; form-action 'none'; base-uri 'self'; frame-ancestors 'self'; object-src 'none'"
+	readerSuffix     = "/read"
 )
 
 type webView string
@@ -26,12 +28,14 @@ const (
 	viewLibrary webView = "library"
 	viewDetails webView = "details"
 	viewConnect webView = "connect"
+	viewReader  webView = "reader"
 )
 
 var webTitles = map[webView]string{
 	viewLibrary: "Library · Shelfarr",
 	viewDetails: "Book · Shelfarr",
 	viewConnect: "Connect an app · Shelfarr",
+	viewReader:  "Reader · Shelfarr",
 }
 
 type webUI struct {
@@ -40,17 +44,25 @@ type webUI struct {
 }
 
 type webBoot struct {
-	Version int    `json:"version"`
-	Runtime string `json:"runtime"`
-	View    string `json:"view"`
-	Mount   string `json:"mount"`
-	API     string `json:"api"`
+	Version      int    `json:"version"`
+	Runtime      string `json:"runtime"`
+	View         string `json:"view"`
+	Mount        string `json:"mount"`
+	API          string `json:"api"`
+	ReaderEngine string `json:"reader_engine,omitempty"`
 }
 
 func newWebUI(bundle *webassets.Bundle) (*webUI, error) {
 	ui := &webUI{bundle: bundle, shells: map[webView][]byte{}}
 	for view, title := range webTitles {
-		boot, err := json.Marshal(webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI})
+		described := webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI}
+		if view == viewReader {
+			if bundle.ReaderEngine() == "" {
+				continue
+			}
+			described.ReaderEngine = webAssetsPrefix + bundle.ReaderEngine()
+		}
+		boot, err := json.Marshal(described)
 		if err != nil {
 			return nil, err
 		}
@@ -84,6 +96,8 @@ func classifyWeb(method, path string) (route, bool) {
 		found = route{kind: routeWebShell, name: "web_library", id: string(viewLibrary)}
 	case strings.HasPrefix(path, webLibraryPath+"/") && bookID.MatchString(strings.TrimPrefix(path, webLibraryPath+"/")):
 		found = route{kind: routeWebShell, name: "web_details", id: string(viewDetails)}
+	case strings.HasPrefix(path, webLibraryPath+"/") && strings.HasSuffix(path, readerSuffix) && bookID.MatchString(strings.TrimSuffix(strings.TrimPrefix(path, webLibraryPath+"/"), readerSuffix)):
+		found = route{kind: routeWebShell, name: "web_reader", id: string(viewReader)}
 	case path == webConnectPath:
 		found = route{kind: routeWebShell, name: "web_connect", id: string(viewConnect)}
 	case strings.HasPrefix(path, webAssetsPrefix) && !strings.Contains(strings.TrimPrefix(path, webAssetsPrefix), "/"):
@@ -115,6 +129,10 @@ func (a *App) serveWeb(w http.ResponseWriter, r *http.Request, found route, resu
 		a.web.bundle.Serve(w, r, found.id)
 	case routeWebShell:
 		w.Header().Set("Cache-Control", "private, no-store")
+		if _, served := a.web.shells[webView(found.id)]; !served {
+			problem(w, result, http.StatusNotFound, "not_found")
+			return
+		}
 		a.writeShell(w, r, webView(found.id), result)
 	}
 }
@@ -122,7 +140,11 @@ func (a *App) serveWeb(w http.ResponseWriter, r *http.Request, found route, resu
 func (a *App) writeShell(w http.ResponseWriter, r *http.Request, view webView, result *outcome) {
 	header := w.Header()
 	header.Set("Content-Type", "text/html; charset=utf-8")
-	header.Set("Content-Security-Policy", webContentPolicy)
+	policy := webContentPolicy
+	if view == viewReader {
+		policy = readerPolicy
+	}
+	header.Set("Content-Security-Policy", policy)
 	header.Set("Cross-Origin-Opener-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 	if view == viewConnect {

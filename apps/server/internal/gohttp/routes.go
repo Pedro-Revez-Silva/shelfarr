@@ -35,6 +35,9 @@ const (
 	routeBrowserContinue
 	routeBrowserPublication
 	routeBrowserStatus
+	routeBrowserReader
+	routeBrowserProgress
+	routeBrowserMedia
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
@@ -53,6 +56,7 @@ type route struct {
 	name    string
 	id      string
 	assetID string
+	account string
 	allow   string
 	web     bool
 }
@@ -194,6 +198,12 @@ func classifyPreview(method, rest string) route {
 		return supported(method, route{kind: routeBrowserPublication, name: "browser_publication", id: segments[1]})
 	case len(segments) == 3 && segments[0] == "library" && segments[2] == "reading_status" && segmentOK(segments[1]):
 		return served(method, route{kind: routeBrowserStatus, name: "browser_reading_status", id: segments[1]}, http.MethodPut)
+	case len(segments) == 3 && segments[0] == "library" && segments[2] == "reader" && segmentOK(segments[1]):
+		return supported(method, route{kind: routeBrowserReader, name: "browser_reader", id: segments[1]})
+	case len(segments) == 3 && segments[0] == "library" && segments[2] == "progress" && segmentOK(segments[1]):
+		return served(method, route{kind: routeBrowserProgress, name: "browser_progress", id: segments[1]}, http.MethodGet, http.MethodHead, http.MethodPut)
+	case len(segments) == 6 && segments[0] == "accounts" && segments[2] == "library" && segments[4] == "assets" && segmentOK(segments[1]) && segmentOK(segments[3]) && segmentOK(segments[5]):
+		return supported(method, route{kind: routeBrowserMedia, name: "browser_media", account: segments[1], id: segments[3], assetID: segments[5]})
 	case rest == "connect":
 		switch method {
 		case http.MethodGet, http.MethodHead:

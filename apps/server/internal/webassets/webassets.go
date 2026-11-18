@@ -42,8 +42,9 @@ var assetName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}\.([0-9a-f]{16
 type manifest struct {
 	Version int `json:"version"`
 	Entry   struct {
-		Script string `json:"script"`
-		Style  string `json:"style"`
+		Script       string `json:"script"`
+		Style        string `json:"style"`
+		ReaderEngine string `json:"reader_engine,omitempty"`
 	} `json:"entry"`
 	Files map[string]struct {
 		SHA256 string `json:"sha256"`
@@ -58,9 +59,10 @@ type file struct {
 }
 
 type Bundle struct {
-	script string
-	style  string
-	files  map[string]file
+	script       string
+	style        string
+	readerEngine string
+	files        map[string]file
 }
 
 func Load(directory string) (*Bundle, error) {
@@ -84,7 +86,7 @@ func Load(directory string) (*Bundle, error) {
 	if err := decoder.Decode(&listed); err != nil || decoder.More() || listed.Version != 1 || len(listed.Files) == 0 || len(listed.Files) > maxFiles {
 		return nil, ErrInvalid
 	}
-	bundle := &Bundle{script: listed.Entry.Script, style: listed.Entry.Style, files: map[string]file{}}
+	bundle := &Bundle{script: listed.Entry.Script, style: listed.Entry.Style, readerEngine: listed.Entry.ReaderEngine, files: map[string]file{}}
 	var total int64
 	for name, expected := range listed.Files {
 		parts := assetName.FindStringSubmatch(name)
@@ -119,6 +121,11 @@ func Load(directory string) (*Bundle, error) {
 	if _, present := bundle.files[bundle.style]; !present {
 		return nil, ErrInvalid
 	}
+	if bundle.readerEngine != "" {
+		if _, present := bundle.files[bundle.readerEngine]; !present || !strings.HasSuffix(bundle.readerEngine, ".js") || bundle.readerEngine == bundle.script {
+			return nil, ErrInvalid
+		}
+	}
 	return bundle, nil
 }
 
@@ -138,6 +145,8 @@ func readRegular(directory, name string, limit int64) ([]byte, error) {
 func (b *Bundle) Script() string { return b.script }
 
 func (b *Bundle) Style() string { return b.style }
+
+func (b *Bundle) ReaderEngine() string { return b.readerEngine }
 
 func (b *Bundle) Has(name string) bool {
 	_, present := b.files[name]

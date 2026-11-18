@@ -212,3 +212,25 @@ func TestLoadNeverTouchesTheWorkingDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestTheReaderEngineIsOptionalAndMustBeAListedScriptOtherThanTheEntry(t *testing.T) {
+	plain, _ := built(t)
+	bundle, err := Load(plain)
+	if err != nil || bundle.ReaderEngine() != "" {
+		t.Fatalf("a manifest without a reader engine must load without one: %v %q", err, bundle.ReaderEngine())
+	}
+	directory := t.TempDir()
+	listed := webassetstest.WriteWithReaderEngine(t, directory)
+	bundle, err = Load(directory)
+	if err != nil || bundle.ReaderEngine() != listed.Entry.ReaderEngine || !bundle.Has(listed.Entry.ReaderEngine) {
+		t.Fatalf("the listed reader engine must load: %v", err)
+	}
+	for name, engine := range map[string]string{"unlisted": "reader-engine.0123456789abcdef.js", "the entry script": listed.Entry.Script, "a stylesheet": listed.Entry.Style} {
+		changed := listed
+		changed.Entry.ReaderEngine = engine
+		webassetstest.WriteManifest(t, directory, changed)
+		if _, err := Load(directory); err == nil {
+			t.Errorf("%s as the reader engine must be refused", name)
+		}
+	}
+}

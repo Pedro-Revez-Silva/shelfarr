@@ -17,8 +17,9 @@ type Entry struct {
 type Manifest struct {
 	Version int `json:"version"`
 	Entry   struct {
-		Script string `json:"script"`
-		Style  string `json:"style"`
+		Script       string `json:"script"`
+		Style        string `json:"style"`
+		ReaderEngine string `json:"reader_engine,omitempty"`
 	} `json:"entry"`
 	Files map[string]Entry `json:"files"`
 }
@@ -47,6 +48,19 @@ func Write(t testing.TB, directory string) Manifest {
 		}
 		listed.Files[name] = Describe(body)
 	}
+	WriteManifest(t, directory, listed)
+	return listed
+}
+
+func WriteWithReaderEngine(t testing.TB, directory string) Manifest {
+	t.Helper()
+	listed := Write(t, directory)
+	engine := []byte("export const ePub = null;\n")
+	listed.Entry.ReaderEngine = Name("reader-engine", engine, ".js")
+	if err := os.WriteFile(filepath.Join(directory, listed.Entry.ReaderEngine), engine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listed.Files[listed.Entry.ReaderEngine] = Describe(engine)
 	WriteManifest(t, directory, listed)
 	return listed
 }

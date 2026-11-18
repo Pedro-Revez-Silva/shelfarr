@@ -204,11 +204,14 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		return
 	}
 	slots := a.metadata
-	if found.kind == routeAsset || found.kind == routeTransfer {
+	if found.kind == routeAsset || found.kind == routeTransfer || found.kind == routeBrowserMedia {
 		slots = a.streams
 	}
 	if found.kind == routeTransfer {
 		setTransferPrivacy(w.Header())
+	}
+	if found.kind == routeBrowserMedia {
+		setBrowserMediaPrivacy(w.Header())
 	}
 	if !a.acquire(slots) {
 		w.Header().Set("Retry-After", "1")
@@ -228,7 +231,8 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.device(w, r, result)
 	case routeAuthToken:
 		a.exchange(w, r, result)
-	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide:
+	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
+		routeBrowserReader, routeBrowserProgress, routeBrowserMedia:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)
