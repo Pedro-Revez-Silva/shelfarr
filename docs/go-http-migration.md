@@ -625,7 +625,7 @@ TypeScript/React screens the pilot needs, so a browser can sign in, deliberately
 connection and browse the existing Library and details without Rails. Reading EPUBs and listening to audiobooks online
 were added later (see [Online EPUB reader and audiobook player](#online-epub-reader-and-audiobook-player-opt-in)).
 Downloads, offline, PWA, PDF and comic rendering, Discover, requests and administration stay with Rails and are shown as
-unavailable, never as dead links. No JavaScript runtime is involved at serving time.
+unavailable (Open Library search was added later, see [Discover](#discover-open-library-search-opt-in)), never as dead links. No JavaScript runtime is involved at serving time.
 
 ### Switching it on
 
@@ -1038,6 +1038,164 @@ and need no migration.
 
 Not proven: Safari, Firefox, real password managers and screen readers.
 
+## Discover: Open Library search (opt-in)
+
+Status: **experimental, default-off, read-only.** Behind the same switches as the browser screens, plus one more that
+only the server operator can set, an allowlisted account gets a Discover screen in the Go navigation. It searches
+[Open Library](https://openlibrary.org) by title or author and, for each work found, links the copies of that work
+already acquired in the Shelfarr Library. Nothing can be requested, acquired or saved from it. Hardcover, Google Books,
+Comic Vine, aggregation across sources, requests and the native `/api/consumer/v1/discover` (still `501`) are later
+slices. The Rails Search and Discover screens, the Rails preview and its Discover handoff are unchanged.
+
+### Switching it on, and off again
+
+Pass `-open-library-search` to `shelfarr-http`. It is the only outbound network use of this runtime: without it the
+process opens no outbound connection, the Discover screen says search is switched off, and the JSON answers
+`"search": "server_off"` without contacting anyone. With it, what a signed-in, allowlisted person types into Discover
+and submits is sent to `https://openlibrary.org` from the server's address. Rollback: restart without the flag (the
+screen goes back to "switched off"), or deploy the previous binary. Nothing is stored, so nothing needs migrating.
+
+The request is fixed: `GET https://openlibrary.org/search.json?q=<query>&limit=<n>&fields=key,title,author_name,first_publish_year,cover_i,edition_count`
+with `Accept: application/json` and `User-Agent: Shelfarr/<-server-version>`. No cookie, credential, account or session
+value is ever sent. The proxy variables `HTTPS_PROXY`/`NO_PROXY` are honoured, as Rails' HTTP client does; the
+destination host is not configurable. The answer must arrive within 8 s (5 s to connect, 5 s for TLS), be `200` with
+`application/json` and at most 1 MiB, or the search fails; no redirect is followed and nothing is retried. The process
+sends at most one search a second to Open Library across every account and at most two at once (Open Library's
+published limit for clients that do not identify themselves with a contact address); a search above that budget is
+refused with `429 search_rate_limited` and `Retry-After`. A `429` from Open Library pauses every search for its
+`Retry-After` (60 s when absent or not a number of seconds, at most 15 minutes) in this process only. A browser that
+leaves or replaces a search cancels the outbound request.
+
+### Which Shelfarr settings apply
+
+The same settings Rails' `MetadataService` reads, read-only and on every request:
+
+| Setting or row | Effect |
+| --- | --- |
+| `open_library_enabled` false | `"search": "provider_disabled"`, nothing sent |
+| `metadata_source` set to `hardcover`, `google_books` or `comic_vine` (surrounding whitespace ignored, as Rails strips it) | `"search": "provider_not_selected"`, nothing sent; `auto`, `openlibrary` and any other value keep Open Library |
+| `open_library_search_limit` | the `limit` sent, clamped to 1–20 (Rails sends any value) |
+| `metadata_provider_statuses` row for `openlibrary` with `rate_limited_until` in the future, or `status = auth_failed` | `"search": "provider_paused"` with `retry_after` seconds when known, nothing sent (Rails skips the provider then) |
+
+A setting stored with a type Rails would not write (`open_library_enabled` that is not `boolean`, a limit that is not
+an integer, a `metadata_source` that is not a string, an unreadable `rate_limited_until`) answers `501
+unsupported_stored_value` instead of guessing. Go never writes `metadata_provider_statuses` or any other row; Rails'
+health tracking stays Rails' own. When Rails also has Hardcover, Google Books or Comic Vine enabled, this screen still
+searches only Open Library and says so.
+
+### What is served
+
+| Route | Authentication | Answer |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/discover` | none (shell) | The HTML shell, boot view `discover`, title `Discover · Shelfarr`, the Library policy. `?q=` is read by the page, not the server. |
+| `GET /preview/api/v1/discover` | session, `X-Shelfarr-Account` | Without `q`: availability only, never contacts Open Library. With `q`: the search. Other methods `405`, `Allow: GET`. |
+
+```
+{"account":"12","provider":{"name":"Open Library","url":"https://openlibrary.org"},
+ "search":"available"|"server_off"|"provider_disabled"|"provider_not_selected"|"provider_paused",
+ "retry_after":91,                     (only when paused until a known time)
+ "query":"dune"|null,
+ "items":[{"id":"OL893415W","title":"Dune","author":"Frank Herbert"|null,"first_publish_year":1965|null,
+           "edition_count":120|null,"cover_url":"https://covers.openlibrary.org/b/id/12345-M.jpg"|null,
+           "source_url":"https://openlibrary.org/works/OL893415W",
+           "library":[{"book_type":"ebook"|"audiobook"|"comicbook","publication_id":"5"}]}]}
+```
+
+`q` is trimmed of Unicode white space and must be 1–200 characters of valid UTF-8 with no control characters; a blank,
+over-long, repeated or malformed `q` is `422 invalid_query` and nothing is sent. Failures: Open Library unreachable or
+too slow `503 search_unavailable`; an error status, redirect, non-JSON, oversized or malformed answer `502
+search_failed`; rate limits `429 search_rate_limited` with `Retry-After`. The guard order and the
+`Cache-Control: private, no-store` of every preview route apply. The access log keeps the route name only; one extra
+line `open_library` records the outcome, the result count and the duration, never the query, a title or Open Library's
+answer.
+
+### Projection and library links
+
+Each Open Library document becomes an item only if its `key` is a work key (`/works/OL<digits>W`) and its `title` is a
+non-blank string; the first occurrence of a work wins and at most `limit` are kept, in Open Library's order. The first
+`author_name` entry, an integer `first_publish_year` in 1–9999, a positive integer `cover_i` and a non-negative integer
+`edition_count` are kept; anything else of another type becomes `null`. Text has control characters removed and white
+space collapsed, and titles over 500 and names over 300 characters are shortened. The cover address is built from the
+number, never taken from the answer, and the browser accepts only `https://covers.openlibrary.org/b/id/<n>-M.jpg`;
+without one it draws the generated cover. Covers are loaded lazily by the browser from Open Library with no referrer,
+as the Rails screens load them, within the existing `img-src 'self' https:` policy.
+
+`library` lists, in the order ebook, audiobook, comic, the acquired copy (non-blank `file_path`, a type the Go Library
+serves) whose `open_library_work_id` is exactly the work's id, the newest by id when several exist. A row holding the
+same work under another source (for example `hardcover_id` as well) still matches through its Open Library column; ids
+stored in another form, other case or with a `/works/` prefix do not, exactly as in Rails' `Book.preload_by_work_ids`.
+No title or author guess is ever used. These are the same shared Library books every allowlisted account already sees
+in the Go Library, so a link reveals nothing new; requests, their owners and pending books are never read or shown.
+
+### Deliberate differences from Rails Search
+
+* Only Open Library; results are not merged with other sources, not clustered by title and author, not classified as
+  comics, and keep Open Library's relevance order (Rails sorts merged candidates by source priority, confidence and title).
+* `subject` is not requested (it only feeds Rails' comics classification), and edition keys (`/books/...M`), repeated
+  works and `cover_i: -1` are dropped (Rails keeps them and builds a broken `-1` cover address).
+* A string `first_publish_year` is dropped; Rails keeps it.
+* The link per format is the newest *acquired* copy. Rails' result card looks at the newest row of that format with the
+  work id, acquired or not, so a newer pending request for the same work and format makes Rails show that format as
+  requested while Go links the copy already in the Library (the verifier's fixture holds that case).
+* No snapshots, pagination, streaming, request buttons or details handoff; no provider-health writes; a stricter
+  limit, deadline, size bound and request budget; the native Discover API stays `501`.
+
+### Browser screen
+
+Discover sits between Library and Account in the Go navigation (`/preview/discover`); a direct load, reload, Back and
+Forward keep the query in the address (`?q=`). Opening the screen only asks the server whether search is available. A
+labelled search field (with a note that what is typed goes to Open Library when Search is pressed) sends one search per
+submit, never per keystroke; a blank submit explains itself and sends nothing, and an over-long query in the address is
+explained and never sent. A status region announces "Searching…", the result count, no results, or that the search did
+not finish. Each result shows its cover, title, author, first publication year, number of editions, "Not in your library"
+or one "Open the ebook/audiobook/comic" link per copy, and a "View on Open Library" link that opens a new tab with no
+opener or referrer. The screen states that only Open Library is searched and that requesting is not part of the
+preview. Each unavailable state has its own explanation and no form. Rate limits, an unreachable or unusable Open
+Library, a refused query and an older server (`404`) each have a message and a Try again button where it can help;
+nothing is retried by itself. Each query has its own cache entry for the account (five minutes, no refetch on focus),
+so Back reuses the answer; a newer search or leaving the page cancels the older request and a late answer cannot
+appear. The account guard, session checks and locking work as on every other page.
+
+### Contract before and after
+
+```
+GET /preview/discover                 before 404 not_found   after 200 shell, boot {"version":1,"runtime":"go","view":"discover","mount":"/preview","api":"/preview/api/v1"}
+GET /preview/api/v1/discover          before 404 not_found   after 200 {"account","provider","search","query":null,"items":[]}
+GET /preview/api/v1/discover?q=dune   before 404 not_found   after 200 {..., "query":"dune","items":[...]}
+                                                             or 422 invalid_query / 429 search_rate_limited / 502 search_failed / 503 search_unavailable
+shelfarr-http -open-library-search    before unknown flag    after opt-in outbound search (default off)
+Go boot block "view"                  before library|details|connect|reader|account   after adds discover
+```
+
+Unchanged: `/api/consumer/v1/discover` (`501`), `server.json` (no capability is advertised), `/preview/api/v1/session`
+(`links.discover` keeps the Rails rule for the Rails preview), cookies, CSRF tokens, the Rails preview, the schema and
+every setting's meaning. The runtime now also requires `books.open_library_work_id` and
+`metadata_provider_statuses(provider, status, rate_limited_until)`, both present in the supported revision. A new
+frontend served by an older binary shows Discover and reports that it is not available (the JSON `404`); serve a binary
+and an asset build from the same commit.
+
+### Verification
+
+* Go unit tests (`internal/openlibrary`, `internal/gohttp`): the exact request URL and headers, the projection of a
+  recorded answer with every odd type, size, status, content type, redirect, stalled body, deadline, cancellation,
+  `429` pause and the per-second and concurrency budget; the route's guards, every settings case with provider health
+  unchanged, refused stored values, refused queries, exact library links (newest acquired, pending, blank, case,
+  prefix, odd type), named failures without leaks in answers or logs, and a disconnect cancelling the upstream request.
+* `tools/migration/web/verify-web`: the Rails fixture gives reader books Open Library work ids (one also with a
+  Hardcover id), adds a newer pending request for one and a pending-only book requested by another account, and records
+  what the real Rails `OpenLibraryClient.search` and `Book.preload_by_work_ids`/`find_in_lookup` make of a recorded
+  answer. A loopback fake Open Library (an HTTPS `CONNECT` proxy with its own test certificate authority, reached by
+  the unmodified production binary through `HTTPS_PROXY` and `SSL_CERT_FILE`) serves that answer and the failure
+  cases; no real Open Library request is made. Real headless Chromium checks off-by-default with no connection, search
+  on submit only, the exact JSON against the Rails capture and the differences above, the exact outbound request,
+  the library links and details, Back without a new request, reload, no rows changed, no query in the logs, every
+  failure state without retry or redirect, the per-second limit and Open Library's pause, cancellation on leaving and
+  on a newer search, the settings and Rails backoff, an over-long query, another tab switching account, keyboard order,
+  and axe with no overflow or small targets in light and dark, desktop, phone and 320 px, at 100% and 200% text. Unit
+  tests and six mutants cover the screen.
+
+Not proven: real Open Library traffic, Safari, Firefox and screen readers.
+
 ## Database access
 
 `internal/live` opens the database read-write only for the two statements above and `query_only` for
@@ -1051,14 +1209,15 @@ request context, so a disconnect cancels it, and no transaction is held while a 
 
 ## Keys and configuration
 
-Nothing is discovered. There is no default database path, no `.env` loading and no network access.
+Nothing is discovered. There is no default database path, no `.env` loading and no network access, except the opt-in
+Open Library search of [Discover](#discover-open-library-search-opt-in) (`-open-library-search`).
 
 ```
 shelfarr-http -experimental \
   -database /abs/primary.sqlite3 -lock-file /abs/auth-domain.lock \
   -library-root /abs/library [-library-root ...] \
   [-listen 127.0.0.1:3100] [-allow-non-loopback] [-server-version V] [-android-channels release] \
-  [-body-timeout 5s]
+  [-body-timeout 5s] [-open-library-search]
 ```
 
 Cursors are signed by Rails with a key derived from `secret_key_base`, so the runtime needs it, in
