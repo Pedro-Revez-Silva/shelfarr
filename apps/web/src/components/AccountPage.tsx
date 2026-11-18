@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ApiError } from "../api/errors";
+import { ApiError, failureKind } from "../api/errors";
 import type { Profile } from "../contract";
 import { useDisplayName, useProfile, useShowSavedProfile } from "../queries";
 import { useServices } from "../services";
@@ -36,6 +36,10 @@ function AccountSettings() {
           <DisplayNameForm profile={profile.data} />
           <PasswordForm profile={profile.data} />
         </>
+      ) : profile.isError && failureKind(profile.error) === "not_found" ? (
+        <EmptyState title="Account settings are not available here">
+          <p>This server does not offer account settings yet. Nothing was changed.</p>
+        </EmptyState>
       ) : profile.isError ? (
         <ErrorPanel error={profile.error} onRetry={() => void profile.refetch()} />
       ) : (
@@ -90,6 +94,7 @@ function Outcome({ outcome }: { outcome: FormOutcome }) {
 function DisplayNameForm({ profile }: { profile: Profile }) {
   const ids = { heading: useId(), input: useId(), error: useId() };
   const form = useRef<HTMLFormElement>(null);
+  const saving = useRef(false);
   const mutation = useDisplayName();
   const { queryClient, keys } = useServices();
   const [draft, setDraft] = useState<string | null>(null);
@@ -99,7 +104,7 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (mutation.isPending) return;
+    if (saving.current) return;
     setOutcome(null);
     if (isBlank(value)) {
       const blank = { name: ["can't be blank"] };
@@ -108,7 +113,11 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
       return;
     }
     setErrors({});
+    saving.current = true;
     mutation.mutate(value, {
+      onSettled: () => {
+        saving.current = false;
+      },
       onSuccess: (answer) => {
         if (answer.kind === "saved") {
           setDraft(null);

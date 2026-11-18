@@ -106,7 +106,7 @@ export type Session = z.infer<typeof sessionSchema>;
 export const profileSchema = z.object({ id: identifier, username: z.string(), name: z.string() });
 export type Profile = z.infer<typeof profileSchema>;
 
-export const accountEnvelopeSchema = z.object({ account: identifier, profile: profileSchema });
+export const accountEnvelopeSchema = z.object({ account: identifier, profile: profileSchema }).refine((envelope) => envelope.profile.id === envelope.account, "The profile belongs to another account");
 export type AccountEnvelope = z.infer<typeof accountEnvelopeSchema>;
 
 export const accountRejectionSchema = z.object({

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryHistory } from "@tanstack/react-router";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../src/App";
 import { resetFirstPage } from "../src/components/PageHeading";
@@ -57,6 +57,7 @@ describe("the account contract", () => {
   test("accepts exactly the profile envelope and the field rejection", () => {
     expect(accountEnvelopeSchema.safeParse({ account: ACCOUNT, profile: profile() }).success).toBe(true);
     expect(accountEnvelopeSchema.safeParse({ account: ACCOUNT, profile: { ...profile(), id: "ada" } }).success).toBe(false);
+    expect(accountEnvelopeSchema.safeParse({ account: ACCOUNT, profile: { ...profile(), id: "99" } }).success).toBe(false);
     expect(accountRejectionSchema.safeParse({ account: ACCOUNT, error: "invalid_password", errors: { password: ["is too long"] } }).success).toBe(true);
     expect(accountRejectionSchema.safeParse({ account: ACCOUNT, error: "invalid_csrf", errors: {} }).success).toBe(false);
     expect(accountRejectionSchema.safeParse({ error: "invalid_profile", errors: {} }).success).toBe(false);
@@ -100,6 +101,14 @@ describe("the Go Account page", () => {
     expect(await screen.findByText("@ada")).toBeTruthy();
   });
 
+  test("a server without account settings says so and changes nothing", async () => {
+    const server = standardServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session() }));
+    renderAccount(server);
+    expect(await screen.findByText("Account settings are not available here")).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: "Display name" })).toBeNull();
+    expect(writes(server)).toHaveLength(0);
+  });
+
   test("the classic preview neither links to nor serves this page", async () => {
     const server = standardServer();
     renderApp({ server, url: "/sub/preview/account" });
@@ -135,6 +144,23 @@ describe("changing the display name", () => {
     expect(await screen.findByText("Display name saved.")).toBeTruthy();
     expect(screen.getByText("Zoë 📚", { selector: "strong", normalizer: (text) => text.trim() })).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Signed in as" })).getByText("Zoë 📚", { normalizer: (text) => text.trim() })).toBeTruthy();
+  });
+
+  test("two submits in the same moment send one save", async () => {
+    const pending = deferred<{ body: unknown }>();
+    const server = accountServer().on("PUT", /\/account\/profile$/, () => pending.promise);
+    renderAccount(server);
+    const input = await screen.findByRole("textbox", { name: "Display name" });
+    fireEvent.change(input, { target: { value: "Once Only" } });
+    const form = input.closest("form") as HTMLFormElement;
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    await waitFor(() => expect(server.called("PUT", /\/account\/profile$/)).toHaveLength(1));
+    await act(async () => pending.resolve({ body: { account: ACCOUNT, profile: profile("Once Only") } }));
+    expect(await screen.findByText("Display name saved.")).toBeTruthy();
+    expect(server.called("PUT", /\/account\/profile$/)).toHaveLength(1);
   });
 
   test("a blank name is explained on the field and never sent", async () => {
@@ -264,6 +290,24 @@ describe("changing the password", () => {
       expect(JSON.stringify({ ...window.sessionStorage })).not.toContain(secret);
       expect(JSON.stringify({ ...window.localStorage })).not.toContain(secret);
     }
+  });
+
+  test("two submits in the same moment send one password change", async () => {
+    const pending = deferred<{ body: unknown }>();
+    const server = accountServer().on("POST", /\/account\/password$/, () => pending.promise);
+    renderAccount(server);
+    const user = userEvent.setup();
+    await screen.findByLabelText("Current password");
+    await fillPassword(user, CURRENT, NEXT);
+    const form = screen.getByLabelText("Current password").closest("form") as HTMLFormElement;
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    await waitFor(() => expect(server.called("POST", /\/account\/password$/)).toHaveLength(1));
+    await act(async () => pending.resolve({ body: { account: ACCOUNT, profile: profile() } }));
+    await screen.findByText(/Password changed/);
+    expect(server.called("POST", /\/account\/password$/)).toHaveLength(1);
   });
 
   test("a wrong current password is shown on that field and focused", async () => {

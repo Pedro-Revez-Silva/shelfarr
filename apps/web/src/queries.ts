@@ -75,7 +75,7 @@ export function useShowSavedProfile() {
   const { keys, guard } = useServices();
   const client = useQueryClient();
   return (profile: Profile) => {
-    if (!guard.isActive() || profile.id !== guard.account) return;
+    if (!guard.isActive()) return;
     client.setQueryData(keys.profile, profile);
     client.setQueryData<Session>(keys.session, (session) => (session ? { ...session, account: { ...session.account, name: profile.name } } : session));
     void client.invalidateQueries({ queryKey: keys.session });
