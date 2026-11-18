@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
@@ -46,7 +49,7 @@ func (d *DB) OpenLibrarySettings(ctx context.Context, now time.Time) (OpenLibrar
 	if present && otherMetadataProviders[rubyStrip(source)] {
 		return OpenLibrarySettings{State: OpenLibraryNotSelected}, nil
 	}
-	limit, err := d.IntegerSetting(ctx, "open_library_search_limit", 20)
+	limit, err := d.openLibraryLimit(ctx)
 	if err != nil {
 		return OpenLibrarySettings{}, err
 	}
@@ -58,6 +61,31 @@ func (d *DB) OpenLibrarySettings(ctx context.Context, now time.Time) (OpenLibrar
 		return OpenLibrarySettings{State: OpenLibraryPaused, Limit: limit, PausedUntil: until}, nil
 	}
 	return OpenLibrarySettings{State: OpenLibraryAvailable, Limit: limit}, nil
+}
+
+var wholeNumber = regexp.MustCompile(`^[+-]?[0-9]+$`)
+
+func (d *DB) openLibraryLimit(ctx context.Context) (int, error) {
+	row, err := d.Setting(ctx, "open_library_search_limit")
+	if err != nil {
+		return 0, err
+	}
+	if !row.Found || !row.Value.Valid {
+		return openlibrary.MaxResults, nil
+	}
+	text := strings.TrimSpace(row.Value.String)
+	if row.Type != "integer" || !wholeNumber.MatchString(text) {
+		return 0, store.ErrUnsupported
+	}
+	if strings.HasPrefix(text, "-") {
+		return 0, nil
+	}
+	digits := strings.TrimLeft(strings.TrimPrefix(text, "+"), "0")
+	if len(digits) > 2 {
+		return openlibrary.MaxResults, nil
+	}
+	value, _ := strconv.Atoi("0" + digits)
+	return min(value, openlibrary.MaxResults), nil
 }
 
 func (d *DB) openLibraryPaused(ctx context.Context, now time.Time) (bool, time.Time, error) {
@@ -87,10 +115,11 @@ func (d *DB) openLibraryPaused(ctx context.Context, now time.Time) (bool, time.T
 }
 
 type WorkCopy struct {
-	WorkID   string
-	BookID   int64
-	BookType int
+	WorkID string
+	Book   store.Book
 }
+
+const maxWorkCopies = 200
 
 func (d *DB) AcquiredCopiesOfOpenLibraryWorks(ctx context.Context, workIDs []string, types []int) ([]WorkCopy, error) {
 	if len(workIDs) == 0 || len(types) == 0 {
@@ -104,7 +133,8 @@ func (d *DB) AcquiredCopiesOfOpenLibraryWorks(ctx context.Context, workIDs []str
 	}
 	typeMarks, typeArguments := typePlaceholders(types)
 	arguments = append(arguments, typeArguments...)
-	rows, err := d.read.QueryContext(ctx, `SELECT books.open_library_work_id, books.book_type, MAX(books.id) FROM books WHERE books.open_library_work_id IN (`+strings.Join(workMarks, ",")+`) AND `+acquired+` AND books.book_type IN (`+typeMarks+`) GROUP BY books.open_library_work_id, books.book_type ORDER BY books.open_library_work_id, books.book_type`, arguments...)
+	arguments = append(arguments, maxWorkCopies)
+	rows, err := d.read.QueryContext(ctx, `SELECT `+bookColumns+`, books.open_library_work_id FROM books WHERE books.open_library_work_id IN (`+strings.Join(workMarks, ",")+`) AND `+acquired+` AND books.book_type IN (`+typeMarks+`) ORDER BY books.id DESC LIMIT ?`, arguments...)
 	if err != nil {
 		return nil, Classify(err)
 	}
@@ -112,9 +142,11 @@ func (d *DB) AcquiredCopiesOfOpenLibraryWorks(ctx context.Context, workIDs []str
 	copies := []WorkCopy{}
 	for rows.Next() {
 		var found WorkCopy
-		if err := rows.Scan(&found.WorkID, &found.BookType, &found.BookID); err != nil {
+		book, err := scanBook(rows, &found.WorkID)
+		if err != nil {
 			return nil, Classify(err)
 		}
+		found.Book = book
 		copies = append(copies, found)
 	}
 	if err := rows.Err(); err != nil {

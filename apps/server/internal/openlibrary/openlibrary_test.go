@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -107,14 +109,20 @@ func TestTheResultLimitIsClampedAndExtraDocumentsAreDropped(t *testing.T) {
 		limits = append(limits, request.URL.Query().Get("limit"))
 		return answer(http.StatusOK, "application/json", recorded), nil
 	})
-	for _, limit := range []int{0, -5, 21, 400} {
+	for _, limit := range []int{1, 21, 400} {
 		if _, err := client.Search(context.Background(), "x", limit); err != nil {
 			t.Fatal(err)
 		}
 		moment.advance(MinimumInterval)
 	}
-	if !reflect.DeepEqual(limits, []string{"1", "1", "20", "20"}) {
+	if !reflect.DeepEqual(limits, []string{"1", "20", "20"}) {
 		t.Fatalf("limits %v", limits)
+	}
+	for _, limit := range []int{0, -5} {
+		works, err := client.Search(context.Background(), "x", limit)
+		if err != nil || works == nil || len(works) != 0 || len(limits) != 3 {
+			t.Fatalf("limit %d: %v %v after %v", limit, works, err, limits)
+		}
 	}
 	works, err := client.Search(context.Background(), "x", 2)
 	if err != nil || len(works) != 2 || works[1].ID != "OL82563W" {
@@ -134,6 +142,8 @@ func TestUnacceptableAnswersAreFailuresAndNothingIsFollowed(t *testing.T) {
 		"array":             answer(http.StatusOK, "application/json", `[]`),
 		"null":              answer(http.StatusOK, "application/json", `null`),
 		"docs not a list":   answer(http.StatusOK, "application/json", `{"docs":{"key":"/works/OL1W"}}`),
+		"no docs":           answer(http.StatusOK, "application/json", `{"numFound":15,"error":"bad backend"}`),
+		"null docs":         answer(http.StatusOK, "application/json", `{"docs":null}`),
 		"trailing data":     answer(http.StatusOK, "application/json", `{"docs":[]} {}`),
 		"just over a limit": answer(http.StatusOK, "application/json", `{"docs":[],"pad":"`+strings.Repeat("a", MaxResponseBytes-19)+`"}`),
 	}
@@ -153,12 +163,12 @@ func TestUnacceptableAnswersAreFailuresAndNothingIsFollowed(t *testing.T) {
 	}
 }
 
-func TestAnAnswerAtTheSizeLimitAndAnAnswerWithoutDocsAreAccepted(t *testing.T) {
+func TestAnAnswerAtTheSizeLimitIsAccepted(t *testing.T) {
 	exact := `{"docs":[],"pad":"` + strings.Repeat("a", MaxResponseBytes-20) + `"}`
 	if len(exact) != MaxResponseBytes {
 		t.Fatalf("fixture is %d bytes", len(exact))
 	}
-	for _, body := range []string{exact, `{"numFound":0}`, `{"docs":null}`} {
+	for _, body := range []string{exact, `{"numFound":0,"docs":[]}`} {
 		client, _ := newClient(func(*http.Request) (*http.Response, error) {
 			return answer(http.StatusOK, "application/json", body), nil
 		})
@@ -245,10 +255,12 @@ func TestTooManyRequestsPausesEverySearchWithoutContactingOpenLibrary(t *testing
 	if _, err := client.Search(context.Background(), "dune", 5); !errors.As(err, &throttled) || throttled.RetryAfter != time.Minute || calls.Load() != 2 {
 		t.Fatalf("date header %v calls %d", err, calls.Load())
 	}
-	moment.advance(time.Minute)
-	retryAfter = "999999"
-	if _, err := client.Search(context.Background(), "dune", 5); !errors.As(err, &throttled) || throttled.RetryAfter != 15*time.Minute {
-		t.Fatalf("capped %v", err)
+	for _, header := range []string{"999999", "9223372037", "99999999999999999999"} {
+		moment.advance(15 * time.Minute)
+		retryAfter = header
+		if _, err := client.Search(context.Background(), "dune", 5); !errors.As(err, &throttled) || throttled.RetryAfter != 15*time.Minute {
+			t.Fatalf("capped %s: %v", header, err)
+		}
 	}
 }
 
@@ -309,5 +321,49 @@ func TestQueriesAreTrimmedBoundedAndPlainText(t *testing.T) {
 		if query != want.query || problem != want.problem {
 			t.Fatalf("%q gave %q %q", raw, query, problem)
 		}
+	}
+}
+
+func TestASearchDroppedByTheServerIsNeverSentAgain(t *testing.T) {
+	var mutex sync.Mutex
+	received := 0
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mutex.Lock()
+		received++
+		count := received
+		mutex.Unlock()
+		if count >= 2 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				conn.Close()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"docs":[]}`))
+	}))
+	server.StartTLS()
+	defer server.Close()
+	transport := NewTransport()
+	transport.Proxy = nil
+	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	transport.TLSClientConfig.ServerName = "example.com"
+	address := server.Listener.Addr().String()
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	client, moment := newClient(nil)
+	client.http.Transport = transport
+	if _, err := client.Search(context.Background(), "first", 5); err != nil {
+		t.Fatal(err)
+	}
+	moment.advance(MinimumInterval)
+	if _, err := client.Search(context.Background(), "second", 5); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("dropped %v", err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if received != 2 {
+		t.Fatalf("the server received %d searches for two submissions", received)
 	}
 }

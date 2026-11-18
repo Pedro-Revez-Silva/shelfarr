@@ -10,12 +10,18 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/consumer"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
-const discoverServerOff = "server_off"
+const (
+	discoverServerOff   = "server_off"
+	maxDiscoverRequests = 8
+)
 
 var discoverCopyTypes = []struct {
 	value int
@@ -97,12 +103,17 @@ func (a *App) webDiscover(w http.ResponseWriter, r *http.Request, session browse
 		writeJSON(w, http.StatusOK, answer)
 		return
 	}
+	roots, err := a.resolveRoots(r.Context())
+	if err != nil {
+		mapFailure(w, result, err)
+		return
+	}
 	works, err := a.searchOpenLibrary(r.Context(), *answer.Query, settings.Limit)
 	if err != nil {
 		a.discoverFailure(w, result, err)
 		return
 	}
-	items, err := a.discoverItems(r.Context(), works)
+	items, err := a.discoverItems(r.Context(), roots, works)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -155,7 +166,37 @@ func (a *App) discoverFailure(w http.ResponseWriter, result *outcome, err error)
 	}
 }
 
-func (a *App) discoverItems(ctx context.Context, works []openlibrary.Work) ([]discoverItem, error) {
+func unlinkable(err error) bool {
+	return errors.Is(err, library.ErrReference) || errors.Is(err, library.ErrUnsupportedPath) || errors.Is(err, library.ErrUnsupportedRoot) ||
+		errors.Is(err, consumer.ErrUnsupportedValue) || errors.Is(err, store.ErrUnsupported) || errors.Is(err, store.ErrTimestamp) || errors.Is(err, media.ErrNoPinnedOpen)
+}
+
+func (a *App) openableCopies(ctx context.Context, roots []string, copies []live.WorkCopy) (map[string]map[int]int64, error) {
+	view := consumer.NewViewFor(roots, webFormats.Names, nil, nil, true)
+	held := map[string]map[int]int64{}
+	for _, found := range copies {
+		if _, chosen := held[found.WorkID][found.Book.BookType]; chosen {
+			continue
+		}
+		publication, err := view.Publication(ctx, found.Book)
+		if unlinkable(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(publication.Assets) == 0 {
+			continue
+		}
+		if held[found.WorkID] == nil {
+			held[found.WorkID] = map[int]int64{}
+		}
+		held[found.WorkID][found.Book.BookType] = found.Book.ID
+	}
+	return held, nil
+}
+
+func (a *App) discoverItems(ctx context.Context, roots []string, works []openlibrary.Work) ([]discoverItem, error) {
 	ids := make([]string, len(works))
 	for index, work := range works {
 		ids[index] = work.ID
@@ -168,12 +209,9 @@ func (a *App) discoverItems(ctx context.Context, works []openlibrary.Work) ([]di
 	if err != nil {
 		return nil, err
 	}
-	held := map[string]map[int]int64{}
-	for _, found := range copies {
-		if held[found.WorkID] == nil {
-			held[found.WorkID] = map[int]int64{}
-		}
-		held[found.WorkID][found.BookType] = found.BookID
+	held, err := a.openableCopies(ctx, roots, copies)
+	if err != nil {
+		return nil, err
 	}
 	items := make([]discoverItem, len(works))
 	for index, work := range works {

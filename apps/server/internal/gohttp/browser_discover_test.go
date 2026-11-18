@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -172,7 +173,10 @@ func TestDiscoverFollowsTheShelfarrOpenLibrarySettingsWithoutWritingProviderHeal
 		{"unknown source", []string{`INSERT INTO settings (key, value, value_type) VALUES ('metadata_source', 'Hardcover', 'string')`}, "available", nil, "20"},
 		{"configured limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '7', 'integer')`}, "available", nil, "7"},
 		{"large limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '100', 'integer')`}, "available", nil, "20"},
-		{"zero limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0', 'integer')`}, "available", nil, "1"},
+		{"zero limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0', 'integer')`}, "available", nil, ""},
+		{"negative limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '-3', 'integer')`}, "available", nil, ""},
+		{"limit beyond any integer", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '100000000000000000000000', 'integer')`}, "available", nil, "20"},
+		{"padded limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', ' +007 ', 'integer')`}, "available", nil, "7"},
 		{"rails backoff", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'rate_limited', '2026-11-15 12:01:30.623456')`}, "provider_paused", float64(91), ""},
 		{"rails backoff over", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'down', '2026-11-15 12:00:00.123456')`}, "available", nil, "20"},
 		{"another provider's backoff", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('hardcover', 'rate_limited', '2026-11-16 12:00:00')`}, "available", nil, "20"},
@@ -247,20 +251,32 @@ func TestDiscoverRefusesQueriesItWouldNotSend(t *testing.T) {
 
 func TestDiscoverLinksOnlyAcquiredCopiesOfTheSameOpenLibraryWork(t *testing.T) {
 	h, fake := newDiscoverHarness(t, true)
-	for _, statement := range []string{
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (10, 'Rings ebook', '/library/rings.epub', 1, 'OL27448W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (11, 'Rings audio', '/library/rings', 0, 'OL27448W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (12, 'Rings ebook again', '/library/rings-2.epub', 1, 'OL27448W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (13, 'Rings ebook requested', NULL, 1, 'OL27448W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (14, 'Harbor comic', '/library/harbor.cbz', 2, 'OL82563W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (15, 'Pending only', '   ', 1, 'OL10W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (16, 'Near Miss', '/library/near.epub', 1, 'ol11w')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (17, 'Near Miss', '/library/near2.epub', 1, ' OL11W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (18, 'Near Miss', '/library/near3.epub', 1, '/works/OL11W')`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (19, 'Near Miss', '/library/near4.epub', 1, NULL)`,
-		`INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (20, 'Odd type', '/library/odd', 7, 'OL11W')`,
-	} {
-		livetest.Exec(t, h.path, statement)
+	copies := []struct {
+		id       int
+		path     string
+		bookType int
+		work     any
+	}{
+		{10, h.file("rings.epub", "an epub"), 1, "OL27448W"},
+		{11, h.file("rings.mp3", "an audio stream"), 0, "OL27448W"},
+		{12, h.file("rings-2.epub", "a second epub"), 1, "OL27448W"},
+		{13, "", 1, "OL27448W"},
+		{14, h.file("harbor.cbz", comicArchive("p1.png")), 2, "OL82563W"},
+		{15, "   ", 1, "OL10W"},
+		{16, h.file("near.epub", "an epub"), 1, "ol11w"},
+		{17, h.file("near2.epub", "an epub"), 1, " OL11W"},
+		{18, h.file("near3.epub", "an epub"), 1, "/works/OL11W"},
+		{19, h.file("near4.epub", "an epub"), 1, nil},
+		{20, h.file("odd.epub", "an epub"), 7, "OL11W"},
+		{21, filepath.Join(h.root, "gone.epub"), 1, "OL27448W"},
+		{22, filepath.Join(h.root, "gone.cbz"), 2, "OL10W"},
+	}
+	for _, copy := range copies {
+		var path any = copy.path
+		if copy.path == "" {
+			path = nil
+		}
+		livetest.Exec(t, h.path, `INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (?, 'Copy', ?, ?, ?)`, copy.id, path, copy.bookType, copy.work)
 	}
 	client := h.client()
 	client.signIn("alice", alicePassword)
@@ -370,5 +386,35 @@ func TestADisconnectedBrowserCancelsTheOpenLibraryRequest(t *testing.T) {
 	<-cancelled
 	if !strings.Contains(h.logs.String(), `"outcome":"cancelled"`) || !strings.Contains(h.logs.String(), `"status":499`) {
 		t.Fatalf("logs %s", h.logs.String())
+	}
+}
+
+func TestAStalledSearchDoesNotTakeTheLibrarysRequestCapacity(t *testing.T) {
+	h := newBrowserHarness(t, func(config *Config) {
+		config.OpenLibrarySearch = true
+		config.MaxMetadataRequests = 1
+	})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fake := &upstream{respond: func(request *http.Request) (*http.Response, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-request.Context().Done():
+		}
+		return jsonAnswer(http.StatusOK, `{"docs":[]}`)(request)
+	}}
+	h.app.openLibrary = openlibrary.New("Shelfarr/test", fake, h.clock.Now)
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	done := make(chan int)
+	go func() { done <- client.discover("q=dune").Code }()
+	<-entered
+	if recorder := client.get("/preview/api/v1/library"); recorder.Code != http.StatusOK {
+		t.Fatalf("library while a search waits: %d %s", recorder.Code, recorder.Body.String())
+	}
+	close(release)
+	if status := <-done; status != http.StatusOK {
+		t.Fatalf("search %d", status)
 	}
 }

@@ -41,6 +41,7 @@ type App struct {
 	previewIDs    map[string]bool
 	web           *webUI
 	openLibrary   *openlibrary.Client
+	discover      chan struct{}
 }
 
 func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
@@ -83,6 +84,7 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 	}
 	return &App{
 		openLibrary:   search,
+		discover:      make(chan struct{}, maxDiscoverRequests),
 		config:        config,
 		db:            database,
 		auth:          bearer.Authenticator{DB: database, Now: now},
@@ -216,6 +218,9 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	slots := a.metadata
 	if found.kind == routeAsset || found.kind == routeTransfer || found.kind == routeBrowserMedia {
 		slots = a.streams
+	}
+	if found.kind == routeBrowserDiscover {
+		slots = a.discover
 	}
 	if found.kind == routeTransfer {
 		setTransferPrivacy(w.Header())

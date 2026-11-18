@@ -2,6 +2,7 @@ package openlibrary
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -42,7 +43,7 @@ var (
 	ErrUnavailable = errors.New("open library could not be reached")
 	ErrFailed      = errors.New("open library answered with something this server does not accept")
 	workKey        = regexp.MustCompile(`^/works/(OL[1-9][0-9]{0,11}W)$`)
-	WorkID         = regexp.MustCompile(`^OL[1-9][0-9]{0,11}W$`)
+	delaySeconds   = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
 type Throttled struct {
@@ -93,12 +94,11 @@ func NewTransport() *http.Transport {
 	return &http.Transport{
 		Proxy:                  http.ProxyFromEnvironment,
 		DialContext:            dialer.DialContext,
-		ForceAttemptHTTP2:      true,
+		DisableKeepAlives:      true,
+		TLSNextProto:           map[string]func(string, *tls.Conn) http.RoundTripper{},
 		TLSHandshakeTimeout:    5 * time.Second,
 		ResponseHeaderTimeout:  SearchTimeout,
 		MaxConnsPerHost:        MaxConcurrent,
-		MaxIdleConns:           MaxConcurrent,
-		IdleConnTimeout:        90 * time.Second,
 		MaxResponseHeaderBytes: 64 << 10,
 	}
 }
@@ -142,8 +142,11 @@ func (c *Client) admit() (func(), error) {
 
 func (c *Client) pause(header string) time.Duration {
 	wait := defaultPause
-	if seconds, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && seconds > 0 {
-		wait = time.Duration(seconds) * time.Second
+	if digits := strings.TrimLeft(strings.TrimSpace(header), "0"); delaySeconds.MatchString(digits) {
+		wait = longestPause
+		if seconds, err := strconv.Atoi(digits); err == nil && len(digits) <= 6 {
+			wait = time.Duration(seconds) * time.Second
+		}
 	}
 	wait = min(max(wait, MinimumInterval), longestPause)
 	c.mutex.Lock()
@@ -163,7 +166,10 @@ func SearchURL(query string, limit int) string {
 }
 
 func (c *Client) Search(ctx context.Context, query string, limit int) ([]Work, error) {
-	limit = min(max(limit, 1), MaxResults)
+	if limit <= 0 {
+		return []Work{}, nil
+	}
+	limit = min(limit, MaxResults)
 	done, err := c.admit()
 	if err != nil {
 		return nil, err
@@ -216,12 +222,9 @@ func Project(body []byte, limit int) ([]Work, error) {
 	if err := json.Unmarshal(body, &top); err != nil || top == nil {
 		return nil, ErrFailed
 	}
-	raw, present := top["docs"]
-	if !present || string(raw) == "null" {
-		return []Work{}, nil
-	}
+	raw := top["docs"]
 	var docs []json.RawMessage
-	if err := json.Unmarshal(raw, &docs); err != nil {
+	if len(raw) == 0 || raw[0] != '[' || json.Unmarshal(raw, &docs) != nil {
 		return nil, ErrFailed
 	}
 	works := make([]Work, 0, min(len(docs), limit))
