@@ -112,6 +112,10 @@ func TestLoadRefusesUnsafeOrInconsistentDirectories(t *testing.T) {
 			os.WriteFile(filepath.Join(directory, "manifest.json"), append(encoded, bytes.Repeat([]byte(" "), manifestLimit)...), 0o600)
 		}},
 		{"another version", rewrite(func(m *webassetstest.Manifest) { m.Version = 2 })},
+		{"manifest has trailing tokens", func(t *testing.T, directory string, _ webassetstest.Manifest) {
+			body, _ := os.ReadFile(filepath.Join(directory, "manifest.json"))
+			os.WriteFile(filepath.Join(directory, "manifest.json"), append(body, ']'), 0o600)
+		}},
 		{"script is a symlink", swap("script", func(directory, path string) {
 			os.WriteFile(filepath.Join(directory, "elsewhere"), []byte("console.log('shelfarr');\n"), 0o600)
 			os.Symlink(filepath.Join(directory, "elsewhere"), path)
@@ -303,7 +307,14 @@ func TestLoadRefusesAPageEngineThatIsUnsafeOrInconsistent(t *testing.T) {
 		"an unknown field": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
 			os.WriteFile(filepath.Join(directory, PageEngineManifestName), []byte(`{"version":1,"scripting":true}`), 0o600)
 		},
-		"another version":          rewrite(func(e *webassetstest.PageEngine) { e.Version = 2 }),
+		"another version":        rewrite(func(e *webassetstest.PageEngine) { e.Version = 2 }),
+		"another frontend build": rewrite(func(e *webassetstest.PageEngine) { e.Script = "preview.0123456789abcdef.js" }),
+		"no frontend build":      rewrite(func(e *webassetstest.PageEngine) { e.Script = "" }),
+		"trailing tokens": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
+			path := filepath.Join(directory, PageEngineManifestName)
+			body, _ := os.ReadFile(path)
+			os.WriteFile(path, append(body, '}'), 0o600)
+		},
 		"the worker is the engine": rewrite(func(e *webassetstest.PageEngine) { e.Worker = e.Engine }),
 		"an unlisted engine":       rewrite(func(e *webassetstest.PageEngine) { e.Engine = "pdf-engine.0123456789abcdef.js" }),
 		"a missing resource kind":  rewrite(func(e *webassetstest.PageEngine) { delete(e.Resources, "wasmUrl") }),

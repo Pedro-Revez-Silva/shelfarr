@@ -80,6 +80,7 @@ type listedFile struct {
 
 type pageEngineManifest struct {
 	Version   int                          `json:"version"`
+	Script    string                       `json:"script"`
 	Engine    string                       `json:"engine"`
 	Worker    string                       `json:"worker"`
 	Resources map[string]map[string]string `json:"resources"`
@@ -122,9 +123,7 @@ func Load(directory string) (*Bundle, error) {
 		return nil, ErrInvalid
 	}
 	var listed manifest
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&listed); err != nil || decoder.More() || listed.Version != 1 || len(listed.Files) == 0 || len(listed.Files) > maxFiles {
+	if !decodeStrict(raw, &listed) || listed.Version != 1 || len(listed.Files) == 0 || len(listed.Files) > maxFiles {
 		return nil, ErrInvalid
 	}
 	bundle := &Bundle{script: listed.Entry.Script, style: listed.Entry.Style, readerEngine: listed.Entry.ReaderEngine, files: map[string]file{}}
@@ -196,9 +195,7 @@ func (b *Bundle) loadPageEngine(directory string) error {
 		return ErrInvalid
 	}
 	var listed pageEngineManifest
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&listed); err != nil || decoder.More() || listed.Version != 1 || len(listed.Files) == 0 || len(listed.Files) > maxPageEngineFiles {
+	if !decodeStrict(raw, &listed) || listed.Version != 1 || listed.Script != b.script || len(listed.Files) == 0 || len(listed.Files) > maxPageEngineFiles {
 		return ErrInvalid
 	}
 	referenced := map[string]bool{listed.Engine: true, listed.Worker: true}
@@ -231,6 +228,16 @@ func (b *Bundle) loadPageEngine(directory string) error {
 	}
 	b.pageEngine = &PageEngine{Engine: listed.Engine, Worker: listed.Worker, Resources: listed.Resources}
 	return nil
+}
+
+func decodeStrict(raw []byte, into any) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
+		return false
+	}
+	var rest json.RawMessage
+	return errors.Is(decoder.Decode(&rest), io.EOF)
 }
 
 func readRegular(directory, name string, limit int64) ([]byte, error) {

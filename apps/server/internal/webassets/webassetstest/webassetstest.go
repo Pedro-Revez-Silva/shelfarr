@@ -78,6 +78,7 @@ func WriteManifest(t testing.TB, directory string, listed Manifest) {
 
 type PageEngine struct {
 	Version   int                          `json:"version"`
+	Script    string                       `json:"script"`
 	Engine    string                       `json:"engine"`
 	Worker    string                       `json:"worker"`
 	Resources map[string]map[string]string `json:"resources"`
@@ -87,7 +88,7 @@ type PageEngine struct {
 func WriteWithPageEngine(t testing.TB, directory string) (Manifest, PageEngine) {
 	t.Helper()
 	listed := WriteWithReaderEngine(t, directory)
-	engine := PageEngine{Version: 1, Resources: map[string]map[string]string{}, Files: map[string]Entry{}}
+	engine := PageEngine{Version: 1, Script: listed.Entry.Script, Resources: map[string]map[string]string{}, Files: map[string]Entry{}}
 	add := func(stem string, body []byte, extension string) string {
 		name := Name(stem, body, extension)
 		if err := os.WriteFile(filepath.Join(directory, name), body, 0o600); err != nil {

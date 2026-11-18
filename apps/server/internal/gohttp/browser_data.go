@@ -26,7 +26,8 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		problem(w, result, http.StatusNotFound, "not_found")
 		return
 	}
-	if media && a.previewConfigured() && !sameOriginFetch(r) {
+	fetched := media || found.kind == routeBrowserReadingOrder
+	if fetched && a.previewConfigured() && !sameOriginFetch(r) {
 		problem(w, result, http.StatusForbidden, "cross_site_refused")
 		return
 	}

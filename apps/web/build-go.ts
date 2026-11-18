@@ -115,7 +115,7 @@ for (const [name, body] of bodies) await writeFile(join(outdir, name), body);
 const sorted = Object.fromEntries(Object.entries(files).sort(([a], [b]) => (a < b ? -1 : 1)));
 await writeFile(join(outdir, "manifest.json"), `${JSON.stringify({ version: 1, entry: { script: scriptName.name, style: styleName.name, reader_engine: engineName.name }, files: sorted }, null, 2)}\n`);
 const sortedPages = Object.fromEntries(Object.entries(pageFiles).sort(([a], [b]) => (a < b ? -1 : 1)));
-await writeFile(join(outdir, "page-engine.json"), `${JSON.stringify({ version: 1, engine: pageEngine, worker: pageWorker, resources: pageResources, files: sortedPages }, null, 2)}\n`);
+await writeFile(join(outdir, "page-engine.json"), `${JSON.stringify({ version: 1, script: scriptName.name, engine: pageEngine, worker: pageWorker, resources: pageResources, files: sortedPages }, null, 2)}\n`);
 await rm(staging, { recursive: true, force: true });
 
 for (const name of (await readdir(outdir)).sort()) console.log(name);

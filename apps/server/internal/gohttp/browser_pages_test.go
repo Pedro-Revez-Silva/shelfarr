@@ -168,6 +168,8 @@ func TestTheBrowserReadingOrderIsTheNativeOrderBoundToTheSignedInAccount(t *test
 		{"an EPUB", f.alice, f.orderPath("7", f.epub), nil, http.StatusGone, "asset_unavailable"},
 		{"another book's archive", f.alice, f.orderPath("7", f.cbz), nil, http.StatusGone, "asset_unavailable"},
 		{"an unknown book", f.alice, f.orderPath("999", f.cbz), nil, http.StatusNotFound, "not_found"},
+		{"cross site before authentication", f.h.client(), f.orderPath("9", f.cbz), map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden, "cross_site_refused"},
+		{"same site", f.alice, f.orderPath("9", f.cbz), map[string]string{"Sec-Fetch-Site": "same-site"}, http.StatusForbidden, "cross_site_refused"},
 	}
 	for _, refusal := range refusals {
 		headers := map[string]string{"X-Shelfarr-Account": "1"}
@@ -178,7 +180,7 @@ func TestTheBrowserReadingOrderIsTheNativeOrderBoundToTheSignedInAccount(t *test
 			delete(headers, "X-Shelfarr-Account")
 		}
 		got := refusal.client.send(http.MethodGet, refusal.path, "", headers)
-		if got.Code != refusal.status || decoded(t, got)["error"] != refusal.code || got.Header().Get("Cache-Control") != "private, no-store" || got.Header().Get("Location") != "" {
+		if got.Code != refusal.status || decoded(t, got)["error"] != refusal.code || got.Header().Get("Cache-Control") != "private, no-store" || got.Header().Get("Cross-Origin-Resource-Policy") != "same-origin" || got.Header().Get("Location") != "" {
 			t.Errorf("%s: %d %v %s", refusal.name, got.Code, got.Header(), got.Body.String())
 		}
 	}
