@@ -8,6 +8,7 @@ const GO_CONNECT = ["test/go-connect.test.tsx"];
 const READER = ["test/reader.test.ts"];
 const PAGES = ["test/pages.test.ts"];
 const GO_ACCOUNT = ["test/go-account.test.tsx"];
+const GO_DISCOVER = ["test/go-discover.test.tsx"];
 
 const mutants: Mutant[] = [
   { name: "sign-in: a second submit while one is pending is sent", file: "src/go/SignInPage.tsx", old: "if (submitting.current) return;", replacement: "", tests: GO_AUTH },
@@ -75,6 +76,12 @@ const mutants: Mutant[] = [
   { name: "account: a repeated refusal is not announced again", file: "src/components/AccountPage.tsx", old: "<p key={outcome.serial} className=", replacement: "<p className=", tests: GO_ACCOUNT },
   { name: "account: a name answer replaces text typed after the submit", file: "src/components/AccountPage.tsx", old: "const current = edits.current === revision;", replacement: "const current = edits.current === revision || true;", tests: GO_ACCOUNT },
   { name: "account: an unreadable success says nothing changed", file: "src/components/accountFields.ts", old: "error.status !== null && error.status >= 400 ? ", replacement: "error.status !== null || error.status === null ? ", tests: GO_ACCOUNT },
+  { name: "discover: every keystroke searches Open Library", file: "src/components/DiscoverPage.tsx", old: "setText(event.target.value);", replacement: "setText(event.target.value);\n              if (event.target.value.trim()) onSearch(event.target.value.trim());", tests: GO_DISCOVER },
+  { name: "discover: a failed search is retried by itself", file: "src/queries.ts", old: "    retry: false,\n    refetchOnWindowFocus: false,\n    refetchOnReconnect: false,", replacement: "    retry: 2,\n    retryDelay: 0,\n    refetchOnWindowFocus: false,\n    refetchOnReconnect: false,", tests: GO_DISCOVER },
+  { name: "discover: a cover from any https host is shown", file: "src/contract.ts", old: "const openLibraryCover = z.string().regex(/^https:\\/\\/covers\\.openlibrary\\.org\\/b\\/id\\/[1-9]\\d{0,15}-M\\.jpg$/);", replacement: "const openLibraryCover = z.string().regex(/^https:\\/\\//);", tests: GO_DISCOVER },
+  { name: "discover: a work link that names another work is followed", file: "src/contract.ts", old: '.refine((item) => item.source_url === `https://openlibrary.org/works/${item.id}`, "The work link must point at the same Open Library work");', replacement: ";", tests: GO_DISCOVER },
+  { name: "discover: an over-long query from the address is sent", file: "src/components/DiscoverPage.tsx", old: 'if ([...query].length > MAX_QUERY_CHARACTERS) return { kind: "too_long" };', replacement: "", tests: GO_DISCOVER },
+  { name: "discover: the classic preview serves the Go discover page", file: "src/components/DiscoverPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_DISCOVER },
 ];
 
 const root = process.argv[2];

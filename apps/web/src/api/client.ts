@@ -13,6 +13,7 @@ import {
   type ReadingStatus,
   type Session,
 } from "../contract";
+import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
@@ -76,6 +77,8 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   database_busy: "busy",
   request_timeout: "busy",
   account_conflict: "conflict",
+  invalid_query: "invalid",
+  search_rate_limited: "rate_limited",
 };
 
 export class ApiClient {
@@ -162,6 +165,12 @@ export class ApiClient {
       signal,
       account: (value) => value.account,
     });
+  }
+
+  discover(query: string | null, signal?: AbortSignal): Promise<DiscoverAnswer> {
+    const params = new URLSearchParams();
+    if (query !== null) params.set("q", query);
+    return this.request({ path: `/discover${suffix(params)}`, schema: discoverSchema, signal, account: (value) => value.account });
   }
 
   async account(signal?: AbortSignal): Promise<Profile> {

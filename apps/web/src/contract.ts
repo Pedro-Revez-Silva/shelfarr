@@ -128,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader", "account"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account", "discover"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({
@@ -196,6 +196,43 @@ export const connectDecisionSchema = z.object({
   requesting: z.boolean(),
 });
 export type ConnectDecision = z.infer<typeof connectDecisionSchema>;
+
+export const discoverStates = ["available", "server_off", "provider_disabled", "provider_not_selected", "provider_paused"] as const;
+export type DiscoverState = (typeof discoverStates)[number];
+export const libraryCopyTypes = ["ebook", "audiobook", "comicbook"] as const;
+export type LibraryCopyType = (typeof libraryCopyTypes)[number];
+
+const openLibraryWork = z.string().regex(/^OL[1-9]\d{0,11}W$/);
+const openLibraryCover = z.string().regex(/^https:\/\/covers\.openlibrary\.org\/b\/id\/[1-9]\d{0,15}-M\.jpg$/);
+
+export const discoverItemSchema = z
+  .object({
+    id: openLibraryWork,
+    title: z.string().min(1),
+    author: z.string().min(1).nullable(),
+    first_publish_year: z.number().int().min(1).max(9999).nullable(),
+    edition_count: z.number().int().nonnegative().nullable(),
+    cover_url: openLibraryCover.nullable(),
+    source_url: z.string(),
+    library: z.array(z.object({ book_type: z.enum(libraryCopyTypes), publication_id: identifier })),
+  })
+  .refine((item) => item.source_url === `https://openlibrary.org/works/${item.id}`, "The work link must point at the same Open Library work");
+export type DiscoverItem = z.infer<typeof discoverItemSchema>;
+
+export const discoverSchema = z.object({
+  account: identifier,
+  provider: z.object({ name: z.literal("Open Library"), url: z.literal("https://openlibrary.org") }),
+  search: z.enum(discoverStates),
+  retry_after: z.number().int().nonnegative().optional(),
+  query: z.string().nullable(),
+  items: z.array(discoverItemSchema),
+});
+export type DiscoverAnswer = z.infer<typeof discoverSchema>;
+
+export const discoverSearchSchema = z.object({
+  q: z.string().optional().catch(undefined),
+});
+export type DiscoverSearch = z.infer<typeof discoverSearchSchema>;
 
 export const libraryFiltersSchema = z.object({
   q: z.string().max(200).optional().catch(undefined),

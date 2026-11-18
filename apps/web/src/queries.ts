@@ -63,6 +63,18 @@ export function useReadingStatus(id: string) {
   });
 }
 
+export function useDiscover(query: string | null) {
+  const { api, keys } = useServices();
+  return useQuery({
+    queryKey: keys.discover(query),
+    queryFn: ({ signal }) => api.discover(query, signal),
+    staleTime: query === null ? 30_000 : 5 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
 export function useProfile() {
   const { api, keys } = useServices();
   return useQuery({

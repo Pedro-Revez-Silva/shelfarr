@@ -1,7 +1,8 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
-import { libraryFiltersSchema } from "./contract";
+import { discoverSearchSchema, libraryFiltersSchema } from "./contract";
 import { AccountPage } from "./components/AccountPage";
 import { DetailsPage } from "./components/DetailsPage";
+import { DiscoverPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { Shell } from "./components/Shell";
 import { EmptyState } from "./components/States";
@@ -55,7 +56,14 @@ const accountRoute = createRoute({
   component: AccountPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute]);
+const discoverRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/discover",
+  validateSearch: (search: Record<string, unknown>) => discoverSearchSchema.parse(search),
+  component: DiscoverPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

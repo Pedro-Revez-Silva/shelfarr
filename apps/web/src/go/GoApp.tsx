@@ -95,6 +95,7 @@ function introFor(view: GoBoot["view"]): string {
   if (view === "connect") return "Sign in to approve or decline the connection you started in your Shelfarr app. You will come straight back to it.";
   if (view === "reader") return "Sign in to open this book. You will come straight back to it.";
   if (view === "account") return "Sign in to manage your account. You will come straight back to it.";
+  if (view === "discover") return "Sign in to find books. You will come straight back to your search.";
   return "Sign in to browse your library.";
 }
 

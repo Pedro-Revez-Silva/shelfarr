@@ -30,6 +30,7 @@ export function createQueryKeys(account: string) {
     libraryAll: [...root, "library"] as const,
     continueAll: [...root, "continue"] as const,
     publication: (id: string) => [...root, "publication", id] as const,
+    discover: (query: string | null) => [...root, "discover", query] as const,
   };
 }
 

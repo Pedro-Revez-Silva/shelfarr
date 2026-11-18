@@ -14,11 +14,18 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
           </Link>
         </li>
         {handoffs ? null : (
-          <li>
-            <Link to="/account" className="nav-link">
-              Account
-            </Link>
-          </li>
+          <>
+            <li>
+              <Link to="/discover" className="nav-link">
+                Discover
+              </Link>
+            </li>
+            <li>
+              <Link to="/account" className="nav-link">
+                Account
+              </Link>
+            </li>
+          </>
         )}
         {session && handoffs ? (
           <>

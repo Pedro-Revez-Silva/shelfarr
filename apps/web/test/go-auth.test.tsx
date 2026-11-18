@@ -238,6 +238,7 @@ describe("signing in on the Go runtime", () => {
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
       ["Library", "/preview/library"],
+      ["Discover", "/preview/discover"],
       ["Account", "/preview/account"],
     ]);
     expect(document.querySelector('a[href^="/read"], a[href="/search"], a[href="/requests"], a[href="/profile"], a[href="/admin"]')).toBeNull();
