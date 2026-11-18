@@ -105,7 +105,13 @@ class SequenceMarker
   private_constant :SEPARATOR_PATTERN
 
   # A publication year after a title is not a sequel ("(1894)", ".2026.").
+  # Bare 1800-2099 stays a year. An older year counts only inside brackets
+  # ("Hamlet (1603)"), where a bare number would otherwise be a volume.
   PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
+  BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
+  # "128 kbps" is bitrate metadata. The glued form "128kbps" is handled with
+  # the numeral suffix below; this pattern is the separated unit token.
+  SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
   CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
   # No trailing anchor: punctuationless keys glue the marker to the subtitle
   # ("第2部：黑暗森林" -> "第2部黑暗森林").
@@ -117,7 +123,7 @@ class SequenceMarker
   # "cd" is a disc label, and it is also the Roman numeral 400.
   NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
   GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
-  private_constant :PUBLICATION_YEAR, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
     :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX
 
   class << self
@@ -177,12 +183,40 @@ class SequenceMarker
 
     # Folded TitleKey tokens. A bare numeral immediately after an unnumbered
     # title is another book ("三体 Ⅱ" folds to "三体 2"). Digits, Roman
-    # numerals, and 第N部/卷 count. A publication year does not.
+    # numerals, and 第N部/卷 count. A publication year does not. A bitrate
+    # number followed by its unit token ("128" "kbps") does not either.
     def leading_sequel_numeral?(tokens)
-      words = Array(tokens)
+      words = drop_leading_bitrate(Array(tokens))
       return false if words.empty?
 
       numeric_sequel_token?(words.first) || cjk_volume_prefix?(words)
+    end
+
+    # Bracketed years and spaced bitrates are release metadata. Unicode
+    # decimal digits are folded before either pattern runs, so "(١٦٠٣)" and
+    # "１２８ kbps" are recognised too. A year that is part of the book title
+    # stays, so "Hamlet (1603)" still matches itself.
+    def without_recognised_metadata(text, preserve_title: nil)
+      prepared = TitleKey.normalize_decimal_digits(text.to_s)
+      kept_years = bracketed_years(preserve_title)
+      prepared = prepared.gsub(BRACKETED_YEAR) { |year|
+        kept_years.include?(year[/\d{4}/]) ? year : " "
+      }
+      prepared.gsub(SPACED_BITRATE, " ")
+    end
+
+    # Canonical tokens only. "Ⅱ:The" stays "2 the" here; the punctuationless
+    # key glues that into "iithe" and would hide the numeral. A conflict is
+    # the shared phrase followed by a sequel numeral, or two different bare
+    # trailing numerals ("Title 1" and "Title 2").
+    def sequel_conflict?(left, right)
+      left_tokens = classification_tokens(left)
+      right_tokens = classification_tokens(right)
+      return false if left_tokens.empty? || right_tokens.empty?
+
+      phrase_sequel_conflict?(left_tokens, right_tokens) ||
+        phrase_sequel_conflict?(right_tokens, left_tokens) ||
+        bare_trailing_sequence_conflict?(left_tokens, right_tokens)
     end
 
     private
@@ -399,12 +433,76 @@ class SequenceMarker
       cluster.each_char.all? { |char| TitleKey.quote_character?(char) }
     end
 
+    def bracketed_years(text)
+      TitleKey.normalize_decimal_digits(text.to_s).scan(BRACKETED_YEAR).filter_map { |year|
+        year[/\d{4}/]
+      }
+    end
+
+    def drop_leading_bitrate(tokens)
+      words = tokens.map(&:to_s)
+      while words.length >= 2 &&
+          TitleKey.normalize_decimal_digits(words[0]).match?(/\A\d{2,3}\z/) &&
+          words[1].match?(/\Akbps\z/i)
+        words = words.drop(2)
+      end
+      words
+    end
+
+    def classification_tokens(text)
+      TitleKey.new(neutralize(without_recognised_metadata(text))).canonical.split
+    end
+
+    # Every acceptable occurrence of the phrase is followed by a sequel
+    # numeral. One clean occurrence is still the same book.
+    def phrase_sequel_conflict?(phrase, host)
+      return false if phrase.empty? || phrase.length > host.length
+
+      short = phrase.join(" ").length < 4
+      hits = (0..(host.length - phrase.length)).select { |start|
+        host[start, phrase.length] == phrase && (!short || start.zero?)
+      }
+      return false if hits.empty?
+
+      hits.all? { |start| leading_sequel_numeral?(host[(start + phrase.length)..]) }
+    end
+
+    def bare_trailing_sequence_conflict?(left, right)
+      left_base, left_number = split_trailing_sequence(left)
+      right_base, right_number = split_trailing_sequence(right)
+      return false if left_number.nil? || right_number.nil?
+      return false unless left_base == right_base
+
+      left_number != right_number
+    end
+
+    def split_trailing_sequence(tokens)
+      return [ tokens, nil ] if tokens.empty?
+
+      number = canonical_sequence_number(tokens.last)
+      return [ tokens, nil ] if number.nil?
+
+      [ tokens[0...-1], number ]
+    end
+
+    def canonical_sequence_number(token)
+      text = normalized_numeral(token)
+      return unless whole_sequel_numeral?(text)
+
+      text.match?(/\A\d+\z/) ? text.to_i.to_s : ROMAN_VALUES[text]
+    end
+
+    def normalized_numeral(token)
+      TitleKey.normalize_decimal_digits(token.to_s).downcase
+    end
+
     def numeric_sequel_token?(token)
-      text = token.to_s
+      text = normalized_numeral(token)
       whole_sequel_numeral?(text) || glued_sequel_numeral?(text)
     end
 
     def whole_sequel_numeral?(text)
+      text = normalized_numeral(text)
       return false if text.match?(PUBLICATION_YEAR)
       return text.to_i.positive? if text.match?(/\A\d+\z/)
       return false if NON_SEQUEL_ROMAN_TOKENS.include?(text)
@@ -416,6 +514,7 @@ class SequenceMarker
     # The punctuationless key deletes the colon, so "Ⅱ：黑暗森林" becomes
     # "ii黑暗森林". A digit or Roman prefix of that token is still the sequel.
     def glued_sequel_numeral?(text)
+      text = normalized_numeral(text)
       if (digits = text[/\A\d+/])
         return false unless digits.length < text.length
         return false if digits.match?(PUBLICATION_YEAR)
@@ -445,7 +544,7 @@ class SequenceMarker
     end
 
     def cjk_volume_prefix?(tokens)
-      first = tokens.first.to_s
+      first = normalized_numeral(tokens.first)
       if (match = first.match(CJK_VOLUME_PREFIX))
         return sequel_number_body?(match[:number])
       end
@@ -455,7 +554,7 @@ class SequenceMarker
     end
 
     def sequel_number_body?(token)
-      text = token.to_s
+      text = normalized_numeral(token)
       return false if text.blank?
       return true if text.match?(/\A\d+\z/) && text.to_i.positive?
       return true if text.match?(/\A[#{CHINESE_NUMERALS}]+\z/)

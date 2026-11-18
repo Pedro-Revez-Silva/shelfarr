@@ -418,6 +418,124 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "does not auto-select a numbered sequel after the exact phrase is rejected" do
+    SettingsService.set(:audiobook_preferred_formats, [ "m4b" ])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+
+    @book.update!(title: "Гарри Поттер и Дары Смерти", author: "Джоан Роулинг", book_type: :audiobook)
+    @request.update!(language: "ru")
+    potter = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Джоан Роулинг - Гарри Поттер и Дары Смерти 2 RU M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator potter.total, :<, threshold, potter.breakdown.inspect
+    assert_not potter.high_confidence?, potter.total.to_s
+    assert_not potter.breakdown[:auto_select_allowed], potter.breakdown.inspect
+
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    forest = ReleaseScorer.score(
+      SearchResult.new(
+        title: "三体 Ⅱ:The Dark Forest - 刘慈欣 [CHS] M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator forest.breakdown[:title], :<, 100, forest.breakdown.inspect
+    assert_operator forest.total, :<, threshold, forest.breakdown.inspect
+    assert_not forest.high_confidence?, forest.total.to_s
+    assert_not forest.breakdown[:auto_select_allowed], forest.breakdown.inspect
+  end
+
+  test "does not auto-select a sequel numeral written with a unicode decimal digit" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+    @book.update!(title: "أرض زيكولا", author: "عمرو عبد الحميد", book_type: :ebook)
+    @request.update!(language: "ar")
+
+    [
+      "أرض زيكولا \u0662 - عمرو عبد الحميد Arabic EPUB",
+      "أرض زيكولا \uFF12 - عمرو عبد الحميد Arabic EPUB"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        SearchResult.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_operator score.total, :<, threshold, "#{release_title} #{score.breakdown.inspect}"
+      assert_not score.high_confidence?, "#{release_title} #{score.total}"
+      assert_not score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+    end
+  end
+
+  test "keeps an exact title match when bitrate or a bracketed year follows it" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+
+    @book.update!(title: "Dune", author: "Frank Herbert", book_type: :audiobook)
+    @request.update!(language: "en")
+    bitrate = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Dune 128 kbps - Frank Herbert - English M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_equal 100, bitrate.breakdown[:title], bitrate.breakdown.inspect
+    assert_operator bitrate.total, :>=, threshold, bitrate.breakdown.inspect
+    assert bitrate.high_confidence?, bitrate.total.to_s
+    assert bitrate.breakdown[:auto_select_allowed], bitrate.breakdown.inspect
+
+    sequel = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Dune 2 - Frank Herbert - English M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator sequel.total, :<, threshold, sequel.breakdown.inspect
+    assert_not sequel.breakdown[:auto_select_allowed], sequel.breakdown.inspect
+
+    @book.update!(title: "Hamlet", author: "William Shakespeare", book_type: :ebook)
+    [
+      "Hamlet (1603) - William Shakespeare English EPUB",
+      "Hamlet [1603] - William Shakespeare English EPUB"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        SearchResult.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_equal 100, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert_operator score.total, :>=, threshold, "#{release_title} total #{score.total} #{score.breakdown.inspect}"
+      assert score.high_confidence?, "#{release_title} #{score.total}"
+      assert score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+    end
+
+    @book.update!(title: "Hamlet (1603)")
+    titled_year = ReleaseScorer.score(
+      SearchResult.new(title: "Hamlet (1603) - William Shakespeare English EPUB", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, titled_year.breakdown[:title], titled_year.breakdown.inspect
+    assert titled_year.breakdown[:auto_select_allowed], titled_year.breakdown.inspect
+  end
+
   test "scores greek titles that differ only by final sigma as the same title" do
     @book.update!(author: "Όμηρος", book_type: :ebook)
 
