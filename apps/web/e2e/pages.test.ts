@@ -151,6 +151,21 @@ async function expectPainted(page: Page, color: number[], at: { x: number; y: nu
   }
 }
 
+async function pageText(page: Page, name: string): Promise<string[]> {
+  const { nodes } = await (await page.context().newCDPSession(page)).send("Accessibility.getFullAXTree");
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const group = nodes.find((node) => !node.ignored && node.role?.value === "group" && node.name?.value === name);
+  const spoken: string[] = [];
+  const visit = (id: string) => {
+    const node = byId.get(id);
+    if (!node) return;
+    if (!node.ignored && node.role?.value === "StaticText" && typeof node.name?.value === "string") spoken.push(node.name.value);
+    for (const child of node.childIds ?? []) visit(child);
+  };
+  for (const child of group?.childIds ?? []) visit(child);
+  return spoken;
+}
+
 const PDF_SAMPLE = { x: 0.85, y: 0.55 };
 const COMIC_SAMPLE = { x: 0.97, y: 0.5 };
 
@@ -187,9 +202,7 @@ describe("the Go online PDF reader", () => {
     await expectPainted(page, pageColor(1), PDF_SAMPLE);
     await page.locator(".pages-view .textLayer").getByText("Page 1 of 6").waitFor();
     expect(await page.getByRole("group", { name: "Page 1 of 6" }).count()).toBe(1);
-    const tree = await (await context.newCDPSession(page)).send("Accessibility.getFullAXTree");
-    const spoken = tree.nodes.filter((node) => !node.ignored && node.role?.value === "StaticText" && node.name?.value === "Page 1 of 6");
-    expect(spoken.length).toBeGreaterThan(0);
+    expect(await pageText(page, "Page 1 of 6")).toEqual(["Page 1 of 6"]);
     await stays(books.pdf, [], 2000);
 
     const clicked = Date.now();
