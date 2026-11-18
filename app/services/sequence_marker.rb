@@ -9,12 +9,14 @@ class SequenceMarker
   # de: band, teil, buch
   # es/it/pt: tomo, parte, libro, livro, volumen
   # nl: deel, boek
+  # ru: том (volume), часть (part), книга (book), выпуск (installment)
   MARKER_WORDS = %w[
     book part vol volume
     tome partie livre
     band teil buch
     tomo parte libro livro volumen
     deel boek
+    том часть книга выпуск
   ].freeze
   NEUTRAL_MARKER = "volume"
   NUMBER_WORDS = {
@@ -102,10 +104,27 @@ class SequenceMarker
   ).freeze
   private_constant :SEPARATOR_PATTERN
 
-  # TitleKey deletes these before tokenizing, so "Shakespeare's" and
-  # "Shakespeares" are the same span.
-  TITLE_QUOTE_CHARACTERS = /['"`´’‘]/
-  private_constant :TITLE_QUOTE_CHARACTERS
+  # A publication year after a title is not a sequel ("(1894)", ".2026.").
+  # Bare 1800-2099 stays a year. An older year counts only inside brackets
+  # ("Hamlet (1603)"), where a bare number would otherwise be a volume.
+  PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
+  BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
+  # "128 kbps" is bitrate metadata. The glued form "128kbps" is handled with
+  # the numeral suffix below; this pattern is the separated unit token.
+  SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
+  CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
+  # No trailing anchor: punctuationless keys glue the marker to the subtitle
+  # ("第2部：黑暗森林" -> "第2部黑暗森林").
+  CJK_VOLUME_PREFIX = /
+    \A第
+    (?<number>\d+|[ivxlcdm]+|[#{CHINESE_NUMERALS}]+)
+    [部卷巻]?
+  /x
+  # "cd" is a disc label, and it is also the Roman numeral 400.
+  NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
+  GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
+  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+    :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX
 
   class << self
     def separate_marker_punctuation(text)
@@ -160,6 +179,44 @@ class SequenceMarker
 
       shared = [ left_numbers.size, right_numbers.size ].min
       shared.times.any? { |index| left_numbers[index] != right_numbers[index] }
+    end
+
+    # Folded TitleKey tokens. A bare numeral immediately after an unnumbered
+    # title is another book ("三体 Ⅱ" folds to "三体 2"). Digits, Roman
+    # numerals, and 第N部/卷 count. A publication year does not. A bitrate
+    # number followed by its unit token ("128" "kbps") does not either.
+    def leading_sequel_numeral?(tokens)
+      words = drop_leading_bitrate(Array(tokens))
+      return false if words.empty?
+
+      numeric_sequel_token?(words.first) || cjk_volume_prefix?(words)
+    end
+
+    # Bracketed years and spaced bitrates are release metadata. Unicode
+    # decimal digits are folded before either pattern runs, so "(١٦٠٣)" and
+    # "１２８ kbps" are recognised too. A year that is part of the book title
+    # stays, so "Hamlet (1603)" still matches itself.
+    def without_recognised_metadata(text, preserve_title: nil)
+      prepared = TitleKey.normalize_decimal_digits(text.to_s)
+      kept_years = bracketed_years(preserve_title)
+      prepared = prepared.gsub(BRACKETED_YEAR) { |year|
+        kept_years.include?(year[/\d{4}/]) ? year : " "
+      }
+      prepared.gsub(SPACED_BITRATE, " ")
+    end
+
+    # Canonical tokens only. "Ⅱ:The" stays "2 the" here; the punctuationless
+    # key glues that into "iithe" and would hide the numeral. A conflict is
+    # the shared phrase followed by a sequel numeral, or two different bare
+    # trailing numerals ("Title 1" and "Title 2").
+    def sequel_conflict?(left, right)
+      left_tokens = classification_tokens(left)
+      right_tokens = classification_tokens(right)
+      return false if left_tokens.empty? || right_tokens.empty?
+
+      phrase_sequel_conflict?(left_tokens, right_tokens) ||
+        phrase_sequel_conflict?(right_tokens, left_tokens) ||
+        bare_trailing_sequence_conflict?(left_tokens, right_tokens)
     end
 
     private
@@ -335,30 +392,174 @@ class SequenceMarker
     end
 
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
+    # Folding matches TitleKey: keep letters with no ASCII approximation, and
+    # split on Unicode letters and numerals so a CJK author stays a token.
+    # TitleKey deletes apostrophes, including modifier letters, so
+    # "Shakespeare's" and "Shakespeares" are the same span.
     def normalized_source_tokens(text)
       folded = +""
-      offsets = []
-      text.each_char.with_index do |char, index|
-        next if char.match?(TITLE_QUOTE_CHARACTERS)
+      starts = []
+      ends = []
+      offset = 0
 
-        ActiveSupport::Inflector.transliterate(char).downcase.each_char do |out|
-          folded << out
-          offsets << index
+      text.to_s.grapheme_clusters.each do |cluster|
+        source_start = offset
+        offset += cluster.length
+        source_end = offset
+        next if quote_cluster?(cluster)
+
+        TitleKey.fold(cluster).each_char do |char|
+          folded << char
+          starts << source_start
+          ends << source_end
         end
       end
 
       tokens = []
-      folded.scan(/[a-z0-9]+/) do
+      folded.scan(/[\p{L}\p{N}]+/) do
         match = Regexp.last_match
         tokens << [
           TitleKey.new(match[0]).canonical,
-          offsets[match.begin(0)],
-          offsets[match.end(0) - 1] + 1,
+          starts.fetch(match.begin(0)),
+          ends.fetch(match.end(0) - 1),
           match[0],
           folded[match.end(0)] == "."
         ]
       end
       tokens
+    end
+
+    def quote_cluster?(cluster)
+      cluster.each_char.all? { |char| TitleKey.quote_character?(char) }
+    end
+
+    def bracketed_years(text)
+      TitleKey.normalize_decimal_digits(text.to_s).scan(BRACKETED_YEAR).filter_map { |year|
+        year[/\d{4}/]
+      }
+    end
+
+    def drop_leading_bitrate(tokens)
+      words = tokens.map(&:to_s)
+      while words.length >= 2 &&
+          TitleKey.normalize_decimal_digits(words[0]).match?(/\A\d{2,3}\z/) &&
+          words[1].match?(/\Akbps\z/i)
+        words = words.drop(2)
+      end
+      words
+    end
+
+    def classification_tokens(text)
+      TitleKey.new(neutralize(without_recognised_metadata(text))).canonical.split
+    end
+
+    # Every acceptable occurrence of the phrase is followed by a sequel
+    # numeral. One clean occurrence is still the same book.
+    def phrase_sequel_conflict?(phrase, host)
+      return false if phrase.empty? || phrase.length > host.length
+
+      short = phrase.join(" ").length < 4
+      hits = (0..(host.length - phrase.length)).select { |start|
+        host[start, phrase.length] == phrase && (!short || start.zero?)
+      }
+      return false if hits.empty?
+
+      hits.all? { |start| leading_sequel_numeral?(host[(start + phrase.length)..]) }
+    end
+
+    def bare_trailing_sequence_conflict?(left, right)
+      left_base, left_number = split_trailing_sequence(left)
+      right_base, right_number = split_trailing_sequence(right)
+      return false if left_number.nil? || right_number.nil?
+      return false unless left_base == right_base
+
+      left_number != right_number
+    end
+
+    def split_trailing_sequence(tokens)
+      return [ tokens, nil ] if tokens.empty?
+
+      number = canonical_sequence_number(tokens.last)
+      return [ tokens, nil ] if number.nil?
+
+      [ tokens[0...-1], number ]
+    end
+
+    def canonical_sequence_number(token)
+      text = normalized_numeral(token)
+      return unless whole_sequel_numeral?(text)
+
+      text.match?(/\A\d+\z/) ? text.to_i.to_s : ROMAN_VALUES[text]
+    end
+
+    def normalized_numeral(token)
+      TitleKey.normalize_decimal_digits(token.to_s).downcase
+    end
+
+    def numeric_sequel_token?(token)
+      text = normalized_numeral(token)
+      whole_sequel_numeral?(text) || glued_sequel_numeral?(text)
+    end
+
+    def whole_sequel_numeral?(text)
+      text = normalized_numeral(text)
+      return false if text.match?(PUBLICATION_YEAR)
+      return text.to_i.positive? if text.match?(/\A\d+\z/)
+      return false if NON_SEQUEL_ROMAN_TOKENS.include?(text)
+      return false if text.length < 2 && text != "i"
+
+      ROMAN_VALUES.key?(text)
+    end
+
+    # The punctuationless key deletes the colon, so "Ⅱ：黑暗森林" becomes
+    # "ii黑暗森林". A digit or Roman prefix of that token is still the sequel.
+    def glued_sequel_numeral?(text)
+      text = normalized_numeral(text)
+      if (digits = text[/\A\d+/])
+        return false unless digits.length < text.length
+        return false if digits.match?(PUBLICATION_YEAR)
+        return false if text[digits.length..].match?(GLUED_NUMERAL_SUFFIX)
+
+        return digits.to_i.positive?
+      end
+
+      roman = longest_leading_roman(text)
+      return false if roman.nil? || roman.length == text.length
+
+      text[roman.length..].match?(/\A[^\p{ASCII}]/)
+    end
+
+    def longest_leading_roman(text)
+      letters = text[/\A[ivxlcdm]+/]
+      return if letters.blank?
+
+      letters.length.downto(1) do |size|
+        candidate = letters[0, size]
+        next if NON_SEQUEL_ROMAN_TOKENS.include?(candidate)
+        next if candidate.length < 2 && candidate != "i"
+        return candidate if ROMAN_VALUES.key?(candidate)
+      end
+
+      nil
+    end
+
+    def cjk_volume_prefix?(tokens)
+      first = normalized_numeral(tokens.first)
+      if (match = first.match(CJK_VOLUME_PREFIX))
+        return sequel_number_body?(match[:number])
+      end
+      return false unless first == "第"
+
+      sequel_number_body?(tokens[1])
+    end
+
+    def sequel_number_body?(token)
+      text = normalized_numeral(token)
+      return false if text.blank?
+      return true if text.match?(/\A\d+\z/) && text.to_i.positive?
+      return true if text.match?(/\A[#{CHINESE_NUMERALS}]+\z/)
+
+      ROMAN_VALUES.key?(text)
     end
 
     def spans_overlap?(left, right)

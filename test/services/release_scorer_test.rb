@@ -333,6 +333,255 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_equal native.breakdown[:title], ascii.breakdown[:title]
   end
 
+  test "scores cyrillic titles and authors that do not fold to ASCII" do
+    assert_equal "spass in der kuche", TitleKey.new("Spaß in der Küche").canonical
+    assert_equal "рыцари сорока островов", TitleKey.new("Рыцари Сорока Островов").canonical
+    assert_equal "сергей лукьяненко", TitleKey.new("Сергей Лукьяненко").canonical
+
+    @book.update!(title: "Рыцари Сорока Островов", author: "Сергей Лукьяненко", book_type: :audiobook)
+    @request.update!(language: "ru")
+
+    verbatim = ReleaseScorer.score(
+      @request.search_results.new(title: "Сергей Лукьяненко - Рыцари сорока островов MP3", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, verbatim.breakdown[:title], verbatim.breakdown.inspect
+    assert_equal 100, verbatim.breakdown[:author], verbatim.breakdown.inspect
+
+    tagged = ReleaseScorer.score(
+      @request.search_results.new(
+        title: "Сергей.Лукьяненко.-.Рыцари.сорока.островов.RU.M4B".unicode_normalize(:nfd),
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_equal 100, tagged.breakdown[:title], tagged.breakdown.inspect
+    assert_equal 100, tagged.breakdown[:author], tagged.breakdown.inspect
+    assert tagged.high_confidence?, tagged.total
+    assert tagged.breakdown[:auto_select_allowed]
+  end
+
+  test "scores an author-first cjk release of a short title" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "刘慈欣 - 三体 [CHS] M4B", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert_equal 100, score.breakdown[:author], score.breakdown.inspect
+    assert_includes score.detected_languages, "zh"
+    assert_equal :audiobook, score.detected_format
+    assert score.high_confidence?, score.total
+    assert score.breakdown[:auto_select_allowed]
+  end
+
+  test "does not accept a cjk sequel distinguished only by a unicode numeral" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "刘慈欣 - 三体Ⅱ：黑暗森林 [CHS] M4B", seeders: 50),
+      @request
+    )
+
+    assert_operator score.breakdown[:title], :<, 100, score.breakdown.inspect
+    assert_operator score.total, :<, threshold, score.breakdown.inspect
+    assert_not score.high_confidence?, score.total.to_s
+  end
+
+  test "does not accept a cjk sequel distinguished by a spaced unicode numeral" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
+
+    [
+      "刘慈欣 - 三体 Ⅱ：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 2：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 II：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 第2部：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 第2卷：黑暗森林 [CHS] M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_operator score.breakdown[:title], :<, 100, "#{release_title} #{score.breakdown.inspect}"
+      assert_operator score.total, :<, threshold, "#{release_title} total #{score.total} #{score.breakdown.inspect}"
+      assert_not score.high_confidence?, "#{release_title} #{score.total}"
+    end
+  end
+
+  test "does not auto-select a numbered sequel after the exact phrase is rejected" do
+    SettingsService.set(:audiobook_preferred_formats, [ "m4b" ])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+
+    @book.update!(title: "Гарри Поттер и Дары Смерти", author: "Джоан Роулинг", book_type: :audiobook)
+    @request.update!(language: "ru")
+    potter = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Джоан Роулинг - Гарри Поттер и Дары Смерти 2 RU M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator potter.total, :<, threshold, potter.breakdown.inspect
+    assert_not potter.high_confidence?, potter.total.to_s
+    assert_not potter.breakdown[:auto_select_allowed], potter.breakdown.inspect
+
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    forest = ReleaseScorer.score(
+      SearchResult.new(
+        title: "三体 Ⅱ:The Dark Forest - 刘慈欣 [CHS] M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator forest.breakdown[:title], :<, 100, forest.breakdown.inspect
+    assert_operator forest.total, :<, threshold, forest.breakdown.inspect
+    assert_not forest.high_confidence?, forest.total.to_s
+    assert_not forest.breakdown[:auto_select_allowed], forest.breakdown.inspect
+  end
+
+  test "does not auto-select a sequel numeral written with a unicode decimal digit" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+    @book.update!(title: "أرض زيكولا", author: "عمرو عبد الحميد", book_type: :ebook)
+    @request.update!(language: "ar")
+
+    [
+      "أرض زيكولا \u0662 - عمرو عبد الحميد Arabic EPUB",
+      "أرض زيكولا \uFF12 - عمرو عبد الحميد Arabic EPUB"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        SearchResult.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_operator score.total, :<, threshold, "#{release_title} #{score.breakdown.inspect}"
+      assert_not score.high_confidence?, "#{release_title} #{score.total}"
+      assert_not score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+    end
+  end
+
+  test "keeps an exact title match when bitrate or a bracketed year follows it" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+    SettingsService.set(:auto_select_confidence_threshold, 90)
+    threshold = SettingsService.get(:auto_select_confidence_threshold)
+
+    @book.update!(title: "Dune", author: "Frank Herbert", book_type: :audiobook)
+    @request.update!(language: "en")
+    bitrate = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Dune 128 kbps - Frank Herbert - English M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_equal 100, bitrate.breakdown[:title], bitrate.breakdown.inspect
+    assert_operator bitrate.total, :>=, threshold, bitrate.breakdown.inspect
+    assert bitrate.high_confidence?, bitrate.total.to_s
+    assert bitrate.breakdown[:auto_select_allowed], bitrate.breakdown.inspect
+
+    sequel = ReleaseScorer.score(
+      SearchResult.new(
+        title: "Dune 2 - Frank Herbert - English M4B",
+        seeders: 50
+      ),
+      @request
+    )
+
+    assert_operator sequel.total, :<, threshold, sequel.breakdown.inspect
+    assert_not sequel.breakdown[:auto_select_allowed], sequel.breakdown.inspect
+
+    @book.update!(title: "Hamlet", author: "William Shakespeare", book_type: :ebook)
+    [
+      "Hamlet (1603) - William Shakespeare English EPUB",
+      "Hamlet [1603] - William Shakespeare English EPUB"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        SearchResult.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_equal 100, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert_operator score.total, :>=, threshold, "#{release_title} total #{score.total} #{score.breakdown.inspect}"
+      assert score.high_confidence?, "#{release_title} #{score.total}"
+      assert score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+    end
+
+    @book.update!(title: "Hamlet (1603)")
+    titled_year = ReleaseScorer.score(
+      SearchResult.new(title: "Hamlet (1603) - William Shakespeare English EPUB", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, titled_year.breakdown[:title], titled_year.breakdown.inspect
+    assert titled_year.breakdown[:auto_select_allowed], titled_year.breakdown.inspect
+  end
+
+  test "scores greek titles that differ only by final sigma as the same title" do
+    @book.update!(author: "Όμηρος", book_type: :ebook)
+
+    [ [ "ΦΩΣ", "Φως" ], [ "Φως", "ΦΩΣ" ] ].each do |book_title, release_title|
+      @book.update!(title: book_title)
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: "#{release_title} - Όμηρος", seeders: 50),
+        @request
+      )
+
+      assert_equal 100, score.breakdown[:title], "#{book_title} vs #{release_title} #{score.breakdown.inspect}"
+    end
+  end
+
+  test "scores a modifier-letter apostrophe against omitted and ascii forms" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    [ "\u02BC", "\u02BB" ].each do |mark|
+      author = "Flannery O#{mark}Connor"
+      assert_equal "flannery oconnor", TitleKey.new(author).canonical, mark.inspect
+      assert_equal "enders game", TitleKey.new("Ender#{mark}s Game").canonical, mark.inspect
+      @book.update!(title: "Wise Blood", author: author, book_type: :ebook)
+
+      [
+        "Wise Blood - Flannery OConnor English EPUB",
+        "Wise Blood - Flannery O'Connor English EPUB",
+        "Ender#{mark}s Game - Flannery OConnor English EPUB",
+        "Ender's Game - Flannery O'Connor English EPUB"
+      ].each do |release_title|
+        @book.update!(title: release_title.start_with?("Wise") ? "Wise Blood" : "Ender#{mark}s Game")
+        score = ReleaseScorer.score(
+          @request.search_results.new(title: release_title, seeders: 50),
+          @request
+        )
+
+        assert_equal 100, score.breakdown[:title], "#{author.inspect} #{release_title} #{score.breakdown.inspect}"
+        assert_equal 100, score.breakdown[:author], "#{author.inspect} #{release_title} #{score.breakdown.inspect}"
+        assert_operator score.total, :>=, 90, "#{release_title} total #{score.total}"
+        assert score.high_confidence?, "#{release_title} #{score.total}"
+        assert score.breakdown[:auto_select_allowed], release_title
+      end
+    end
+  end
+
   test "preserves exact title and author matches with curly apostrophes" do
     [ "'", "’", "‘" ].each do |apostrophe|
       @book.update!(title: "Ender#{apostrophe}s Game", author: "O#{apostrophe}Connor")

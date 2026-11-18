@@ -25,6 +25,56 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "matches each cyrillic title to its own book" do
+    knights = Book.create!(
+      title: "Рыцари Сорока Островов",
+      author: "Сергей Лукьяненко",
+      book_type: :audiobook
+    )
+    war = Book.create!(
+      title: "Война и мир",
+      author: "Лев Толстой",
+      book_type: :audiobook
+    )
+
+    found_war = BookMatcherService.match(
+      title: "Война и мир",
+      author: "Лев Толстой",
+      book_type: :audiobook
+    )
+    found_knights = BookMatcherService.match(
+      title: "рыцари сорока островов",
+      author: "сергей лукьяненко",
+      book_type: :audiobook
+    )
+
+    assert_equal war, found_war.book
+    assert found_war.exact?
+    assert_equal knights, found_knights.book
+    assert found_knights.exact?
+  end
+
+  test "does not create a duplicate when greek final sigma is the only difference" do
+    existing = Book.create!(title: "ΦΩΣ", author: "Όμηρος", book_type: :ebook)
+
+    result = BookMatcherService.match(
+      title: "Φως",
+      author: "Όμηρος",
+      book_type: :ebook
+    )
+
+    assert result.exact?, "got #{result.match_type} with score #{result.score}"
+    assert_equal existing, result.book
+
+    assert_no_difference("Book.count") do
+      assert_equal existing, BookMatcherService.find_or_create_book(
+        title: "Φως",
+        author: "Όμηρος",
+        book_type: :ebook
+      )
+    end
+  end
+
   test "matches high Roman volumes with their translated Arabic markers" do
     book = Book.create!(title: "One Piece Volume CI", author: "Eiichiro Oda", book_type: :ebook)
 
@@ -353,6 +403,66 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_nil result.book
   end
 
+  test "does not match a different russian volume of the same work" do
+    existing = Book.create!(
+      title: "Война и мир. Том 1",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+
+    conflict = BookMatcherService.match(
+      title: "Война и мир. Том 2",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+    same = BookMatcherService.match(
+      title: "Война и мир. Том 1",
+      author: "Лев Толстой",
+      book_type: :ebook
+    )
+
+    assert conflict.no_match?, "got #{conflict.match_type} with score #{conflict.score}"
+    assert_nil conflict.book
+    assert same.exact?, "got #{same.match_type} with score #{same.score}"
+    assert_equal existing, same.book
+  end
+
+  test "does not fuzzy-match cyrillic titles that differ by a bare trailing number" do
+    numbered = Book.create!(
+      title: "Хроники Амбера 1",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    plain = Book.create!(
+      title: "Хроники Амбера",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+
+    conflict = BookMatcherService.match(
+      title: "Хроники Амбера 2",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    same = BookMatcherService.match(
+      title: "Хроники Амбера 1",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    unnumbered = BookMatcherService.match(
+      title: "Хроники Амбера",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+
+    assert conflict.no_match?, "got #{conflict.match_type} with score #{conflict.score}"
+    assert_nil conflict.book
+    assert same.exact?, "got #{same.match_type} with score #{same.score}"
+    assert_equal numbered, same.book
+    assert unnumbered.exact?, "got #{unnumbered.match_type} with score #{unnumbered.score}"
+    assert_equal plain, unnumbered.book
+  end
+
   test "does not match different numbered volumes" do
     Book.create!(
       title: "Attack on Titan Vol 2",
@@ -417,6 +527,10 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
       "The Witcher Volumen 2",
       "The Witcher Deel 2",
       "The Witcher Boek 2",
+      "The Witcher Том 2",
+      "The Witcher Часть 2",
+      "The Witcher Книга 2",
+      "The Witcher Выпуск 2",
       "The Witcher Tome II",
       "The Witcher Part. 2",
       "The Witcher Volume 2",
