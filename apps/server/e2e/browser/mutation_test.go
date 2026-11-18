@@ -115,7 +115,7 @@ var mutants = []mutant{
 	{name: "assets: a name that does not carry its digest is trusted", file: "internal/webassets/webassets.go", edits: one("if encoded != expected.SHA256 || encoded[:digestPrefix] != parts[1] {", "if encoded != expected.SHA256 {"), unit: "./internal/webassets/"},
 	{name: "assets: an entry that is not listed is accepted", file: "internal/webassets/webassets.go", edits: one("if _, present := bundle.files[bundle.script]; !present {", "if _, present := bundle.files[bundle.script]; !present && false {"), unit: "./internal/webassets/"},
 	{name: "assets: an oversized manifest is read", file: "internal/webassets/webassets.go", edits: one("if err != nil || int64(len(body)) > limit {", "if err != nil {"), unit: "./internal/webassets/"},
-	{name: "assets: the total size is unbounded", file: "internal/webassets/webassets.go", edits: one("if total > totalLimit {", "if total > totalLimit && false {"), unit: "./internal/webassets/"},
+	{name: "assets: the total size is unbounded", file: "internal/webassets/webassets.go", edits: one("if total > limit {", "if total > limit && false {"), unit: "./internal/webassets/"},
 	{name: "projection: the account is not part of the status isolation", file: "internal/live/queries.go", edits: one("func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {", "func (d *DB) StatesFor(ctx context.Context, userID int64, bookIDs []int64) (map[int64]int, error) {\n\tuserID = 0"), unit: "./internal/gohttp/", scenario: differential},
 }
 
