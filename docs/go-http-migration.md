@@ -1058,13 +1058,17 @@ screen goes back to "switched off"), or deploy the previous binary. Nothing is s
 The request is fixed: `GET https://openlibrary.org/search.json?q=<query>&limit=<n>&fields=key,title,author_name,first_publish_year,cover_i,edition_count`
 with `Accept: application/json` and `User-Agent: Shelfarr/<-server-version>`. No cookie, credential, account or session
 value is ever sent. The proxy variables `HTTPS_PROXY`/`NO_PROXY` are honoured, as Rails' HTTP client does; the
-destination host is not configurable. The answer must arrive within 8 s (5 s to connect, 5 s for TLS), be `200` with
-`application/json` and at most 1 MiB, or the search fails; no redirect is followed and nothing is retried. The process
+destination host is not configurable. Every search uses a new connection, so the HTTP client can never resend a search
+on a reused connection the server dropped. The answer must arrive within 8 s (5 s to connect, 5 s for TLS), be `200`
+with `application/json`, at most 1 MiB and an object with a `docs` list, or the search fails; no redirect is followed and
+nothing is retried. The process
 sends at most one search a second to Open Library across every account and at most two at once (Open Library's
 published limit for clients that do not identify themselves with a contact address); a search above that budget is
 refused with `429 search_rate_limited` and `Retry-After`. A `429` from Open Library pauses every search for its
-`Retry-After` (60 s when absent or not a number of seconds, at most 15 minutes) in this process only. A browser that
-leaves or replaces a search cancels the outbound request.
+`Retry-After` (60 s when absent or not a number of seconds, at least 1 s, at most 15 minutes, a larger number meaning
+15 minutes) in this process only. A browser that leaves or replaces a search cancels the outbound request. Discover
+requests have their own pool of 8 (`503 server_busy` beyond it), so a slow Open Library cannot take the Library's
+`-max-metadata-requests` capacity.
 
 ### Which Shelfarr settings apply
 
@@ -1074,7 +1078,7 @@ The same settings Rails' `MetadataService` reads, read-only and on every request
 | --- | --- |
 | `open_library_enabled` false | `"search": "provider_disabled"`, nothing sent |
 | `metadata_source` set to `hardcover`, `google_books` or `comic_vine` (surrounding whitespace ignored, as Rails strips it) | `"search": "provider_not_selected"`, nothing sent; `auto`, `openlibrary` and any other value keep Open Library |
-| `open_library_search_limit` | the `limit` sent, clamped to 1–20 (Rails sends any value) |
+| `open_library_search_limit` | the `limit` sent, at most 20 (Rails sends any value); 0 or a negative value returns no results without contacting Open Library (Rails sends it); a whole number of any length is read, as Rails' `to_i` reads the canonical integer it stores |
 | `metadata_provider_statuses` row for `openlibrary` with `rate_limited_until` in the future, or `status = auth_failed` | `"search": "provider_paused"` with `retry_after` seconds when known, nothing sent (Rails skips the provider then) |
 
 A setting stored with a type Rails would not write (`open_library_enabled` that is not `boolean`, a limit that is not
@@ -1120,8 +1124,11 @@ number, never taken from the answer, and the browser accepts only `https://cover
 without one it draws the generated cover. Covers are loaded lazily by the browser from Open Library with no referrer,
 as the Rails screens load them, within the existing `img-src 'self' https:` policy.
 
-`library` lists, in the order ebook, audiobook, comic, the acquired copy (non-blank `file_path`, a type the Go Library
-serves) whose `open_library_work_id` is exactly the work's id, the newest by id when several exist. A row holding the
+`library` lists, in the order ebook, audiobook, comic, one copy per format that the Go Library can open now: acquired
+(non-blank `file_path`, a type the Go Library serves), with `open_library_work_id` exactly the work's id, and with at least
+one file the Library lists under the configured roots. The newest such copy by id wins; a newer copy whose files are
+missing, or whose layout the Go Library cannot read, is skipped for an older usable one. At most 200 candidate copies
+across one answer are examined, newest first. The library roots are checked before Open Library is contacted. A row holding the
 same work under another source (for example `hardcover_id` as well) still matches through its Open Library column; ids
 stored in another form, other case or with a `/works/` prefix do not, exactly as in Rails' `Book.preload_by_work_ids`.
 No title or author guess is ever used. These are the same shared Library books every allowlisted account already sees
@@ -1132,9 +1139,10 @@ in the Go Library, so a link reveals nothing new; requests, their owners and pen
 * Only Open Library; results are not merged with other sources, not clustered by title and author, not classified as
   comics, and keep Open Library's relevance order (Rails sorts merged candidates by source priority, confidence and title).
 * `subject` is not requested (it only feeds Rails' comics classification), and edition keys (`/books/...M`), repeated
-  works and `cover_i: -1` are dropped (Rails keeps them and builds a broken `-1` cover address).
+  works and `cover_i: -1` are dropped (Rails keeps them and builds a broken `-1` cover address). An answer without a
+  `docs` list is a failure; Rails reads it as no results.
 * A string `first_publish_year` is dropped; Rails keeps it.
-* The link per format is the newest *acquired* copy. Rails' result card looks at the newest row of that format with the
+* The link per format is the newest copy the Library can open. Rails' result card looks at the newest row of that format with the
   work id, acquired or not, so a newer pending request for the same work and format makes Rails show that format as
   requested while Go links the copy already in the Library (the verifier's fixture holds that case).
 * No snapshots, pagination, streaming, request buttons or details handoff; no provider-health writes; a stricter
@@ -1147,10 +1155,13 @@ Forward keep the query in the address (`?q=`). Opening the screen only asks the 
 labelled search field (with a note that what is typed goes to Open Library when Search is pressed) sends one search per
 submit, never per keystroke; a blank submit explains itself and sends nothing, and an over-long query in the address is
 explained and never sent. A status region announces "Searching…", the result count, no results, or that the search did
-not finish. Each result shows its cover, title, author, first publication year, number of editions, "Not in your library"
-or one "Open the ebook/audiobook/comic" link per copy, and a "View on Open Library" link that opens a new tab with no
+not finish. Each result shows its cover, title, author, first publication year, number of editions,
+"No copy to open in your library" or one "Open the ebook/audiobook/comic" link per copy, and a "View on Open Library" link that opens a new tab with no
 opener or referrer. The screen states that only Open Library is searched and that requesting is not part of the
-preview. Each unavailable state has its own explanation and no form. Rate limits, an unreachable or unusable Open
+preview. Each unavailable state has its own explanation and no form; all but "switched off" (which only a restart
+changes) offer Check again, and such answers are not cached, so a later visit asks again. The field keeps focus
+through a search. A query repeated in the address is rewritten to the last one, which is the one searched, as the
+Library's address is. Rate limits, an unreachable or unusable Open
 Library, a refused query and an older server (`404`) each have a message and a Try again button where it can help;
 nothing is retried by itself. Each query has its own cache entry for the account (five minutes, no refetch on focus),
 so Back reuses the answer; a newer search or leaving the page cancels the older request and a late answer cannot
@@ -1179,8 +1190,10 @@ and an asset build from the same commit.
 * Go unit tests (`internal/openlibrary`, `internal/gohttp`): the exact request URL and headers, the projection of a
   recorded answer with every odd type, size, status, content type, redirect, stalled body, deadline, cancellation,
   `429` pause and the per-second and concurrency budget; the route's guards, every settings case with provider health
-  unchanged, refused stored values, refused queries, exact library links (newest acquired, pending, blank, case,
-  prefix, odd type), named failures without leaks in answers or logs, and a disconnect cancelling the upstream request.
+  unchanged, refused stored values and limits, refused queries, exact library links (newest openable, a newer
+  copy with a missing file skipped, pending, blank, case, prefix, odd type), named failures without leaks in answers or
+  logs, a disconnect cancelling the upstream request, a stalled search leaving the Library's capacity free, and a search
+  the server dropped on a connection never being sent twice.
 * `tools/migration/web/verify-web`: the Rails fixture gives reader books Open Library work ids (one also with a
   Hardcover id), adds a newer pending request for one and a pending-only book requested by another account, and records
   what the real Rails `OpenLibraryClient.search` and `Book.preload_by_work_ids`/`find_in_lookup` make of a recorded
