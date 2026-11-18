@@ -427,6 +427,42 @@ class BookMatcherServiceTest < ActiveSupport::TestCase
     assert_equal existing, same.book
   end
 
+  test "does not fuzzy-match cyrillic titles that differ by a bare trailing number" do
+    numbered = Book.create!(
+      title: "Хроники Амбера 1",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    plain = Book.create!(
+      title: "Хроники Амбера",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+
+    conflict = BookMatcherService.match(
+      title: "Хроники Амбера 2",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    same = BookMatcherService.match(
+      title: "Хроники Амбера 1",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+    unnumbered = BookMatcherService.match(
+      title: "Хроники Амбера",
+      author: "Роджер Желязны",
+      book_type: :ebook
+    )
+
+    assert conflict.no_match?, "got #{conflict.match_type} with score #{conflict.score}"
+    assert_nil conflict.book
+    assert same.exact?, "got #{same.match_type} with score #{same.score}"
+    assert_equal numbered, same.book
+    assert unnumbered.exact?, "got #{unnumbered.match_type} with score #{unnumbered.score}"
+    assert_equal plain, unnumbered.book
+  end
+
   test "does not match different numbered volumes" do
     Book.create!(
       title: "Attack on Titan Vol 2",

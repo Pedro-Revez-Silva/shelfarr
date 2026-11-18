@@ -54,6 +54,7 @@ class ReleaseScorer
     auto_select_allowed = @format_preferences.auto_select_allowed &&
       !explicit_format_conflict? &&
       !ambiguous_title_alias_match? &&
+      !sequel_title_conflict? &&
       (@comic_issue_match.nil? || issue_status == :exact) &&
       size_limit[:allowed]
     breakdown = {
@@ -138,11 +139,13 @@ class ReleaseScorer
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
-    title_variants = SearchTitleVariantService.call(@book.title)
     # Every marker is rewritten to "volume N", so trigrams cannot tell
     # volume 2 from volume 3. A mismatched number is a different book.
-    comparable = title_variants.reject { |title| SequenceMarker.conflict?(title, prepared_release_title) }
+    # A bare sequel numeral is decided once on the canonical title, before
+    # punctuationless forms or trigrams can outvote it.
+    comparable = comparable_titles
     return 0 if comparable.empty?
+    return 0 if sequel_title_conflict?
 
     release_key = release_title_key
     book_titles = comparable
@@ -207,13 +210,33 @@ class ReleaseScorer
   end
 
   # The author credit is not part of the title, so initials cannot finish a
-  # marker ("The Red Book C. G. Jung").
+  # marker ("The Red Book C. G. Jung"). Bracketed years and spaced bitrates
+  # come off next, before a numeral is read.
   def prepared_release_title
-    @prepared_release_title ||= SequenceMarker.without_author_credit(
-      @search_result.title.to_s,
-      author: @book.author,
-      protected_title: @book.title
+    @prepared_release_title ||= SequenceMarker.without_recognised_metadata(
+      SequenceMarker.without_author_credit(
+        @search_result.title.to_s,
+        author: @book.author,
+        protected_title: @book.title
+      ),
+      preserve_title: @book.title
     )
+  end
+
+  def comparable_titles
+    @comparable_titles ||= SearchTitleVariantService.call(@book.title).reject { |title|
+      SequenceMarker.conflict?(title, prepared_release_title)
+    }
+  end
+
+  # Comic issue numbers are a separate match. A confirmed book sequel blocks
+  # auto-selection even when the numeric total stays under the threshold.
+  def sequel_title_conflict?
+    return @sequel_title_conflict if instance_variable_defined?(:@sequel_title_conflict)
+
+    @sequel_title_conflict = @comic_issue_match.nil? && comparable_titles.any? { |title|
+      SequenceMarker.sequel_conflict?(title, prepared_release_title)
+    }
   end
 
   def release_title_key
