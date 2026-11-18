@@ -67,7 +67,7 @@ const mutants: Mutant[] = [
   { name: "account: a saved name is not shown in the header", file: "src/queries.ts", old: 'if (answer.kind === "saved") show(answer.profile);', replacement: 'if (answer.kind === "saved" && answer.profile.name === "") show(answer.profile);', tests: GO_ACCOUNT },
   { name: "account: a field rejection is read as a server failure", file: "src/api/client.ts", old: "const rejected = options.rejection !== undefined && response.status === 422 && options.rejection.safeParse(payload).success;", replacement: "const rejected = false;", tests: GO_ACCOUNT },
   { name: "account: a profile of another account is accepted", file: "src/contract.ts", old: '.refine((envelope) => envelope.profile.id === envelope.account, "The profile belongs to another account")', replacement: "", tests: GO_ACCOUNT },
-  { name: "account: the classic preview serves the Go account page", file: "src/components/AccountPage.tsx", old: 'if (mode !== "go") {', replacement: "if (false) {", tests: GO_ACCOUNT },
+  { name: "account: the classic preview serves the Go account page", file: "src/components/AccountPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_ACCOUNT },
   { name: "account: the Go navigation has no Account link", file: "src/components/Navigation.tsx", old: "{handoffs ? null : (", replacement: "{true ? null : (", tests: GO_ACCOUNT.concat(GO_AUTH) },
 ];
 
