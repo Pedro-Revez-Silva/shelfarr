@@ -7,9 +7,11 @@ import * as ReadAlong from "../../app/javascript/consumer_read_along.js"
 // Keep the production controller methods. Only Stimulus construction and the
 // importmap alias are replaced; media, DOM and network are external boundaries.
 const progressURL = new URL("../../app/javascript/consumer_progress_sync.js", import.meta.url)
+const placesURL = new URL("../../app/javascript/consumer_epub_places.js", import.meta.url)
 const source = (await readFile(new URL("../../app/javascript/controllers/consumer_reader_controller.js", import.meta.url), "utf8"))
   .replace('import { Controller } from "@hotwired/stimulus"', "class Controller {}")
   .replace('from "consumer_progress_sync"', `from ${JSON.stringify(progressURL.href)}`)
+  .replace('from "consumer_epub_places"', `from ${JSON.stringify(placesURL.href)}`)
 const { default: Reader } = await import(`data:text/javascript;base64,${Buffer.from(source + "\n//# sourceURL=consumer-reader-controller-under-test.js\n").toString("base64")}`)
 const ASSET = "a".repeat(64), GENERATION = "b".repeat(64), AUDIO = "c".repeat(64)
 

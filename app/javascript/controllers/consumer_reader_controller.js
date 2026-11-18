@@ -1,5 +1,6 @@
 import { Controller } from "@hotwired/stimulus"
 import ConsumerProgressSync, { ListeningCheckpoints } from "consumer_progress_sync"
+import * as places from "consumer_epub_places"
 
 const STATUS = {
   saved: ["Your place is saved to your account", false, false],
@@ -17,8 +18,6 @@ const FORMAT_LABELS = { epub: "EPUB", pdf: "PDF", cbz: "Comic (CBZ)" }
 const PAGE_FORMATS = new Set(["pdf", "cbz"])
 const WEB_EBOOK_LIMIT = 32 * 1024 * 1024
 const READ_ALONG_ACTIVE = "shelfarr-read-along-active"
-const BOOK_IMAGE_TAGS = new Set(["img", "image"])
-const BOOK_IMAGE_ATTRS = new Set(["src", "href", "xlink:href"])
 
 export default class extends Controller {
   static targets = ["publication", "syncStatus", "retry", "conflict", "conflictMessage", "error", "viewport", "chapters", "location", "audio", "tracks", "trackTitle", "seek", "elapsed", "duration", "play", "speed", "controls", "reveal", "hide", "notice", "remote",
@@ -416,36 +415,7 @@ export default class extends Controller {
       // it made from the book's own file. DOMPurify drops every blob: URL, so
       // image-only books (manga, comics as EPUB) opened to empty pages. Keep
       // exactly those URLs, and only as the source of an image.
-      const sanitize = (html, section) => {
-        const images = new Set((this.book.resources?.replacementUrls || []).filter(url => typeof url === "string" && url.startsWith(`blob:${window.location.origin}/`)))
-        const ownImage = (node, data) => {
-          if (BOOK_IMAGE_TAGS.has(node.nodeName.toLowerCase()) && BOOK_IMAGE_ATTRS.has(data.attrName) && images.has(data.attrValue)) data.forceKeepAttr = true
-        }
-        DOMPurify.addHook("uponSanitizeAttribute", ownImage)
-        let clean
-        try {
-          clean = DOMPurify.sanitize(html, {
-            WHOLE_DOCUMENT: true, SANITIZE_NAMED_PROPS: true,
-            FORBID_TAGS: ["script", "iframe", "frame", "form", "input", "button", "object", "embed", "base", "meta", "audio", "video", "source"],
-            FORBID_ATTR: ["srcset", "action", "formaction"]
-          })
-        } finally { DOMPurify.removeHook("uponSanitizeAttribute", ownImage) }
-        const document = new DOMParser().parseFromString(clean, "text/html")
-        for (const link of document.querySelectorAll("[href]")) {
-          const href = link.getAttribute("href") || ""
-          if (/^(?:https?:|javascript:|file:|data:|\/\/)/i.test(href)) link.removeAttribute("href")
-        }
-        const policy = document.createElement("meta")
-        policy.httpEquiv = "Content-Security-Policy"
-        policy.content = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline' blob:; img-src data: blob:; font-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'self'"
-        // EPUB.js resolves internal anchors from the section's base URI. Source
-        // bases are stripped; only this derived same-origin archive path is used.
-        const base = document.createElement("base")
-        base.href = this.sectionBase(section.href)
-        document.head.prepend(base)
-        document.head.prepend(policy)
-        return document.documentElement.outerHTML
-      }
+      const sanitize = (html, section) => places.sanitizeSection(DOMPurify, html, { images: places.ownBookImages(this.book, window.location.origin), base: this.sectionBase(section.href) })
       if (streamed) {
         // Narration, overlays and video are played (or ignored) by the
         // reader; EPUB.js would otherwise load every one into memory.
@@ -491,32 +461,10 @@ export default class extends Controller {
       addChapters((await this.book.loaded.navigation).toc)
       const locator = this.initialProgress?.locator
       await this.showLocator(locator)
-      if (locator && !locator.locations?.cfi && !this.fragmentOf(locator) && locator.locations?.progression > 0) {
-        const contents = this.rendition.getContents()[0]
-        if (contents) {
-          const walker = contents.document.createTreeWalker(contents.document.body, NodeFilter.SHOW_TEXT)
-          const nodes = []
-          while (walker.nextNode()) if (walker.currentNode.textContent.length) nodes.push(walker.currentNode)
-          // A chapter of pictures has no text to measure, only the spaces
-          // between them; its fraction names a picture (one per page).
-          const pictures = nodes.some(node => node.textContent.trim()) ? [] : [...contents.document.querySelectorAll("img, image")]
-          if (pictures.length) {
-            await this.showPlace(contents.cfiFromNode(pictures[Math.min(pictures.length - 1, Math.round(pictures.length * locator.locations.progression))]))
-          } else {
-            let offset = Math.floor(nodes.reduce((length, node) => length + node.textContent.length, 0) * Math.min(1, locator.locations.progression))
-            for (const node of nodes) {
-              if (offset <= node.textContent.length) {
-                const range = contents.document.createRange()
-                range.setStart(node, offset)
-                range.collapse(true)
-                await this.showPlace(contents.cfiFromRange(range))
-                break
-              }
-              offset -= node.textContent.length
-            }
-          }
-        }
-      }
+      const fraction = places.restorableFraction(locator)
+      const contents = fraction === null ? null : this.rendition.getContents()[0]
+      const restored = contents ? places.fractionPlace(contents, fraction) : null
+      if (restored) await this.showPlace(restored)
       this.lastEbookCfi = this.pageCfi()
       this.readerReady = true
       await this.readAlongRestored(locator)
@@ -548,17 +496,11 @@ export default class extends Controller {
   }
 
   sectionBase(href) {
-    const resolved = this.book.resolve(href)
-    if (/^[a-z][a-z0-9+.-]*:/i.test(resolved)) {
-      const url = new URL(resolved)
-      if (url.origin === window.location.origin) return url.href
-    }
-    return new URL(`/${resolved.replace(/^\/+/, "")}`, window.location.origin).href
+    return places.sectionBase(this.book, href, window.location.origin)
   }
 
   fragmentOf(locator) {
-    const fragment = Array.isArray(locator?.locations?.fragments) ? locator.locations.fragments[0] : null
-    return typeof fragment === "string" && fragment && !fragment.includes("=") ? fragment : null
+    return places.fragmentOf(locator)
   }
 
   // Show a saved place: its CFI, else its element (read-along places name
@@ -585,10 +527,7 @@ export default class extends Controller {
   // A CFI for the start of an element's text. EPUB.js positions a collapsed
   // text range cleanly; an element CFI makes it log range errors.
   elementCfi(contents, element) {
-    const range = element.ownerDocument.createRange()
-    range.selectNodeContents(element)
-    range.collapse(true)
-    return contents.cfiFromRange(range)
+    return places.elementCfi(contents, element)
   }
 
   // Sanitized documents prefix IDs ("user-content-"); look up both.
@@ -629,19 +568,7 @@ export default class extends Controller {
   // saved, and reopening went back to the first page. A page whose name is
   // not text on that page is named by its first picture instead.
   pageCfi(location = this.rendition?.currentLocation()) {
-    const start = location?.start
-    const contents = start?.cfi && this.rendition.getContents().find(item => item.sectionIndex === start.index)
-    const frame = contents?.window?.frameElement
-    if (!frame) return start?.cfi
-    const view = this.viewportTarget.getBoundingClientRect(), box = frame.getBoundingClientRect()
-    const onPage = rect => rect.width + rect.height > 0 && rect.right > view.left - box.left + 1 && rect.left < view.right - box.left - 1
-    let named = null
-    try { named = this.rendition.getRange(start.cfi) } catch (_) { named = null }
-    if (this.textOnPage(named, onPage)) return start.cfi
-    const picture = [...contents.document.querySelectorAll("img, image")].find(node => onPage(node.getBoundingClientRect()))
-    // The picture itself, not a text offset in it: a picture has no text, and
-    // EPUB.js shows an element place on the page where that element is drawn.
-    return picture ? contents.cfiFromNode(picture) : start.cfi
+    return places.pageCfi(this.rendition, this.viewportTarget, location)
   }
 
   // EPUB.js's name for a page is a point in a text node: a collapsed range,
@@ -649,14 +576,7 @@ export default class extends Controller {
   // non-blank character from that point is drawn there. A point in blank
   // space, in an element, or in text on another page does not.
   textOnPage(range, onPage) {
-    const node = range?.startContainer
-    if (node?.nodeType !== Node.TEXT_NODE) return false
-    const skip = node.textContent.slice(range.startOffset).search(/\S/)
-    if (skip < 0) return false
-    const character = node.ownerDocument.createRange()
-    character.setStart(node, range.startOffset + skip)
-    character.setEnd(node, range.startOffset + skip + 1)
-    return [...character.getClientRects()].some(onPage)
+    return places.textOnPage(range, onPage)
   }
 
   layoutAnchor() {
@@ -692,12 +612,8 @@ export default class extends Controller {
     this.readerReflow = reflow
   }
 
-  async settleFrames() {
-    for (const view of this.rendition.views().all?.() || []) {
-      view.expand?.()
-      await view.contents?.document?.fonts?.ready
-      view.expand?.()
-    }
+  settleFrames() {
+    return places.settleFrames(this.rendition)
   }
 
   // Keyboard, tap and swipe inside the sandboxed book frame. Side taps turn
@@ -818,8 +734,7 @@ export default class extends Controller {
   ebookPosition(location) {
     if (!this.active || this.pageReader || !this.book) return
     const start = location.start
-    const fraction = Math.max(0, (start.displayed.page - 1) / Math.max(1, start.displayed.total))
-    const total = Math.min(1, (start.index + fraction) / Math.max(1, this.book.spine.length))
+    const { fraction, total } = places.pageProgression(start, this.book.spine.length)
     this.locationTarget.textContent = `${start.displayed.page} / ${start.displayed.total} · chapter ${start.index + 1}`
     const option = [...this.chaptersTarget.options].find(option => option.value.split("#")[0] === start.href)
     if (option) for (const menu of this.chapterMenus) menu.value = option.value

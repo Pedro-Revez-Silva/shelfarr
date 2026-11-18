@@ -1,6 +1,7 @@
 pin "application"
 pin "consumer_reader_engine", to: "consumer_reader_engine.js", preload: false
 pin "consumer_progress_sync", preload: false
+pin "consumer_epub_places", preload: false
 pin "consumer_offline", preload: false
 pin "consumer_page_reader", preload: false
 pin "consumer_read_along", preload: false
