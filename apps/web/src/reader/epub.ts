@@ -43,6 +43,7 @@ export class EpubSession {
   private moves: Promise<void> = Promise.resolve();
   private epoch = 0;
   private displayFailed: ((reason: unknown) => void) | null = null;
+  private failedStep: { failed: boolean } | null = null;
   private readingAnchor: string | undefined;
   private reflow: Promise<unknown> = Promise.resolve();
   private touchStart: { x: number; y: number } | null = null;
@@ -183,7 +184,9 @@ export class EpubSession {
   private async showTarget(href: string): Promise<void> {
     const hash = href.indexOf("#");
     if (hash < 0) return this.showPlace(href);
+    const step = this.failedStep;
     await this.showPlace(href.slice(0, hash));
+    if (step?.failed) return;
     const rendition = this.rendition;
     const index = rendition?.currentLocation()?.start?.index;
     const contents = rendition?.getContents().find((item) => item.sectionIndex === index) ?? null;
@@ -210,13 +213,15 @@ export class EpubSession {
 
   private async showPlace(target: string | undefined): Promise<void> {
     const rendition = this.rendition;
-    if (!rendition) return;
+    const step = this.failedStep;
+    if (!rendition || step?.failed) return;
     await rendition.display(target);
+    if (step?.failed) return;
     if (target && this.active) {
       await places.settleFrames(rendition);
-      if (this.active) await rendition.display(target);
+      if (this.active && !step?.failed) await rendition.display(target);
     }
-    if (this.active) {
+    if (this.active && !step?.failed) {
       const cfi = typeof target === "string" && target.startsWith("epubcfi(") ? target : this.pageCfi();
       if (cfi) this.readingAnchor = cfi;
     }
@@ -262,11 +267,17 @@ export class EpubSession {
   }
 
   private settled(step: () => Promise<unknown> | undefined): Promise<unknown> {
+    const marker = { failed: false };
+    this.failedStep = marker;
     return new Promise((resolve, reject) => {
-      this.displayFailed = reject;
+      this.displayFailed = (reason) => {
+        marker.failed = true;
+        reject(reason);
+      };
       Promise.resolve(step()).then(resolve, reject);
     }).finally(() => {
       this.displayFailed = null;
+      if (this.failedStep === marker) this.failedStep = null;
     });
   }
 

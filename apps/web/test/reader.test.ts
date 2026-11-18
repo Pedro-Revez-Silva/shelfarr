@@ -431,13 +431,19 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
   const displayed: (string | undefined)[] = [];
   const listeners: Record<string, Listener> = {};
   const hooks: ((contents: unknown) => void)[] = [];
+  let abandoned: (() => void) | null = null;
   let current: FakeLocation = options.location ?? pageAt(1);
   const rendition = {
     display: async (target?: string) => {
+      const release = abandoned;
+      abandoned = null;
+      release?.();
       displayed.push(target);
       if (target !== undefined && target === options.broken) {
         listeners["displayerror"]?.(new Error("missing section"));
-        await new Promise(() => undefined);
+        await new Promise<void>((resolve) => {
+          abandoned = resolve;
+        });
       }
       const next = options.places?.(target);
       if (next) current = next;
@@ -525,15 +531,20 @@ describe("EPUB session review regressions", () => {
 
   test("a chapter the engine cannot display is reported and does not stall later moves", async () => {
     const failures: string[] = [];
+    const moved: unknown[] = [];
     const { engine, displayed } = fakeEngine({ now: { value: 0 }, broken: "missing.xhtml" });
-    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: (message) => failures.push(message) });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value) => moved.push(value), key: () => undefined, failed: (message) => failures.push(message) });
     await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
     session.chooseChapter("missing.xhtml");
     await settle();
     session.chooseChapter("two.xhtml");
     await settle();
+    session.next();
+    await settle();
     expect(failures).toEqual(["This chapter couldn't be opened."]);
-    expect(displayed).toContain("two.xhtml");
+    expect(displayed.filter((target) => target === "missing.xhtml")).toEqual(["missing.xhtml"]);
+    expect(displayed.at(-1)).toBe("two.xhtml");
+    expect(moved).toHaveLength(1);
     session.destroy();
   });
 
