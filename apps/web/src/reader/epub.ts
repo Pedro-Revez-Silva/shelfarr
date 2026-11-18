@@ -290,7 +290,7 @@ export class EpubSession {
     const location = this.rendition?.currentLocation();
     const start = location?.start;
     const cfi = this.pageCfi(location);
-    if (!book || !start || !cfi) return;
+    if (!book || !start || !cfi || (!current && cfi === before)) return;
     this.readingAnchor = cfi;
     if (!current || cfi === before) return;
     const { fraction, total } = places.pageProgression(start, book.spine.length);

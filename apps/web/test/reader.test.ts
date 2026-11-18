@@ -525,6 +525,22 @@ describe("EPUB session review regressions", () => {
     session.destroy();
   });
 
+  test("a turn that lands on the same place while another device's place is chosen keeps the exact reading anchor", async () => {
+    const releases: (() => void)[] = [];
+    const exact = "epubcfi(/6/2!/4/8/1:72)";
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, location: pageAt(4), slowNext: () => new Promise<void>((resolve) => releases.push(resolve)) });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), { href: "one.xhtml", locations: { cfi: exact } }, { ink: "#000", surface: "#fff" });
+    session.next();
+    await settle();
+    session.forgetMoves();
+    releases.shift()?.();
+    await settle();
+    await session.changeTextSize(10);
+    expect(displayed.at(-1)).toBe(exact);
+    session.destroy();
+  });
+
   test("a turn still running when another device's place is adopted records nothing", async () => {
     const releases: (() => void)[] = [];
     const { engine } = fakeEngine({ now: { value: 0 }, slowNext: (advance) => new Promise<void>((resolve) => releases.push(() => { advance(); resolve(); })) });

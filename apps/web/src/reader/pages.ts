@@ -85,7 +85,9 @@ export class PageSession {
   private readonly callbacks: PageCallbacks;
   private readonly now: () => number;
   private readonly reader: PageReader;
-  private readonly zoomWatch: MutationObserver;
+  private readonly element: HTMLElement;
+  private readonly paintWatch: MutationObserver;
+  private painted = 0;
   private placed = 0;
   private turnAt: number | null = null;
   private ready = false;
@@ -115,8 +117,9 @@ export class PageSession {
       onTap: (zone) => this.tapped(zone),
       onError: (message) => this.callbacks.failed(message),
     });
-    this.zoomWatch = new MutationObserver(() => this.report());
-    this.zoomWatch.observe(element, { attributes: true, attributeFilter: ["data-zoom"] });
+    this.element = element;
+    this.paintWatch = new MutationObserver(() => this.paintSeen());
+    this.paintWatch.observe(element, { attributes: true, attributeFilter: ["data-page", "data-zoom"] });
   }
 
   async open(saved: Locator | null): Promise<PageOpening> {
@@ -136,7 +139,7 @@ export class PageSession {
     this.active = false;
     this.ready = false;
     this.turnAt = null;
-    this.zoomWatch.disconnect();
+    this.paintWatch.disconnect();
     this.reader.destroy();
   }
 
@@ -192,11 +195,10 @@ export class PageSession {
   private move(step: () => Promise<void> | undefined): void {
     if (!this.ready || !this.active) return;
     const at = this.now();
-    const from = this.reader.position;
     const started = step();
     if (!started) return;
     const target = this.reader.position;
-    if (target !== from) this.turnAt = at;
+    this.turnAt = target === this.painted ? null : at;
     started.then(
       () => this.settled(target),
       () => {
@@ -208,7 +210,7 @@ export class PageSession {
   }
 
   private settled(target: number): void {
-    if (this.active && this.reader.displayedPosition !== target) this.callbacks.unsure();
+    if (this.active && this.painted !== target) this.callbacks.unsure();
   }
 
   private zoomWith(step: () => Promise<void>): Promise<void> {
@@ -220,13 +222,21 @@ export class PageSession {
     if (!this.active) return;
     if (shown) this.callbacks.failed(null);
     this.report(position, count);
+  }
+
+  private paintSeen(): void {
+    if (!this.active) return;
+    this.report();
+    const page = Number(this.element.dataset["page"]);
+    const shown = Number.isInteger(page) && page > 0 && !this.reader.page?.querySelector(".consumer-page__unavailable");
+    this.painted = shown ? page : 0;
     if (!shown || !this.ready) return;
     const at = this.turnAt;
-    if (position === this.placed) this.turnAt = null;
-    if (position === this.placed || at === null) return;
+    if (page === this.placed) this.turnAt = null;
+    if (page === this.placed || at === null) return;
     this.turnAt = null;
-    this.placed = position;
-    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(position) }, at);
+    this.placed = page;
+    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(page) }, at);
   }
 
   private report(position = this.reader.position, count = this.reader.count): void {

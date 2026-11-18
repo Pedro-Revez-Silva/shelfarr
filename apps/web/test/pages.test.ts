@@ -316,6 +316,56 @@ describe("the page reader session", () => {
     opened.session.destroy();
   });
 
+  test("retrying a failed page, or going to an unseen page after another device's place was chosen, is dated by that input", async () => {
+    const book = comic();
+    const opened = open(book, server(book));
+    await opened.session.open(null);
+    let failing = true;
+    HTMLImageElement.prototype.decode = () => (failing ? Promise.reject(new Error("decode")) : Promise.resolve());
+    opened.session.next();
+    await settle();
+    expect(opened.moved).toEqual([]);
+    failing = false;
+    opened.tick(9000);
+    const retried = opened.now();
+    opened.session.go(2);
+    await settle();
+    expect(opened.moved).toEqual([{ place: { asset_id: ID, locator: pageAt(book, 2) as never }, at: retried }]);
+    let release = () => {};
+    HTMLImageElement.prototype.decode = () => new Promise<void>((resolve) => (release = resolve));
+    opened.session.next();
+    opened.session.forgetTurns();
+    opened.tick(4000);
+    const chosen = opened.now();
+    HTMLImageElement.prototype.decode = () => Promise.resolve();
+    opened.session.go(4);
+    await settle();
+    release();
+    await settle();
+    expect(opened.moved.slice(1)).toEqual([{ place: { asset_id: ID, locator: pageAt(book, 4) as never }, at: chosen }]);
+    opened.session.destroy();
+  });
+
+  test("a page drawn by zoom before its turn's own draw finishes is recorded with that turn's time, even if a failed turn follows", async () => {
+    const book = comic({ damage: 3 });
+    const opened = open(book, server(book));
+    await opened.session.open(null);
+    let decodes = 0;
+    HTMLImageElement.prototype.decode = () => (decodes++ === 0 ? new Promise<void>(() => {}) : Promise.resolve());
+    const turned = opened.now();
+    opened.session.next();
+    await settle();
+    opened.tick(2000);
+    await opened.session.zoomIn();
+    await settle();
+    expect(opened.moved).toEqual([{ place: { asset_id: ID, locator: pageAt(book, 2) as never }, at: turned }]);
+    opened.session.next();
+    await settle();
+    expect(opened.failures.filter(Boolean)).toEqual(["This page is damaged: its checksum doesn't match."]);
+    expect(opened.moved).toHaveLength(1);
+    opened.session.destroy();
+  });
+
   test("a pinch zoom made by the page itself is reported and makes the page a pannable region, without reading", async () => {
     const book = comic();
     const opened = open(book, server(book));
