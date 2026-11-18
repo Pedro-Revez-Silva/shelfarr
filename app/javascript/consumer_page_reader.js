@@ -326,8 +326,8 @@ class PdfSource {
     this.count = document.numPages
   }
 
-  static async open(url, resources, signal) {
-    const engine = await import("consumer_pdf_engine")
+  static async open(url, resources, signal, loadEngine = () => import("consumer_pdf_engine")) {
+    const engine = await loadEngine()
     const worker = new URL(resources?.worker || "", globalThis.location.href)
     if (!resources?.worker || worker.origin !== globalThis.location.origin) throw new PageError("The PDF renderer isn't available.", "engine")
     engine.GlobalWorkerOptions.workerSrc = worker.href
@@ -398,12 +398,12 @@ class ComicSource {
     this.count = pages.count
   }
 
-  static async open(asset, orderURL, signal) {
-    const response = await fetch(orderURL, { credentials: "same-origin", redirect: "error", signal, headers: { Accept: "application/json" } })
+  static async open(asset, orderURL, signal, fetcher) {
+    const response = await (fetcher || fetch)(orderURL, { credentials: "same-origin", redirect: "error", signal, headers: { Accept: "application/json" } })
     if (response.status === 410) throw new PageError("This comic changed or can't be read safely. Refresh the publication.", "changed")
     if (!response.ok) throw new PageError("This comic couldn't be opened. Check your connection or sign in again.", "network")
     const items = validateReadingOrder(await response.json(), asset)
-    return new ComicSource(new ComicPages({ url: asset.content_url, asset, items }))
+    return new ComicSource(new ComicPages({ url: asset.content_url, asset, items, ...(fetcher ? { fetch: fetcher } : {}) }))
   }
 
   item(position) { return this.pages.items[position - 1] }
@@ -472,7 +472,7 @@ export class PageReader {
   // element: the container; asset: the publication asset; onChange(position,
   // count, { activity }) reports every displayed page; onTap(zone) handles
   // taps ("previous", "next" or "middle"); onError(message).
-  constructor({ element, asset, format, resources, orderURL, onChange, onTap, onError, label }) {
+  constructor({ element, asset, format, resources, orderURL, onChange, onTap, onError, label, fetch: fetcher, loadEngine }) {
     this.element = element
     this.asset = asset
     this.format = format
@@ -482,6 +482,8 @@ export class PageReader {
     this.onTap = onTap
     this.onError = onError
     this.label = label || "Page"
+    this.fetcher = fetcher
+    this.loadEngine = loadEngine
     this.zoom = 1
     this.position = 0
     this.displayedPosition = 0
@@ -503,8 +505,8 @@ export class PageReader {
     this.stage.append(this.page)
     this.element.append(this.stage)
     this.listen()
-    this.source = this.format === "pdf" ? await PdfSource.open(url, this.resources, this.abort.signal)
-      : await ComicSource.open({ ...this.asset, content_url: url }, this.orderURL, this.abort.signal)
+    this.source = this.format === "pdf" ? await PdfSource.open(url, this.resources, this.abort.signal, this.loadEngine)
+      : await ComicSource.open({ ...this.asset, content_url: url }, this.orderURL, this.abort.signal, this.fetcher)
     return this.count
   }
 

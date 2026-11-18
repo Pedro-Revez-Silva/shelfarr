@@ -147,7 +147,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
     const guard = new AccountGuard(account);
     const csrf = new CsrfSession(auth, guard, token, expiresIn);
     const services = createServices({
-      boot: { version: 1, account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go" },
+      boot: { version: 1, account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go", ...(boot.reader_formats ? { reader_formats: boot.reader_formats } : {}) },
       guard,
       csrfToken: csrf.token,
       mutations: csrf.lifecycle,
@@ -195,7 +195,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
       {router ? (
         <App services={services} router={router} />
       ) : (
-        <ServicesProvider services={services}>{boot.view === "reader" ? <ReaderApp engine={boot.reader_engine} /> : <ConnectPage />}</ServicesProvider>
+        <ServicesProvider services={services}>{boot.view === "reader" ? <ReaderApp engine={boot.reader_engine} pageEngine={boot.page_engine} /> : <ConnectPage />}</ServicesProvider>
       )}
     </GoSessionProvider>
   );

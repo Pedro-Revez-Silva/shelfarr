@@ -78,7 +78,7 @@ function primaryLabel(publication: PublicationDetail): string {
 function Details({ publication }: { publication: PublicationDetail }) {
   const available = publication.availability === "available";
   const { mode, boot } = useServices();
-  const readerLink = mode === "go" ? goReaderLink(publication, boot.mount) : publication.reader_url;
+  const readerLink = mode === "go" ? goReaderLink(publication, boot.mount, boot.reader_formats) : publication.reader_url;
   return (
     <article className="details" aria-labelledby="publication-heading">
       <BackToLibrary />

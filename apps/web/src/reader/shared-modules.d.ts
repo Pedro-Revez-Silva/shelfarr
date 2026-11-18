@@ -94,3 +94,53 @@ declare module "*/app/javascript/consumer_progress_sync.js" {
   export function plausibleObservedAt(value: unknown, now: number): number | null;
   export function samePlace(left: unknown, right: unknown): boolean;
 }
+
+declare module "*/app/javascript/consumer_page_reader.js" {
+  export type PageFormat = "pdf" | "cbz";
+  export type PageResources = { worker: string; files: Record<string, Record<string, string>> };
+  export type PageAsset = { id: string; size_bytes: number; page_count?: number | undefined };
+  export type ComicItem = { position: number; href: string; media_type: string };
+  export type PageLocator = { href: string; type: string; locations: { position: number; totalProgression: number; fragments?: string[] } };
+  export type RestoredPage = { position: number; exact: boolean };
+  export type PageZone = "previous" | "next" | "middle";
+  export type PageChange = { activity: boolean; shown: boolean };
+
+  export class PageError extends Error {
+    constructor(message: string, kind?: string);
+    kind: string;
+  }
+
+  export class PageReader {
+    constructor(options: {
+      element: HTMLElement;
+      asset: PageAsset;
+      format: PageFormat;
+      resources: PageResources | null;
+      orderURL: string | null;
+      label?: string;
+      onChange: (position: number, count: number, change: PageChange) => void;
+      onTap: (zone: PageZone) => void;
+      onError: (message: string) => void;
+      fetch?: (input: string, init: RequestInit) => Promise<Response>;
+      loadEngine?: () => Promise<unknown>;
+    });
+    readonly count: number;
+    readonly zoomed: boolean;
+    zoom: number;
+    position: number;
+    stage?: HTMLElement;
+    open(url: string): Promise<number>;
+    items(): ComicItem[];
+    locator(position: number): PageLocator;
+    show(position: number, options?: { activity?: boolean }): Promise<void>;
+    next(): Promise<void> | undefined;
+    previous(): Promise<void> | undefined;
+    go(position: number): Promise<void>;
+    zoomIn(): Promise<void>;
+    zoomOut(): Promise<void>;
+    fit(): Promise<void>;
+    destroy(): void;
+  }
+
+  export function restoredPage(format: PageFormat, locator: unknown, count: number, items?: ComicItem[]): RestoredPage;
+}

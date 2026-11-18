@@ -297,3 +297,35 @@ test("a comic download needs its bytes and its reading order", () => {
   expect(assetUrls(saved.assets[1])).toEqual([`${location.origin}/shelf/read/1/assets/bbb`])
   expect("reading_order_url" in saved.assets[1]).toBe(false)
 })
+
+test("a reader opens its comic order and pages through a given fetch and its PDF through a given engine loader", async () => {
+  const originals = { document: globalThis.document, fetch: globalThis.fetch }
+  const listening = () => Object.assign(fakeElement(), { addEventListener() {}, append() {} })
+  globalThis.document = { createElement: listening }
+  globalThis.fetch = async () => { throw new Error("the global fetch must not be used") }
+  try {
+    const { bytes, items, asset } = comic([png(4, 4), png(4, 4)])
+    const server = rangeServer(bytes)
+    const asked = []
+    const fetcher = async (url, options) => {
+      asked.push(url)
+      return url === "/order" ? Response.json({ asset_id: asset.id, format: "cbz", items }) : server.fetcher(url, options)
+    }
+    const comicReader = new PageReader({ element: listening(), asset, format: "cbz", orderURL: "/order", fetch: fetcher })
+    expect(await comicReader.open(asset.content_url)).toBe(2)
+    await comicReader.source.pages.bytes(1)
+    expect(asked).toEqual(["/order", asset.content_url])
+    expect(server.calls).toHaveLength(1)
+
+    const loaded = []
+    const engine = { GlobalWorkerOptions: {}, getDocument: options => ({ promise: Promise.resolve({ numPages: 3, options }) }) }
+    const pdfReader = new PageReader({ element: listening(), asset, format: "pdf", resources: { worker: "/w.js", files: {} }, loadEngine: async () => { loaded.push("engine"); return engine } })
+    globalThis.location ||= { href: "https://reader.example/shelf/read/1", origin: "https://reader.example" }
+    expect(await pdfReader.open("/document.pdf")).toBe(3)
+    expect(loaded).toEqual(["engine"])
+    expect(engine.GlobalWorkerOptions.workerSrc).toBe(`${location.origin}/w.js`)
+  } finally {
+    globalThis.document = originals.document
+    globalThis.fetch = originals.fetch
+  }
+})

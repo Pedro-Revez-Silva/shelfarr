@@ -116,6 +116,13 @@ export const bootSchema = z.object({
 export const goViews = ["library", "details", "connect", "reader"] as const;
 export type GoView = (typeof goViews)[number];
 
+export const pageEngineSchema = z.object({
+  engine: sitePath,
+  worker: sitePath,
+  files: z.record(z.enum(["cMapUrl", "standardFontDataUrl", "wasmUrl"]), z.record(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*\.(?:bcmap|pfb|ttf|wasm)$/), sitePath)),
+});
+export type PageEngine = z.infer<typeof pageEngineSchema>;
+
 export const goBootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
   runtime: z.literal("go"),
@@ -123,6 +130,8 @@ export const goBootSchema = z.object({
   mount: sitePath,
   api: sitePath,
   reader_engine: sitePath.optional(),
+  reader_formats: z.array(z.string()).optional(),
+  page_engine: pageEngineSchema.optional(),
 });
 export type GoBoot = z.infer<typeof goBootSchema>;
 
@@ -133,6 +142,7 @@ export type Boot = {
   api: string;
   classic_library: string | null;
   runtime?: "go";
+  reader_formats?: readonly string[];
 };
 
 export const bootstrapSchema = z.discriminatedUnion("authenticated", [
@@ -217,6 +227,8 @@ export const readerAssetSchema = z.object({
   size_bytes: z.number().int().nonnegative(),
   position: z.number().int().nonnegative(),
   url: sitePath,
+  page_count: z.number().int().positive().optional(),
+  reading_order_url: sitePath.optional(),
 });
 export type ReaderAsset = z.infer<typeof readerAssetSchema>;
 

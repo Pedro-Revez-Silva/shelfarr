@@ -11,15 +11,11 @@ export const WEB_EBOOK_LIMIT = 32 * 1024 * 1024;
 
 type Props = {
   publication: ReaderPublication;
+  asset: ReaderAsset;
   engine: string;
   record: (place: ProgressPlace, at?: number) => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
 };
-
-function chosenAsset(publication: ReaderPublication): ReaderAsset | null {
-  const saved = publication.progress?.asset_id;
-  return publication.assets.find((asset) => asset.id === saved) ?? publication.assets.find((asset) => asset.format === "epub") ?? null;
-}
 
 function openingNotice(publication: ReaderPublication, asset: ReaderAsset): string | null {
   const saved = publication.progress;
@@ -42,9 +38,8 @@ function currentChapter(chapters: Chapter[], position: EpubPosition | null): str
   return chapters.find((chapter) => chapter.href.split("#")[0] === position.href)?.href ?? "";
 }
 
-export function EpubReader({ publication, engine, record, registerPlace }: Props) {
+export function EpubReader({ publication, asset, engine, record, registerPlace }: Props) {
   const { guard } = useServices();
-  const asset = chosenAsset(publication);
   const viewport = useRef<HTMLDivElement>(null);
   const session = useRef<EpubSession | null>(null);
   const [phase, setPhase] = useState<"opening" | "ready" | "failed">("opening");
@@ -52,15 +47,15 @@ export function EpubReader({ publication, engine, record, registerPlace }: Props
   const [position, setPosition] = useState<EpubPosition | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [textSize, setTextSize] = useState<number>(FONT_SIZES.initial);
-  const assetId = asset?.id ?? null;
-  const assetUrl = asset?.url ?? null;
-  const assetSize = asset?.size_bytes ?? 0;
+  const assetId = asset.id;
+  const assetUrl = asset.url;
+  const assetSize = asset.size_bytes;
   const savedLocator = publication.progress?.asset_id === assetId ? (publication.progress?.locator ?? null) : null;
   const [initial] = useState(() => savedLocator);
 
   useEffect(() => {
     const element = viewport.current;
-    if (!assetId || !assetUrl || !element) return;
+    if (!element) return;
     const controller = new AbortController();
     let opened: EpubSession | null = null;
     let cancelled = false;
@@ -107,7 +102,6 @@ export function EpubReader({ publication, engine, record, registerPlace }: Props
     return () => registerPlace(null);
   }, [registerPlace, assetId]);
 
-  if (!asset) return null;
   const ready = phase === "ready";
   const notice = openingNotice(publication, asset);
   const changeSize = (delta: number) => {

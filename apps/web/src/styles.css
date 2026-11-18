@@ -1181,6 +1181,154 @@ thead th {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.pages {
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+}
+.page-jump,
+.zoom-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.page-jump input {
+  inline-size: 5.5em;
+  min-block-size: var(--reader-target);
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.page-total,
+.zoom-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.zoom-value {
+  min-width: 3.5em;
+  text-align: center;
+}
+.reader [aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+.pages-stage {
+  position: relative;
+  height: clamp(320px, 100dvh - 300px, 1400px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper);
+  overflow: hidden;
+}
+.pages-view {
+  position: absolute;
+  inset: 0;
+}
+.pages-view .consumer-pages__stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  box-sizing: border-box;
+  padding: 8px;
+  overflow: hidden;
+  touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+}
+.pages-view.is-zoomed .consumer-pages__stage {
+  overflow: auto;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+}
+.pages-view .consumer-pages__stage:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+.pages-view .consumer-page {
+  position: relative;
+  flex: none;
+  margin: auto;
+  background: #fff;
+  box-shadow: 0 2px 18px #1726191f;
+}
+.pages-view .consumer-page--cbz {
+  background: transparent;
+  box-shadow: none;
+}
+.pages-view .consumer-page canvas,
+.pages-view .consumer-page img {
+  display: block;
+}
+.pages-view .consumer-page img {
+  max-inline-size: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.pages-view .consumer-page__unavailable {
+  padding: 24px;
+  color: var(--ink);
+}
+.pages-view .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.pages-view .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.pages-view .textLayer > :not(.markedContent),
+.pages-view .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.pages-view .textLayer .markedContent {
+  display: contents;
+}
+.pages-view .textLayer ::selection {
+  background: color-mix(in srgb, AccentColor, transparent 55%);
+  color: transparent;
+}
+.pages-view .textLayer br::selection {
+  background: transparent;
+}
+.pages-view .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+}
+.pages-view .textLayer.selecting .endOfContent {
+  top: 0;
+}
 .player {
   display: grid;
   gap: 18px;
@@ -1227,6 +1375,7 @@ thead th {
 }
 @media (forced-colors: active) {
   .epub-stage,
+  .pages-stage,
   .reader-footer {
     border-color: CanvasText;
   }

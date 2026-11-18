@@ -1,6 +1,6 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import type { ProgressPlace, ReaderPublication, StoredProgress } from "../contract";
+import type { PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
 import { LockedScreen } from "../components/LockedScreen";
 import { ErrorPanel, Loading } from "../components/States";
 import { useAccountRevalidation } from "../revalidation";
@@ -8,6 +8,8 @@ import { useGuardState, useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { AudioPlayer } from "./AudioPlayer";
 import { EpubReader } from "./EpubReader";
+import { isPageFormat } from "./pages";
+import { PagesReader } from "./PagesReader";
 import { ProgressSession } from "./progress";
 import { SaveStatus } from "./SaveStatus";
 
@@ -18,14 +20,16 @@ export function readerPublicationId(pathname: string, mount: string): string | n
   return READER_PATH.exec(pathname.slice(mount.length))?.[1] ?? null;
 }
 
-export function ReaderApp({ engine }: { engine: string | undefined }) {
+type Engines = { engine: string; pageEngine: PageEngine | undefined };
+
+export function ReaderApp({ engine, pageEngine }: { engine: string | undefined; pageEngine?: PageEngine | undefined }) {
   const services = useServices();
   const guard = useGuardState();
   const id = readerPublicationId(window.location.pathname, services.boot.mount);
   if (guard.status !== "active") return <LockedScreen reason={guard.status} classicLibrary={null} />;
   return (
     <QueryClientProvider client={services.queryClient}>
-      {id && engine ? <ActiveReader id={id} engine={engine} /> : <MissingReader mount={services.boot.mount} />}
+      {id && engine ? <ActiveReader id={id} engine={engine} pageEngine={pageEngine} /> : <MissingReader mount={services.boot.mount} />}
     </QueryClientProvider>
   );
 }
@@ -45,7 +49,7 @@ function MissingReader({ mount }: { mount: string }) {
   );
 }
 
-function ActiveReader({ id, engine }: { id: string; engine: string }) {
+function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
   const { api, keys } = useServices();
   useAccountRevalidation();
   const reader = useQuery({
@@ -71,7 +75,7 @@ function ActiveReader({ id, engine }: { id: string; engine: string }) {
       </ReaderFrame>
     );
   }
-  return <OpenReader key={reader.data.id} publication={reader.data} engine={engine} />;
+  return <OpenReader key={reader.data.id} publication={reader.data} engine={engine} pageEngine={pageEngine} />;
 }
 
 export type BackTarget = { href: string; label: string; returns: boolean };
@@ -124,7 +128,19 @@ function ReaderFrame({ id, title, author, kind, children, footer, beforeLeave }:
   );
 }
 
-function OpenReader({ publication, engine }: { publication: ReaderPublication; engine: string }) {
+const OPENING_ORDER: Record<ReaderPublication["content_kind"], readonly string[]> = { graphic: ["cbz", "pdf", "epub"], book: ["epub", "pdf", "cbz"] };
+
+export function chosenAsset(publication: ReaderPublication): ReaderAsset | null {
+  const saved = publication.assets.find((asset) => asset.id === publication.progress?.asset_id);
+  if (saved) return saved;
+  for (const format of OPENING_ORDER[publication.content_kind]) {
+    const found = publication.assets.find((asset) => asset.format === format);
+    if (found) return found;
+  }
+  return null;
+}
+
+function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPublication } & Engines) {
   const { api, guard } = useServices();
   const [session] = useState(
     () =>
@@ -177,20 +193,29 @@ function OpenReader({ publication, engine }: { publication: ReaderPublication; e
   };
 
   const listening = publication.book_type === "audiobook";
+  const asset = listening ? null : chosenAsset(publication);
   const footer = <SaveStatus state={state} onRetry={() => session.retry()} onKeep={() => session.keepLocal()} onUseRemote={goToRemotePlace} onDismiss={() => session.dismissRemote()} />;
   const body =
     publication.assets.length === 0 ? (
       <Unreadable publication={publication} />
     ) : listening ? (
       <AudioPlayer publication={publication} record={record} flush={flush} registerPlace={registerPlace} registerLeave={registerLeave} />
+    ) : asset && isPageAsset(asset) ? (
+      <PagesReader publication={publication} asset={asset} pageEngine={pageEngine} record={record} registerPlace={registerPlace} />
+    ) : asset?.format === "epub" ? (
+      <EpubReader publication={publication} asset={asset} engine={engine} record={record} registerPlace={registerPlace} />
     ) : (
-      <EpubReader publication={publication} engine={engine} record={record} registerPlace={registerPlace} />
+      <Unreadable publication={publication} />
     );
   return (
     <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} beforeLeave={beforeLeave}>
       {body}
     </ReaderFrame>
   );
+}
+
+function isPageAsset(asset: ReaderAsset): asset is ReaderAsset & { format: "pdf" | "cbz" } {
+  return isPageFormat(asset.format);
 }
 
 const FORMAT_NAMES: Record<string, string> = { pdf: "PDF", cbz: "comic (CBZ)", epub: "EPUB" };

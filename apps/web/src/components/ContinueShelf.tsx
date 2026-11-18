@@ -22,7 +22,7 @@ export function ContinueShelf({ items }: { items: PublicationSummary[] }) {
 
 function ResumeCard({ item }: { item: PublicationSummary }) {
   const { mode, boot } = useServices();
-  const href = mode === "go" ? goSummaryReaderLink(item, boot.mount) : item.reader_url;
+  const href = mode === "go" ? goSummaryReaderLink(item, boot.mount, boot.reader_formats) : item.reader_url;
   return (
     <article className="resume-card">
       <Cover publication={item} />

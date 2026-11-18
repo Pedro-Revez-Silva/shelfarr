@@ -14,7 +14,7 @@ const result = await Bun.build({
   minify: true,
   sourcemap: "none",
   naming: "[name].[ext]",
-  external: ["*.ttf"],
+  external: ["*.ttf", "consumer_pdf_engine"],
   define: { "process.env.NODE_ENV": JSON.stringify("production") },
 });
 
