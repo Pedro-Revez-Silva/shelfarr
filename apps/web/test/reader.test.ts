@@ -3,12 +3,14 @@ import { AccountGuard } from "../src/api/account-guard";
 import { ApiClient, type ProgressAnswer } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import type { ProgressRequest, StoredProgress } from "../src/contract";
+import { readerEnvelopeSchema } from "../src/contract";
 import { AudioSession } from "../src/reader/audio";
-import { loadEngine } from "../src/reader/engine";
+import { loadEngine, type ReaderEngine } from "../src/reader/engine";
+import { EpubSession } from "../src/reader/epub";
 import { pageKey, playKey } from "../src/reader/keys";
 import { goReaderLink, goSummaryReaderLink } from "../src/reader/links";
 import { ProgressSession, type SaveState } from "../src/reader/progress";
-import { readerPublicationId } from "../src/reader/ReaderApp";
+import { backTarget, readerPublicationId } from "../src/reader/ReaderApp";
 import { ACCOUNT, boot, deferred, detail, FakeServer, summary } from "./helpers";
 
 const ASSET = "a".repeat(64);
@@ -229,6 +231,7 @@ class FakeAudio extends EventTarget {
   src = "";
   reject: DOMException | null = null;
   load() {
+    this.currentTime = 0;
     queueMicrotask(() => this.dispatchEvent(new Event("loadedmetadata")));
   }
   async play() {
@@ -249,6 +252,11 @@ class FakeAudio extends EventTarget {
   }
 }
 
+const audioTracks = [
+  { id: ASSET, filename: "Part 1.wav", format: "wav", media_type: "audio/wav", size_bytes: 10, position: 0, url: "/preview/api/v1/accounts/42/library/8/assets/a" },
+  { id: OTHER, filename: "Part 2.wav", format: "wav", media_type: "audio/wav", size_bytes: 10, position: 1, url: "/preview/api/v1/accounts/42/library/8/assets/b" },
+];
+
 describe("the audiobook player rules", () => {
   const tracks = [
     { id: ASSET, filename: "Part 1.wav", format: "wav", media_type: "audio/wav", size_bytes: 10, position: 0, url: "/preview/api/v1/accounts/42/library/8/assets/a" },
@@ -266,7 +274,7 @@ describe("the audiobook player rules", () => {
     element.reject = new DOMException("blocked", "NotAllowedError");
     await player.play();
     expect(player.getState().problem).toBe("blocked");
-    expect(element.currentTime).toBe(7);
+    expect(element.currentTime).toBe(12);
     player.settle();
     expect(recorded).toEqual([]);
     element.reject = null;
@@ -302,5 +310,157 @@ describe("the audiobook player rules", () => {
     player.setRate(1.5);
     expect(recorded).toHaveLength(4);
     player.destroy();
+  });
+});
+
+describe("review regressions", () => {
+  test("leaving while an older write is in flight still sends the newest place, chained after it", async () => {
+    const gate = deferred<ProgressAnswer>();
+    const { calls, session, tick } = harness([() => gate.promise, savedAnswer(2)], stored({ version: 3 }));
+    session.record(place(0.2));
+    await settle();
+    tick(2000);
+    session.record(place(0.3));
+    session.flush({ keepalive: true });
+    session.stop();
+    gate.resolve({ kind: "saved", progress: stored({ version: 4 }) });
+    await settle();
+    expect(calls.map((call) => [call.body.locator?.locations?.progression, call.body.expected_version, call.body.observed_at, call.keepalive])).toEqual([
+      [0.2, 3, "2026-11-15T12:00:00.000Z", false],
+      [0.3, 4, "2026-11-15T12:00:02.000Z", true],
+    ]);
+  });
+
+  test("a native place with a null CFI and fraction is a valid reader publication", () => {
+    const publication = { id: "7", title: "T", author: null, book_type: "ebook", content_kind: "book", reading_status: "in_progress", assets: [], other_formats: [], progress: stored({ locator: { href: "index.html", type: "application/xhtml+xml", locations: { progression: 0.5, cfi: null, position: null } } as never }) };
+    expect(readerEnvelopeSchema.safeParse({ account: ACCOUNT, publication }).success).toBe(true);
+  });
+
+  test("Back returns to the Library entry the reader was opened from, or to the book", () => {
+    const origin = "http://shelf.test";
+    expect(backTarget(`${origin}/preview/library?type=ebook&sort=title`, "7", "/preview", origin)).toEqual({ href: "/preview/library?type=ebook&sort=title", label: "Back to the library", returns: true });
+    expect(backTarget(`${origin}/preview/library/7`, "7", "/preview", origin)).toEqual({ href: "/preview/library/7", label: "Back to the book", returns: true });
+    expect(backTarget("https://elsewhere.test/preview/library", "7", "/preview", origin)).toEqual({ href: "/preview/library/7", label: "Back to the book", returns: false });
+    expect(backTarget("", "7", "/preview", origin)).toEqual({ href: "/preview/library/7", label: "Back to the book", returns: false });
+  });
+
+  test("a refused automatic play on the next track saves nothing until that track really plays", async () => {
+    const element = new FakeAudio();
+    const recorded: unknown[] = [];
+    const player = new AudioSession(element as unknown as HTMLAudioElement, audioTracks, null, { record: (value) => recorded.push(value), flush: () => undefined, failed: () => undefined });
+    await settle();
+    await player.play();
+    element.currentTime = 24;
+    element.paused = true;
+    element.reject = new DOMException("blocked", "NotAllowedError");
+    element.dispatchEvent(new Event("pause"));
+    element.dispatchEvent(new Event("ended"));
+    await settle();
+    await settle();
+    expect(player.getState()).toMatchObject({ track: 1, problem: "blocked" });
+    expect(recorded).toEqual([{ asset_id: ASSET, position_seconds: 24 }]);
+    element.reject = null;
+    await player.play();
+    expect(recorded).toEqual([{ asset_id: ASSET, position_seconds: 24 }, { asset_id: OTHER, position_seconds: 0 }]);
+    player.destroy();
+  });
+
+  test("a refused play keeps a paused seek exact for the next successful play", async () => {
+    const element = new FakeAudio();
+    const player = new AudioSession(element as unknown as HTMLAudioElement, audioTracks, null, { record: () => undefined, flush: () => undefined, failed: () => undefined });
+    await settle();
+    player.seek(12);
+    element.reject = new DOMException("blocked", "NotAllowedError");
+    await player.play();
+    expect(element.currentTime).toBe(12);
+    element.reject = null;
+    await player.play();
+    expect(element.currentTime).toBe(12);
+    player.destroy();
+  });
+});
+
+type Listener = (location: unknown) => void;
+
+function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: () => unknown }) {
+  const displayed: (string | undefined)[] = [];
+  const listeners: Record<string, Listener> = {};
+  const location = options.location ?? (() => ({ start: { cfi: "epubcfi(/6/2!/4/2/1:0)", href: "one.xhtml", index: 0, displayed: { page: 1, total: 4 } } }));
+  const rendition = {
+    display: async (target?: string) => {
+      displayed.push(target);
+    },
+    next: async () => {
+      setTimeout(() => {
+        options.now.value = 5000;
+        listeners["relocated"]?.({ start: { cfi: "epubcfi(/6/2!/4/8/1:0)", href: "one.xhtml", index: 0, displayed: { page: 2, total: 4 } } });
+      }, 5);
+    },
+    prev: async () => undefined,
+    on: (event: string, listener: Listener) => {
+      listeners[event] = listener;
+    },
+    hooks: { content: { register: () => undefined } },
+    themes: { default: () => undefined, fontSize: () => undefined },
+    getContents: () => (options.contents ? options.contents() : []),
+    currentLocation: location,
+    getRange: () => null,
+    views: () => ({ all: () => [] }),
+    reportLocation: async () => undefined,
+  };
+  const book = {
+    open: async () => undefined,
+    spine: { length: 3, spineItems: [], get: () => ({ href: "one.xhtml", index: 1 }) },
+    loaded: { navigation: Promise.resolve({ toc: [] }) },
+    resolve: (href: string) => href,
+    path: { relative: (path: string) => path.replace(/^\//, "") },
+    renderTo: () => rendition,
+    destroy: () => undefined,
+  };
+  const purifier = Object.assign(() => undefined, { sanitize: (html: string) => html, addHook: () => undefined, removeHook: () => undefined });
+  return { engine: { ePub: () => book, DOMPurify: purifier } as unknown as ReaderEngine, displayed };
+}
+
+describe("EPUB session review regressions", () => {
+  test("a turn is saved with the time of the key press, not the later relocation", async () => {
+    const now = { value: 1000 };
+    const { engine } = fakeEngine({ now });
+    const moved: [unknown, number][] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, at) => moved.push([value, at]), key: () => undefined, failed: () => undefined }, () => now.value);
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    session.next();
+    await settle();
+    expect(moved).toHaveLength(1);
+    expect(moved[0]?.[1]).toBe(1000);
+    session.destroy();
+  });
+
+  test("adopting another device's chapter fraction shows the same picture as opening it", async () => {
+    document.body.innerHTML = '<p><img alt="Image 1"></p><p><img alt="Image 2"></p><p><img alt="Image 3"></p><p><img alt="Image 4"></p><p><img alt="Image 5"></p>';
+    const contents = { document, window, sectionIndex: 1, cfiFromNode: (node: Element) => `cfi:${node.getAttribute("alt")}`, cfiFromRange: () => "cfi:text" };
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, contents: () => [contents] });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    const locator = { href: "index.html", type: "application/xhtml+xml", locations: { progression: 0.6, cfi: null } };
+    await session.open(new ArrayBuffer(1), locator, { ink: "#000", surface: "#fff" });
+    const opened = displayed.at(-1);
+    displayed.length = 0;
+    await session.showRemote(locator);
+    expect(opened).toBe("cfi:Image 4");
+    expect(displayed.at(-1)).toBe("cfi:Image 4");
+    session.destroy();
+  });
+
+  test("a table-of-contents entry inside a chapter finds its sanitised anchor", async () => {
+    document.body.innerHTML = '<p>Start</p><p id="user-content-ending">The ending</p>';
+    const contents = { document, window, sectionIndex: 2, cfiFromNode: () => "cfi:node", cfiFromRange: () => "cfi:ending" };
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, contents: () => [contents], location: () => ({ start: { cfi: "epubcfi(/6/6!/4/2/1:0)", href: "three.xhtml", index: 2, displayed: { page: 1, total: 3 } } }) });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    displayed.length = 0;
+    session.chooseChapter("three.xhtml#ending");
+    await settle();
+    expect(displayed).toContain("three.xhtml");
+    expect(displayed.at(-1)).toBe("cfi:ending");
+    session.destroy();
   });
 });

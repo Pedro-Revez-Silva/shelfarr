@@ -7,7 +7,7 @@ export type EpubPosition = { page: number; total: number; chapter: number; href:
 
 export type EpubCallbacks = {
   position: (position: EpubPosition) => void;
-  moved: (place: ProgressPlace) => void;
+  moved: (place: ProgressPlace, at: number) => void;
   key: (event: KeyboardEvent) => void;
   failed: (message: string) => void;
 };
@@ -41,16 +41,15 @@ export class EpubSession {
   private swiped = false;
   private active = true;
   private fontSize: number = FONT_SIZES.initial;
+  private actionAt = 0;
+  private readonly now: () => number;
 
-  constructor(engine: ReaderEngine, viewport: HTMLElement, assetId: string, callbacks: EpubCallbacks) {
+  constructor(engine: ReaderEngine, viewport: HTMLElement, assetId: string, callbacks: EpubCallbacks, now: () => number = () => Date.now()) {
+    this.now = now;
     this.engine = engine;
     this.viewport = viewport;
     this.assetId = assetId;
     this.callbacks = callbacks;
-  }
-
-  get textSize(): number {
-    return this.fontSize;
   }
 
   async open(buffer: ArrayBuffer, locator: Locator | null, colors: { ink: string; surface: string }): Promise<Chapter[]> {
@@ -79,11 +78,7 @@ export class EpubSession {
     rendition.on("resized", () => this.reflowed());
     rendition.hooks.content.register((contents) => this.bookInput(contents));
     const chapters = flatten((await book.loaded.navigation).toc);
-    await this.showLocator(locator);
-    const fraction = places.restorableFraction(locator);
-    const contents = fraction === null ? null : rendition.getContents()[0];
-    const restored = contents && fraction !== null ? places.fractionPlace(contents, fraction) : null;
-    if (restored) await this.showPlace(restored);
+    await this.restore(locator);
     this.lastCfi = this.pageCfi();
     this.ready = true;
     return chapters;
@@ -106,12 +101,13 @@ export class EpubSession {
   }
 
   chooseChapter(href: string): void {
-    void this.move(() => this.showPlace(href), "This chapter couldn't be opened.");
+    void this.move(() => this.showTarget(href), "This chapter couldn't be opened.");
   }
 
-  showRemote(locator: Locator): Promise<void> {
+  async showRemote(locator: Locator): Promise<void> {
     this.userMoved = false;
-    return this.showLocator(locator);
+    await this.restore(locator);
+    this.lastCfi = this.pageCfi();
   }
 
   changeTextSize(delta: number): Promise<number> {
@@ -141,15 +137,38 @@ export class EpubSession {
     return this.book ? this.book.path.relative(`/${clean}`) : clean;
   }
 
+  private async restore(locator: Locator | null): Promise<void> {
+    await this.showLocator(locator);
+    const fraction = places.restorableFraction(locator);
+    const contents = fraction === null ? null : this.rendition?.getContents()[0];
+    const restored = contents && fraction !== null ? places.fractionPlace(contents, fraction) : null;
+    if (restored) await this.showPlace(restored);
+  }
+
   private async showLocator(locator: Locator | null): Promise<void> {
-    if (locator?.locations?.cfi) return this.showPlace(locator.locations.cfi);
+    const cfi = locator?.locations?.cfi;
+    if (typeof cfi === "string" && cfi) return this.showPlace(cfi);
     const target = locator?.href ? this.bookTarget(locator.href) : undefined;
     await this.showPlace(target);
     const fragment = places.fragmentOf(locator);
     if (!target || !fragment || !this.active || !locator) return;
-    const contents = this.contentsFor(locator.href);
-    const element = contents?.document.getElementById(`user-content-${fragment}`) ?? contents?.document.getElementById(fragment);
-    if (contents && element) await this.showPlace(places.elementCfi(contents, element));
+    await this.showElement(this.contentsFor(locator.href), fragment);
+  }
+
+  private async showTarget(href: string): Promise<void> {
+    const hash = href.indexOf("#");
+    if (hash < 0) return this.showPlace(href);
+    await this.showPlace(href.slice(0, hash));
+    const rendition = this.rendition;
+    const index = rendition?.currentLocation()?.start?.index;
+    const contents = rendition?.getContents().find((item) => item.sectionIndex === index) ?? null;
+    await this.showElement(contents, decodeURIComponent(href.slice(hash + 1)));
+  }
+
+  private async showElement(contents: EpubContents | null, fragment: string): Promise<void> {
+    if (!contents || !fragment || !this.active) return;
+    const element = contents.document.getElementById(`user-content-${fragment}`) ?? contents.document.getElementById(fragment);
+    if (element) await this.showPlace(places.elementCfi(contents, element));
   }
 
   private contentsFor(href: string): EpubContents | null {
@@ -197,6 +216,7 @@ export class EpubSession {
   }
 
   private async move(step: () => Promise<unknown> | undefined, message: string): Promise<void> {
+    const started = this.now();
     try {
       let pending: Promise<unknown>;
       do {
@@ -206,6 +226,7 @@ export class EpubSession {
       if (!this.active || !this.ready) return;
       this.lastCfi = this.pageCfi();
       this.userMoved = true;
+      this.actionAt = started;
       await step();
     } catch {
       if (this.active) this.callbacks.failed(message);
@@ -227,7 +248,7 @@ export class EpubSession {
     if (!cfi || cfi === this.lastCfi) return;
     this.lastCfi = cfi;
     const { fraction, total } = places.pageProgression(start, book.spine.length);
-    this.callbacks.moved({ asset_id: this.assetId, locator: { href: this.archiveHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } });
+    this.callbacks.moved({ asset_id: this.assetId, locator: { href: this.archiveHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } }, this.actionAt);
   }
 
   private bookInput(contents: EpubContents): void {

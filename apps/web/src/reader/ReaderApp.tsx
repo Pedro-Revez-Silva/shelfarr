@@ -74,14 +74,23 @@ function ActiveReader({ id, engine }: { id: string; engine: string }) {
   return <OpenReader key={reader.data.id} publication={reader.data} engine={engine} />;
 }
 
-function backTarget(id: string, mount: string): string {
-  return `${mount}/library/${id}`;
+export type BackTarget = { href: string; label: string; returns: boolean };
+
+export function backTarget(referrer: string, id: string, mount: string, origin: string): BackTarget {
+  const details = `${mount}/library/${id}`;
+  let from: URL | null = null;
+  try {
+    from = referrer ? new URL(referrer) : null;
+  } catch {
+    from = null;
+  }
+  if (from && from.origin === origin && from.pathname === `${mount}/library`) return { href: `${mount}/library${from.search}`, label: "Back to the library", returns: true };
+  return { href: details, label: "Back to the book", returns: from !== null && from.origin === origin && from.pathname === details };
 }
 
-function goBack(event: MouseEvent<HTMLAnchorElement>, target: string) {
+function goBack(event: MouseEvent<HTMLAnchorElement>, target: BackTarget) {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  const referrer = document.referrer ? new URL(document.referrer) : null;
-  if (referrer && referrer.origin === window.location.origin && referrer.pathname === target && window.history.length > 1) {
+  if (target.returns && window.history.length > 1) {
     event.preventDefault();
     window.history.back();
   }
@@ -89,12 +98,13 @@ function goBack(event: MouseEvent<HTMLAnchorElement>, target: string) {
 
 function ReaderFrame({ id, title, author, kind, children, footer }: { id: string; title: string; author: string | null; kind?: string; children: ReactNode; footer?: ReactNode }) {
   const { boot } = useServices();
-  const target = backTarget(id, boot.mount);
+  const [target] = useState(() => backTarget(document.referrer, id, boot.mount, window.location.origin));
   return (
     <div className="reader">
       <header className="reader-header">
-        <a className="back-link reader-back" href={target} onClick={(event) => goBack(event, target)}>
-          <span aria-hidden="true">←</span>Back to the book
+        <a className="back-link reader-back" href={target.href} onClick={(event) => goBack(event, target)}>
+          <span aria-hidden="true">←</span>
+          {target.label}
         </a>
         <div className="reader-title">
           {kind ? <p className="eyebrow">{kind}</p> : null}
@@ -136,7 +146,7 @@ function OpenReader({ publication, engine }: { publication: ReaderPublication; e
 
   useEffect(() => guard.subscribe(() => session.stop()), [guard, session]);
 
-  const record = useCallback((place: ProgressPlace) => session.record(place), [session]);
+  const record = useCallback((place: ProgressPlace, at?: number) => session.record(place, at), [session]);
   const flush = useCallback(() => session.flush(), [session]);
   const registerPlace = useCallback((show: ((progress: StoredProgress) => void) | null) => {
     showPlace.current = show;

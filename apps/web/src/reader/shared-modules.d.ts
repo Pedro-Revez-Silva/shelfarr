@@ -57,7 +57,7 @@ declare module "*/app/javascript/consumer_epub_places.js" {
     sanitize(html: string, options: Record<string, unknown>): string;
   }
 
-  export type FragmentLocator = { locations?: { cfi?: string; progression?: number; fragments?: unknown[] | null } } | null | undefined;
+  export type FragmentLocator = { locations?: { cfi?: unknown; progression?: number | null; fragments?: unknown } | null } | null | undefined;
 
   export function ownBookImages(book: EpubBook, origin: string): Set<string>;
   export function sanitizeSection(purifier: Purifier, html: string, options: { images: Set<string>; base: string }): string;
@@ -79,6 +79,8 @@ declare module "*/app/javascript/consumer_progress_sync.js" {
     static INTERVAL: number;
     static REWIND: number;
     active: boolean;
+    floor: number | null;
+    skipRewind: boolean;
     constructor(options: { record: (place: ListeningPlace) => void; now?: () => number });
     restored(position: number, assetId: string): void;
     resume(position: number): number;

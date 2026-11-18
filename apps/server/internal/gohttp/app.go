@@ -190,6 +190,9 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		problem(w, result, http.StatusNotFound, "not_found")
 		return
 	case routeWrongMethod:
+		if found.name == "browser_media" {
+			setBrowserMediaPrivacy(w.Header())
+		}
 		w.Header().Set("Allow", found.allow)
 		problem(w, result, http.StatusMethodNotAllowed, "method_not_allowed")
 		return

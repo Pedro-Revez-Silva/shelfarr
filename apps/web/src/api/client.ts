@@ -1,4 +1,4 @@
-import { z } from "zod";
+import type { z } from "zod";
 import {
   continueSchema,
   errorEnvelopeSchema,
@@ -125,11 +125,6 @@ export class ApiClient {
   async reader(id: string, signal?: AbortSignal): Promise<ReaderPublication> {
     const envelope = await this.request({ path: `/library/${encodeURIComponent(id)}/reader`, schema: readerEnvelopeSchema, signal, account: (value) => value.account });
     return envelope.publication;
-  }
-
-  async progress(id: string, signal?: AbortSignal): Promise<StoredProgress | null> {
-    const envelope = await this.request({ path: `/library/${encodeURIComponent(id)}/progress`, schema: progressEnvelopeSchema, signal, account: (value) => value.account });
-    return envelope.progress;
   }
 
   async saveProgress(id: string, body: ProgressRequest, options: { signal?: AbortSignal; keepalive?: boolean } = {}): Promise<ProgressAnswer> {

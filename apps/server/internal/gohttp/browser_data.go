@@ -20,6 +20,11 @@ const webContinueLimit = 3
 
 func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
 	media := found.kind == routeBrowserMedia
+	if (media || found.kind == routeBrowserReader || found.kind == routeBrowserProgress) && !a.readerInstalled() {
+		w.Header().Set("Cache-Control", "private, no-store")
+		problem(w, result, http.StatusNotFound, "not_found")
+		return
+	}
 	if media && a.previewConfigured() && !sameOriginFetch(r) {
 		problem(w, result, http.StatusForbidden, "cross_site_refused")
 		return

@@ -187,12 +187,13 @@ export const locatorSchema = z.looseObject({
   type: z.string().optional(),
   locations: z
     .looseObject({
-      progression: z.number().optional(),
-      totalProgression: z.number().optional(),
-      position: z.number().optional(),
-      cfi: z.string().optional(),
-      fragments: z.array(z.unknown()).nullable().optional(),
+      progression: z.number().nullable().optional(),
+      totalProgression: z.number().nullable().optional(),
+      position: z.number().nullable().optional(),
+      cfi: z.unknown().optional(),
+      fragments: z.unknown().optional(),
     })
+    .nullable()
     .optional(),
 });
 export type Locator = z.infer<typeof locatorSchema>;

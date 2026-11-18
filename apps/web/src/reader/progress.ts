@@ -80,10 +80,6 @@ export class ProgressSession {
     };
   };
 
-  get pending(): boolean {
-    return this.queued !== null || this.inflight !== null || this.held !== null;
-  }
-
   record(place: ProgressPlace, at: number = this.options.now()): void {
     if (!this.writable()) return;
     this.queued = { place, observedAt: this.stamp(at) };
@@ -96,9 +92,13 @@ export class ProgressSession {
 
   flush(options: { keepalive?: boolean } = {}): void {
     this.clearTimer();
-    if (!this.writable() || this.inflight || this.held || this.state.kind === "conflict") return;
+    if (!this.writable() || this.held || this.state.kind === "conflict") return;
     const next = this.queued;
     if (!next) return;
+    if (this.inflight) {
+      if (options.keepalive) this.sendBehind(this.inflight, next);
+      return;
+    }
     this.queued = null;
     void this.send({ ...next.place, observed_at: next.observedAt, expected_version: this.version, client_mutation_id: this.options.uuid() }, options.keepalive ?? false);
   }
@@ -160,6 +160,12 @@ export class ProgressSession {
   private clearTimer(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  private sendBehind(inflight: ProgressRequest, next: Observation): void {
+    this.queued = null;
+    const body = { ...next.place, observed_at: next.observedAt, expected_version: inflight.expected_version + 1, client_mutation_id: this.options.uuid() };
+    void this.options.write(body, { keepalive: true }).catch(() => undefined);
   }
 
   private async send(request: ProgressRequest, keepalive: boolean): Promise<void> {

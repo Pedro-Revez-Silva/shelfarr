@@ -234,7 +234,7 @@ describe("the Go online EPUB reader", () => {
     expect(await page.locator(".epub-viewport iframe").getAttribute("title")).toBe("Book text");
     const frame = page.frameLocator(".epub-viewport iframe");
     await frame.getByRole("heading", { name: "The Lantern Ledger" }).waitFor();
-    expect(await page.getByLabel("Chapter").locator("option").allInnerTexts()).toEqual(["The Lantern Ledger", "Harbor Copper", "Willow Summit"]);
+    expect(await page.getByLabel("Chapter").locator("option").allInnerTexts()).toEqual(["The Lantern Ledger", "Harbor Copper", "Willow Summit", "The ending"]);
     await stays(books.text, [], 2000);
     await page.getByLabel("Chapter").selectOption({ label: "Harbor Copper" });
     await frame.getByText("An outside address must not open from the book").waitFor();
@@ -321,7 +321,14 @@ describe("the Go online EPUB reader", () => {
     await page.frameLocator(".epub-viewport iframe").getByRole("heading", { name: "Willow Summit" }).waitFor();
     const chapter = await waitForRow(books.text, (row) => row.version === 6);
     expect(locatorOf(chapter).href).toBe("OEBPS/three.xhtml");
-    expect(await location(page)).toMatch(/· Chapter 3$/);
+    expect(await location(page)).toMatch(/^Page 1 of \d+ · Chapter 3$/);
+    await page.getByLabel("Chapter").selectOption({ label: "The ending" });
+    await page.locator(".epub-location").filter({ hasText: /^Page ([2-9]|\d\d+) of \d+ · Chapter 3$/ }).waitFor();
+    const ending = page.frameLocator(".epub-viewport iframe").getByText("The ending of the sampler.");
+    const shown = await ending.boundingBox();
+    const stage = await page.locator(".epub-viewport").boundingBox();
+    expect(shown !== null && stage !== null && shown.x >= stage.x && shown.x + shown.width <= stage.x + stage.width + 1).toBe(true);
+    await waitForRow(books.text, (row) => row.version === 7);
     await clean(page, seen);
     await context.close();
   });
@@ -441,6 +448,27 @@ describe("the Go online EPUB reader", () => {
     await context.close();
   });
 
+  test("Back from a reader opened by Keep going returns to the filtered, scrolled Library", async () => {
+    const { context, page } = await signedIn({ viewport: phone });
+    await page.goto(`${server.origin}/preview/library`);
+    const [asset] = await readerAsset(page, books.text);
+    seedPlace(books.text, asset?.id ?? "", { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { progression: 0.2, totalProgression: 0.4 } }, { version: 1 });
+    await page.goto(`${server.origin}/preview/library?type=ebook&sort=title`);
+    const resume = page.locator(`a.resume-link[href="/preview/library/${books.text}/read"]`);
+    await resume.waitFor();
+    await page.locator(".book-card").nth(4).scrollIntoViewIfNeeded();
+    await Bun.sleep(300);
+    const scrolled = await page.evaluate(() => window.scrollY);
+    expect(scrolled).toBeGreaterThan(200);
+    await resume.click();
+    await settled(page);
+    await page.getByRole("link", { name: "Back to the library" }).click();
+    await page.waitForURL(/\/preview\/library\?/);
+    expect(new URL(page.url()).search).toBe("?type=ebook&sort=title");
+    await page.waitForFunction((target) => Math.abs(window.scrollY - target) <= 4, scrolled);
+    await context.close();
+  });
+
   test("an older place from a file that is gone opens the EPUB at its beginning, says so and is replaced only by a turn", async () => {
     const { context, page } = await signedIn();
     seedPlace(books.text, "f".repeat(64), { href: "OEBPS/three.xhtml", type: "application/xhtml+xml", locations: { progression: 0.5, totalProgression: 0.9 } }, { version: 3 });
@@ -540,20 +568,21 @@ describe("saving a place when the network, the token or another device disagree"
     const opening = { href: "OEBPS/one.xhtml", type: "application/xhtml+xml", locations: { progression: 0, totalProgression: 0, cfi: "epubcfi(/6/4!/4/2/1:0)" } };
     seedPlace(books.text, asset?.id ?? "", opening, { version: 1, observedAt: Date.now() - 600_000 });
     await openReader(page, books.text);
-    const later = { href: "OEBPS/three.xhtml", type: "application/xhtml+xml", locations: { progression: 0, totalProgression: 0.67 } };
+    const later = { href: "OEBPS/three.xhtml", type: "application/xhtml+xml", locations: { progression: 0.6, totalProgression: 0.67, cfi: null } };
     otherDevice(books.text, { version: 2, locator: later, observedAt: Date.now() + 90_000 });
     const remote = only(books.text);
     await page.getByRole("button", { name: "Next page" }).click();
     await page.getByText("A later place was saved on another device (67% through).").waitFor();
     expect(rows(books.text)).toEqual([remote]);
     await page.getByRole("button", { name: "Go to that place" }).click();
-    await page.locator(".epub-location").filter({ hasText: /· Chapter 3$/ }).waitFor();
+    await page.locator(".epub-location").filter({ hasText: /^Page ([2-9]|\d\d+) of \d+ · Chapter 3$/ }).waitFor();
     await stays(books.text, [remote], 2500);
 
     otherDevice(books.text, { version: 3, observedAt: Date.now() - 1000 });
     await page.getByRole("button", { name: "Previous page" }).click();
     const rebased = await waitForRow(books.text, (row) => row.version === 4);
-    expect(locatorOf(rebased).href).toBe("OEBPS/two.xhtml");
+    expect(locatorOf(rebased).href).toBe("OEBPS/three.xhtml");
+    expect(locatorOf(rebased).locations.progression ?? 1).toBeLessThan(0.6);
 
     otherDevice(books.text, { version: 5, locator: opening, observedAt: null });
     const undated = only(books.text);
@@ -563,7 +592,7 @@ describe("saving a place when the network, the token or another device disagree"
     const chosen = Date.now();
     await page.getByRole("button", { name: "Keep this device's place" }).click();
     const kept = await waitForRow(books.text, (row) => row.version === 6);
-    expect(locatorOf(kept).href).toBe("OEBPS/two.xhtml");
+    expect(locatorOf(kept).href).toBe("OEBPS/three.xhtml");
     expect(railsTime(kept.observed_at)).toBeGreaterThanOrEqual(chosen - 50);
     await context.close();
   });

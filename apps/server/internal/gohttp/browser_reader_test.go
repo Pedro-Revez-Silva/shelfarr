@@ -24,14 +24,12 @@ const (
 )
 
 type readerFixture struct {
-	h       *browserHarness
-	alice   *browserClient
-	token   string
-	epub    string
-	pdf     string
-	tracks  []string
-	ebookID string
-	audioID string
+	h      *browserHarness
+	alice  *browserClient
+	token  string
+	epub   string
+	pdf    string
+	tracks []string
 }
 
 type readerEnvelope struct {
@@ -58,8 +56,18 @@ const (
 )
 
 func newReaderFixture(t *testing.T) *readerFixture {
+	return newReaderFixtureWith(t, true)
+}
+
+func newReaderFixtureWith(t *testing.T, engine bool) *readerFixture {
 	t.Helper()
-	h := newBrowserHarness(t, nil)
+	directory := t.TempDir()
+	if engine {
+		webassetstest.WriteWithReaderEngine(t, directory)
+	} else {
+		webassetstest.Write(t, directory)
+	}
+	h := newBrowserHarness(t, func(config *Config) { config.WebAssetsDir = directory })
 	folder := filepath.Join(h.root, "Mixed Book")
 	h.file("Mixed Book/Mixed Book.epub", readerEpubBytes)
 	h.file("Mixed Book/Mixed Book.pdf", "%PDF-1.4\n"+strings.Repeat("x", 600))
@@ -69,7 +77,10 @@ func newReaderFixture(t *testing.T) *readerFixture {
 	h.addBook(8, "Spoken", store.BookTypeAudiobook, filepath.Join(h.root, "Spoken"))
 	alice := h.client()
 	token := alice.signIn("alice", alicePassword)
-	fixture := &readerFixture{h: h, alice: alice, token: token, ebookID: "7", audioID: "8"}
+	fixture := &readerFixture{h: h, alice: alice, token: token}
+	if !engine {
+		return fixture
+	}
 	ebook := fixture.reader(t, alice, "7")
 	for _, asset := range ebook.Publication.Assets {
 		if asset.Format == "epub" {
@@ -291,7 +302,7 @@ func TestBrowserMediaIsBoundToTheAccountInItsAddressAndNeverRedirects(t *testing
 			t.Errorf("%s: refusal headers %v", refusal.name, recorder.Header())
 		}
 	}
-	if recorder := f.alice.send(http.MethodPost, address, "", nil); recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" {
+	if recorder := f.alice.send(http.MethodPost, address, "", nil); recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, HEAD" || recorder.Header().Get("Cache-Control") != "private, no-store" || recorder.Header().Get("Cross-Origin-Resource-Policy") != "same-origin" {
 		t.Errorf("post: %d %v", recorder.Code, recorder.Header())
 	}
 	bob := f.h.client()
@@ -341,5 +352,28 @@ func TestTheReaderShellHasItsOwnScopedPolicyAndExistsOnlyWithAReaderEngine(t *te
 	off := newBrowserHarness(t, func(config *Config) { config.WebAssetsDir = directory; config.PreviewUserIDs = nil })
 	if recorder := off.client().send(http.MethodGet, "/preview/library/7/read", "", nil); recorder.Code != http.StatusNotFound {
 		t.Errorf("default-off: %d", recorder.Code)
+	}
+}
+
+func TestTheReaderAPIsExistOnlyWhileAReaderBundleIsInstalled(t *testing.T) {
+	f := newReaderFixtureWith(t, false)
+	if recorder := f.alice.get("/preview/api/v1/library/7"); recorder.Code != http.StatusOK {
+		t.Fatalf("the preview JSON must stay available without a reader: %d", recorder.Code)
+	}
+	address := "/preview/api/v1/accounts/1/library/7/assets/" + strings.Repeat("a", 64)
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/preview/api/v1/library/7/reader"},
+		{http.MethodGet, "/preview/api/v1/library/7/progress"},
+		{http.MethodPut, "/preview/api/v1/library/7/progress"},
+		{http.MethodGet, address},
+		{http.MethodHead, address},
+	} {
+		recorder := f.alice.send(request.method, request.path, `{}`, map[string]string{"X-Shelfarr-Account": "1", "Origin": browserOrigin, "X-CSRF-Token": f.token})
+		if recorder.Code != http.StatusNotFound || recorder.Header().Get("Cache-Control") != "private, no-store" {
+			t.Errorf("%s %s without a reader bundle: %d %v", request.method, request.path, recorder.Code, recorder.Header())
+		}
+	}
+	if rows := progressRows(t, f.h); len(rows) != 0 {
+		t.Errorf("a refused write stored %v", rows)
 	}
 }

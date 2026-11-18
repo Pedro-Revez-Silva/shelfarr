@@ -747,7 +747,9 @@ claim, and the Rails `/read` PWA identity, worker scope, outbox keys and downloa
 | `PUT /preview/api/v1/library/{id}/progress` | session, `X-Shelfarr-Account`, exact `Origin`, Go CSRF | The native compare-and-set body and rules, unchanged (same code path as `PUT /api/consumer/v1/library/{id}/progress`). `200 {account, progress}`, `409 {account, error:"progress_conflict", progress}`, `422 invalid_progress`. |
 | `GET`, `HEAD /preview/api/v1/accounts/{account}/library/{id}/assets/{asset}` | session; the path account must equal the session's | EPUB or audio bytes of that exact generation through the existing confined, pinned, identity-checked streaming: `Range`, `If-Range`, `If-None-Match`, `HEAD`, strong `ETag`, `Cache-Control: private, no-store`, `Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Content-Disposition: inline` and the document policy `default-src 'none'; sandbox; ...`. |
 
-An audio element cannot send `X-Shelfarr-Account`, so media addresses carry the account id in the path. It is an
+The three API rows answer `404 not_found` unless the installed asset build has a reader engine (so stopping
+`-web-assets-dir` switches the reader off even for a signed-in, allowlisted session); the existing preview JSON does not
+depend on it. An audio element cannot send `X-Shelfarr-Account`, so media addresses carry the account id in the path. It is an
 identity guard, not a secret: every request (each range included) re-reads the session and is refused
 `401 account_changed` when the path account is not the signed-in one, so a tab left open after another tab signed in as
 someone else cannot fetch the new account's media, and its own old addresses stop working. Refusals are always JSON with
@@ -782,6 +784,11 @@ never read cookies. PDF and CBZ asset ids are `410 asset_unavailable` here; thei
   waits for Retry. `signed_out`/`account_changed` lock the page, stop the player and nothing more is sent.
 * A saved place in another file or an earlier edition opens the EPUB at its beginning, says so, and is kept until a
   turn. Manual reading status is a separate row and is never changed by reading.
+* Back returns to where the reader was opened: the Library entry (with its filters and scroll) from "Keep going", the
+  details otherwise. Leaving while a save is in flight still sends the newest place, chained behind it with
+  `keepalive`; if it loses that race the compare-and-set refuses it and the earlier place stays.
+* "Keep going" links a publication to the reader only when its label says Ebook or Audiobook; a graphic EPUB (labelled
+  Comic) opens from its details page, where the real files decide.
 
 ### Contract before and after
 
@@ -803,6 +810,9 @@ continues them (verified with the real application).
 ### Rollback
 
 Stop passing `-web-assets-dir` (or the allowlist): the reader shell and every route above answer the JSON `404` again.
+Roll the binary and the asset build back as a matched pair: a previous binary refuses a manifest that names
+`reader_engine` (its manifest reader rejects unknown fields), while this binary still accepts older asset builds and
+then serves no reader.
 Places saved by the reader are ordinary Rails rows with their activity times and mutation ids; Rails' reader, the
 native apps and the previous Go build read and continue them. Reverting the commits removes the reader routes, the
 reader view and `consumer_epub_places.js` (the Rails controller would need its previous inline code back, which the

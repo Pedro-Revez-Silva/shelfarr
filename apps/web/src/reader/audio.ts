@@ -38,6 +38,7 @@ export class AudioSession {
   private restore: Restore;
   private switching = false;
   private playWhenReady = false;
+  private awaitingTransition = false;
   private active = true;
 
   constructor(audio: HTMLAudioElement, tracks: ReaderAsset[], saved: StoredProgress | null, callbacks: AudioCallbacks) {
@@ -52,7 +53,7 @@ export class AudioSession {
       ["loadedmetadata", () => this.loaded()],
       ["timeupdate", () => this.progressed()],
       ["pause", () => this.paused()],
-      ["playing", () => this.update({ playing: true, buffering: false, finished: false, problem: null })],
+      ["playing", () => this.started()],
       ["waiting", () => this.update({ buffering: true })],
       ["canplay", () => this.update({ buffering: false })],
       ["ended", () => this.ended()],
@@ -87,6 +88,7 @@ export class AudioSession {
 
   async play(resume = true): Promise<void> {
     const audio = this.audio;
+    const before = { time: audio.currentTime, floor: this.checkpoints.floor, skipRewind: this.checkpoints.skipRewind, active: this.checkpoints.active };
     if (resume && audio.paused && !audio.ended && this.snapshot.ready) {
       const from = this.checkpoints.resume(audio.currentTime);
       if (from !== audio.currentTime) audio.currentTime = from;
@@ -95,7 +97,9 @@ export class AudioSession {
       await audio.play();
     } catch (error) {
       if (!this.active) return;
-      this.update({ playing: false, problem: error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "failed" });
+      Object.assign(this.checkpoints, { floor: before.floor, skipRewind: before.skipRewind, active: before.active });
+      if (audio.currentTime !== before.time) audio.currentTime = before.time;
+      this.update({ playing: false, position: audio.currentTime, problem: error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "failed" });
     }
   }
 
@@ -123,6 +127,7 @@ export class AudioSession {
     if (!this.tracks[index] || index === this.snapshot.track) return;
     if (this.snapshot.ready) this.checkpoints.settle(this.audio.currentTime, this.current.id);
     this.restore = null;
+    this.awaitingTransition = false;
     this.snapshot = { ...this.snapshot, track: index };
     this.checkpoints.deliberate(0, this.current.id, !autoplay);
     this.callbacks.flush();
@@ -182,7 +187,7 @@ export class AudioSession {
     const audio = this.audio;
     if (this.restore && this.restore.track === this.snapshot.track) audio.currentTime = Math.min(this.restore.position, audio.duration || 0);
     this.restore = null;
-    this.checkpoints.restored(audio.currentTime, this.current.id);
+    if (!this.awaitingTransition) this.checkpoints.restored(audio.currentTime, this.current.id);
     this.switching = false;
     this.update({ ready: true, buffering: false, position: audio.currentTime, duration: audio.duration });
     if (this.playWhenReady) void this.play(false);
@@ -212,9 +217,17 @@ export class AudioSession {
     }
     this.restore = null;
     this.snapshot = { ...this.snapshot, track: next };
-    this.checkpoints.continued(this.current.id);
-    this.callbacks.flush();
+    this.awaitingTransition = true;
     this.open(true);
+  }
+
+  private started(): void {
+    if (!this.active) return;
+    this.update({ playing: true, buffering: false, finished: false, problem: null });
+    if (!this.awaitingTransition) return;
+    this.awaitingTransition = false;
+    this.checkpoints.continued(this.current.id, this.audio.currentTime);
+    this.callbacks.flush();
   }
 
   private deliberate(): void {

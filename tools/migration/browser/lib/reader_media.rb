@@ -49,10 +49,10 @@ module Migration
         %(<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en"><head><title>#{title}</title></head><body>\n#{body}\n</body></html>)
       end
 
-      def epub3(identifier, title, chapters, extra_manifest: "", extra_files: {})
+      def epub3(identifier, title, chapters, extra_manifest: "", extra_files: {}, extra_nav: [])
         manifest = chapters.each_with_index.map { |(href, _, _), index| %(<item id="c#{index + 1}" href="#{href}" media-type="application/xhtml+xml"/>) }.join
         spine = chapters.each_index.map { |index| %(<itemref idref="c#{index + 1}"/>) }.join
-        nav = chapters.map { |href, label, _| %(<li><a href="#{href}">#{label}</a></li>) }.join
+        nav = (chapters.map { |href, label, _| [ href, label ] } + extra_nav).map { |href, label| %(<li><a href="#{href}">#{label}</a></li>) }.join
         files = [
           { name: "mimetype", data: "application/epub+zip", method: 0 },
           { name: "META-INF/container.xml", data: format(CONTAINER, "OEBPS/content.opf") },
@@ -69,7 +69,7 @@ module Migration
           [ "one.xhtml", "The Lantern Ledger", %(<h1>The Lantern Ledger</h1>\n#{paragraphs(1, 28)}) ],
           [ "two.xhtml", "Harbor Copper", %(<h1>Harbor Copper</h1>\n#{HOSTILE}\n#{paragraphs(2, 24)}) ],
           [ "three.xhtml", "Willow Summit", %(<h1>Willow Summit</h1>\n#{paragraphs(3, 20)}\n<p id="ending">The ending of the sampler.</p>) ]
-        ])
+        ], extra_nav: [ [ "three.xhtml#ending", "The ending" ] ])
       end
 
       def mixed_epub

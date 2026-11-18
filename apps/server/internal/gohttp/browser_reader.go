@@ -36,6 +36,10 @@ type readerPublication struct {
 	Progress      *consumer.Progress `json:"progress"`
 }
 
+func (a *App) readerInstalled() bool {
+	return a.web != nil && a.web.bundle.ReaderEngine() != ""
+}
+
 func setBrowserMediaPrivacy(header http.Header) {
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")

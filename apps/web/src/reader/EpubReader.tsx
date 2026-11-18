@@ -12,7 +12,7 @@ export const WEB_EBOOK_LIMIT = 32 * 1024 * 1024;
 type Props = {
   publication: ReaderPublication;
   engine: string;
-  record: (place: ProgressPlace) => void;
+  record: (place: ProgressPlace, at?: number) => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
 };
 
