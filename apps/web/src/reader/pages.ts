@@ -14,8 +14,6 @@ export type PageCallbacks = {
 
 export type PageOpening = { count: number; exact: boolean; position: number };
 
-type PendingMove = { target: number; at: number };
-
 export class PageEngineError extends Error {}
 
 function isPdfEngine(value: unknown): boolean {
@@ -76,7 +74,7 @@ export class PageSession {
   private readonly callbacks: PageCallbacks;
   private readonly now: () => number;
   private readonly reader: PageReader;
-  private pending: PendingMove | null = null;
+  private inputAt: number | null = null;
   private ready = false;
   private active = true;
 
@@ -120,7 +118,7 @@ export class PageSession {
   destroy(): void {
     this.active = false;
     this.ready = false;
-    this.pending = null;
+    this.inputAt = null;
     this.reader.destroy();
   }
 
@@ -171,7 +169,7 @@ export class PageSession {
     const at = this.now();
     const started = step();
     if (!started) return;
-    this.pending = { target: this.reader.position, at };
+    this.inputAt = at;
     started.catch(() => {
       if (this.active) this.callbacks.failed("This page couldn't be opened.");
     });
@@ -186,10 +184,10 @@ export class PageSession {
     if (!this.active) return;
     if (shown) this.callbacks.failed(null);
     this.report(position, count);
-    const pending = this.pending;
-    if (!activity || !shown || !this.ready || !pending || pending.target !== position) return;
-    this.pending = null;
-    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(position) }, pending.at);
+    const at = this.inputAt;
+    if (!activity || !this.ready || at === null) return;
+    this.inputAt = null;
+    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(position) }, at);
   }
 
   private report(position = this.reader.position, count = this.reader.count): void {
