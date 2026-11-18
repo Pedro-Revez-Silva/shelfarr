@@ -71,6 +71,7 @@ export function PagesReader({ asset, start, savedElsewhere, pageEngine, record, 
           setFailure(message);
           if (message) revalidate();
         },
+        unsure: revalidate,
       },
     );
     session.current = opened;
@@ -103,6 +104,7 @@ export function PagesReader({ asset, start, savedElsewhere, pageEngine, record, 
 
   useEffect(() => {
     registerPlace((progress) => {
+      session.current?.forgetTurns();
       if (progress.asset_id !== assetId || !progress.locator) return;
       session.current?.showRemote(progress.locator).catch(() => setFailure("Couldn't open the other device's page."));
     });

@@ -128,6 +128,7 @@ declare module "*/app/javascript/consumer_page_reader.js" {
     readonly zoomed: boolean;
     zoom: number;
     position: number;
+    displayedPosition: number;
     stage?: HTMLElement;
     page?: HTMLElement;
     open(url: string): Promise<number>;

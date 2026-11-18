@@ -95,6 +95,7 @@ export function EpubReader({ asset, start, savedElsewhere, engine, record, regis
 
   useEffect(() => {
     registerPlace((progress) => {
+      session.current?.forgetMoves();
       if (progress.asset_id !== assetId || !progress.locator) return;
       session.current?.showRemote(progress.locator).catch(() => setFailure("Couldn't open the other device's place."));
     });

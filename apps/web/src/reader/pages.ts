@@ -11,6 +11,7 @@ export type PageCallbacks = {
   view: (view: PageView) => void;
   moved: (place: ProgressPlace, at: number) => void;
   failed: (message: string | null) => void;
+  unsure: () => void;
 };
 
 export type PageOpening = { count: number; exact: boolean; position: number };
@@ -62,7 +63,7 @@ export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, ini
         throw new PageError("Sign in again to keep reading.", "signin");
       }
     }
-    if (response.ok && response.headers.get("Content-Type")?.startsWith("application/json")) {
+    if (response.ok && !headers.has("Range")) {
       const answered = accountedSchema.safeParse(await response.clone().json().catch(() => null));
       if (!answered.success || answered.data.account !== guard.account) {
         guard.lock("account_changed");
@@ -85,7 +86,7 @@ export class PageSession {
   private readonly now: () => number;
   private readonly reader: PageReader;
   private readonly zoomWatch: MutationObserver;
-  private inputAt: number | null = null;
+  private turn = 0;
   private ready = false;
   private active = true;
 
@@ -109,7 +110,7 @@ export class PageSession {
       label: "Page",
       fetch: options.fetch,
       ...(options.loadEngine ? { loadEngine: options.loadEngine } : {}),
-      onChange: (position, count, change) => this.changed(position, count, change.activity, change.shown),
+      onChange: (position, count, change) => this.changed(position, count, change.shown),
       onTap: (zone) => this.tapped(zone),
       onError: (message) => this.callbacks.failed(message),
     });
@@ -132,7 +133,7 @@ export class PageSession {
   destroy(): void {
     this.active = false;
     this.ready = false;
-    this.inputAt = null;
+    this.turn += 1;
     this.zoomWatch.disconnect();
     this.reader.destroy();
   }
@@ -164,7 +165,7 @@ export class PageSession {
 
   showRemote(locator: Locator): Promise<void> {
     if (!this.ready) return Promise.resolve();
-    this.inputAt = null;
+    this.forgetTurns();
     const restored = restoredPage(this.format, locator, this.reader.count, this.reader.items());
     return this.reader.show(restored.position);
   }
@@ -180,15 +181,36 @@ export class PageSession {
     else this.previous();
   }
 
+  forgetTurns(): void {
+    this.turn += 1;
+  }
+
   private move(step: () => Promise<void> | undefined): void {
     if (!this.ready || !this.active) return;
     const at = this.now();
+    const from = this.reader.displayedPosition;
+    const turn = ++this.turn;
     const started = step();
     if (!started) return;
-    this.inputAt = at;
-    started.catch(() => {
-      if (this.active) this.callbacks.failed("This page couldn't be opened.");
-    });
+    const target = this.reader.position;
+    started.then(
+      () => this.settled(turn, from, target, at),
+      () => {
+        if (!this.active) return;
+        this.callbacks.failed("This page couldn't be opened.");
+        this.callbacks.unsure();
+      },
+    );
+  }
+
+  private settled(turn: number, from: number, target: number, at: number): void {
+    if (!this.active) return;
+    if (this.reader.displayedPosition !== target) {
+      this.callbacks.unsure();
+      return;
+    }
+    if (turn !== this.turn || target === from) return;
+    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(target) }, at);
   }
 
   private zoomWith(step: () => Promise<void>): Promise<void> {
@@ -196,14 +218,10 @@ export class PageSession {
     return step().then(() => this.report());
   }
 
-  private changed(position: number, count: number, activity: boolean, shown: boolean): void {
+  private changed(position: number, count: number, shown: boolean): void {
     if (!this.active) return;
     if (shown) this.callbacks.failed(null);
     this.report(position, count);
-    const at = this.inputAt;
-    if (!activity || !this.ready || at === null) return;
-    this.inputAt = null;
-    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(position) }, at);
   }
 
   private report(position = this.reader.position, count = this.reader.count): void {

@@ -99,16 +99,17 @@ function open(book: ReturnType<typeof comic>, fake: ReturnType<typeof server>) {
   const guard = new AccountGuard(ACCOUNT);
   const moved: { place: ProgressPlace; at: number }[] = [];
   const failures: (string | null)[] = [];
+  const checks: number[] = [];
   const views: PageView[] = [];
   let clock = Date.parse("2026-11-18T10:00:00.000Z");
   const session = new PageSession(
     element,
     book.asset,
     { resources: null, fetch: guardedFetch(guard, fake.fetcher), loadEngine: undefined },
-    { view: (view) => views.push(view), moved: (place, at) => moved.push({ place, at }), failed: (message) => failures.push(message) },
+    { view: (view) => views.push(view), moved: (place, at) => moved.push({ place, at }), failed: (message) => failures.push(message), unsure: () => checks.push(clock) },
     () => clock,
   );
-  return { element, guard, session, moved, failures, views, tick: (ms: number) => (clock += ms), now: () => clock };
+  return { element, guard, session, moved, failures, checks, views, tick: (ms: number) => (clock += ms), now: () => clock };
 }
 
 const pageAt = (book: ReturnType<typeof comic>, position: number) => ({ href: book.items[position - 1]?.["href"], type: "image/png", locations: { position, totalProgression: (position - 1) / NAMES.length } });
@@ -217,6 +218,58 @@ describe("the page reader session", () => {
     opened.session.destroy();
   });
 
+  test("an unchanged page box after adopting another device's page records nothing when the earlier turn finally draws", async () => {
+    const book = comic();
+    const opened = open(book, server(book));
+    await opened.session.open(null);
+    let releaseFirst = () => {};
+    let decodes = 0;
+    HTMLImageElement.prototype.decode = () => (decodes++ === 0 ? new Promise<void>((resolve) => (releaseFirst = resolve)) : Promise.resolve());
+    opened.session.go(3);
+    await settle();
+    await opened.session.showRemote(pageAt(book, 3) as never);
+    expect(opened.views.at(-1)?.position).toBe(3);
+    opened.session.go(3);
+    await settle();
+    releaseFirst();
+    await settle();
+    expect(opened.views.at(-1)?.position).toBe(3);
+    expect(opened.moved).toEqual([]);
+    opened.session.destroy();
+  });
+
+  test("choosing another device's place in a file this page cannot show drops the turn still drawing", async () => {
+    const book = comic();
+    const fake = server(book);
+    const opened = open(book, fake);
+    await opened.session.open(null);
+    fake.hold();
+    opened.session.go(3);
+    opened.session.forgetTurns();
+    fake.release();
+    await settle();
+    expect(opened.views.at(-1)?.position).toBe(3);
+    expect(opened.moved).toEqual([]);
+    opened.session.destroy();
+  });
+
+  test("a turn abandoned before its page showed asks for the session to be confirmed", async () => {
+    const book = comic();
+    const fake = server(book);
+    const opened = open(book, fake);
+    await opened.session.open(null);
+    expect(opened.checks).toEqual([]);
+    fake.hold();
+    opened.session.go(4);
+    opened.session.go(1);
+    fake.release();
+    await settle();
+    expect(opened.views.at(-1)?.position).toBe(1);
+    expect(opened.checks.length).toBeGreaterThan(0);
+    expect(opened.moved).toEqual([]);
+    opened.session.destroy();
+  });
+
   test("a pinch zoom made by the page itself is reported and makes the page a pannable region, without reading", async () => {
     const book = comic();
     const opened = open(book, server(book));
@@ -294,12 +347,19 @@ describe("page fetches", () => {
     expect(fake.seen).toHaveLength(1);
   });
 
-  test("a reading order answered for another account locks the page and does not open", async () => {
-    const book = comic();
-    const opened = open(book, server(book, { account: "99" }));
-    await expect(opened.session.open(null)).rejects.toThrow("Sign in again");
-    expect(opened.guard.getState()).toEqual({ status: "account_changed" });
-    opened.session.destroy();
+  test("a reading order answered for another account locks the page and does not open, whatever its content type says", async () => {
+    for (const type of ["application/json", "application/JSON; charset=utf-8", "text/plain"]) {
+      const book = comic();
+      const fake = server(book, { account: "99" });
+      const typed = async (url: string, init: RequestInit) => {
+        const answer = await fake.fetcher(url, init);
+        return url === ORDER ? new Response(await answer.text(), { status: answer.status, headers: { "Content-Type": type } }) : answer;
+      };
+      const opened = open(book, { ...fake, fetcher: typed });
+      await expect(opened.session.open(null)).rejects.toThrow("Sign in again");
+      expect(opened.guard.getState()).toEqual({ status: "account_changed" });
+      opened.session.destroy();
+    }
   });
 
   test("a comic whose reading order is refused does not open", async () => {

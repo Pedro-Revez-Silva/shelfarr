@@ -112,8 +112,12 @@ export class EpubSession {
     void this.move(() => this.showTarget(href), "This chapter couldn't be opened.");
   }
 
-  showRemote(locator: Locator): Promise<void> {
+  forgetMoves(): void {
     this.epoch += 1;
+  }
+
+  showRemote(locator: Locator): Promise<void> {
+    this.forgetMoves();
     const shown = this.moves.then(() => this.restore(locator));
     this.moves = shown.catch(() => undefined);
     return shown;

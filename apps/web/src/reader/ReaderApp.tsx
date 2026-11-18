@@ -218,9 +218,9 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
       return;
     }
     const decision = remoteOpening(publication, opening.asset, remote);
+    showPlace.current?.(remote);
     setRemoteNote(decision.kind === "unavailable" ? REMOTE_UNAVAILABLE : null);
-    if (decision.kind === "show") showPlace.current?.(remote);
-    else if (decision.kind === "open") setOpening(decision.opening);
+    if (decision.kind === "open") setOpening(decision.opening);
   };
 
   const asset = listening ? null : opening.asset;
