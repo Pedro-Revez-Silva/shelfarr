@@ -103,6 +103,21 @@ export const sessionSchema = z.object({
 });
 export type Session = z.infer<typeof sessionSchema>;
 
+export const profileSchema = z.object({ id: identifier, username: z.string(), name: z.string() });
+export type Profile = z.infer<typeof profileSchema>;
+
+export const accountEnvelopeSchema = z.object({ account: identifier, profile: profileSchema });
+export type AccountEnvelope = z.infer<typeof accountEnvelopeSchema>;
+
+export const accountRejectionSchema = z.object({
+  account: identifier,
+  error: z.enum(["invalid_profile", "invalid_password"]),
+  errors: z.record(z.string(), z.array(z.string())),
+});
+export type AccountRejection = z.infer<typeof accountRejectionSchema>;
+
+export type PasswordChange = { current_password: string; password: string; password_confirmation: string };
+
 export const errorEnvelopeSchema = z.object({ error: z.string(), message: z.string().optional() });
 
 export const bootSchema = z.object({
@@ -113,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({

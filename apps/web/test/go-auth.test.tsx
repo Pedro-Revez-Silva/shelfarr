@@ -236,7 +236,10 @@ describe("signing in on the Go runtime", () => {
     expect(await screen.findByRole("link", { name: "The Quiet Library" })).toBeTruthy();
     expect(screen.queryByLabelText("Password")).toBeNull();
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library"]);
+    expect(within(nav).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Library", "/preview/library"],
+      ["Account", "/preview/account"],
+    ]);
     expect(document.querySelector('a[href^="/read"], a[href="/search"], a[href="/requests"], a[href="/profile"], a[href="/admin"]')).toBeNull();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
   });

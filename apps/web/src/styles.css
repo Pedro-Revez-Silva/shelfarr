@@ -936,7 +936,9 @@ thead th {
   font-weight: 550;
 }
 .auth-form input[type="text"],
-.auth-form input[type="password"] {
+.auth-form input[type="password"],
+.account-form input[type="text"],
+.account-form input[type="password"] {
   width: 100%;
   min-height: 56px;
   padding: 0 16px;
@@ -946,7 +948,8 @@ thead th {
   font: inherit;
   font-size: max(1rem, 1em);
 }
-.auth-form input[aria-invalid="true"] {
+.auth-form input[aria-invalid="true"],
+.account-form input[aria-invalid="true"] {
   border-color: var(--danger);
   border-width: 2px;
 }
@@ -1379,4 +1382,70 @@ thead th {
   .reader-footer {
     border-color: CanvasText;
   }
+}
+
+.account {
+  display: grid;
+  gap: 24px;
+  max-width: 40rem;
+}
+.account > .lede {
+  margin: 0;
+}
+.account-card {
+  display: grid;
+  gap: 16px;
+  padding: 24px clamp(16px, 4vw, 28px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+.account-card h2,
+.account-card p {
+  margin: 0;
+}
+.identity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 16px;
+  margin: 0;
+}
+.identity dt {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.identity dd {
+  margin: 4px 0 0;
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.account-form {
+  display: grid;
+  gap: 20px;
+}
+.field-hint {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+.field-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 550;
+}
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.form-outcome:empty {
+  display: none;
+}
+.form-success {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-inline-start: 6px solid var(--ink);
+  border-radius: 12px;
+  background: var(--sunken);
 }

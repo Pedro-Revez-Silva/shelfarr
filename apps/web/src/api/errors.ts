@@ -11,7 +11,8 @@ export type FailureKind =
   | "different_account"
   | "invalid_grant"
   | "rate_limited"
-  | "busy";
+  | "busy"
+  | "conflict";
 
 export class ApiError extends Error {
   readonly kind: FailureKind;

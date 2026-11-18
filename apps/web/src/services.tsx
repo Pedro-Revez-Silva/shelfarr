@@ -24,6 +24,7 @@ export function createQueryKeys(account: string) {
   return {
     root,
     session: [...root, "session"] as const,
+    profile: [...root, "profile"] as const,
     continueReading: (filters: Pick<LibraryFilters, "type">) => [...root, "continue", filters.type ?? null] as const,
     library: (filters: LibraryFilters) => [...root, "library", filters.q ?? "", filters.type ?? null, filters.status ?? null, filters.sort ?? "recent"] as const,
     libraryAll: [...root, "library"] as const,

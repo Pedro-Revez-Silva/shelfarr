@@ -13,6 +13,7 @@ import {
   type ReadingStatus,
   type Session,
 } from "../contract";
+import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
   progressConflictSchema,
@@ -50,10 +51,13 @@ type RequestOptions<T> = {
   body?: unknown;
   keepalive?: boolean;
   conflict?: z.ZodType<T>;
+  rejection?: z.ZodType<T>;
   account: (value: T) => string;
 };
 
 export type ProgressAnswer = { kind: "saved"; progress: StoredProgress } | { kind: "conflict"; progress: StoredProgress | null };
+
+export type AccountAnswer = { kind: "saved"; profile: Profile } | { kind: "rejected"; errors: Record<string, string[]> };
 
 type ProgressBody = { account: string; error?: "progress_conflict"; progress: StoredProgress | null };
 
@@ -71,6 +75,7 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   server_busy: "busy",
   database_busy: "busy",
   request_timeout: "busy",
+  account_conflict: "conflict",
 };
 
 export class ApiClient {
@@ -159,6 +164,32 @@ export class ApiClient {
     });
   }
 
+  async account(signal?: AbortSignal): Promise<Profile> {
+    const envelope = await this.request({ path: "/account", schema: accountEnvelopeSchema, signal, account: (value) => value.account });
+    return envelope.profile;
+  }
+
+  updateProfile(name: string, signal?: AbortSignal): Promise<AccountAnswer> {
+    return this.accountWrite("/account/profile", "PUT", { name }, signal);
+  }
+
+  changePassword(change: PasswordChange, signal?: AbortSignal): Promise<AccountAnswer> {
+    return this.accountWrite("/account/password", "POST", change, signal);
+  }
+
+  private async accountWrite(path: string, method: "PUT" | "POST", body: unknown, signal: AbortSignal | undefined): Promise<AccountAnswer> {
+    const answer = await this.request<AccountEnvelope | AccountRejection>({
+      path,
+      schema: accountEnvelopeSchema,
+      rejection: accountRejectionSchema,
+      method,
+      body,
+      signal,
+      account: (value) => value.account,
+    });
+    return "profile" in answer ? { kind: "saved", profile: answer.profile } : { kind: "rejected", errors: answer.errors };
+  }
+
   private async request<T>(options: RequestOptions<T>): Promise<T> {
     const { boot, guard } = this.deps;
     guard.assertActive();
@@ -187,7 +218,8 @@ export class ApiClient {
     const payload = await readJson(response);
 
     const conflict = options.conflict !== undefined && response.status === 409;
-    if (!response.ok && !conflict) throw this.failure(response.status, payload, response);
+    const rejected = options.rejection !== undefined && response.status === 422 && options.rejection.safeParse(payload).success;
+    if (!response.ok && !conflict && !rejected) throw this.failure(response.status, payload, response);
 
     if (!options.verifying) {
       const trusted = await untilAborted(guard.untilSettled(), options.signal);
@@ -198,7 +230,7 @@ export class ApiClient {
       }
     }
 
-    const parsed = (conflict && options.conflict ? options.conflict : options.schema).safeParse(payload);
+    const parsed = (conflict && options.conflict ? options.conflict : rejected && options.rejection ? options.rejection : options.schema).safeParse(payload);
     if (!parsed.success) throw new ApiError("contract", "The server answered with an unexpected shape", response.status);
     if (options.account(parsed.data) !== guard.account) {
       guard.lock("account_changed");

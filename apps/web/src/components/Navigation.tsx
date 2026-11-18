@@ -13,6 +13,13 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
             Library
           </Link>
         </li>
+        {handoffs ? null : (
+          <li>
+            <Link to="/account" className="nav-link">
+              Account
+            </Link>
+          </li>
+        )}
         {session && handoffs ? (
           <>
             <HandoffLink href={session.links.discover} label="Discover" />

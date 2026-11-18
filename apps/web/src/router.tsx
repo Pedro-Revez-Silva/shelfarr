@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
 import { libraryFiltersSchema } from "./contract";
+import { AccountPage } from "./components/AccountPage";
 import { DetailsPage } from "./components/DetailsPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { Shell } from "./components/Shell";
@@ -48,7 +49,13 @@ const publicationRoute = createRoute({
   component: DetailsPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute]);
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account",
+  component: AccountPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

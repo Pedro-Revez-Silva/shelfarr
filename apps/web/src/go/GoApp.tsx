@@ -94,6 +94,7 @@ export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch 
 function introFor(view: GoBoot["view"]): string {
   if (view === "connect") return "Sign in to approve or decline the connection you started in your Shelfarr app. You will come straight back to it.";
   if (view === "reader") return "Sign in to open this book. You will come straight back to it.";
+  if (view === "account") return "Sign in to manage your account. You will come straight back to it.";
   return "Sign in to browse your library.";
 }
 

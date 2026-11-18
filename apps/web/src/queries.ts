@@ -6,7 +6,8 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import type { LibraryFilters, LibraryPage, PublicationDetail, ReadingStatus } from "./contract";
+import type { AccountAnswer } from "./api/client";
+import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, Session } from "./contract";
 import { useServices } from "./services";
 
 export function useSession() {
@@ -58,6 +59,36 @@ export function useReadingStatus(id: string) {
       client.setQueryData(keys.publication(id), publication);
       void client.invalidateQueries({ queryKey: keys.libraryAll });
       void client.invalidateQueries({ queryKey: keys.continueAll });
+    },
+  });
+}
+
+export function useProfile() {
+  const { api, keys } = useServices();
+  return useQuery({
+    queryKey: keys.profile,
+    queryFn: ({ signal }) => api.account(signal),
+  });
+}
+
+export function useShowSavedProfile() {
+  const { keys, guard } = useServices();
+  const client = useQueryClient();
+  return (profile: Profile) => {
+    if (!guard.isActive() || profile.id !== guard.account) return;
+    client.setQueryData(keys.profile, profile);
+    client.setQueryData<Session>(keys.session, (session) => (session ? { ...session, account: { ...session.account, name: profile.name } } : session));
+    void client.invalidateQueries({ queryKey: keys.session });
+  };
+}
+
+export function useDisplayName() {
+  const { api } = useServices();
+  const show = useShowSavedProfile();
+  return useMutation({
+    mutationFn: (name: string) => api.updateProfile(name),
+    onSuccess: (answer: AccountAnswer) => {
+      if (answer.kind === "saved") show(answer.profile);
     },
   });
 }

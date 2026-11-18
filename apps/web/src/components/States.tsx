@@ -39,6 +39,7 @@ const MESSAGES = {
   invalid_grant: { title: "That code is no longer valid", body: "It has expired or was already used. Start again in the app." },
   rate_limited: { title: "Too many attempts", body: "Wait a moment, then try again." },
   busy: { title: "The server is busy", body: "Try again in a moment. Nothing was changed." },
+  conflict: { title: "Changed somewhere else", body: "Reload the page to see the latest details. Nothing was changed." },
 } as const;
 
 const UNSUPPORTED: Record<string, string> = {
