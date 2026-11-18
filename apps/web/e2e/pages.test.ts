@@ -383,10 +383,14 @@ describe("the Go online comic reader", () => {
     await page.goto(`${server.origin}/preview/library?type=ebook&sort=title`);
     const resume = page.locator(`a.resume-link[href="/preview/library/${books.comic}/read"]`);
     await resume.waitFor();
-    await page.locator(".book-card").last().scrollIntoViewIfNeeded();
+    await page.locator(".book-card").nth(4).waitFor();
+    const linkTop = await resume.evaluate((link) => link.getBoundingClientRect().top + window.scrollY);
+    await page.evaluate((top) => window.scrollTo(0, Math.max(240, top - 320)), linkTop);
     await Bun.sleep(300);
     const scrolled = await page.evaluate(() => window.scrollY);
     expect(scrolled).toBeGreaterThan(200);
+    expect(await resume.evaluate((link) => link.getBoundingClientRect().bottom <= window.innerHeight && link.getBoundingClientRect().top >= 0)).toBe(true);
+    expect(await page.evaluate(() => window.history.state?.shelfarrLibrary?.scrollY ?? null)).toBe(scrolled);
     await resume.click();
     await atPage(page, 2, 5);
     await page.getByRole("link", { name: "Back to the library" }).click();
