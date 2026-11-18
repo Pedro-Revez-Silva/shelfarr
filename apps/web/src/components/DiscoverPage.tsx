@@ -62,12 +62,12 @@ function Discover() {
       </header>
 
       {searchable ? (
-        <SearchForm key={q ?? ""} initial={q ?? ""} problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null} onSearch={submit} />
+        <SearchForm initial={checked.kind === "ready" ? checked.query : (q ?? "")} problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null} onSearch={submit} />
       ) : null}
 
       <SearchStatus query={query} answer={answer.data} pending={query !== null && answer.isFetching} failed={answer.isError} />
 
-      {state !== null && state !== "available" ? <Unavailable state={state} retryAfter={answer.data?.retry_after ?? null} /> : null}
+      {state !== null && state !== "available" ? <Unavailable state={state} retryAfter={answer.data?.retry_after ?? null} checking={answer.isFetching} onCheck={() => void answer.refetch()} /> : null}
       {answer.isError ? <SearchFailure error={answer.error} query={query} onRetry={() => void answer.refetch()} /> : null}
       {query === null && answer.isPending ? <Loading label="Checking whether search is available…" /> : null}
       {answer.data && answer.data.search === "available" && answer.data.query !== null && !answer.isError ? <Results answer={answer.data} /> : null}
@@ -77,7 +77,13 @@ function Discover() {
 
 function SearchForm({ initial, problem, onSearch }: { initial: string; problem: "too_long" | "invalid" | null; onSearch: (query: string) => void }) {
   const [text, setText] = useState(initial);
+  const [shown, setShown] = useState(initial);
   const [blank, setBlank] = useState(false);
+  if (shown !== initial) {
+    setShown(initial);
+    setText(initial);
+    setBlank(false);
+  }
   const inputId = useId();
   const hintId = useId();
   const errorId = useId();
@@ -169,7 +175,7 @@ const UNAVAILABLE: Record<Exclude<DiscoverState, "available">, { title: string; 
   },
 };
 
-function Unavailable({ state, retryAfter }: { state: Exclude<DiscoverState, "available">; retryAfter: number | null }) {
+function Unavailable({ state, retryAfter, checking, onCheck }: { state: Exclude<DiscoverState, "available">; retryAfter: number | null; checking: boolean; onCheck: () => void }) {
   const message = UNAVAILABLE[state];
   return (
     <EmptyState title={message.title}>
@@ -177,6 +183,11 @@ function Unavailable({ state, retryAfter }: { state: Exclude<DiscoverState, "ava
         {message.body}
         {state === "provider_paused" ? ` ${retryAfter !== null ? `Try again in about ${waitText(retryAfter)}.` : "Try again later."}` : ""}
       </p>
+      {state === "server_off" ? null : (
+        <button type="button" className="button" onClick={onCheck} disabled={checking}>
+          {checking ? "Checking…" : "Check again"}
+        </button>
+      )}
     </EmptyState>
   );
 }
@@ -298,7 +309,7 @@ function Result({ item }: { item: DiscoverItem }) {
             ))}
           </ul>
         ) : (
-          <p className="discover-meta">Not in your library</p>
+          <p className="discover-meta">No copy to open in your library</p>
         )}
         <a className="discover-source" href={item.source_url} target="_blank" rel="noopener noreferrer">
           View on Open Library

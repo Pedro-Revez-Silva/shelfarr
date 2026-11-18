@@ -68,7 +68,7 @@ export function useDiscover(query: string | null) {
   return useQuery({
     queryKey: keys.discover(query),
     queryFn: ({ signal }) => api.discover(query, signal),
-    staleTime: query === null ? 30_000 : 5 * 60_000,
+    staleTime: ({ state }) => (state.data?.search === "available" ? (query === null ? 30_000 : 5 * 60_000) : 0),
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,

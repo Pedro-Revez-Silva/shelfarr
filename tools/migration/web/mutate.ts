@@ -81,6 +81,8 @@ const mutants: Mutant[] = [
   { name: "discover: a cover from any https host is shown", file: "src/contract.ts", old: "const openLibraryCover = z.string().regex(/^https:\\/\\/covers\\.openlibrary\\.org\\/b\\/id\\/[1-9]\\d{0,15}-M\\.jpg$/);", replacement: "const openLibraryCover = z.string().regex(/^https:\\/\\//);", tests: GO_DISCOVER },
   { name: "discover: a work link that names another work is followed", file: "src/contract.ts", old: '.refine((item) => item.source_url === `https://openlibrary.org/works/${item.id}`, "The work link must point at the same Open Library work");', replacement: ";", tests: GO_DISCOVER },
   { name: "discover: an over-long query from the address is sent", file: "src/components/DiscoverPage.tsx", old: 'if ([...query].length > MAX_QUERY_CHARACTERS) return { kind: "too_long" };', replacement: "", tests: GO_DISCOVER },
+  { name: "discover: an unavailable answer is kept for minutes", file: "src/queries.ts", old: 'state.data?.search === "available" ? (query === null', replacement: 'state.data ? (query === null', tests: GO_DISCOVER },
+  { name: "discover: a search replaces the focused field", file: "src/components/DiscoverPage.tsx", old: "<SearchForm initial=", replacement: '<SearchForm key={q ?? ""} initial=', tests: GO_DISCOVER },
   { name: "discover: the classic preview serves the Go discover page", file: "src/components/DiscoverPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_DISCOVER },
 ];
 

@@ -199,7 +199,8 @@ describe("Discover in the Go preview", () => {
     expect(sent.length).toBe(1);
     expect(sent[0]?.path).toBe("/search.json");
     expect(sent[0]?.query).toEqual({ q: ["reader sampler"], limit: ["20"], fields: [FIELDS] });
-    expect(Object.keys(sent[0]?.headers ?? {}).sort()).toEqual(["Accept", "Accept-Encoding", "User-Agent"]);
+    expect(Object.keys(sent[0]?.headers ?? {}).sort()).toEqual(["Accept", "Accept-Encoding", "Connection", "User-Agent"]);
+    expect(sent[0]?.headers?.["Connection"]).toEqual(["close"]);
     expect(sent[0]?.headers?.["User-Agent"]).toEqual([`Shelfarr/${fixture.serverVersion}`]);
     expect(cases.rails_request).toEqual({ q: "reader sampler", limit: "20", fields: `${FIELDS},subject` });
 
@@ -217,7 +218,7 @@ describe("Discover in the Go preview", () => {
     expect(await harbor.getByRole("link", { name: /Open the comic/ }).getAttribute("href")).toBe(`/preview/library/${cases.books.comic}`);
     expect(await harbor.locator("img").count()).toBe(0);
     const waiting = articles.filter({ has: page.getByRole("heading", { name: "Reader Waiting List", level: 3 }) });
-    expect(await waiting.getByText("Not in your library").count()).toBe(1);
+    expect(await waiting.getByText("No copy to open in your library").count()).toBe(1);
     expect(await waiting.getByText("Author not listed").count()).toBe(1);
     const source = text.getByRole("link", { name: "View on Open Library for Reader Text Sampler (opens in a new tab)" });
     expect([await source.getAttribute("href"), await source.getAttribute("target"), await source.getAttribute("rel")]).toEqual(["https://openlibrary.org/works/OL900001W", "_blank", "noopener noreferrer"]);
@@ -352,7 +353,7 @@ describe("Discover in the Go preview", () => {
     await server.stop();
   });
 
-  test("an over-long query in the address is explained and never sent", async () => {
+  test("an over-long query in the address is explained and never sent, and a repeated one is rewritten to the one searched", async () => {
     const server = await serve();
     const { context, page } = await open(server);
     const before = fake.searches().length;
@@ -361,6 +362,10 @@ describe("Discover in the Go preview", () => {
     expect(await page.getByRole("searchbox", { name: "Title or author" }).getAttribute("aria-invalid")).toBe("true");
     await page.waitForTimeout(300);
     expect(fake.searches().length).toBe(before);
+    await page.goto(`${server.origin}/preview/discover?q=dune&q=reader+sampler`);
+    await page.getByRole("status").filter({ hasText: "5 results from Open Library for “reader sampler”." }).waitFor();
+    expect(page.url()).toBe(`${server.origin}/preview/discover?q=reader+sampler`);
+    expect(fake.searches().slice(before).map((entry) => entry.query?.["q"])).toEqual([["reader sampler"]]);
     await context.close();
     await server.stop();
   });
@@ -388,9 +393,12 @@ describe("Discover in the Go preview", () => {
     const server = await serve();
     const { context, page } = await open(server);
     await openDiscover(page, server.origin);
-    await search(page, "reader sampler");
+    const box = page.getByRole("searchbox", { name: "Title or author" });
+    await box.focus();
+    await page.keyboard.type("reader sampler");
+    await page.keyboard.press("Enter");
     await page.getByRole("heading", { name: "Reader Text Sampler", level: 3 }).waitFor();
-    await page.getByRole("searchbox", { name: "Title or author" }).focus();
+    expect(await box.evaluate((element) => element === document.activeElement)).toBe(true);
     const order: string[] = [];
     for (let step = 0; step < 5; step += 1) {
       await page.keyboard.press("Tab");

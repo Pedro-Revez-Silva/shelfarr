@@ -153,6 +153,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   const environment: Record<string, string> = { PATH: process.env["PATH"] ?? "", SECRET_KEY_BASE_FILE: fixture.secretFile };
   if (options.clock) environment["SHELFARR_E2E_CLOCK_FILE"] = options.clock;
   Object.assign(environment, options.environment ?? {});
+  if (image && options.environment) throw new Error("the image mode cannot reach the test's loopback services; run these tests against the binary");
   const container = image ? `shelfarr-go-web-${process.pid}-${port}` : null;
   const command = image
     ? [

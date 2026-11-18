@@ -138,7 +138,7 @@ describe("the Go Discover page", () => {
     expect([image?.getAttribute("src"), image?.getAttribute("referrerpolicy"), image?.getAttribute("loading"), image?.getAttribute("alt")]).toEqual(["https://covers.openlibrary.org/b/id/14625765-M.jpg", "no-referrer", "lazy", ""]);
     expect(within(other).getByText("Author not listed")).toBeTruthy();
     expect(within(other).getByText("1 edition")).toBeTruthy();
-    expect(within(other).getByText("Not in your library")).toBeTruthy();
+    expect(within(other).getByText("No copy to open in your library")).toBeTruthy();
     expect(within(other).queryByRole("list", { name: "In your library" })).toBeNull();
     expect(other.querySelector("img")).toBeNull();
     expect(within(results).getByText(/Requesting books is not part of this preview yet/)).toBeTruthy();
@@ -165,6 +165,63 @@ describe("the Go Discover page", () => {
     act(() => router.history.forward());
     await screen.findByText("2 results from Open Library for “emma”.");
     expect(searches(server).map(queryOf)).toEqual(["dune", "emma"]);
+  });
+
+  test("the field keeps focus through a keyboard search so the next search can be typed at once", async () => {
+    const server = discoverServer();
+    renderDiscover(server);
+    const user = userEvent.setup();
+    await waitFor(() => expect(searches(server).length).toBe(1));
+    const input = field();
+    await user.click(input);
+    await user.keyboard("dune{Enter}");
+    await screen.findByText("2 results from Open Library for “dune”.");
+    expect(document.activeElement).toBe(input);
+    expect(field()).toBe(input);
+    await user.keyboard("{Control>}a{/Control}emma{Enter}");
+    await screen.findByText("2 results from Open Library for “emma”.");
+    expect(document.activeElement).toBe(input);
+    expect(searches(server).map(queryOf)).toEqual([null, "dune", "emma"]);
+  });
+
+  test("a query repeated in the address searches the one the address is rewritten to", async () => {
+    const server = discoverServer();
+    const { router } = renderDiscover(server, "/preview/discover?q=dune&q=foundation");
+    await screen.findByText("2 results from Open Library for “foundation”.");
+    expect(router.history.location.search).toBe("?q=foundation");
+    expect(searches(server).map(queryOf)).toEqual(["foundation"]);
+  });
+
+  test("an unavailable answer is checked again on request and on a later visit instead of being kept for minutes", async () => {
+    let paused = true;
+    const server = discoverServer((query) => ({ body: paused ? answer(query, [], { search: "provider_paused", retry_after: 1 }) : answer(query, query ? [item()] : []) }));
+    const { router } = renderDiscover(server, "/preview/discover?q=dune");
+    expect(await screen.findByRole("heading", { level: 2, name: "Open Library is paused for now" })).toBeTruthy();
+    expect(screen.getByText(/Try again in about 1 second\./)).toBeTruthy();
+    paused = false;
+    act(() => {
+      void router.navigate({ to: "/library" });
+    });
+    await screen.findByRole("heading", { level: 1, name: "Library" });
+    act(() => router.history.back());
+    expect(await screen.findByText("1 result from Open Library for “dune”.")).toBeTruthy();
+    paused = true;
+    const user = userEvent.setup();
+    act(() => {
+      void router.navigate({ to: "/discover" });
+    });
+    expect(await screen.findByRole("heading", { level: 2, name: "Open Library is paused for now" })).toBeTruthy();
+    paused = false;
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    expect(await screen.findByRole("searchbox", { name: "Title or author" })).toBeTruthy();
+    expect(searches(server).map(queryOf)).toEqual(["dune", "dune", null, null]);
+  });
+
+  test("a server with search switched off offers no check, since only a restart changes it", async () => {
+    const server = discoverServer((query) => ({ body: answer(query, [], { search: "server_off" }) }));
+    renderDiscover(server);
+    expect(await screen.findByRole("heading", { level: 2, name: "Search is switched off on this server" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
 
   test("a blank search sends nothing and says why, and an over-long query in the address is never sent", async () => {
