@@ -129,6 +129,7 @@ declare module "*/app/javascript/consumer_page_reader.js" {
     zoom: number;
     position: number;
     stage?: HTMLElement;
+    page?: HTMLElement;
     open(url: string): Promise<number>;
     items(): ComicItem[];
     locator(position: number): PageLocator;

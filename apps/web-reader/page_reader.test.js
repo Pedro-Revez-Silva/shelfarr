@@ -329,3 +329,25 @@ test("a reader opens its comic order and pages through a given fetch and its PDF
     globalThis.fetch = originals.fetch
   }
 })
+
+test("a reader closed while its PDF engine is still loading never opens the document", async () => {
+  const originals = { document: globalThis.document }
+  const listening = () => Object.assign(fakeElement(), { addEventListener() {}, append() {} })
+  globalThis.document = { createElement: listening }
+  try {
+    let release
+    const opened = []
+    const engine = { GlobalWorkerOptions: {}, getDocument: () => { opened.push("document"); return { promise: Promise.resolve({ numPages: 2 }) } } }
+    globalThis.location ||= { href: "https://reader.example/shelf/read/1", origin: "https://reader.example" }
+    const reader = new PageReader({ element: listening(), asset: { id: "a".repeat(64), size_bytes: 10 }, format: "pdf", resources: { worker: "/w.js", files: {} },
+      loadEngine: () => new Promise(resolve => { release = () => resolve(engine) }) })
+    const opening = reader.open("/document.pdf")
+    await Promise.resolve()
+    reader.destroy()
+    release()
+    await expect(opening).rejects.toMatchObject({ name: "AbortError" })
+    expect(opened).toEqual([])
+  } finally {
+    globalThis.document = originals.document
+  }
+})

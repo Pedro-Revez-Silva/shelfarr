@@ -1,6 +1,6 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
-import type { PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import type { Locator, PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
 import { LockedScreen } from "../components/LockedScreen";
 import { ErrorPanel, Loading } from "../components/States";
 import { useAccountRevalidation } from "../revalidation";
@@ -140,6 +140,26 @@ export function chosenAsset(publication: ReaderPublication): ReaderAsset | null 
   return null;
 }
 
+export type Opening = { asset: ReaderAsset | null; start: Locator | null; savedElsewhere: boolean };
+
+export function firstOpening(publication: ReaderPublication): Opening {
+  const asset = chosenAsset(publication);
+  const saved = publication.progress;
+  const here = asset !== null && saved?.asset_id === asset.id;
+  return { asset, start: here ? (saved?.locator ?? null) : null, savedElsewhere: saved !== null && !here };
+}
+
+export type RemoteOpening = { kind: "show" } | { kind: "open"; opening: Opening } | { kind: "unavailable" };
+
+export function remoteOpening(publication: ReaderPublication, current: ReaderAsset | null, remote: StoredProgress): RemoteOpening {
+  const asset = publication.assets.find((candidate) => candidate.id === remote.asset_id);
+  if (!asset) return { kind: "unavailable" };
+  if (asset.id === current?.id) return { kind: "show" };
+  return { kind: "open", opening: { asset, start: remote.locator, savedElsewhere: false } };
+}
+
+const REMOTE_UNAVAILABLE = "The other device's place is in a file this reader doesn't list any more, so it can't be shown here. Your account keeps it until you turn a page.";
+
 function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPublication } & Engines) {
   const { api, guard } = useServices();
   const [session] = useState(
@@ -152,6 +172,8 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
       }),
   );
   const showPlace = useRef<((progress: StoredProgress) => void) | null>(null);
+  const [opening, setOpening] = useState(() => firstOpening(publication));
+  const [remoteNote, setRemoteNote] = useState<string | null>(null);
   const leaving = useRef<(() => void) | null>(null);
   const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
 
@@ -187,13 +209,21 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
     leaving.current?.();
     await session.drain(LEAVE_WAIT_MS);
   }, [session]);
+  const listening = publication.book_type === "audiobook";
   const goToRemotePlace = () => {
     const remote = session.useRemote();
-    if (remote) showPlace.current?.(remote);
+    if (!remote) return;
+    if (listening) {
+      showPlace.current?.(remote);
+      return;
+    }
+    const decision = remoteOpening(publication, opening.asset, remote);
+    setRemoteNote(decision.kind === "unavailable" ? REMOTE_UNAVAILABLE : null);
+    if (decision.kind === "show") showPlace.current?.(remote);
+    else if (decision.kind === "open") setOpening(decision.opening);
   };
 
-  const listening = publication.book_type === "audiobook";
-  const asset = listening ? null : chosenAsset(publication);
+  const asset = listening ? null : opening.asset;
   const footer = <SaveStatus state={state} onRetry={() => session.retry()} onKeep={() => session.keepLocal()} onUseRemote={goToRemotePlace} onDismiss={() => session.dismissRemote()} />;
   const body =
     publication.assets.length === 0 ? (
@@ -201,14 +231,19 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
     ) : listening ? (
       <AudioPlayer publication={publication} record={record} flush={flush} registerPlace={registerPlace} registerLeave={registerLeave} />
     ) : asset && isPageAsset(asset) ? (
-      <PagesReader publication={publication} asset={asset} pageEngine={pageEngine} record={record} registerPlace={registerPlace} />
+      <PagesReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} pageEngine={pageEngine} record={record} registerPlace={registerPlace} />
     ) : asset?.format === "epub" ? (
-      <EpubReader publication={publication} asset={asset} engine={engine} record={record} registerPlace={registerPlace} />
+      <EpubReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} engine={engine} record={record} registerPlace={registerPlace} />
     ) : (
       <Unreadable publication={publication} />
     );
   return (
     <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} beforeLeave={beforeLeave}>
+      {remoteNote ? (
+        <p className="notice reader-notice" role="status">
+          {remoteNote}
+        </p>
+      ) : null}
       {body}
     </ReaderFrame>
   );

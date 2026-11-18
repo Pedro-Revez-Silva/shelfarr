@@ -328,6 +328,7 @@ class PdfSource {
 
   static async open(url, resources, signal, loadEngine = () => import("consumer_pdf_engine")) {
     const engine = await loadEngine()
+    if (signal?.aborted) throw new DOMException("The reader was closed.", "AbortError")
     const worker = new URL(resources?.worker || "", globalThis.location.href)
     if (!resources?.worker || worker.origin !== globalThis.location.origin) throw new PageError("The PDF renderer isn't available.", "engine")
     engine.GlobalWorkerOptions.workerSrc = worker.href

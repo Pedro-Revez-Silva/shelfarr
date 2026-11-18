@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ACCOUNT_HEADER } from "../api/client";
 import type { AccountGuard } from "../api/account-guard";
 import { errorEnvelopeSchema, type Locator, type PageEngine, type ProgressPlace, type ReaderAsset } from "../contract";
@@ -43,6 +44,8 @@ export function pageResources(engine: PageEngine): PageResources {
 
 type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
+const accountedSchema = z.looseObject({ account: z.string() });
+
 export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, init) => fetch(input, init)): Fetcher {
   return async (input, init) => {
     guard.assertActive();
@@ -56,6 +59,13 @@ export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, ini
       const code = envelope.success ? envelope.data.error : null;
       if (code === "signed_out" || code === "account_changed") {
         guard.lock(code);
+        throw new PageError("Sign in again to keep reading.", "signin");
+      }
+    }
+    if (response.ok && response.headers.get("Content-Type")?.startsWith("application/json")) {
+      const answered = accountedSchema.safeParse(await response.clone().json().catch(() => null));
+      if (!answered.success || answered.data.account !== guard.account) {
+        guard.lock("account_changed");
         throw new PageError("Sign in again to keep reading.", "signin");
       }
     }
@@ -74,6 +84,7 @@ export class PageSession {
   private readonly callbacks: PageCallbacks;
   private readonly now: () => number;
   private readonly reader: PageReader;
+  private readonly zoomWatch: MutationObserver;
   private inputAt: number | null = null;
   private ready = false;
   private active = true;
@@ -102,6 +113,8 @@ export class PageSession {
       onTap: (zone) => this.tapped(zone),
       onError: (message) => this.callbacks.failed(message),
     });
+    this.zoomWatch = new MutationObserver(() => this.report());
+    this.zoomWatch.observe(element, { attributes: true, attributeFilter: ["data-zoom"] });
   }
 
   async open(saved: Locator | null): Promise<PageOpening> {
@@ -109,6 +122,7 @@ export class PageSession {
     if (url.origin !== window.location.origin) throw new PageError("This file must come from this server.");
     const count = await this.reader.open(url.href);
     if (!this.active) return { count, exact: true, position: 1 };
+    if (this.format === "pdf") this.reader.page?.setAttribute("role", "group");
     const restored = restoredPage(this.format, saved, count, this.reader.items());
     await this.reader.show(restored.position);
     this.ready = this.active;
@@ -119,6 +133,7 @@ export class PageSession {
     this.active = false;
     this.ready = false;
     this.inputAt = null;
+    this.zoomWatch.disconnect();
     this.reader.destroy();
   }
 
@@ -149,6 +164,7 @@ export class PageSession {
 
   showRemote(locator: Locator): Promise<void> {
     if (!this.ready) return Promise.resolve();
+    this.inputAt = null;
     const restored = restoredPage(this.format, locator, this.reader.count, this.reader.items());
     return this.reader.show(restored.position);
   }

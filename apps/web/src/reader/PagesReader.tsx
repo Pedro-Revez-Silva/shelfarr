@@ -1,13 +1,14 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import type { PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import type { Locator, PageEngine, ProgressPlace, ReaderAsset, StoredProgress } from "../contract";
 import { Loading } from "../components/States";
 import { useServices } from "../services";
 import { guardedFetch, PageEngineError, PageSession, pageResources, pdfEngineLoader, type PageView } from "./pages";
 import { PageError, type PageFormat } from "./shared";
 
 type Props = {
-  publication: ReaderPublication;
   asset: ReaderAsset & { format: PageFormat };
+  start: Locator | null;
+  savedElsewhere: boolean;
   pageEngine: PageEngine | undefined;
   record: (place: ProgressPlace, at?: number) => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
@@ -20,9 +21,8 @@ function failureText(error: unknown, format: PageFormat): string {
   return `This ${NAMES[format]} couldn't be opened.`;
 }
 
-function openingNotice(publication: ReaderPublication, asset: ReaderAsset): string | null {
-  const saved = publication.progress;
-  if (!saved || saved.asset_id === asset.id) return null;
+function openingNotice(savedElsewhere: boolean, asset: ReaderAsset): string | null {
+  if (!savedElsewhere) return null;
   return `Your saved place is in another file or an earlier edition of this book, so this ${NAMES[asset.format as PageFormat]} opens at its first page. That place is kept until you turn a page here.`;
 }
 
@@ -30,8 +30,9 @@ function zoomLabel(view: PageView | null): string {
   return view?.zoomed ? `${Math.round(view.zoom * 100)}%` : "Fit";
 }
 
-export function PagesReader({ publication, asset, pageEngine, record, registerPlace }: Props) {
-  const { guard } = useServices();
+export function PagesReader({ asset, start, savedElsewhere, pageEngine, record, registerPlace }: Props) {
+  const { guard, revalidate } = useServices();
+  const shownPosition = useRef(0);
   const stage = useRef<HTMLDivElement>(null);
   const session = useRef<PageSession | null>(null);
   const [phase, setPhase] = useState<"opening" | "ready" | "failed">("opening");
@@ -40,8 +41,7 @@ export function PagesReader({ publication, asset, pageEngine, record, registerPl
   const [failure, setFailure] = useState<string | null>(null);
   const [restoreNote, setRestoreNote] = useState<string | null>(null);
   const inputId = useId();
-  const savedLocator = publication.progress?.asset_id === asset.id ? (publication.progress?.locator ?? null) : null;
-  const [initial] = useState(() => savedLocator);
+  const [initial] = useState(() => start);
   const assetId = asset.id;
   const format = asset.format;
   const engineAddress = pageEngine?.engine;
@@ -63,10 +63,14 @@ export function PagesReader({ publication, asset, pageEngine, record, registerPl
       {
         view: (next) => {
           setView(next);
-          setDraft(String(next.position));
+          if (next.position !== shownPosition.current) setDraft(String(next.position));
+          shownPosition.current = next.position;
         },
         moved: record,
-        failed: setFailure,
+        failed: (message) => {
+          setFailure(message);
+          if (message) revalidate();
+        },
       },
     );
     session.current = opened;
@@ -82,13 +86,14 @@ export function PagesReader({ publication, asset, pageEngine, record, registerPl
         if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
         setFailure(failureText(error, format));
         setPhase("failed");
+        revalidate();
       });
     return () => {
       cancelled = true;
       opened.destroy();
       session.current = null;
     };
-  }, [assetId, format, engineAddress, resources, target, guard, initial, record]);
+  }, [assetId, format, engineAddress, resources, target, guard, initial, record, revalidate]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => session.current?.key(event);
@@ -107,7 +112,7 @@ export function PagesReader({ publication, asset, pageEngine, record, registerPl
   const ready = phase === "ready";
   const count = view?.count ?? asset.page_count ?? 0;
   const position = view?.position ?? 0;
-  const notice = openingNotice(publication, asset) ?? restoreNote;
+  const notice = openingNotice(savedElsewhere, asset) ?? restoreNote;
   const jump = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const value = Number(draft);

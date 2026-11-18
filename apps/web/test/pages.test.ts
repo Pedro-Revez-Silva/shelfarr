@@ -5,7 +5,7 @@ import { ApiError } from "../src/api/errors";
 import type { ProgressPlace, ReaderAsset, ReaderPublication } from "../src/contract";
 import { goReaderLink, goSummaryReaderLink } from "../src/reader/links";
 import { guardedFetch, PageSession, pdfEngineLoader, type PageView } from "../src/reader/pages";
-import { chosenAsset } from "../src/reader/ReaderApp";
+import { chosenAsset, firstOpening, remoteOpening } from "../src/reader/ReaderApp";
 import { ACCOUNT, detail, summary } from "./helpers";
 
 const ID = "c".repeat(64);
@@ -61,7 +61,7 @@ function comic(options: { damage?: number } = {}) {
 
 type Seen = { url: string; headers: Headers; signal: AbortSignal | null | undefined };
 
-function server(book: ReturnType<typeof comic>, options: { status?: number; error?: string } = {}) {
+function server(book: ReturnType<typeof comic>, options: { status?: number; error?: string; account?: string } = {}) {
   const seen: Seen[] = [];
   const gates: (() => void)[] = [];
   let holding = false;
@@ -69,7 +69,7 @@ function server(book: ReturnType<typeof comic>, options: { status?: number; erro
     const headers = new Headers(init.headers);
     seen.push({ url, headers, signal: init.signal });
     if (options.status) return new Response(JSON.stringify({ error: options.error }), { status: options.status, headers: { "Content-Type": "application/json" } });
-    if (url === ORDER) return Response.json({ account: ACCOUNT, asset_id: ID, format: "cbz", items: book.items });
+    if (url === ORDER) return Response.json({ account: options.account ?? ACCOUNT, asset_id: ID, format: "cbz", items: book.items });
     if (holding) await new Promise<void>((resolve) => gates.push(resolve));
     const [, start, end] = /^bytes=(\d+)-(\d+)$/.exec(headers.get("Range") ?? "") ?? [];
     const first = Number(start);
@@ -201,6 +201,40 @@ describe("the page reader session", () => {
     opened.session.destroy();
   });
 
+  test("adopting another device's place on the page a turn is still drawing drops that turn", async () => {
+    const book = comic();
+    const fake = server(book);
+    const opened = open(book, fake);
+    await opened.session.open(null);
+    fake.hold();
+    opened.session.go(3);
+    const remote = opened.session.showRemote(pageAt(book, 3) as never);
+    fake.release();
+    await remote;
+    await settle();
+    expect(opened.views.at(-1)?.position).toBe(3);
+    expect(opened.moved).toEqual([]);
+    opened.session.destroy();
+  });
+
+  test("a pinch zoom made by the page itself is reported and makes the page a pannable region, without reading", async () => {
+    const book = comic();
+    const opened = open(book, server(book));
+    await opened.session.open(null);
+    const stage = opened.element.querySelector(".consumer-pages__stage") as HTMLElement;
+    const pointer = (type: string, pointerId: number, x: number) => stage.dispatchEvent(new PointerEvent(type, { pointerId, clientX: x, clientY: 100, bubbles: true }));
+    pointer("pointerdown", 1, 100);
+    pointer("pointerdown", 2, 140);
+    pointer("pointermove", 2, 220);
+    pointer("pointerup", 1, 100);
+    pointer("pointerup", 2, 220);
+    await settle();
+    expect(opened.views.at(-1)?.zoomed).toBe(true);
+    expect([stage.getAttribute("role"), stage.tabIndex]).toEqual(["region", 0]);
+    expect(opened.moved).toEqual([]);
+    opened.session.destroy();
+  });
+
   test("a damaged page is refused with a message, is not recorded, and the next page clears the message", async () => {
     const book = comic({ damage: 2 });
     const fake = server(book);
@@ -260,6 +294,14 @@ describe("page fetches", () => {
     expect(fake.seen).toHaveLength(1);
   });
 
+  test("a reading order answered for another account locks the page and does not open", async () => {
+    const book = comic();
+    const opened = open(book, server(book, { account: "99" }));
+    await expect(opened.session.open(null)).rejects.toThrow("Sign in again");
+    expect(opened.guard.getState()).toEqual({ status: "account_changed" });
+    opened.session.destroy();
+  });
+
   test("a comic whose reading order is refused does not open", async () => {
     const book = comic();
     const opened = open(book, server(book, { status: 410, error: "asset_unavailable" }));
@@ -306,6 +348,19 @@ describe("choosing what to open", () => {
     expect(chosenAsset(publication("book", ["epub", "pdf"], "1".repeat(64)))?.format).toBe("pdf");
     expect(chosenAsset(publication("book", ["epub"], "9".repeat(64)))?.format).toBe("epub");
     expect(chosenAsset(publication("book", []))).toBeNull();
+  });
+
+  test("another device's place opens in its own file when this reader lists it, and is reported when it does not", () => {
+    const book = publication("book", ["epub", "pdf"], "1".repeat(64));
+    const saved = book.progress;
+    if (!saved) throw new Error("no saved place");
+    expect(firstOpening(book)).toEqual({ asset: book.assets[1] ?? null, start: null, savedElsewhere: false });
+    const elsewhere = publication("book", ["epub"], "f".repeat(64));
+    expect(firstOpening(elsewhere)).toEqual({ asset: elsewhere.assets[0] ?? null, start: null, savedElsewhere: true });
+    const pdfPlace = { ...saved, locator: { href: "document.pdf", type: "application/pdf", locations: { position: 4 } } };
+    expect(remoteOpening(book, book.assets[1] ?? null, pdfPlace)).toEqual({ kind: "show" });
+    expect(remoteOpening(book, book.assets[0] ?? null, pdfPlace)).toEqual({ kind: "open", opening: { asset: book.assets[1] ?? null, start: pdfPlace.locator, savedElsewhere: false } });
+    expect(remoteOpening(book, book.assets[0] ?? null, { ...pdfPlace, asset_id: "e".repeat(64) })).toEqual({ kind: "unavailable" });
   });
 
   test("Details and Keep going link PDFs and comics to the reader only when this server can open them", () => {

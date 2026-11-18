@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import type { Locator, ProgressPlace, ReaderAsset, StoredProgress } from "../contract";
 import { Loading } from "../components/States";
 import { useServices } from "../services";
 import { EngineError, loadEngine } from "./engine";
@@ -10,16 +10,16 @@ import { fetchBook, ReaderFailure } from "./media";
 export const WEB_EBOOK_LIMIT = 32 * 1024 * 1024;
 
 type Props = {
-  publication: ReaderPublication;
   asset: ReaderAsset;
+  start: Locator | null;
+  savedElsewhere: boolean;
   engine: string;
   record: (place: ProgressPlace, at?: number) => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
 };
 
-function openingNotice(publication: ReaderPublication, asset: ReaderAsset): string | null {
-  const saved = publication.progress;
-  if (!saved || saved.asset_id === asset.id) return null;
+function openingNotice(savedElsewhere: boolean): string | null {
+  if (!savedElsewhere) return null;
   return "Your saved place is in another file or an earlier edition of this book, so this EPUB opens at its beginning. That place is kept until you turn a page here.";
 }
 
@@ -38,7 +38,7 @@ function currentChapter(chapters: Chapter[], position: EpubPosition | null): str
   return chapters.find((chapter) => chapter.href.split("#")[0] === position.href)?.href ?? "";
 }
 
-export function EpubReader({ publication, asset, engine, record, registerPlace }: Props) {
+export function EpubReader({ asset, start, savedElsewhere, engine, record, registerPlace }: Props) {
   const { guard } = useServices();
   const viewport = useRef<HTMLDivElement>(null);
   const session = useRef<EpubSession | null>(null);
@@ -50,8 +50,7 @@ export function EpubReader({ publication, asset, engine, record, registerPlace }
   const assetId = asset.id;
   const assetUrl = asset.url;
   const assetSize = asset.size_bytes;
-  const savedLocator = publication.progress?.asset_id === assetId ? (publication.progress?.locator ?? null) : null;
-  const [initial] = useState(() => savedLocator);
+  const [initial] = useState(() => start);
 
   useEffect(() => {
     const element = viewport.current;
@@ -103,7 +102,7 @@ export function EpubReader({ publication, asset, engine, record, registerPlace }
   }, [registerPlace, assetId]);
 
   const ready = phase === "ready";
-  const notice = openingNotice(publication, asset);
+  const notice = openingNotice(savedElsewhere);
   const changeSize = (delta: number) => {
     void session.current?.changeTextSize(delta).then(setTextSize, () => setFailure("Text size couldn't be changed. Try again."));
   };
