@@ -86,7 +86,8 @@ export class PageSession {
   private readonly now: () => number;
   private readonly reader: PageReader;
   private readonly zoomWatch: MutationObserver;
-  private turn = 0;
+  private placed = 0;
+  private turnAt: number | null = null;
   private ready = false;
   private active = true;
 
@@ -126,6 +127,7 @@ export class PageSession {
     if (this.format === "pdf") this.reader.page?.setAttribute("role", "group");
     const restored = restoredPage(this.format, saved, count, this.reader.items());
     await this.reader.show(restored.position);
+    this.placed = restored.position;
     this.ready = this.active;
     return { count, exact: restored.exact, position: restored.position };
   }
@@ -133,7 +135,7 @@ export class PageSession {
   destroy(): void {
     this.active = false;
     this.ready = false;
-    this.turn += 1;
+    this.turnAt = null;
     this.zoomWatch.disconnect();
     this.reader.destroy();
   }
@@ -167,6 +169,7 @@ export class PageSession {
     if (!this.ready) return Promise.resolve();
     this.forgetTurns();
     const restored = restoredPage(this.format, locator, this.reader.count, this.reader.items());
+    this.placed = restored.position;
     return this.reader.show(restored.position);
   }
 
@@ -182,19 +185,20 @@ export class PageSession {
   }
 
   forgetTurns(): void {
-    this.turn += 1;
+    this.turnAt = null;
+    this.placed = 0;
   }
 
   private move(step: () => Promise<void> | undefined): void {
     if (!this.ready || !this.active) return;
     const at = this.now();
-    const from = this.reader.displayedPosition;
-    const turn = ++this.turn;
+    const from = this.reader.position;
     const started = step();
     if (!started) return;
     const target = this.reader.position;
+    if (target !== from) this.turnAt = at;
     started.then(
-      () => this.settled(turn, from, target, at),
+      () => this.settled(target),
       () => {
         if (!this.active) return;
         this.callbacks.failed("This page couldn't be opened.");
@@ -203,14 +207,8 @@ export class PageSession {
     );
   }
 
-  private settled(turn: number, from: number, target: number, at: number): void {
-    if (!this.active) return;
-    if (this.reader.displayedPosition !== target) {
-      this.callbacks.unsure();
-      return;
-    }
-    if (turn !== this.turn || target === from) return;
-    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(target) }, at);
+  private settled(target: number): void {
+    if (this.active && this.reader.displayedPosition !== target) this.callbacks.unsure();
   }
 
   private zoomWith(step: () => Promise<void>): Promise<void> {
@@ -222,6 +220,13 @@ export class PageSession {
     if (!this.active) return;
     if (shown) this.callbacks.failed(null);
     this.report(position, count);
+    if (!shown || !this.ready) return;
+    const at = this.turnAt;
+    if (position === this.placed) this.turnAt = null;
+    if (position === this.placed || at === null) return;
+    this.turnAt = null;
+    this.placed = position;
+    this.callbacks.moved({ asset_id: this.asset.id, locator: this.reader.locator(position) }, at);
   }
 
   private report(position = this.reader.position, count = this.reader.count): void {

@@ -508,6 +508,23 @@ describe("EPUB session review regressions", () => {
     session.destroy();
   });
 
+  test("a turn still running when another device's place in an unlisted file is chosen saves nothing but keeps the page it reached for reflow", async () => {
+    const releases: (() => void)[] = [];
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, slowNext: (advance) => new Promise<void>((resolve) => releases.push(() => { advance(); resolve(); })) });
+    const moved: unknown[] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value) => moved.push(value), key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    session.next();
+    await settle();
+    session.forgetMoves();
+    releases.shift()?.();
+    await settle();
+    expect(moved).toEqual([]);
+    await session.changeTextSize(10);
+    expect(displayed.at(-1)).toBe(pageAt(2).start.cfi);
+    session.destroy();
+  });
+
   test("a turn still running when another device's place is adopted records nothing", async () => {
     const releases: (() => void)[] = [];
     const { engine } = fakeEngine({ now: { value: 0 }, slowNext: (advance) => new Promise<void>((resolve) => releases.push(() => { advance(); resolve(); })) });

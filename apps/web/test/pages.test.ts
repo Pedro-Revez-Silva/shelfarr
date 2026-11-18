@@ -270,6 +270,52 @@ describe("the page reader session", () => {
     opened.session.destroy();
   });
 
+  test("an extra turn past the end while the last page is still drawing keeps the turn that reached it", async () => {
+    const book = comic();
+    const opened = open(book, server(book));
+    await opened.session.open(pageAt(book, 3) as never);
+    let release = () => {};
+    HTMLImageElement.prototype.decode = () => new Promise<void>((resolve) => (release = resolve));
+    const turned = opened.now();
+    opened.session.next();
+    opened.tick(300);
+    opened.session.next();
+    await settle();
+    release();
+    await settle();
+    expect(opened.moved).toEqual([{ place: { asset_id: ID, locator: pageAt(book, 4) as never }, at: turned }]);
+    opened.session.destroy();
+  });
+
+  test("a page that failed and is redrawn by zoom is recorded by the page box with the time of the turn that reached it; going back records nothing", async () => {
+    const book = comic();
+    const opened = open(book, server(book));
+    await opened.session.open(null);
+    let failing = true;
+    HTMLImageElement.prototype.decode = () => (failing ? Promise.reject(new Error("decode")) : Promise.resolve());
+    const turned = opened.now();
+    opened.session.next();
+    await settle();
+    expect(opened.failures.filter(Boolean)).toEqual(["This page image couldn't be shown."]);
+    failing = false;
+    opened.tick(5000);
+    await opened.session.zoomIn();
+    opened.session.go(2);
+    await settle();
+    expect(opened.moved).toEqual([{ place: { asset_id: ID, locator: pageAt(book, 2) as never }, at: turned }]);
+    opened.session.previous();
+    await settle();
+    expect(opened.moved).toHaveLength(2);
+    failing = true;
+    opened.session.next();
+    await settle();
+    failing = false;
+    opened.session.previous();
+    await settle();
+    expect(opened.moved.map((entry) => entry.place.locator?.locations?.position)).toEqual([2, 1]);
+    opened.session.destroy();
+  });
+
   test("a pinch zoom made by the page itself is reported and makes the page a pannable region, without reading", async () => {
     const book = comic();
     const opened = open(book, server(book));

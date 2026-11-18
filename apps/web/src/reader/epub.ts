@@ -261,7 +261,7 @@ export class EpubSession {
         if (!this.active || !this.ready || epoch !== this.epoch) return;
         const before = this.pageCfi();
         await this.settled(step);
-        if (this.active && epoch === this.epoch) this.reached(before, started);
+        if (this.active) this.reached(before, started, epoch === this.epoch);
       } catch {
         if (this.active) this.callbacks.failed(message);
       }
@@ -285,14 +285,14 @@ export class EpubSession {
     });
   }
 
-  private reached(before: string | undefined, at: number): void {
+  private reached(before: string | undefined, at: number, current: boolean): void {
     const book = this.book;
     const location = this.rendition?.currentLocation();
     const start = location?.start;
     const cfi = this.pageCfi(location);
     if (!book || !start || !cfi) return;
     this.readingAnchor = cfi;
-    if (cfi === before) return;
+    if (!current || cfi === before) return;
     const { fraction, total } = places.pageProgression(start, book.spine.length);
     this.callbacks.moved({ asset_id: this.assetId, locator: { href: this.archiveHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } }, at);
   }
