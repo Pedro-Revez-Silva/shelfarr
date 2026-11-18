@@ -161,12 +161,37 @@ class ReleaseScorer
     end
   end
 
+  # A spaced sequel numeral is not the requested book. "三体" must not match
+  # "三体 Ⅱ" once TitleKey folding has turned that numeral into "2". The
+  # numeral has to follow the matched phrase. A publication year still may.
   def exact_title_phrase_match?(release_title, book_title, short_title:)
-    phrase = /(?:\A|\s)#{Regexp.escape(book_title)}(?:\z|\s)/
-    return false unless release_title.match?(phrase)
+    phrase_endings(release_title, book_title).any? do |ending|
+      next false unless acceptable_phrase_position?(release_title, book_title, ending, short_title: short_title)
+
+      !SequenceMarker.leading_sequel_numeral?(release_title[ending..].to_s.split)
+    end
+  end
+
+  def acceptable_phrase_position?(release_title, book_title, ending, short_title:)
     return true unless short_title
 
-    release_title == book_title || release_title.start_with?("#{book_title} ")
+    release_title == book_title ||
+      (ending == book_title.length && release_title.start_with?("#{book_title} "))
+  end
+
+  def phrase_endings(release_title, book_title)
+    return [] if book_title.blank?
+
+    pattern = /(?:\A|\s)#{Regexp.escape(book_title)}(?=\z|\s)/
+    endings = []
+    offset = 0
+    while (match = pattern.match(release_title, offset))
+      endings << match.end(0)
+      break if match.end(0) <= offset
+
+      offset = match.end(0)
+    end
+    endings
   end
 
   def exact_normalized_title_match?(book_title)

@@ -395,6 +395,29 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert_not score.high_confidence?, score.total.to_s
   end
 
+  test "does not accept a cjk sequel distinguished by a spaced unicode numeral" do
+    @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
+    @request.update!(language: "zh")
+    threshold = SettingsService.get(:auto_select_confidence_threshold, default: 90)
+
+    [
+      "刘慈欣 - 三体 Ⅱ：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 2：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 II：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 第2部：黑暗森林 [CHS] M4B",
+      "刘慈欣 - 三体 第2卷：黑暗森林 [CHS] M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: release_title, seeders: 50),
+        @request
+      )
+
+      assert_operator score.breakdown[:title], :<, 100, "#{release_title} #{score.breakdown.inspect}"
+      assert_operator score.total, :<, threshold, "#{release_title} total #{score.total} #{score.breakdown.inspect}"
+      assert_not score.high_confidence?, "#{release_title} #{score.total}"
+    end
+  end
+
   test "scores greek titles that differ only by final sigma as the same title" do
     @book.update!(author: "Όμηρος", book_type: :ebook)
 
@@ -406,6 +429,38 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       )
 
       assert_equal 100, score.breakdown[:title], "#{book_title} vs #{release_title} #{score.breakdown.inspect}"
+    end
+  end
+
+  test "scores a modifier-letter apostrophe against omitted and ascii forms" do
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+    SettingsService.set(:ebook_preferred_formats, [])
+
+    [ "\u02BC", "\u02BB" ].each do |mark|
+      author = "Flannery O#{mark}Connor"
+      assert_equal "flannery oconnor", TitleKey.new(author).canonical, mark.inspect
+      assert_equal "enders game", TitleKey.new("Ender#{mark}s Game").canonical, mark.inspect
+      @book.update!(title: "Wise Blood", author: author, book_type: :ebook)
+
+      [
+        "Wise Blood - Flannery OConnor English EPUB",
+        "Wise Blood - Flannery O'Connor English EPUB",
+        "Ender#{mark}s Game - Flannery OConnor English EPUB",
+        "Ender's Game - Flannery O'Connor English EPUB"
+      ].each do |release_title|
+        @book.update!(title: release_title.start_with?("Wise") ? "Wise Blood" : "Ender#{mark}s Game")
+        score = ReleaseScorer.score(
+          @request.search_results.new(title: release_title, seeders: 50),
+          @request
+        )
+
+        assert_equal 100, score.breakdown[:title], "#{author.inspect} #{release_title} #{score.breakdown.inspect}"
+        assert_equal 100, score.breakdown[:author], "#{author.inspect} #{release_title} #{score.breakdown.inspect}"
+        assert_operator score.total, :>=, 90, "#{release_title} total #{score.total}"
+        assert score.high_confidence?, "#{release_title} #{score.total}"
+        assert score.breakdown[:auto_select_allowed], release_title
+      end
     end
   end
 
