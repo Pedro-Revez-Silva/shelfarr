@@ -755,7 +755,7 @@ identity guard, not a secret: every request (each range included) re-reads the s
 someone else cannot fetch the new account's media, and its own old addresses stop working. Refusals are always JSON with
 the same privacy headers and never a redirect. `Sec-Fetch-Site` other than `same-origin` or `none` is
 `403 cross_site_refused` before the session is read. The browser routes never read `Authorization`; the native routes
-never read cookies. PDF and CBZ asset ids are `410 asset_unavailable` here; their native delivery is unchanged.
+never read cookies. Without the page engine (below), PDF and CBZ asset ids are `410 asset_unavailable` here; their native delivery is unchanged.
 
 ### Reader and player behaviour
 
@@ -842,6 +842,65 @@ Go wrote and reads, replays and continues them.
 Not proven: Safari, Firefox, real devices, screen readers, audible output (the test audio is silent and the browser
 muted), offline use, very large books (the reader refuses EPUBs over 32 MiB like Rails), and Rails and Go writing the
 same place at the same moment.
+
+### PDF and comic pages (opt-in)
+
+Status: **experimental, default-off, online only**, behind the same switches as the EPUB reader plus one more: the asset
+build must carry the page engine. With it, the reader view opens PDFs and CBZ comics (comic records may hold EPUB, PDF or
+CBZ files; the real file types decide) and saves page places through the same compare-and-set.
+
+| Route or file | Change |
+| --- | --- |
+| `page-engine.json` beside `manifest.json` | New, optional: `{version:1, engine, worker, resources:{cMapUrl, standardFontDataUrl, wasmUrl:{name: asset}}, files:{name:{sha256,size}}}`. It lists the pinned, vendored PDF.js engine (`vendor/javascript/consumer_pdf_engine.js`), its worker (`vendor/javascript/pdfjs/pdf.worker.js`) and their CMaps, standard fonts and WebAssembly decoders byte for byte, each digest-addressed. At most 256 files and 8 MiB; only `.js`, `.bcmap`, `.pfb`, `.ttf` and `.wasm`, each resource under the kind its extension allows, every listed file referenced exactly once and none shared with the main manifest; a page engine without a reader engine, or any invalid entry, refuses the whole build. Absent: nothing changes. |
+| Go boot block | Every view adds `reader_formats` (`["epub"]`, or `["cbz","epub","pdf"]` with the page engine); the reader view adds `page_engine:{engine, worker, files}` (same-origin asset paths). |
+| `GET /preview/api/v1/library/{id}/reader` | With the page engine, PDF and CBZ files are listed in `assets`; a CBZ also carries `page_count` and `reading_order_url`. Without it, unchanged. |
+| `GET`, `HEAD /preview/api/v1/library/{id}/assets/{asset}/reading_order` | New. Session, `X-Shelfarr-Account`. `{account, asset_id, format:"cbz", items}` with exactly the native items; `410 asset_unavailable` for anything that is not a listed CBZ of this book, a replaced or malformed archive; `404` without the page engine. Same privacy headers as media. |
+| `GET`, `HEAD /preview/api/v1/accounts/{account}/library/{id}/assets/{asset}` | With the page engine also serves PDF and CBZ, as `Content-Disposition: attachment` under the document policy, with the same per-request session and path-account checks, cross-site refusal before the session, ranges, `If-Range` and no redirect. |
+
+The reader uses the Rails page reader itself (`app/javascript/consumer_page_reader.js`), which gained two optional
+constructor options, `fetch` and `loadEngine`, defaulting to what Rails always used. PDF pages are canvases with a
+selectable text layer, drawn without scripting, forms, XFA or an annotation layer; PDF.js loads its worker and resources
+only from the listed same-origin assets. CBZ pages are read one page at a time with byte ranges, following the server's
+reading order for that exact generation: each local header is checked against the order, data is inflated within its
+announced size, length and CRC-32 are verified, and image type and dimensions (JPEG, PNG or WebP; at most 16 384 px a side
+and 40 Mpx) are read from the header before the browser decodes anything. Nothing extracts a whole archive, and the server's
+strict archive checks are unchanged. Every page read carries `X-Shelfarr-Account`, stays on this server and locks the page on
+`signed_out`/`account_changed`. The reader policy and the Library policy are unchanged.
+
+Controls: Back, a page number box with Go to page, Zoom out, Fit page, Zoom in, previous/next page and the location; arrow
+and Page keys turn pages except in editing controls, and a zoomed page becomes a labelled, focusable region whose arrows pan.
+Taps on the outer thirds and swipes turn pages at fit. Opening, restoring, resizing, zooming and re-drawing never save; a
+turn is recorded once its page shows, dated by its own input, rapid turns record only the page they reach, a page that
+cannot be shown (damaged, oversized, changed edition) is never recorded, and the ends do nothing. Places are the native
+fixed-layout locators: `{href:"document.pdf", type:"application/pdf", locations:{position, totalProgression, fragments:["page=N"]}}`
+and `{href: item N's href, type: its media type, locations:{position, totalProgression}}`. A saved page of another file or
+edition opens page 1 and says so; a saved page that is no longer in the file opens the nearest page and keeps the saved
+place until a turn. Without a saved place a comic opens CBZ, then PDF, then EPUB, and a book EPUB, then PDF, then CBZ.
+
+```
+GET /preview/api/v1/library/77/reader     before {...,"assets":[epub],"other_formats":["cbz","pdf"]}
+                                          after  {...,"assets":[epub, {"format":"pdf",...}, {"format":"cbz",...,"page_count":5,"reading_order_url":"/preview/api/v1/library/77/assets/<cbz>/reading_order"}],"other_formats":[]}
+GET /preview/api/v1/library/77/assets/<cbz>/reading_order   before 404   after 200 {"account":"5","asset_id":"<cbz>","format":"cbz","items":[{"position":1,"href":"p%C3%A1gina%201.png",...}]}
+GET /preview/api/v1/accounts/5/library/77/assets/<pdf>      before 410 asset_unavailable   after 200/206 attachment
+Go boot block                                               after adds "reader_formats" (all views) and "page_engine" (reader view)
+```
+
+Rollback: remove `page-engine.json` from the asset build (or deploy a build without it) and the browser refuses PDF and CBZ
+again exactly as before; stopping `-web-assets-dir` or the allowlist switches the reader off. A previous binary ignores
+`page-engine.json` and keeps refusing them, so either half can be rolled back alone. Page places are the ordinary rows the
+native apps and Rails already write; Rails reads, replays and continues Go-written PDF and CBZ rows (verified with the real
+application). No migration either way.
+
+`tools/migration/web/verify-web` adds the page engine build check (engine and worker equal to the vendored files), Go tests
+for the reading order, page media, gating and boot, unit tests and mutants for the page session, guarded page reads and
+links, and real headless Chromium tests on a synthetic six-page PDF and compressed CBZ fixtures (natural Unicode order,
+a damaged CRC, an oversized image): page pixels, text layer, buttons, keys, the page box, zoom, resizing, reopening,
+boundaries, rapid turns, uncertain, later and undated saves, a replaced edition, an earlier edition, Back from Keep going,
+another tab switching account, an ended session, axe in both schemes, both viewports and 200% text, and keyboard order;
+then the real Rails verifier on the PDF and CBZ rows Go wrote.
+
+Not proven: Safari, Firefox, real devices, screen readers, password-protected or very large PDFs, PDFs that need JPX or
+JBIG2 decoders or CMaps (shipped, but no fixture uses them), comic archives larger than the synthetic ones, and offline use.
 
 ## Database access
 

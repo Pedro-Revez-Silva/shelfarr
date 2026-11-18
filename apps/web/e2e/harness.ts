@@ -11,7 +11,7 @@ export type Fixture = {
   serverVersion: string;
   previewUsers: string;
   users: Record<string, number>;
-  readerBooks: Record<"text" | "manga" | "mixed" | "audio", number>;
+  readerBooks: Record<"text" | "manga" | "mixed" | "audio" | "pdf" | "comic" | "damaged" | "broken_pdf", number>;
   passwords: Record<string, string>;
   personas: Record<string, { cookie: string; user_id: number; session_id: number | null }>;
 };

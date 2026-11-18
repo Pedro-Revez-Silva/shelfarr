@@ -100,6 +100,54 @@ module Migration
         Z.build(files)
       end
 
+      COMIC_PAGES = [ "página 10.png", "página 2.png", "日本/終.png", "página 1.png", "página 3.png" ].freeze
+      COMIC_ORDER = [ "página 1.png", "página 2.png", "página 3.png", "página 10.png", "日本/終.png" ].freeze
+      PDF_SIZE = [ 360, 540 ].freeze
+
+      def pdf_document(pages:)
+        width, height = PDF_SIZE
+        objects = { 1 => "<< /Type /Catalog /Pages 2 0 R >>", 3 => "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>" }
+        kids = []
+        (1..pages).each do |position|
+          red, green, blue = page_color(position).map { |value| format("%.4f", value / 255.0) }
+          bars = (1..position).map { |bar| "0.08 0.08 0.16 rg #{bar * 24} 40 12 60 re f" }.join("\n")
+          stream = "#{red} #{green} #{blue} rg 0 0 #{width} #{height} re f\n1 1 1 rg 30 #{height - 150} #{width - 60} 110 re f\n#{bars}\nBT 0 0 0 rg /F1 30 Tf 48 #{height - 105} Td (Page #{position} of #{pages}) Tj ET"
+          page, content = 4 + (position - 1) * 2, 5 + (position - 1) * 2
+          objects[page] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 #{width} #{height}] /Resources << /Font << /F1 3 0 R >> >> /Contents #{content} 0 R >>"
+          objects[content] = "<< /Length #{stream.bytesize} >>\nstream\n#{stream}\nendstream"
+          kids << "#{page} 0 R"
+        end
+        objects[2] = "<< /Type /Pages /Kids [#{kids.join(' ')}] /Count #{pages} >>"
+        body = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".b
+        offsets = {}
+        objects.keys.sort.each do |number|
+          offsets[number] = body.bytesize
+          body << "#{number} 0 obj\n#{objects[number]}\nendobj\n".b
+        end
+        xref = body.bytesize
+        body << "xref\n0 #{objects.size + 1}\n0000000000 65535 f \n".b
+        objects.keys.sort.each { |number| body << format("%010d 00000 n \n", offsets[number]).b }
+        body << "trailer\n<< /Size #{objects.size + 1} /Root 1 0 R >>\nstartxref\n#{xref}\n%%EOF\n".b
+      end
+
+      def comic_page(position)
+        png(width: 330, height: 500, color: page_color(position), bars: position)
+      end
+
+      def comic_cbz
+        Z.build(COMIC_PAGES.map { |name| Z.page(name, comic_page(COMIC_ORDER.index(name) + 1)) } + [ Z.page("ComicInfo.xml", "<ComicInfo/>") ])
+      end
+
+      def damaged_cbz
+        oversized = png(width: 20_000, height: 20_000, color: page_color(3), bars: 0)[0, 33]
+        Z.build([
+          Z.page("01.png", comic_page(1)),
+          Z.page("02.png", comic_page(2), central: { crc: 1 }, local: { crc: 1 }),
+          Z.page("03.png", oversized + "\x00".b * 64),
+          Z.page("04.png", comic_page(4))
+        ])
+      end
+
       def silent_wav(seconds, rate: 8000)
         data = "\x00\x00".b * (seconds * rate)
         "RIFF".b + [ 36 + data.bytesize ].pack("V") + "WAVE".b + "fmt ".b + [ 16, 1, 1, rate, rate * 2, 2, 16 ].pack("VvvVVvv") + "data".b + [ data.bytesize ].pack("V") + data

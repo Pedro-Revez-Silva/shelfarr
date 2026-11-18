@@ -175,7 +175,8 @@ SPA itself can move to `/` or `/read` only with the transition described in
 
 When the experimental Go runtime serves these screens, Details and "Keep going" link EPUBs and audiobooks to an online
 reader and player at `/preview/library/:id/read` instead of the Rails `/read/:id` (the JSON `reader_url` keeps its Rails
-meaning; the Go link is derived in the client). PDFs and comics stay honestly unavailable there. See
+meaning; the Go link is derived in the client). PDFs and comics open there too when the asset build carries the page
+engine, and stay honestly unavailable otherwise. See
 [`go-http-migration.md`](go-http-migration.md#online-epub-reader-and-audiobook-player-opt-in). Under Rails nothing changes.
 
 ## Not in this slice

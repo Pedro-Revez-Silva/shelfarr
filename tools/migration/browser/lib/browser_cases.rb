@@ -71,6 +71,10 @@ module Migration
         spoken = File.join(root, "Reader Spoken Sampler")
         [ 24, 18, 12 ].each_with_index { |seconds, index| write_bytes(File.join(spoken, "Part #{index + 1}.wav"), ReaderMedia.silent_wav(seconds), stamp + 3 + index) }
         @reader_books["audio"] = create_book("Reader Spoken Sampler", :audiobook, spoken, author: "S. Voice")
+        @reader_books["pdf"] = create_book("Reader Paged Document", :ebook, write_bytes(File.join(root, "Reader Paged Document.pdf"), ReaderMedia.pdf_document(pages: 6), stamp + 6), author: "D. Pages")
+        @reader_books["comic"] = create_book("Reader Harbor Panels", :comicbook, write_bytes(File.join(root, "Reader Harbor Panels.cbz"), ReaderMedia.comic_cbz, stamp + 7), author: "H. Panel")
+        @reader_books["damaged"] = create_book("Reader Damaged Panels", :comicbook, write_bytes(File.join(root, "Reader Damaged Panels.cbz"), ReaderMedia.damaged_cbz, stamp + 8), author: "D. Panel")
+        @reader_books["broken_pdf"] = create_book("Reader Broken Document", :ebook, write_bytes(File.join(root, "Reader Broken Document.pdf"), "%PDF-1.4\n".b + "not really a document ".b * 40, stamp + 9), author: "B. Pages")
       end
 
       def seed_people

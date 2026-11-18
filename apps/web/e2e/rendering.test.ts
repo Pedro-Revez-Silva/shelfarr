@@ -100,6 +100,21 @@ describe("rendered pages in light and dark, on desktop and phone, at 100% and 20
       await context.close();
     });
 
+    test(`the PDF and comic readers: ${JSON.stringify(variant)}`, async () => {
+      const { context, page: view, seen } = await page(variant);
+      await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.pdf}/read`);
+      await signIn(view, "browser_member", fixture.passwords["browser_member"] ?? "");
+      await view.locator(".epub-location").filter({ hasText: /^Page 1 of 6$/ }).waitFor({ timeout: 30_000 });
+      await view.locator('.pages-view[data-page="1"] canvas').waitFor();
+      await audit(view, "pages-pdf", variant);
+      await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.comic}/read`);
+      await view.locator('.pages-view[data-page="1"] img').waitFor({ timeout: 30_000 });
+      await audit(view, "pages-comic", variant);
+      expect(await policyViolations(view)).toEqual([]);
+      expect(unexpectedConsole(seen)).toEqual([]);
+      await context.close();
+    });
+
     test(`every consent state: ${JSON.stringify(variant)}`, async () => {
       const own = await startServer({ fixture, extraArguments: ["-login-attempts", "1000"] });
       const native = new NativeClient(own.origin);
@@ -193,6 +208,39 @@ describe("keyboard use", () => {
     expect(await active()).toBe("BUTTON:← Previous page");
     await view.keyboard.press("ArrowLeft");
     await view.locator(".epub-location").filter({ hasText: /^Page 2 of \d+ · Chapter 1$/ }).waitFor();
+    await context.close();
+  });
+
+  test("the page reader's controls are reached by Tab in reading order and operated by Enter, Space and arrows", async () => {
+    const { context, page: view } = await page({ viewport: "desktop", scheme: "light", zoom: 100 });
+    await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.comic}/read`);
+    await signIn(view, "browser_member", fixture.passwords["browser_member"] ?? "");
+    await view.locator('.pages-view[data-page="1"] img').waitFor({ timeout: 30_000 });
+    const active = () => view.evaluate(() => {
+      const element = document.activeElement;
+      if (!element || element === document.body) return "BODY";
+      const label = element.getAttribute("aria-label") ?? (element.id ? document.querySelector(`label[for="${element.id}"]`)?.textContent : null) ?? element.textContent;
+      return `${element.tagName}:${(label ?? "").replace(/\s+/g, " ").trim()}`;
+    });
+    const stops: string[] = [];
+    for (let step = 0; step < 8; step += 1) {
+      await view.keyboard.press("Tab");
+      stops.push(await active());
+    }
+    expect(stops).toEqual(["A:←Back to the book", "INPUT:Page", "BUTTON:Go to page", "BUTTON:Zoom out", "BUTTON:Fit page", "BUTTON:Zoom in", "BUTTON:← Previous page", "BUTTON:Next page →"]);
+    expect(await view.evaluate(() => getComputedStyle(document.activeElement as Element).outlineStyle)).not.toBe("none");
+    await view.keyboard.press("Enter");
+    await view.locator(".epub-location").filter({ hasText: /^Page 2 of 5$/ }).waitFor();
+    await view.keyboard.press("Space");
+    await view.locator(".epub-location").filter({ hasText: /^Page 3 of 5$/ }).waitFor();
+    await view.keyboard.press("Shift+Tab");
+    expect(await active()).toBe("BUTTON:← Previous page");
+    await view.keyboard.press("ArrowLeft");
+    await view.locator(".epub-location").filter({ hasText: /^Page 2 of 5$/ }).waitFor();
+    await view.getByLabel("Page", { exact: true }).focus();
+    await view.keyboard.press("ArrowLeft");
+    await view.keyboard.press("ArrowRight");
+    expect(await view.locator(".epub-location").innerText()).toBe("Page 2 of 5");
     await context.close();
   });
 

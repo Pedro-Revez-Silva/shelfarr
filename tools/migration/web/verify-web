@@ -42,8 +42,9 @@ step "web: a private copy of the sources, so no build output lands in the reposi
 mkdir -p "$work/repo/apps/design/assets" "$work/repo/app/javascript" "$work/repo/vendor/javascript"
 cp -R "$root/apps/web" "$work/repo/apps/web"
 cp -R "$root/apps/design/assets/fonts" "$work/repo/apps/design/assets/fonts"
-cp "$root/app/javascript/consumer_progress_sync.js" "$root/app/javascript/consumer_epub_places.js" "$work/repo/app/javascript/"
-cp "$root/vendor/javascript/consumer_reader_engine.js" "$work/repo/vendor/javascript/"
+cp "$root/app/javascript/consumer_progress_sync.js" "$root/app/javascript/consumer_epub_places.js" "$root/app/javascript/consumer_page_reader.js" "$work/repo/app/javascript/"
+cp "$root/vendor/javascript/consumer_reader_engine.js" "$root/vendor/javascript/consumer_pdf_engine.js" "$work/repo/vendor/javascript/"
+cp -R "$root/vendor/javascript/pdfjs" "$work/repo/vendor/javascript/pdfjs"
 web="$work/repo/apps/web"
 
 step "web: install from the lockfile, typecheck, unit tests, audit and both production builds"
@@ -55,10 +56,19 @@ step "web: mutants of the account, CSRF, double-submit and consent invariants mu
 step "web: the Go-served build is byte-for-byte reproducible and ships only the manifest's files"
 (cd "$web" && bun run build:go --out "$work/assets-a" && bun run build:go --out "$work/assets-b")
 diff -r "$work/assets-a" "$work/assets-b"
-test "$(find "$work/assets-a" -type f | wc -l)" -le 33
+main_files="$(grep -c '"sha256"' "$work/assets-a/manifest.json")"
+page_files="$(grep -c '"sha256"' "$work/assets-a/page-engine.json")"
+test "$main_files" -le 32
+test "$page_files" -le 256
+test "$(find "$work/assets-a" -type f | wc -l)" -eq "$((main_files + page_files + 2))"
 engine="$(sed -n 's/.*"reader_engine": "\(reader-engine\.[0-9a-f]*\.js\)".*/\1/p' "$work/assets-a/manifest.json")"
 test -n "$engine"
 cmp "$work/assets-a/$engine" "$root/vendor/javascript/consumer_reader_engine.js"
+pdf_engine="$(sed -n 's/^  "engine": "\(pdf-engine\.[0-9a-f]*\.js\)".*/\1/p' "$work/assets-a/page-engine.json")"
+pdf_worker="$(sed -n 's/^  "worker": "\(pdf-worker\.[0-9a-f]*\.js\)".*/\1/p' "$work/assets-a/page-engine.json")"
+test -n "$pdf_engine" && test -n "$pdf_worker"
+cmp "$work/assets-a/$pdf_engine" "$root/vendor/javascript/consumer_pdf_engine.js"
+cmp "$work/assets-a/$pdf_worker" "$root/vendor/javascript/pdfjs/pdf.worker.js"
 ! find "$work/assets-a" -name '*.map' | grep -q .
 echo "assets reproducible: $(cd "$work/assets-a" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
 
@@ -111,6 +121,9 @@ step "rails: the real Rails application reads, replays and continues the reading
 test -f "$out/reader-rows.sqlite3"
 (cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/web/verify_reader_rows.rb --bundle "$work/bundle-current" --cases "$work/browser-current" \
   --database "$out/reader-rows.sqlite3" --rows "$out/reader-rows.json" --out "$work/reader-rails")
+test -f "$out/page-rows.sqlite3"
+(cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/web/verify_reader_rows.rb --bundle "$work/bundle-current" --cases "$work/browser-current" \
+  --database "$out/page-rows.sqlite3" --rows "$out/page-rows.json" --out "$work/page-rails")
 
 step "the source bundle was not modified by the browser run, and the repository is untouched"
 test "$current_before" = "$(bundle_digest "$work/bundle-current")" || { echo "bundle-current changed" >&2; exit 1; }
