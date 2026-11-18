@@ -1,0 +1,58 @@
+{
+  "numFound": 7,
+  "start": 0,
+  "numFoundExact": true,
+  "num_found": 7,
+  "q": "reader sampler",
+  "offset": null,
+  "docs": [
+    {
+      "key": "/works/OL900001W",
+      "title": "Reader Text Sampler",
+      "author_name": ["R. Sampler", "A. Editor"],
+      "first_publish_year": 2021,
+      "cover_i": 9000001,
+      "edition_count": 3
+    },
+    {
+      "key": "/works/OL900002W",
+      "title": "Reader Harbor Panels",
+      "author_name": ["H. Panel"],
+      "first_publish_year": 2019,
+      "cover_i": -1,
+      "edition_count": 1
+    },
+    {
+      "key": "/works/OL900003W",
+      "title": "Reader Waiting List",
+      "edition_count": 0
+    },
+    {
+      "key": "/works/OL900001W",
+      "title": "Reader Text Sampler (repeated work)",
+      "author_name": ["R. Sampler"],
+      "first_publish_year": 2021
+    },
+    {
+      "key": "/books/OL900005M",
+      "title": "An Edition Key",
+      "author_name": ["E. Dition"]
+    },
+    {
+      "key": "/works/OL900004W",
+      "title": "Café 📚 <b>&amp;</b>   \"quoted\"",
+      "author_name": ["日本語 Author"],
+      "first_publish_year": "1999",
+      "cover_i": 9000004,
+      "edition_count": 12
+    },
+    {
+      "key": "/works/OL900006W",
+      "title": "Reader Spoken Elsewhere",
+      "author_name": ["S. Voice"],
+      "first_publish_year": 2020,
+      "cover_i": 9000006,
+      "edition_count": 2
+    }
+  ]
+}

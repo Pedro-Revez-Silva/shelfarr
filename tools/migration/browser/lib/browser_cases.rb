@@ -55,6 +55,7 @@ module Migration
         seed_markup_descriptions
         seed_reader_library
         seed_people
+        seed_discover_library
         configure_preview
         seed_sessions
         seed_account_people
@@ -89,6 +90,52 @@ module Migration
         @reader_books["comic"] = create_book("Reader Harbor Panels", :comicbook, write_bytes(File.join(root, "Reader Harbor Panels.cbz"), ReaderMedia.comic_cbz, stamp + 7), author: "H. Panel")
         @reader_books["damaged"] = create_book("Reader Damaged Panels", :comicbook, write_bytes(File.join(root, "Reader Damaged Panels.cbz"), ReaderMedia.damaged_cbz, stamp + 8), author: "D. Panel")
         @reader_books["broken_pdf"] = create_book("Reader Broken Document", :ebook, write_bytes(File.join(root, "Reader Broken Document.pdf"), "%PDF-1.4\n".b + "not really a document ".b * 40, stamp + 9), author: "B. Pages")
+      end
+
+      DISCOVER_RESPONSE = File.expand_path("open_library_search.json", __dir__)
+      DISCOVER_QUERY = "reader sampler"
+      DISCOVER_TYPES = %w[ebook audiobook comicbook].freeze
+
+      def seed_discover_library
+        text, audio, comic = @reader_books.values_at("text", "audio", "comic")
+        text.update!(open_library_work_id: "OL900001W")
+        audio.update!(open_library_work_id: "OL900001W")
+        comic.update!(open_library_work_id: "OL900002W", hardcover_id: "900002")
+        newer_request = Book.create!(title: "Reader Text Sampler", book_type: :ebook, file_path: nil, open_library_work_id: "OL900001W")
+        waiting = Book.create!(title: "Reader Waiting List", book_type: :ebook, file_path: nil, open_library_work_id: "OL900003W")
+        member = @people.fetch("browser_member").fetch(:user)
+        Request.create!(book: waiting, user: member, status: :pending)
+        Request.create!(book: newer_request, user: member, status: :pending)
+        @discover_books = { "text" => text.id, "audio" => audio.id, "comic" => comic.id, "newer_request" => newer_request.id, "waiting" => waiting.id }
+      end
+
+      def capture_discover
+        body = File.read(DISCOVER_RESPONSE)
+        sent = nil
+        stubs = Faraday::Adapter::Test::Stubs.new
+        stubs.get("/search.json") do |env|
+          sent = env.params
+          [ 200, { "Content-Type" => "application/json" }, body ]
+        end
+        OpenLibraryClient.instance_variable_set(:@connection, Faraday.new(url: OpenLibraryClient::BASE_URL) { |f| f.response :json, parser_options: { symbolize_names: false }; f.adapter :test, stubs })
+        results = OpenLibraryClient.search(DISCOVER_QUERY, limit: 20)
+        OpenLibraryClient.reset_connection!
+        work_ids = results.map(&:work_id).compact.uniq
+        lookup = Book.preload_by_work_ids(work_ids.map { |id| "openlibrary:#{id}" })
+        library = work_ids.to_h do |id|
+          [ id, DISCOVER_TYPES.to_h do |type|
+            book = Book.find_in_lookup(lookup, [ "openlibrary:#{id}" ], book_type: type)
+            [ type, book && { "book_id" => book.id, "acquired" => book.acquired? } ]
+          end ]
+        end
+        {
+          "query" => DISCOVER_QUERY, "response" => body, "rails_request" => sent,
+          "rails_results" => results.map do |result|
+            { "work_id" => result.work_id, "title" => result.title, "author" => result.author, "first_publish_year" => result.first_publish_year,
+              "cover_id" => result.cover_id, "cover_url" => result.cover_url, "edition_count" => result.edition_count }
+          end,
+          "rails_library" => library, "books" => @discover_books
+        }
       end
 
       def seed_people
@@ -421,7 +468,7 @@ module Migration
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
                      "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
-                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "steps" => @steps }
+                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }

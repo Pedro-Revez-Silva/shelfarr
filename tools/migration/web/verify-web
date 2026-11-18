@@ -77,7 +77,7 @@ step "go: format, vet (shipped and e2e builds) and unit tests with the race dete
 test -z "$(gofmt -l .)"
 go vet ./...
 go vet -tags e2e ./...
-go test -race -count=1 ./internal/gohttp/ ./internal/webassets/... ./internal/webpreview/
+go test -race -count=1 ./internal/gohttp/ ./internal/webassets/... ./internal/webpreview/ ./internal/openlibrary/
 
 step "go: the production binary and its clock-seam twin, built twice to prove the build is reproducible"
 mkdir -p "$work/bin-a" "$work/bin-b"
@@ -86,6 +86,7 @@ build -o "$work/bin-a/shelfarr-http" ./cmd/shelfarr-http
 build -o "$work/bin-b/shelfarr-http" ./cmd/shelfarr-http
 cmp "$work/bin-a/shelfarr-http" "$work/bin-b/shelfarr-http"
 build -tags e2eclock -o "$work/bin-a/shelfarr-http-seam" ./cmd/shelfarr-http
+build -tags e2e -o "$work/bin-a/fake-openlibrary" ./e2e/fakeopenlibrary
 
 cd "$root"
 step "ruby: the real Rails plain-text conversion over the committed corpus must equal the committed answers"
@@ -113,7 +114,7 @@ mkdir -p "$out"
 (
   cd "$web/e2e"
   env SHELFARR_E2E_FIXTURE="$work/browser-current" SHELFARR_E2E_BINARY="$work/bin-a/shelfarr-http" SHELFARR_E2E_SEAM_BINARY="$work/bin-a/shelfarr-http-seam" \
-    SHELFARR_E2E_ASSETS="$work/assets-a" SHELFARR_E2E_OUT="$out" PULSE_SINK="$PULSE_SINK" TMPDIR="$work/t" ${SHELFARR_E2E_CHROMIUM:+SHELFARR_E2E_CHROMIUM="$SHELFARR_E2E_CHROMIUM"} \
+    SHELFARR_E2E_FAKE_OPENLIBRARY="$work/bin-a/fake-openlibrary" SHELFARR_E2E_ASSETS="$work/assets-a" SHELFARR_E2E_OUT="$out" PULSE_SINK="$PULSE_SINK" TMPDIR="$work/t" ${SHELFARR_E2E_CHROMIUM:+SHELFARR_E2E_CHROMIUM="$SHELFARR_E2E_CHROMIUM"} \
     bun test --timeout 120000
 )
 

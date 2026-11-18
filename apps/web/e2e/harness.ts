@@ -14,6 +14,18 @@ export type Fixture = {
   readerBooks: Record<"text" | "manga" | "mixed" | "audio" | "pdf" | "comic" | "damaged" | "broken_pdf", number>;
   passwords: Record<string, string>;
   personas: Record<string, { cookie: string; user_id: number; session_id: number | null }>;
+  discover: DiscoverCases;
+};
+
+export type RailsSearchResult = { work_id: string; title: string; author: string | null; first_publish_year: number | string | null; cover_id: number | null; cover_url: string | null; edition_count: number | null };
+export type RailsLibraryVerdict = Record<string, Record<"ebook" | "audiobook" | "comicbook", { book_id: number; acquired: boolean } | null>>;
+export type DiscoverCases = {
+  query: string;
+  response: string;
+  rails_request: Record<string, string>;
+  rails_results: RailsSearchResult[];
+  rails_library: RailsLibraryVerdict;
+  books: Record<"text" | "audio" | "comic" | "newer_request" | "waiting", number>;
 };
 
 function required(name: string): string {
@@ -37,10 +49,12 @@ export function loadFixture(): Fixture {
     readerBooks: cases.reader_books,
     passwords: secrets.passwords,
     personas: secrets.personas,
+    discover: cases.discover,
   };
 }
 
 export const artifacts = {
+  fakeOpenLibrary: () => required("SHELFARR_E2E_FAKE_OPENLIBRARY"),
   binary: () => required("SHELFARR_E2E_BINARY"),
   seamBinary: () => required("SHELFARR_E2E_SEAM_BINARY"),
   assets: () => required("SHELFARR_E2E_ASSETS"),
@@ -60,6 +74,7 @@ export type ServerOptions = {
   extraArguments?: string[];
   seamBinary?: string;
   clock?: string;
+  environment?: Record<string, string>;
 };
 
 export class RunningServer {
@@ -137,6 +152,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   ];
   const environment: Record<string, string> = { PATH: process.env["PATH"] ?? "", SECRET_KEY_BASE_FILE: fixture.secretFile };
   if (options.clock) environment["SHELFARR_E2E_CLOCK_FILE"] = options.clock;
+  Object.assign(environment, options.environment ?? {});
   const container = image ? `shelfarr-go-web-${process.pid}-${port}` : null;
   const command = image
     ? [
