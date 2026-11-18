@@ -5,21 +5,24 @@ package httpruntime
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/pbkdf2"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/railsmsg"
-	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/transfergrant"
 )
 
 type mintedGrant struct {
@@ -38,18 +41,32 @@ type grantBody struct {
 
 const grantPlaceholder = "<grant>"
 
-func productEncryptor(t *testing.T, f fixture) railsmsg.Encryptor {
+const railsGrantSalt = "shelfarr consumer transfer grant v1"
+
+func railsGrantPlaintext(t *testing.T, f fixture, grant string) (string, bool) {
 	t.Helper()
 	secret, err := os.ReadFile(f.secretFile())
 	if err != nil {
 		t.Fatal("cannot read the synthetic secret")
 	}
-	encryptor, err := railsmsg.NewEncryptor(strings.TrimRight(string(secret), "\n"), transfergrant.Salt)
-	if err != nil {
-		t.Fatal(err)
+	key, err := pbkdf2.Key(sha256.New, strings.TrimRight(string(secret), "\n"), []byte(railsGrantSalt), 1000, 32)
+	if err != nil || len(grant) < 42 || grant[len(grant)-24:len(grant)-22] != "--" || grant[len(grant)-42:len(grant)-40] != "--" {
+		return "", false
 	}
-	return encryptor
+	decode := base64.RawURLEncoding.Strict().DecodeString
+	body, bodyErr := decode(grant[:len(grant)-42])
+	nonce, nonceErr := decode(grant[len(grant)-40 : len(grant)-24])
+	tag, tagErr := decode(grant[len(grant)-22:])
+	block, blockErr := aes.NewCipher(key)
+	if bodyErr != nil || nonceErr != nil || tagErr != nil || blockErr != nil {
+		return "", false
+	}
+	sealed, _ := cipher.NewGCM(block)
+	plaintext, err := sealed.Open(nil, nonce, append(body, tag...), nil)
+	return string(plaintext), err == nil
 }
+
+var grantAlphabet = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 func grantURL(got result) string {
 	var body grantBody
@@ -67,11 +84,11 @@ func redactMintedGrant(t *testing.T, f fixture, entry caseEntry, got result) (re
 	if !found || len(grant) != entry.Grant.Length {
 		return got, []string{fmt.Sprintf("the minted url has the wrong shape or length (%d want %d)", len(grant), entry.Grant.Length)}
 	}
-	if _, valid := transfergrant.GrantFromQuery("grant=" + grant); !valid {
+	if !grantAlphabet.MatchString(grant) {
 		return got, []string{"the minted grant is outside the grant alphabet"}
 	}
-	plaintext, ok := productEncryptor(t, f).Decrypt(grant)
-	if !ok || string(plaintext) != entry.Grant.Plaintext {
+	plaintext, ok := railsGrantPlaintext(t, f, grant)
+	if !ok || plaintext != entry.Grant.Plaintext {
 		return got, []string{fmt.Sprintf("the minted grant decrypts to %q, Rails minted %q", plaintext, entry.Grant.Plaintext)}
 	}
 	body["url"] = grantPlaceholder
