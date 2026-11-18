@@ -38,6 +38,7 @@ const (
 	routeBrowserReader
 	routeBrowserProgress
 	routeBrowserMedia
+	routeBrowserReadingOrder
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
@@ -202,6 +203,8 @@ func classifyPreview(method, rest string) route {
 		return supported(method, route{kind: routeBrowserReader, name: "browser_reader", id: segments[1]})
 	case len(segments) == 3 && segments[0] == "library" && segments[2] == "progress" && segmentOK(segments[1]):
 		return served(method, route{kind: routeBrowserProgress, name: "browser_progress", id: segments[1]}, http.MethodGet, http.MethodHead, http.MethodPut)
+	case len(segments) == 5 && segments[0] == "library" && segments[2] == "assets" && segments[4] == "reading_order" && segmentOK(segments[1]) && segmentOK(segments[3]):
+		return supported(method, route{kind: routeBrowserReadingOrder, name: "browser_reading_order", id: segments[1], assetID: segments[3]})
 	case len(segments) == 6 && segments[0] == "accounts" && segments[2] == "library" && segments[4] == "assets" && segmentOK(segments[1]) && segmentOK(segments[3]) && segmentOK(segments[5]):
 		return supported(method, route{kind: routeBrowserMedia, name: "browser_media", account: segments[1], id: segments[3], assetID: segments[5]})
 	case rest == "connect":

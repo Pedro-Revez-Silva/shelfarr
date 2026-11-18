@@ -234,3 +234,130 @@ func TestTheReaderEngineIsOptionalAndMustBeAListedScriptOtherThanTheEntry(t *tes
 		}
 	}
 }
+
+func TestThePageEngineIsOptionalAndLoadsOnlyItsListedResourcesWithTheirTypes(t *testing.T) {
+	plain := t.TempDir()
+	webassetstest.WriteWithReaderEngine(t, plain)
+	if bundle, err := Load(plain); err != nil || bundle.PageEngine() != nil {
+		t.Fatalf("a build without a page engine must load without one: %v", err)
+	}
+	directory := t.TempDir()
+	_, engine := webassetstest.WriteWithPageEngine(t, directory)
+	unlisted := webassetstest.Name("cmap-Unlisted", []byte("x"), ".bcmap")
+	os.WriteFile(filepath.Join(directory, unlisted), []byte("x"), 0o600)
+	bundle, err := Load(directory)
+	if err != nil || bundle.PageEngine() == nil {
+		t.Fatalf("the listed page engine must load: %v", err)
+	}
+	loaded := bundle.PageEngine()
+	if loaded.Engine != engine.Engine || loaded.Worker != engine.Worker || loaded.Resources["wasmUrl"]["openjpeg.wasm"] != engine.Resources["wasmUrl"]["openjpeg.wasm"] || len(loaded.Resources) != 3 {
+		t.Errorf("page engine: %+v", loaded)
+	}
+	types := map[string]string{
+		engine.Engine: "text/javascript; charset=utf-8", engine.Worker: "text/javascript; charset=utf-8",
+		engine.Resources["cMapUrl"]["UniJIS-UTF16-H.bcmap"]:                   "application/octet-stream",
+		engine.Resources["standardFontDataUrl"]["FoxitSerif.pfb"]:             "application/octet-stream",
+		engine.Resources["standardFontDataUrl"]["LiberationSans-Regular.ttf"]: "font/ttf",
+		engine.Resources["wasmUrl"]["openjpeg.wasm"]:                          "application/wasm",
+	}
+	for name, mediaType := range types {
+		recorder := httptest.NewRecorder()
+		if !bundle.Serve(recorder, httptest.NewRequest(http.MethodGet, "/", nil), name) || recorder.Header().Get("Content-Type") != mediaType || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || recorder.Header().Get("Cross-Origin-Resource-Policy") != "same-origin" {
+			t.Errorf("%s: %d %v", name, recorder.Code, recorder.Header())
+		}
+	}
+	if bundle.Has(unlisted) || bundle.Has(PageEngineManifestName) {
+		t.Error("only the files the page engine lists may be served")
+	}
+}
+
+func TestLoadRefusesAPageEngineThatIsUnsafeOrInconsistent(t *testing.T) {
+	rewrite := func(change func(*webassetstest.PageEngine)) func(*testing.T, string, webassetstest.PageEngine) {
+		return func(t *testing.T, directory string, engine webassetstest.PageEngine) {
+			change(&engine)
+			webassetstest.WritePageEngine(t, directory, engine)
+		}
+	}
+	extra := func(stem, extension string, attach func(*webassetstest.PageEngine, string)) func(*testing.T, string, webassetstest.PageEngine) {
+		return func(t *testing.T, directory string, engine webassetstest.PageEngine) {
+			body := []byte("extra " + stem)
+			name := webassetstest.Name(stem, body, extension)
+			os.WriteFile(filepath.Join(directory, name), body, 0o600)
+			engine.Files[name] = webassetstest.Describe(body)
+			attach(&engine, name)
+			webassetstest.WritePageEngine(t, directory, engine)
+		}
+	}
+	mutations := map[string]func(*testing.T, string, webassetstest.PageEngine){
+		"not json": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
+			os.WriteFile(filepath.Join(directory, PageEngineManifestName), []byte("{"), 0o600)
+		},
+		"a symlink": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
+			os.Rename(filepath.Join(directory, PageEngineManifestName), filepath.Join(directory, "real.json"))
+			os.Symlink(filepath.Join(directory, "real.json"), filepath.Join(directory, PageEngineManifestName))
+		},
+		"a directory": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
+			os.Remove(filepath.Join(directory, PageEngineManifestName))
+			os.Mkdir(filepath.Join(directory, PageEngineManifestName), 0o700)
+		},
+		"an unknown field": func(t *testing.T, directory string, _ webassetstest.PageEngine) {
+			os.WriteFile(filepath.Join(directory, PageEngineManifestName), []byte(`{"version":1,"scripting":true}`), 0o600)
+		},
+		"another version":          rewrite(func(e *webassetstest.PageEngine) { e.Version = 2 }),
+		"the worker is the engine": rewrite(func(e *webassetstest.PageEngine) { e.Worker = e.Engine }),
+		"an unlisted engine":       rewrite(func(e *webassetstest.PageEngine) { e.Engine = "pdf-engine.0123456789abcdef.js" }),
+		"a missing resource kind":  rewrite(func(e *webassetstest.PageEngine) { delete(e.Resources, "wasmUrl") }),
+		"an unknown resource kind": rewrite(func(e *webassetstest.PageEngine) { e.Resources["scriptingUrl"] = map[string]string{} }),
+		"a font listed as a cmap": rewrite(func(e *webassetstest.PageEngine) {
+			e.Resources["cMapUrl"]["FoxitSerif.pfb"] = e.Resources["standardFontDataUrl"]["FoxitSerif.pfb"]
+		}),
+		"a resource named with a path": rewrite(func(e *webassetstest.PageEngine) {
+			e.Resources["cMapUrl"]["../UniJIS-UTF16-H.bcmap"] = e.Resources["cMapUrl"]["UniJIS-UTF16-H.bcmap"]
+		}),
+		"a resource of another type": rewrite(func(e *webassetstest.PageEngine) { e.Resources["wasmUrl"]["openjpeg.wasm"] = e.Worker }),
+		"a resource that is not listed": rewrite(func(e *webassetstest.PageEngine) {
+			e.Resources["wasmUrl"]["jbig2.wasm"] = "wasm-jbig2.0123456789abcdef.wasm"
+		}),
+		"a file nothing references": extra("cmap-Spare", ".bcmap", func(*webassetstest.PageEngine, string) {}),
+		"an html page":              extra("page", ".html", func(e *webassetstest.PageEngine, name string) { e.Resources["cMapUrl"]["page.html"] = name }),
+		"an svg resource":           extra("font-Image", ".svg", func(e *webassetstest.PageEngine, name string) { e.Resources["standardFontDataUrl"]["Image.svg"] = name }),
+		"a file of the main bundle": func(t *testing.T, directory string, engine webassetstest.PageEngine) {},
+		"files together exceed the cap": func(t *testing.T, directory string, engine webassetstest.PageEngine) {
+			for index := 0; index < pageEngineTotalLimit/fileLimit+1; index++ {
+				body := bytes.Repeat([]byte{byte('a' + index)}, fileLimit)
+				name := webassetstest.Name("cmap-Big", body, ".bcmap")
+				os.WriteFile(filepath.Join(directory, name), body, 0o600)
+				engine.Files[name] = webassetstest.Describe(body)
+				engine.Resources["cMapUrl"][strings.Repeat("B", index+1)+".bcmap"] = name
+			}
+			webassetstest.WritePageEngine(t, directory, engine)
+		},
+		"a resource content changed": func(t *testing.T, directory string, engine webassetstest.PageEngine) {
+			os.WriteFile(filepath.Join(directory, engine.Resources["wasmUrl"]["openjpeg.wasm"]), []byte("\x00asm tampered"), 0o600)
+		},
+	}
+	for name, apply := range mutations {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			listed, engine := webassetstest.WriteWithPageEngine(t, directory)
+			if name == "a file of the main bundle" {
+				delete(engine.Files, engine.Engine)
+				engine.Engine = listed.Entry.Script
+				engine.Files[listed.Entry.Script] = listed.Files[listed.Entry.Script]
+				webassetstest.WritePageEngine(t, directory, engine)
+			}
+			apply(t, directory, engine)
+			if bundle, err := Load(directory); err == nil || bundle != nil {
+				t.Fatalf("accepted a page engine with %s", name)
+			}
+		})
+	}
+	withoutReader := t.TempDir()
+	listed, engine := webassetstest.WriteWithPageEngine(t, withoutReader)
+	listed.Entry.ReaderEngine = ""
+	webassetstest.WriteManifest(t, withoutReader, listed)
+	webassetstest.WritePageEngine(t, withoutReader, engine)
+	if _, err := Load(withoutReader); err == nil {
+		t.Error("a page engine without the reader it extends must be refused")
+	}
+}

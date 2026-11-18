@@ -327,7 +327,7 @@ func TestTheReaderShellHasItsOwnScopedPolicyAndExistsOnlyWithAReaderEngine(t *te
 	}
 	boot := regexp.MustCompile(`<script type="application/json" id="shelfarr-boot">(.*)</script>`).FindStringSubmatch(recorder.Body.String())
 	var decodedBoot map[string]any
-	if boot == nil || json.Unmarshal([]byte(boot[1]), &decodedBoot) != nil || fmt.Sprint(decodedBoot) != fmt.Sprint(map[string]any{"version": float64(1), "runtime": "go", "view": "reader", "mount": "/preview", "api": "/preview/api/v1", "reader_engine": "/preview/assets/" + listed.Entry.ReaderEngine}) {
+	if boot == nil || json.Unmarshal([]byte(boot[1]), &decodedBoot) != nil || fmt.Sprint(decodedBoot) != fmt.Sprint(map[string]any{"version": float64(1), "runtime": "go", "view": "reader", "mount": "/preview", "api": "/preview/api/v1", "reader_engine": "/preview/assets/" + listed.Entry.ReaderEngine, "reader_formats": []any{"epub"}}) {
 		t.Errorf("reader boot: %v", boot)
 	}
 	if engine := client.send(http.MethodGet, "/preview/assets/"+listed.Entry.ReaderEngine, "", nil); engine.Code != http.StatusOK || engine.Header().Get("Content-Type") != "text/javascript; charset=utf-8" {

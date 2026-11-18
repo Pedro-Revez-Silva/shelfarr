@@ -75,3 +75,46 @@ func WriteManifest(t testing.TB, directory string, listed Manifest) {
 		t.Fatal(err)
 	}
 }
+
+type PageEngine struct {
+	Version   int                          `json:"version"`
+	Engine    string                       `json:"engine"`
+	Worker    string                       `json:"worker"`
+	Resources map[string]map[string]string `json:"resources"`
+	Files     map[string]Entry             `json:"files"`
+}
+
+func WriteWithPageEngine(t testing.TB, directory string) (Manifest, PageEngine) {
+	t.Helper()
+	listed := WriteWithReaderEngine(t, directory)
+	engine := PageEngine{Version: 1, Resources: map[string]map[string]string{}, Files: map[string]Entry{}}
+	add := func(stem string, body []byte, extension string) string {
+		name := Name(stem, body, extension)
+		if err := os.WriteFile(filepath.Join(directory, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		engine.Files[name] = Describe(body)
+		return name
+	}
+	engine.Engine = add("pdf-engine", []byte("export const getDocument = null;\n"), ".js")
+	engine.Worker = add("pdf-worker", []byte("self.onmessage = null;\n"), ".js")
+	engine.Resources["cMapUrl"] = map[string]string{"UniJIS-UTF16-H.bcmap": add("cmap-UniJIS-UTF16-H", []byte("bcmap"), ".bcmap")}
+	engine.Resources["standardFontDataUrl"] = map[string]string{
+		"FoxitSerif.pfb":             add("font-FoxitSerif", []byte("pfb"), ".pfb"),
+		"LiberationSans-Regular.ttf": add("font-LiberationSans-Regular", []byte("ttf"), ".ttf"),
+	}
+	engine.Resources["wasmUrl"] = map[string]string{"openjpeg.wasm": add("wasm-openjpeg", []byte("\x00asm"), ".wasm")}
+	WritePageEngine(t, directory, engine)
+	return listed, engine
+}
+
+func WritePageEngine(t testing.TB, directory string, engine PageEngine) {
+	t.Helper()
+	encoded, err := json.Marshal(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "page-engine.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}

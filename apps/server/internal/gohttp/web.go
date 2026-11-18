@@ -44,23 +44,52 @@ type webUI struct {
 }
 
 type webBoot struct {
-	Version      int    `json:"version"`
-	Runtime      string `json:"runtime"`
-	View         string `json:"view"`
-	Mount        string `json:"mount"`
-	API          string `json:"api"`
-	ReaderEngine string `json:"reader_engine,omitempty"`
+	Version       int             `json:"version"`
+	Runtime       string          `json:"runtime"`
+	View          string          `json:"view"`
+	Mount         string          `json:"mount"`
+	API           string          `json:"api"`
+	ReaderEngine  string          `json:"reader_engine,omitempty"`
+	ReaderFormats []string        `json:"reader_formats,omitempty"`
+	PageEngine    *pageEngineBoot `json:"page_engine,omitempty"`
+}
+
+type pageEngineBoot struct {
+	Engine string                       `json:"engine"`
+	Worker string                       `json:"worker"`
+	Files  map[string]map[string]string `json:"files"`
+}
+
+func describePageEngine(engine *webassets.PageEngine) *pageEngineBoot {
+	files := make(map[string]map[string]string, len(engine.Resources))
+	for kind, names := range engine.Resources {
+		files[kind] = make(map[string]string, len(names))
+		for logical, stored := range names {
+			files[kind][logical] = webAssetsPrefix + stored
+		}
+	}
+	return &pageEngineBoot{Engine: webAssetsPrefix + engine.Engine, Worker: webAssetsPrefix + engine.Worker, Files: files}
 }
 
 func newWebUI(bundle *webassets.Bundle) (*webUI, error) {
 	ui := &webUI{bundle: bundle, shells: map[webView][]byte{}}
+	formats := []string(nil)
+	if bundle.ReaderEngine() != "" {
+		formats = textReaderFormats
+		if bundle.PageEngine() != nil {
+			formats = pageReaderFormats
+		}
+	}
 	for view, title := range webTitles {
-		described := webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI}
+		described := webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI, ReaderFormats: formats}
 		if view == viewReader {
 			if bundle.ReaderEngine() == "" {
 				continue
 			}
 			described.ReaderEngine = webAssetsPrefix + bundle.ReaderEngine()
+			if engine := bundle.PageEngine(); engine != nil {
+				described.PageEngine = describePageEngine(engine)
+			}
 		}
 		boot, err := json.Marshal(described)
 		if err != nil {

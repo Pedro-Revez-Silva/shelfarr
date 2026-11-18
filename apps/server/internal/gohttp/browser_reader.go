@@ -12,16 +12,21 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
-var browserReadableFormats = []string{"epub"}
+var (
+	textReaderFormats = []string{"epub"}
+	pageReaderFormats = []string{"cbz", "epub", "pdf"}
+)
 
 type readerAsset struct {
-	ID        string `json:"id"`
-	Filename  string `json:"filename"`
-	Format    string `json:"format"`
-	MediaType string `json:"media_type"`
-	SizeBytes int64  `json:"size_bytes"`
-	Position  int    `json:"position"`
-	URL       string `json:"url"`
+	ID              string `json:"id"`
+	Filename        string `json:"filename"`
+	Format          string `json:"format"`
+	MediaType       string `json:"media_type"`
+	SizeBytes       int64  `json:"size_bytes"`
+	Position        int    `json:"position"`
+	URL             string `json:"url"`
+	PageCount       *int   `json:"page_count,omitempty"`
+	ReadingOrderURL string `json:"reading_order_url,omitempty"`
 }
 
 type readerPublication struct {
@@ -40,6 +45,17 @@ func (a *App) readerInstalled() bool {
 	return a.web != nil && a.web.bundle.ReaderEngine() != ""
 }
 
+func (a *App) pagesInstalled() bool {
+	return a.readerInstalled() && a.web.bundle.PageEngine() != nil
+}
+
+func (a *App) browserFormats() []string {
+	if a.pagesInstalled() {
+		return pageReaderFormats
+	}
+	return textReaderFormats
+}
+
 func setBrowserMediaPrivacy(header http.Header) {
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
@@ -54,15 +70,19 @@ func sameOriginFetch(r *http.Request) bool {
 	return len(sites) == 1 && (sites[0] == "same-origin" || sites[0] == "none")
 }
 
-func browserReadable(format, mediaType string) bool {
-	return slices.Contains(browserReadableFormats, format) || strings.HasPrefix(mediaType, "audio/")
+func browserReadable(formats []string, format, mediaType string) bool {
+	return slices.Contains(formats, format) || strings.HasPrefix(mediaType, "audio/")
 }
 
 func browserMediaPath(account, bookID, assetID string) string {
 	return webAPI + "/accounts/" + account + "/library/" + bookID + "/assets/" + assetID
 }
 
-func readerView(item consumer.Publication, account string) readerPublication {
+func browserReadingOrderPath(bookID, assetID string) string {
+	return webAPI + "/library/" + bookID + "/assets/" + assetID + "/reading_order"
+}
+
+func readerView(item consumer.Publication, account string, formats []string) readerPublication {
 	kind := "book"
 	if item.ContentKind != nil {
 		kind = *item.ContentKind
@@ -76,16 +96,20 @@ func readerView(item consumer.Publication, account string) readerPublication {
 		Assets: []readerAsset{}, OtherFormats: []string{}, Progress: item.Progress,
 	}
 	for _, asset := range item.Assets {
-		if !browserReadable(asset.Format, asset.MediaType) {
+		if !browserReadable(formats, asset.Format, asset.MediaType) {
 			if !slices.Contains(view.OtherFormats, asset.Format) {
 				view.OtherFormats = append(view.OtherFormats, asset.Format)
 			}
 			continue
 		}
-		view.Assets = append(view.Assets, readerAsset{
+		described := readerAsset{
 			ID: asset.ID, Filename: asset.Filename, Format: asset.Format, MediaType: asset.MediaType, SizeBytes: asset.SizeBytes,
 			Position: asset.Position, URL: browserMediaPath(account, item.ID, asset.ID),
-		})
+		}
+		if asset.Format == "cbz" {
+			described.PageCount, described.ReadingOrderURL = asset.PageCount, browserReadingOrderPath(item.ID, asset.ID)
+		}
+		view.Assets = append(view.Assets, described)
 	}
 	slices.Sort(view.OtherFormats)
 	return view
@@ -102,7 +126,7 @@ func (a *App) webReader(w http.ResponseWriter, r *http.Request, session browserS
 		return
 	}
 	result.set(http.StatusOK, "")
-	writeJSON(w, http.StatusOK, map[string]any{"account": session.account(), "publication": readerView(items[0], session.account())})
+	writeJSON(w, http.StatusOK, map[string]any{"account": session.account(), "publication": readerView(items[0], session.account(), a.browserFormats())})
 }
 
 func (a *App) webProgress(w http.ResponseWriter, r *http.Request, session browserSession, rawID string, result *outcome) {
@@ -135,11 +159,12 @@ func (a *App) webProgress(w http.ResponseWriter, r *http.Request, session browse
 }
 
 func (a *App) webMedia(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	book, chosen, ok := a.findAsset(w, r, found, browserReadableFormats, result)
+	formats := a.browserFormats()
+	book, chosen, ok := a.findAsset(w, r, found, formats, result)
 	if !ok {
 		return
 	}
-	if !browserReadable(chosen.Format, chosen.MediaType) {
+	if !browserReadable(formats, chosen.Format, chosen.MediaType) {
 		problem(w, result, http.StatusGone, "asset_unavailable")
 		return
 	}
@@ -148,6 +173,24 @@ func (a *App) webMedia(w http.ResponseWriter, r *http.Request, found route, resu
 		return
 	}
 	defer file.Close()
+	disposition := "inline"
+	if fixedLayout(chosen.Format) {
+		disposition = "attachment"
+	}
 	result.set(http.StatusOK, "")
-	media.Serve(w, r, file, media.Asset{ID: chosen.ID, Filename: chosen.Filename, MediaType: chosen.MediaType, Size: chosen.SizeBytes, Disposition: "inline", ContentSecurityPolicy: documentPolicy}, a.config.StreamWriteStall)
+	media.Serve(w, r, file, media.Asset{ID: chosen.ID, Filename: chosen.Filename, MediaType: chosen.MediaType, Size: chosen.SizeBytes, Disposition: disposition, ContentSecurityPolicy: documentPolicy}, a.config.StreamWriteStall)
+}
+
+type browserReadingOrder struct {
+	Account string `json:"account"`
+	readingOrderBody
+}
+
+func (a *App) webReadingOrder(w http.ResponseWriter, r *http.Request, session browserSession, found route, result *outcome) {
+	order, ok := a.comicOrder(w, r, found, result)
+	if !ok {
+		return
+	}
+	result.set(http.StatusOK, "")
+	writeJSON(w, http.StatusOK, browserReadingOrder{Account: session.account(), readingOrderBody: order})
 }

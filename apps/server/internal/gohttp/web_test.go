@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -52,7 +53,7 @@ func TestTheShellRoutesServeOneStaticDocumentPerViewWithAStrictPolicy(t *testing
 		body := recorder.Body.String()
 		boot := regexp.MustCompile(`<script type="application/json" id="shelfarr-boot">(.*)</script>`).FindStringSubmatch(body)
 		var decoded webBoot
-		if boot == nil || json.Unmarshal([]byte(boot[1]), &decoded) != nil || decoded != (webBoot{Version: 1, Runtime: "go", View: view, Mount: "/preview", API: "/preview/api/v1"}) {
+		if boot == nil || json.Unmarshal([]byte(boot[1]), &decoded) != nil || !reflect.DeepEqual(decoded, webBoot{Version: 1, Runtime: "go", View: view, Mount: "/preview", API: "/preview/api/v1"}) {
 			t.Errorf("%s: boot %v", path, boot)
 		}
 		for _, required := range []string{`href="/preview/assets/` + listed.Entry.Style + `"`, `src="/preview/assets/` + listed.Entry.Script + `"`, `<html lang="en">`, "<noscript>"} {

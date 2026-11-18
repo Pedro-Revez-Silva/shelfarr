@@ -356,21 +356,29 @@ type readingOrderBody struct {
 }
 
 func (a *App) readingOrder(w http.ResponseWriter, r *http.Request, principal *account.Principal, found route, result *outcome) {
-	book, chosen, ok := a.findAsset(w, r, found, comicFormats, result)
+	order, ok := a.comicOrder(w, r, found, result)
 	if !ok {
 		return
 	}
+	result.set(http.StatusOK, "")
+	writeJSON(w, http.StatusOK, order)
+}
+
+func (a *App) comicOrder(w http.ResponseWriter, r *http.Request, found route, result *outcome) (readingOrderBody, bool) {
+	book, chosen, ok := a.findAsset(w, r, found, comicFormats, result)
+	if !ok {
+		return readingOrderBody{}, false
+	}
 	if chosen.Format != "cbz" {
 		problem(w, result, http.StatusGone, "asset_unavailable")
-		return
+		return readingOrderBody{}, false
 	}
 	pages, err := readPages(r.Context(), *book, *chosen)
 	if err != nil {
 		a.assetFailure(w, result, err)
-		return
+		return readingOrderBody{}, false
 	}
-	result.set(http.StatusOK, "")
-	writeJSON(w, http.StatusOK, readingOrderBody{AssetID: chosen.ID, Format: "cbz", Items: pages})
+	return readingOrderBody{AssetID: chosen.ID, Format: "cbz", Items: pages}, true
 }
 
 var errAssetChanged = errors.New("media edition changed while opening")

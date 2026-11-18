@@ -190,7 +190,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		problem(w, result, http.StatusNotFound, "not_found")
 		return
 	case routeWrongMethod:
-		if found.name == "browser_media" {
+		if found.name == "browser_media" || found.name == "browser_reading_order" {
 			setBrowserMediaPrivacy(w.Header())
 		}
 		w.Header().Set("Allow", found.allow)
@@ -213,7 +213,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	if found.kind == routeTransfer {
 		setTransferPrivacy(w.Header())
 	}
-	if found.kind == routeBrowserMedia {
+	if found.kind == routeBrowserMedia || found.kind == routeBrowserReadingOrder {
 		setBrowserMediaPrivacy(w.Header())
 	}
 	if !a.acquire(slots) {
@@ -235,7 +235,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeAuthToken:
 		a.exchange(w, r, result)
 	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
-		routeBrowserReader, routeBrowserProgress, routeBrowserMedia:
+		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)
