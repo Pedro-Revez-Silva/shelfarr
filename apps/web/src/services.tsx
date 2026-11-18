@@ -35,6 +35,13 @@ export function createQueryKeys(account: string) {
 
 const VALIDATION_TIMEOUT_MS = 8000;
 
+function sessionLost(error: unknown): "signed_out" | "account_changed" | null {
+  if (!isApiError(error)) return null;
+  if (error.kind === "signed_out") return "signed_out";
+  if (error.kind === "account_changed" || error.kind === "not_found") return "account_changed";
+  return null;
+}
+
 export type ServiceInputs = {
   guard?: AccountGuard;
   validationTimeoutMs?: number;
@@ -75,7 +82,8 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
     } catch (error) {
-      if (generation === guard.generation && isApiError(error) && error.kind === "not_found") guard.lock("account_changed");
+      const lost = sessionLost(error);
+      if (lost && generation === guard.generation) guard.lock(lost);
       else guard.finishCheck(generation, false);
     } finally {
       clearTimeout(timer);

@@ -219,7 +219,7 @@ export class ApiClient {
 
     const conflict = options.conflict !== undefined && response.status === 409;
     const rejected = options.rejection !== undefined && response.status === 422 && options.rejection.safeParse(payload).success;
-    if (!response.ok && !conflict && !rejected) throw this.failure(response.status, payload, response);
+    if (!response.ok && !conflict && !rejected) throw this.failure(response.status, payload, response, options.verifying ?? false);
 
     if (!options.verifying) {
       const trusted = await untilAborted(guard.untilSettled(), options.signal);
@@ -233,17 +233,17 @@ export class ApiClient {
     const parsed = (conflict && options.conflict ? options.conflict : rejected && options.rejection ? options.rejection : options.schema).safeParse(payload);
     if (!parsed.success) throw new ApiError("contract", "The server answered with an unexpected shape", response.status);
     if (options.account(parsed.data) !== guard.account) {
-      guard.lock("account_changed");
+      if (!options.verifying) guard.lock("account_changed");
       throw new ApiError("account_changed", "The signed-in account changed", response.status);
     }
     return parsed.data;
   }
 
-  private failure(status: number, payload: unknown, response: Response): ApiError {
+  private failure(status: number, payload: unknown, response: Response, verifying: boolean): ApiError {
     const envelope = errorEnvelopeSchema.safeParse(payload);
     const code = envelope.success ? envelope.data.error : null;
     const kind = code ? FAILURE_BY_CODE[code] : undefined;
-    if (kind === "signed_out" || kind === "account_changed") this.deps.guard.lock(kind);
+    if (!verifying && (kind === "signed_out" || kind === "account_changed")) this.deps.guard.lock(kind);
     if (kind === "csrf") this.deps.mutations?.rejected();
     const retry = Number.parseInt(response.headers.get("retry-after") ?? "", 10);
     const retryAfter = Number.isFinite(retry) && retry >= 0 ? retry : null;

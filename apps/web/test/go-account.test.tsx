@@ -274,6 +274,51 @@ describe("review regressions", () => {
     expect((screen.getByLabelText("Current password") as HTMLInputElement).value).toBe(CURRENT);
   });
 
+  for (const [label, stale] of [
+    ["an ended session", error(401, "signed_out")],
+    ["another allowlisted account", error(401, "account_changed")],
+    ["an answer for another account", { body: session({ account: { id: "99", name: "Mallory" } }) }],
+  ] as const) {
+    test(`a superseded session check that reported ${label} does not lock a page a newer check confirmed`, async () => {
+      const first = deferred<{ status?: number; body: unknown }>();
+      let calls = 0;
+      const server = accountServer().on("GET", /\/api\/v1\/session$/, () => {
+        calls += 1;
+        return calls === 2 ? first.promise : { body: session() };
+      });
+      renderAccount(server);
+      const user = userEvent.setup();
+      await user.type(await screen.findByLabelText("Current password"), CURRENT);
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await waitFor(() => expect(calls).toBe(2));
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await waitFor(() => expect(calls).toBe(3));
+      await act(async () => Bun.sleep(20));
+      await act(async () => first.resolve(stale));
+      await act(async () => Bun.sleep(20));
+      expect(screen.queryByRole("heading", { name: /account changed|session ended/i })).toBeNull();
+      expect((screen.getByLabelText("Current password") as HTMLInputElement).value).toBe(CURRENT);
+    });
+  }
+
+  test("the latest session check reporting an ended session locks the page", async () => {
+    let ended = false;
+    const server = accountServer().on("GET", /\/api\/v1\/session$/, () => (ended ? error(401, "signed_out") : { body: session() }));
+    renderAccount(server);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Current password"), CURRENT);
+    ended = true;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await screen.findByRole("heading", { name: /session ended/i })).toBeTruthy();
+    expect(screen.queryByLabelText("Current password")).toBeNull();
+  });
+
   test("a rejection naming both a stored-record problem and a password rule shows both and focuses the field", async () => {
     const server = accountServer().on("POST", /\/account\/password$/, () =>
       error(422, "invalid_password", { account: ACCOUNT, errors: { name: ["can't be blank"], password: ["is too short (minimum is 12 characters)"] } }),
