@@ -902,6 +902,135 @@ then the real Rails verifier on the PDF and CBZ rows Go wrote.
 Not proven: Safari, Firefox, real devices, screen readers, password-protected or very large PDFs, PDFs that need JPX or
 JBIG2 decoders or CMaps (shipped, but no fixture uses them), comic archives larger than the synthetic ones, and offline use.
 
+## Account: display name and password (opt-in)
+
+Status: **experimental, default-off**, behind the same switches as the browser screens. A signed-in account on the
+allowlist gets an Account screen in the Go navigation that shows its display name and username and changes the display
+name and its local password, with the Rails rules, rows and session effects. Two-step verification, OIDC linking, API
+tokens, Kobo, notifications, account creation and administration are later slices and are not shown at all; the Rails
+`/profile` screens and the Rails preview's Account handoff are unchanged.
+
+### What is served
+
+| Route | Authentication | Answer |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/account` | none (shell) | The HTML shell, boot view `account`, title `Account · Shelfarr`, the Library policy. Signed out, it shows sign-in and returns to Account. |
+| `GET`, `HEAD /preview/api/v1/account` | session, `X-Shelfarr-Account` | `{account, profile:{id, username, name}}` from the session's own user row; never writes. |
+| `PUT /preview/api/v1/account/profile` | session, `X-Shelfarr-Account`, Origin, session CSRF token | `{"name": string}` (other members are ignored, as Rails' `permit(:name)` does). `200 {account, profile}` or `422 {account, error:"invalid_profile", errors:{field:[message]}}`. |
+| `POST /preview/api/v1/account/password` | same | `{"current_password", "password", "password_confirmation"}`, all strings. `200 {account, profile}` or `422 {account, error:"invalid_password", errors}`; `409 account_conflict`; `429 rate_limited`. The answer never carries a password or digest. |
+
+Guard order is the one of every browser write: allowlist, session, account header, Origin and `Sec-Fetch-Site`, CSRF token.
+The user being changed is always the session's user; no request member names a user, role, username or column. Both
+bodies are strict JSON of at most 4 KiB (`400 invalid_json`, `413 request_too_large`, `415`). Other methods are `405`.
+
+### Rules, matched to the Rails model
+
+Messages are the attribute messages of `User#errors` (for example `"name": ["can't be blank"]`,
+`"password": ["is too short (minimum is 12 characters)", "must include at least one lowercase letter, one uppercase letter, and one number"]`,
+`"password_confirmation": ["doesn't match Password"]`, `"current_password": ["is incorrect"]`).
+
+* Display name: saved exactly as typed (no trimming or normalisation, as Rails); blank means empty or only Unicode
+  `White_Space`, which is ActiveSupport's `blank?`. An unchanged name is not written and keeps `updated_at`, as an update
+  without changes in Rails.
+* Password: the current password is checked first and, when wrong, is the only error, as in `ProfilesController#update_password`.
+  Then the Rails validations: at most 72 bytes; unless the account is linked to OIDC, at least 12 characters (code points)
+  and at least one ASCII lowercase letter, uppercase letter and digit with no line feed (the Ruby regular expression);
+  confirmation equal. The new digest is bcrypt `$2a$`, cost 12 (`BCrypt::Engine::DEFAULT_COST`, what Rails writes in
+  production); existing `$2a$` and `$2y$` digests (both tested, including a `$2y$10$` one) of any cost up to 14 are verified.
+* The stored record must still pass the Rails record validations Rails runs on every save (username present, lowercase
+  ASCII and unique among active users, OIDC provider and uid present together and unique, a password digest present);
+  otherwise the change is refused with those messages, as Rails refuses it.
+* After a change: the current browser session stays, every other `sessions` row of the same account is deleted, and
+  nothing else: API tokens, device grants, other accounts, failed-login counters and reading state are untouched. This is
+  exactly what Rails does (captured by running the real Rails controller), except that Go deletes the sessions in the same
+  transaction as the digest, where Rails does it afterwards.
+
+### Atomicity and stale state
+
+The current password is checked and the new digest computed from a read snapshot, outside any write lock, in the same
+bounded pool as sign-in (`-max-login-workers`, `503 server_busy`) and under the sign-in per-address limit (`-login-attempts`
+per `-login-window`, shared with sign-in). Then one `BEGIN IMMEDIATE` re-reads the session row (same id, user and
+creation time), the user (present, not deleted), the stored digest and the OIDC link; a session ended or account deleted
+meanwhile is `401 signed_out`, a digest or OIDC link changed meanwhile is `409 account_conflict` and nothing is written.
+The digest and `updated_at` (microseconds, as Rails) change and the other sessions are deleted in that transaction, so a
+failure or crash leaves either both or neither. The name change runs in one such transaction too. The session cookie and
+its CSRF token stay valid, because the session row is unchanged.
+
+### Deliberate differences from Rails
+
+* An empty new password is refused (`can't be blank`). Rails' form requires the field, but the controller treats an empty
+  password as "no change", still ends the other sessions and reports success.
+* A new password made only of whitespace is held to the strength rules (Rails skips them because `"   ".present?` is false)
+  and so refused; for OIDC-linked accounts both skip them.
+* A new password containing U+0000 is refused (`is invalid`); Rails raises an exception from the bcrypt extension (500).
+* A current password over 72 bytes is refused, as Go sign-in already does; Rails' bcrypt compares only its first 72 bytes.
+* A display name or request over 4 KiB is `413`; Rails has no limit.
+* Password changes are rate limited per address and bounded in concurrency; Rails' profile controller is not.
+* Security log lines are `profile.updated`, `password.changed` (with the number of sessions ended), `password.incorrect`
+  and `password.rate_limited`, with the user id only. `activity_logs` is not written; Rails writes none for these actions either.
+
+### Browser screen
+
+Account sits beside Library in the Go navigation (`/preview/account`); reloads, Back and Forward keep it. It shows the
+display name and `@username`, a display-name form and a password form, each a native labelled form with its own heading.
+The password form carries a hidden `autocomplete="username"` field and `current-password`/`new-password` fields, so
+password managers can update the saved credential. Errors appear only after a submit, on their fields (`aria-invalid`,
+`aria-describedby`), and focus moves to the first refused field; outcomes are announced in a status region. A submit while
+one is in flight sends nothing. A saved name updates the header and the identity without touching an unsaved password
+form; an answer that arrives after leaving the screen still refreshes the header, and an answer for another account locks
+the page. An uncertain answer (network or server error) says it may have been saved and never resends by itself; a
+conflict clears and focuses the current password. Password values live only in the form: they are never in React state,
+the query or mutation cache, storage, the URL, history or a log, and the fields are cleared after a change.
+
+### Contract before and after
+
+```
+GET  /preview/account                          before 404 not_found          after 200 shell, boot {"version":1,"runtime":"go","view":"account","mount":"/preview","api":"/preview/api/v1"}
+GET  /preview/api/v1/account                   before 404 not_found          after 200 {"account":"12","profile":{"id":"12","username":"ada","name":"Ada Reader"}}
+PUT  /preview/api/v1/account/profile           before 404 not_found          after 200 {"account":"12","profile":{...,"name":"Zoë 📚"}}
+                                                                             or 422 {"account":"12","error":"invalid_profile","errors":{"name":["can't be blank"]}}
+POST /preview/api/v1/account/password          before 404 not_found          after 200 {"account":"12","profile":{...}}
+                                                                             or 422 {"account":"12","error":"invalid_password","errors":{"current_password":["is incorrect"]}}
+                                                                             or 409 {"error":"account_conflict"} / 429 {"error":"rate_limited"}
+Go boot block "view"                           before library|details|connect|reader     after adds account
+```
+
+Unchanged: `/preview/api/v1/session` (still `links.account: "/profile"` for the Rails preview), every other preview and
+native route, cookies, CSRF tokens, the Rails preview and its boot block, and the schema. A frontend build from before this
+change ignores the new routes; a new frontend served by an older binary shows the Account link, and the screen reports
+that account settings are not available (the JSON `404`) and changes nothing. Serve a binary and an asset build from the same
+commit.
+
+### Rows written and rollback
+
+`users.name`, `users.password_digest`, `users.updated_at`, and deletions of `sessions` rows of the changing account. Rails
+signs in with a Go-set password, refuses the replaced one, keeps the Go session, treats the ended sessions as signed out,
+loads the rows as valid and continues editing the profile and password (verified with the real application). Rollback: stop
+`-web-assets-dir` or the allowlist (the routes answer `404`), or deploy the previous binary; the rows are ordinary Rails rows
+and need no migration.
+
+### Verification
+
+* Go unit tests (`internal/account`, `internal/gohttp`): every rule above, guard and CSRF refusals, body limits, ignored
+  members, unchanged names, record validity, session scope, tokens untouched, cost-14 ceiling, OIDC rules, rate limit and
+  that no password or digest reaches the answer or the log.
+* `tools/migration/browser/verify-browser`: the Rails capture records `User` validation verdicts over a corpus of 16 names
+  and 50 password cases (both for a password account and an OIDC account) and the effects of a real Rails password change;
+  the real Go executable must give the same verdicts (8 documented differences above) over HTTP, the same session and
+  token effects, a `$2y$10$` digest upgrade, recheck and conflict handling (password checked with no write lock held, a
+  digest, OIDC link, session or account changed while parked, an injected failure before and inside the transaction, a
+  kill before commit, concurrent changes); then the real Rails application verifies the rows Go wrote; 21 mutants of these
+  invariants must each fail an assertion.
+* `tools/migration/web/verify-web`: unit tests and 15 mutants for the screen (double submit, cleared fields, autocomplete,
+  focus and description of refused fields, uncertain answers, header refresh, field rejection parsing, profile/account
+  binding, classic preview), and real headless Chromium against the production binary, build and SQLite: direct load after
+  sign-in, reload, Back, a Unicode name stored exactly with the header refreshed, refusals, a password change that keeps this
+  browser and ends only the account's other browsers, the old password refused and the new one accepted, another tab
+  switching account, keyboard order, and axe with no overflow or small targets in light and dark, desktop, phone and 320 px,
+  at 100% and 200% text.
+
+Not proven: Safari, Firefox, real password managers and screen readers.
+
 ## Database access
 
 `internal/live` opens the database read-write only for the two statements above and `query_only` for
