@@ -186,7 +186,10 @@ describe("the Go online PDF reader", () => {
     expect(await page.title()).toBe("Reader Paged Document · Shelfarr");
     await expectPainted(page, pageColor(1), PDF_SAMPLE);
     await page.locator(".pages-view .textLayer").getByText("Page 1 of 6").waitFor();
-    expect(await page.locator(".pages-view .consumer-page").getAttribute("aria-label")).toBe("Page 1 of 6");
+    expect(await page.getByRole("group", { name: "Page 1 of 6" }).count()).toBe(1);
+    const tree = await (await context.newCDPSession(page)).send("Accessibility.getFullAXTree");
+    const spoken = tree.nodes.filter((node) => !node.ignored && node.role?.value === "StaticText" && node.name?.value === "Page 1 of 6");
+    expect(spoken.length).toBeGreaterThan(0);
     await stays(books.pdf, [], 2000);
 
     const clicked = Date.now();
@@ -202,7 +205,19 @@ describe("the Go online PDF reader", () => {
     await page.keyboard.press("ArrowRight");
     await atPage(page, 3, 6);
     await expectPainted(page, pageColor(3), PDF_SAMPLE);
-    await waitForRow(books.pdf, (row) => row.version === 2 && locatorOf(row).locations.position === 3);
+    const third = await waitForRow(books.pdf, (row) => row.version === 2 && locatorOf(row).locations.position === 3);
+
+    for (let step = 0; step < 4; step += 1) await page.getByRole("button", { name: "Zoom in" }).click();
+    await page.locator(".zoom-value").filter({ hasText: "400%" }).waitFor();
+    const zoomed = page.getByRole("region", { name: /^Zoomed page/ });
+    await zoomed.focus();
+    const left = await zoomed.evaluate((element) => element.scrollLeft);
+    await page.keyboard.press("ArrowRight");
+    await page.waitForFunction((start) => (document.querySelector(".consumer-pages__stage")?.scrollLeft ?? 0) > start, left);
+    await atPage(page, 3, 6);
+    await page.getByRole("button", { name: "Fit page" }).click();
+    await page.locator(".zoom-value").filter({ hasText: "Fit" }).waitFor();
+    await stays(books.pdf, [third], 1800);
 
     await page.getByLabel("Page", { exact: true }).fill("6");
     await page.getByLabel("Page", { exact: true }).press("ArrowLeft");
@@ -501,6 +516,19 @@ describe("account and session changes while pages are open", () => {
     expect(rows(books.comic, member)).toEqual([]);
     expect(rows(books.comic, admin)).toEqual([]);
     expect(await page.locator(".pages-view").count()).toBe(0);
+    await context.close();
+  });
+
+  test("a session that ends while a PDF page is being read locks the page and saves nothing", async () => {
+    const { context, page } = await signedIn();
+    await page.route(`**/preview/api/v1/accounts/*/library/${books.pdf}/assets/*`, async (route: Route) => {
+      server.execute("DELETE FROM sessions WHERE user_id = ?", member);
+      await route.continue();
+    });
+    await page.goto(`${server.origin}/preview/library/${books.pdf}/read`);
+    await page.getByRole("heading", { name: "Your session ended" }).waitFor({ timeout: 30_000 });
+    await Bun.sleep(2000);
+    expect(rows(books.pdf)).toEqual([]);
     await context.close();
   });
 

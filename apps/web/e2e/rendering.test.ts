@@ -211,6 +211,19 @@ describe("keyboard use", () => {
     await context.close();
   });
 
+  test("the page readers reflow into 320 CSS pixels at 200% text without clipped or small controls", async () => {
+    const context = await newContext(browser, { viewport: { width: 320, height: 700 } });
+    const view = await context.newPage();
+    await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.pdf}/read`);
+    await signIn(view, "browser_member", fixture.passwords["browser_member"] ?? "");
+    await view.locator('.pages-view[data-page="1"] canvas').waitFor({ timeout: 30_000 });
+    await audit(view, "pages-pdf-320", { viewport: "phone", scheme: "light", zoom: 200 });
+    await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.comic}/read`);
+    await view.locator('.pages-view[data-page="1"] img').waitFor({ timeout: 30_000 });
+    await audit(view, "pages-comic-320", { viewport: "phone", scheme: "dark", zoom: 200 });
+    await context.close();
+  });
+
   test("the page reader's controls are reached by Tab in reading order and operated by Enter, Space and arrows", async () => {
     const { context, page: view } = await page({ viewport: "desktop", scheme: "light", zoom: 100 });
     await view.goto(`${server.origin}/preview/library/${fixture.readerBooks.comic}/read`);

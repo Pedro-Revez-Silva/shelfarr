@@ -24,12 +24,19 @@ module Migration
 
       module_function
 
+      def png_chunk(type, data)
+        [ data.bytesize ].pack("N") + type + data + [ Zlib.crc32(type + data) ].pack("N")
+      end
+
+      def png_header(width:, height:)
+        "\x89PNG\r\n\x1a\n".b + png_chunk("IHDR", [ width, height, 8, 2, 0, 0, 0 ].pack("NNCCCCC"))
+      end
+
       def png(width:, height:, color:, bars:)
         bar_width = [ width / (bars * 2 + 1), 1 ].max
         row = (0...width).flat_map { |x| (x / bar_width).odd? && (x / bar_width) <= bars * 2 ? [ 20, 20, 40 ] : color }.pack("C*")
         raw = ("\x00".b + row) * height
-        chunk = ->(type, data) { [ data.bytesize ].pack("N") + type + data + [ Zlib.crc32(type + data) ].pack("N") }
-        "\x89PNG\r\n\x1a\n".b + chunk.call("IHDR", [ width, height, 8, 2, 0, 0, 0 ].pack("NNCCCCC")) + chunk.call("IDAT", Zlib::Deflate.deflate(raw)) + chunk.call("IEND", "".b)
+        png_header(width: width, height: height) + png_chunk("IDAT", Zlib::Deflate.deflate(raw)) + png_chunk("IEND", "".b)
       end
 
       def page_color(position)
@@ -139,7 +146,7 @@ module Migration
       end
 
       def damaged_cbz
-        oversized = png(width: 20_000, height: 20_000, color: page_color(3), bars: 0)[0, 33]
+        oversized = png_header(width: 20_000, height: 20_000)
         Z.build([
           Z.page("01.png", comic_page(1)),
           Z.page("02.png", comic_page(2), central: { crc: 1 }, local: { crc: 1 }),
