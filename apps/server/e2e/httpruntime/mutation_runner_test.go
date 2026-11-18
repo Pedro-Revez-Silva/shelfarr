@@ -586,7 +586,45 @@ func TestA(t *testing.T) { t.Fatal("wrong") }`)
 	}
 }
 
+const setupSkipChild = "SHELFARR_SETUP_SKIP_CHILD"
+
+var setupSkipCases = map[string]string{
+	"a_missing_database":                    "cannot read the pre-scenario database",
+	"a_private_directory_that_cannot_exist": "cannot create the private runtime directory",
+}
+
 func TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing(t *testing.T) {
+	if os.Getenv(setupSkipChild) == "1" {
+		runSetupFailureCases(t)
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing$", "-test.v", "-test.count=1")
+	child.Env = append(os.Environ(), setupSkipChild+"=1")
+	output, err := child.CombinedOutput()
+	text := string(output)
+	if err != nil {
+		t.Fatalf("the setup-failure cases did not finish cleanly under a mutant run: %v\n%s", err, tail(text))
+	}
+	for name, reason := range setupSkipCases {
+		skip := "--- SKIP: TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing/" + name + " "
+		if !strings.Contains(text, skip) {
+			t.Errorf("%s was not skipped under a mutant run:\n%s", name, tail(text))
+		}
+		if !strings.Contains(text, "proves nothing about a mutant: "+reason) {
+			t.Errorf("%s was not skipped for its setup failure (%s):\n%s", name, reason, tail(text))
+		}
+		for _, claim := range []string{"--- PASS: TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing/" + name, "--- FAIL: TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing/" + name} {
+			if strings.Contains(text, claim) {
+				t.Errorf("%s claimed a verdict instead of a skip: %s", name, claim)
+			}
+		}
+	}
+	if strings.Contains(text, "--- FAIL") {
+		t.Errorf("the child run reported a failure:\n%s", tail(text))
+	}
+}
+
+func runSetupFailureCases(t *testing.T) {
 	t.Setenv(runMarkerName, "probe")
 	readable := fixture{name: "probe", dir: t.TempDir(), doc: casesDocument{Database: "primary.sqlite3"}}
 	database, err := sql.Open("sqlite", "file:"+filepath.Join(readable.dir, "primary.sqlite3"))
@@ -606,15 +644,10 @@ func TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing(t *testing.T) {
 		"a missing database":                    {missing, func(t *testing.T) {}},
 		"a private directory that cannot exist": {readable, func(t *testing.T) { t.Setenv("TMPDIR", unwritable) }},
 	} {
-		skipped := false
 		t.Run(name, func(t *testing.T) {
-			defer func() { skipped = t.Skipped() }()
 			test.prepare(t)
 			newRuntimeCopy(t, test.fixture)
 		})
-		if !skipped {
-			t.Errorf("%s was not skipped under a mutant run", name)
-		}
 	}
 }
 
