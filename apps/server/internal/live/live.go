@@ -27,16 +27,17 @@ var (
 )
 
 var requiredColumns = map[string][]string{
-	"schema_migrations":       {"version"},
-	"settings":                {"key", "value", "value_type"},
-	"users":                   {"id", "username", "name", "role", "deleted_at", "password_digest", "failed_login_count", "last_failed_login_at", "last_failed_login_ip", "locked_until", "otp_required", "otp_secret", "oidc_provider", "oidc_uid", "updated_at"},
-	"hardcover_connections":   {"user_id", "status"},
-	"sessions":                {"id", "user_id", "user_agent", "ip_address", "created_at", "updated_at"},
-	"api_tokens":              {"id", "user_id", "name", "scopes", "token_digest", "token_prefix", "revoked_at", "expires_at", "last_used_at", "created_at", "updated_at", "issued_via", "replaces_api_token_id", "connection_key"},
-	"consumer_device_grants":  {"id", "user_id", "client_name", "device_code_digest", "user_code_digest", "expires_at", "approved_at", "denied_at", "consumed_at", "last_polled_at", "poll_interval", "scopes", "replaces_api_token_id", "created_at", "updated_at"},
-	"books":                   {"id", "title", "author", "description", "cover_url", "file_path", "book_type", "content_kind"},
-	"consumer_progresses":     {"id", "user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},
-	"consumer_reading_states": {"id", "user_id", "book_id", "status", "updated_at"},
+	"schema_migrations":          {"version"},
+	"settings":                   {"key", "value", "value_type"},
+	"users":                      {"id", "username", "name", "role", "deleted_at", "password_digest", "failed_login_count", "last_failed_login_at", "last_failed_login_ip", "locked_until", "otp_required", "otp_secret", "oidc_provider", "oidc_uid", "updated_at"},
+	"hardcover_connections":      {"user_id", "status"},
+	"sessions":                   {"id", "user_id", "user_agent", "ip_address", "created_at", "updated_at"},
+	"api_tokens":                 {"id", "user_id", "name", "scopes", "token_digest", "token_prefix", "revoked_at", "expires_at", "last_used_at", "created_at", "updated_at", "issued_via", "replaces_api_token_id", "connection_key"},
+	"consumer_device_grants":     {"id", "user_id", "client_name", "device_code_digest", "user_code_digest", "expires_at", "approved_at", "denied_at", "consumed_at", "last_polled_at", "poll_interval", "scopes", "replaces_api_token_id", "created_at", "updated_at"},
+	"books":                      {"id", "title", "author", "description", "cover_url", "file_path", "book_type", "content_kind", "open_library_work_id"},
+	"metadata_provider_statuses": {"provider", "status", "rate_limited_until"},
+	"consumer_progresses":        {"id", "user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},
+	"consumer_reading_states":    {"id", "user_id", "book_id", "status", "updated_at"},
 }
 
 type Options struct {

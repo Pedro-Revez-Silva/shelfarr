@@ -13,6 +13,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/csrf"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/loginlimit"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/railsmsg"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/transfergrant"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webassets"
@@ -39,6 +40,7 @@ type App struct {
 	transfers     transfergrant.Grants
 	previewIDs    map[string]bool
 	web           *webUI
+	openLibrary   *openlibrary.Client
 }
 
 func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
@@ -75,7 +77,12 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 			return nil, err
 		}
 	}
+	var search *openlibrary.Client
+	if config.OpenLibrarySearch {
+		search = openlibrary.New("Shelfarr/"+config.ServerVersion, openlibrary.NewTransport(), now)
+	}
 	return &App{
+		openLibrary:   search,
 		config:        config,
 		db:            database,
 		auth:          bearer.Authenticator{DB: database, Now: now},
@@ -235,7 +242,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeAuthToken:
 		a.exchange(w, r, result)
 	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
-		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword:
+		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword, routeBrowserDiscover:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)

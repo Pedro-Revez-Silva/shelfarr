@@ -72,6 +72,8 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.webProfile(w, r, *session, result)
 	case routeBrowserPassword:
 		a.webPassword(w, r, *session, result)
+	case routeBrowserDiscover:
+		a.webDiscover(w, r, *session, result)
 	}
 }
 

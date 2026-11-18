@@ -27,6 +27,8 @@ type Config struct {
 	AllowPublicBind bool
 	WebAssetsDir    string
 
+	OpenLibrarySearch bool
+
 	PreviewUserIDs  []string
 	BrowserOrigin   string
 	PasswordlessEnv bool

@@ -48,6 +48,7 @@ func run(args []string, stderr *os.File) int {
 	flags.StringVar(&previewUsers, "preview-user-ids", "", "comma-separated user ids allowed to use the browser preview API (default: SHELFARR_WEB_PREVIEW_USER_IDS; off when empty)")
 	flags.StringVar(&config.BrowserOrigin, "browser-origin", "", "canonical browser origin, scheme://host[:port] with no path; required for sign-in and every browser write")
 	flags.StringVar(&config.WebAssetsDir, "web-assets-dir", "", "absolute path of the built static web assets; serves the experimental browser sign-in, connection consent and Library screens when the preview allowlist is also set (default: off)")
+	flags.BoolVar(&config.OpenLibrarySearch, "open-library-search", false, "let allowlisted preview accounts search Open Library (https://openlibrary.org) from Discover; the only outbound network use of this runtime (default: off)")
 	flags.IntVar(&config.LoginAttempts, "login-attempts", 0, "sign-in attempts allowed per client address per window (default 10)")
 	flags.DurationVar(&config.LoginWindow, "login-window", 0, "rate-limit window for sign-in attempts (default 3m)")
 	flags.IntVar(&config.MaxLoginWorkers, "max-login-workers", 0, "concurrent password checks")
