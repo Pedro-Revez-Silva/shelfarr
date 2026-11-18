@@ -167,9 +167,13 @@ type runtimeCopy struct {
 
 func newRuntimeCopy(t *testing.T, f fixture) runtimeCopy {
 	t.Helper()
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp("", "shelfarr-runtime-")
+	if err != nil {
+		setupFailed(t, "cannot create the private runtime directory")
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
+		setupFailed(t, "cannot make the private runtime directory private")
 	}
 	copied := runtimeCopy{dir: dir, database: filepath.Join(dir, "primary.sqlite3"), lock: filepath.Join(dir, "domain.lock")}
 	source, err := os.ReadFile(filepath.Join(f.dir, f.doc.Database))
@@ -181,12 +185,12 @@ func newRuntimeCopy(t *testing.T, f fixture) runtimeCopy {
 	}
 	database, err := sql.Open("sqlite", "file:"+copied.database)
 	if err != nil {
-		t.Fatal(err)
+		setupFailed(t, "cannot open the private database copy")
 	}
 	defer database.Close()
 	var mode string
 	if err := database.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&mode); err != nil || mode != "wal" {
-		t.Fatalf("cannot enable WAL: %v %s", err, mode)
+		setupFailed(t, "cannot enable WAL on the private database copy")
 	}
 	return copied
 }

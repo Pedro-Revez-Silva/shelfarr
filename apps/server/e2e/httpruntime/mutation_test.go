@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -332,14 +333,30 @@ func fixtureDigest(t *testing.T, f fixture) string {
 		}
 		sum.Write(data)
 	}
-	for _, root := range []string{f.doc.BundleMediaRoot, f.doc.ExtraMediaRoot} {
+	sum.Write([]byte(mediaDigest(f.doc.BundleMediaRoot, f.doc.ExtraMediaRoot)))
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func mediaDigest(roots ...string) string {
+	sum := sha256.New()
+	for _, root := range roots {
 		filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
-				sum.Write([]byte("missing " + path))
+				fmt.Fprintf(sum, "missing %s\n", path)
 				return nil
 			}
-			fmt.Fprintf(sum, "%s %s\n", path, entry.Type())
-			if entry.Type().IsRegular() {
+			info, err := os.Lstat(path)
+			if err != nil {
+				fmt.Fprintf(sum, "missing %s\n", path)
+				return nil
+			}
+			stat, _ := info.Sys().(*syscall.Stat_t)
+			if stat == nil {
+				fmt.Fprintf(sum, "unknown %s\n", path)
+				return nil
+			}
+			fmt.Fprintf(sum, "%s %s %d %d %d %d.%d %d.%d\n", path, info.Mode(), stat.Dev, stat.Ino, stat.Size, stat.Mtim.Sec, stat.Mtim.Nsec, stat.Ctim.Sec, stat.Ctim.Nsec)
+			if info.Mode().IsRegular() {
 				if file, err := os.Open(path); err == nil {
 					io.Copy(sum, file)
 					file.Close()
@@ -349,4 +366,34 @@ func fixtureDigest(t *testing.T, f fixture) string {
 		})
 	}
 	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func TestTheFixtureGuardSeesAChangeOfTheFileIdentityWithoutAChangeOfBytes(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Big Listening.mp3")
+	stamp := time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC)
+	if err := os.WriteFile(path, []byte("synthetic audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(path, stamp, stamp)
+	before := mediaDigest(root)
+	if mediaDigest(root) != before {
+		t.Fatal("the media digest is not stable")
+	}
+	os.Chtimes(path, stamp, stamp.Add(time.Nanosecond))
+	touched := mediaDigest(root)
+	if touched == before {
+		t.Fatal("a changed modification time with the same bytes was not seen")
+	}
+	replacement := filepath.Join(root, "replacement")
+	if err := os.WriteFile(replacement, []byte("synthetic audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Chtimes(replacement, stamp, stamp.Add(time.Nanosecond))
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	if mediaDigest(root) == touched {
+		t.Fatal("a new inode with the same bytes and modification time was not seen")
+	}
 }

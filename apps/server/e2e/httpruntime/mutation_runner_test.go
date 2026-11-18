@@ -35,6 +35,7 @@ type mutantRunner struct {
 	timeout  time.Duration
 	budget   time.Duration
 	shortest time.Duration
+	sweep    func(marker string) bool
 }
 
 const (
@@ -44,6 +45,8 @@ const (
 	frame            = "\x16"
 	runMarkerName    = "SHELFARR_MUTANT_RUN"
 )
+
+var errLeftovers = errors.New("processes were left running")
 
 var (
 	runCounter     atomic.Int64
@@ -127,7 +130,7 @@ func newRunMarker() string {
 	return runMarkerName + "=" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(runCounter.Add(1), 10) + "-" + hex.EncodeToString(random)
 }
 
-func stopRun(marker string) {
+func stopRun(marker string) bool {
 	for round := 0; round < 40; round++ {
 		entries, _ := os.ReadDir("/proc")
 		members := 0
@@ -149,10 +152,11 @@ func stopRun(marker string) {
 			unix.Close(descriptor)
 		}
 		if members == 0 {
-			return
+			return true
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	return false
 }
 
 func (r mutantRunner) limits(deadline time.Time) (time.Duration, time.Duration, bool) {
@@ -169,22 +173,26 @@ type runResult struct {
 	exitCode  int
 	err       error
 	exhausted bool
+	leftovers bool
 }
 
-func runInSession(ctx context.Context, directory, program string, arguments ...string) runResult {
+func (r mutantRunner) runInSession(ctx context.Context, directory, program string, arguments ...string) runResult {
 	becomeSubreaper()
 	command := exec.CommandContext(ctx, program, arguments...)
 	command.Dir = directory
 	marker := newRunMarker()
 	command.Env = append(os.Environ(), "GOMAXPROCS=4", marker)
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGKILL) }
 	command.WaitDelay = 10 * time.Second
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	err := command.Run()
-	stopRun(marker)
-	result := runResult{output: output.String(), exitCode: -1, err: err, exhausted: ctx.Err() != nil}
+	exhausted := ctx.Err() != nil
+	sweep := r.sweep
+	if sweep == nil {
+		sweep = stopRun
+	}
+	result := runResult{output: output.String(), exitCode: -1, err: err, exhausted: exhausted, leftovers: !sweep(marker)}
 	var exit *exec.ExitError
 	if command.ProcessState != nil && (err == nil || errors.As(err, &exit)) {
 		result.exitCode = command.ProcessState.ExitCode()
@@ -199,9 +207,12 @@ func (r mutantRunner) build(directory string, deadline time.Time) (string, error
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
-	result := runInSession(ctx, directory, "go", "build", "-p", "2", "./...")
+	result := r.runInSession(ctx, directory, "go", "build", "-p", "2", "./...")
 	if result.exhausted {
 		return "the build exhausted its budget", context.DeadlineExceeded
+	}
+	if result.leftovers {
+		return "the build left processes running", errLeftovers
 	}
 	return result.output, result.err
 }
@@ -218,10 +229,12 @@ func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, 
 	if tagged {
 		compile = append(compile, "-tags", "e2e")
 	}
-	built := runInSession(ctx, directory, "go", append(compile, packagePath)...)
+	built := r.runInSession(ctx, directory, "go", append(compile, packagePath)...)
 	switch {
 	case built.exhausted:
 		return unproven, "the test build exhausted its budget:\n" + tail(built.output)
+	case built.leftovers:
+		return unproven, "the test build left processes running"
 	case built.err != nil:
 		return unproven, "the tests do not build:\n" + tail(built.output)
 	}
@@ -232,7 +245,7 @@ func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, 
 	if pattern != "" {
 		arguments = append(arguments, "-test.run="+pattern)
 	}
-	ran := runInSession(ctx, filepath.Join(directory, packagePath), binary, arguments...)
+	ran := r.runInSession(ctx, filepath.Join(directory, packagePath), binary, arguments...)
 	return classifyMutantRun(ran)
 }
 
@@ -267,6 +280,8 @@ func classifyMutantRun(ran runResult) (verdict, string) {
 	switch {
 	case ran.exhausted:
 		return unproven, "the run exhausted its budget and was cancelled:\n" + evidence
+	case ran.leftovers:
+		return unproven, "the run left processes running after its clean-up, so it proves nothing:\n" + evidence
 	case skips > 0:
 		return unproven, "a test was skipped, so the run proves nothing:\n" + evidence
 	case ran.exitCode == 0 && finishedPassing && failures == 0:
@@ -535,5 +550,40 @@ func TestTheSweepStopsEveryProcessOfTheRunAndNothingElse(t *testing.T) {
 		if !alive(pid) {
 			t.Errorf("the sweep stopped %s", name)
 		}
+	}
+}
+
+func TestAVerdictIsTakenWhenTheRunEndsNotAfterItsCleanUp(t *testing.T) {
+	directory := writeProbeModule(t, `package probe
+import "testing"
+func TestA(t *testing.T) { t.Fatal("wrong") }`)
+	budget := alarmMargin + 5*time.Second
+	begin, sweeps := time.Now(), 0
+	slow := mutantRunner{timeout: time.Hour, budget: budget, sweep: func(marker string) bool {
+		cleaned := stopRun(marker)
+		if sweeps++; sweeps == 2 {
+			time.Sleep(time.Until(begin.Add(budget + time.Second)))
+		}
+		return cleaned
+	}}
+	if got, evidence := slow.test(directory, ".", "", false, time.Time{}); got != detected || sweeps != 2 || time.Since(begin) < budget {
+		t.Fatalf("a failed assertion was lost to a clean-up that outlasted the budget: %d after %d clean-ups %s", got, sweeps, evidence)
+	}
+	stuck := mutantRunner{timeout: 20 * time.Second, budget: 40 * time.Second, sweep: func(string) bool { return false }}
+	if got, evidence := stuck.test(directory, ".", "", false, time.Time{}); got != unproven || !strings.Contains(evidence, "processes running") {
+		t.Fatalf("a run that left processes running was credited: %d %s", got, evidence)
+	}
+}
+
+func TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing(t *testing.T) {
+	t.Setenv(runMarkerName, "probe")
+	missing := fixture{name: "probe", dir: t.TempDir(), doc: casesDocument{Database: "missing.sqlite3"}}
+	skipped := false
+	t.Run("missing database", func(t *testing.T) {
+		defer func() { skipped = t.Skipped() }()
+		newRuntimeCopy(t, missing)
+	})
+	if !skipped {
+		t.Fatal("a fixture that cannot be copied was not skipped under a mutant run")
 	}
 }
