@@ -7,6 +7,7 @@ const GO_AUTH = ["test/go-auth.test.tsx"];
 const GO_CONNECT = ["test/go-connect.test.tsx"];
 const READER = ["test/reader.test.ts"];
 const PAGES = ["test/pages.test.ts"];
+const GO_ACCOUNT = ["test/go-account.test.tsx"];
 
 const mutants: Mutant[] = [
   { name: "sign-in: a second submit while one is pending is sent", file: "src/go/SignInPage.tsx", old: "if (submitting.current) return;", replacement: "", tests: GO_AUTH },
@@ -42,7 +43,7 @@ const mutants: Mutant[] = [
   { name: "pages: an ended session keeps the reader unlocked", file: "src/reader/pages.ts", old: "        guard.lock(code);\n", replacement: "", tests: PAGES },
   { name: "pages: a zoomed page cannot be panned from the keyboard", file: "src/reader/pages.ts", old: "        stage.tabIndex = 0;\n", replacement: "", tests: PAGES },
   { name: "pages: the saved file is not the one opened", file: "src/reader/ReaderApp.tsx", old: "  if (saved) return saved;\n", replacement: "  if (saved && saved.format === \"never\") return saved;\n", tests: PAGES },
-  { name: "reader: a 409 conflict is taken as a saved place", file: "src/api/client.ts", old: "(conflict && options.conflict ? options.conflict : options.schema)", replacement: "options.schema", tests: READER },
+  { name: "reader: a 409 conflict is taken as a saved place", file: "src/api/client.ts", old: "conflict && options.conflict ? options.conflict : rejected && options.rejection", replacement: "rejected && options.rejection", tests: READER },
   { name: "reader: Retry sends a new mutation instead of the uncertain one", file: "src/reader/progress.ts", old: "    this.held = null;\n    void this.send(request, false);", replacement: "    this.held = null;\n    void this.send({ ...request, client_mutation_id: this.options.uuid() }, false);", tests: READER },
   { name: "reader: the activity time is the upload time", file: "src/reader/progress.ts", old: "void this.send({ ...next.place, observed_at: next.observedAt,", replacement: "void this.send({ ...next.place, observed_at: new Date(this.options.now()).toISOString(),", tests: READER },
   { name: "reader: a later place from another device is overwritten", file: "src/reader/progress.ts", old: "if (!remote || (remoteTime !== null && localTime > remoteTime)) {", replacement: "if (!remote || remoteTime !== null) {", tests: READER },
@@ -53,6 +54,21 @@ const mutants: Mutant[] = [
   { name: "library: a refused format is shown as a generic server error", file: "src/api/client.ts", old: 'if (code?.startsWith("unsupported_")', replacement: 'if (false && code?.startsWith("unsupported_")', tests: GO_AUTH },
   { name: "boot: an unknown view is accepted", file: "src/contract.ts", old: 'view: z.enum(goViews),', replacement: "view: z.string(),", tests: GO_AUTH },
   { name: "boot: an account in the Go boot block is trusted", file: "src/contract.ts", old: "export const goBootSchema = z.object({", replacement: "export const goBootSchema = z.looseObject({", tests: GO_AUTH },
+  { name: "account: a second password change is sent while one is pending", file: "src/components/AccountPage.tsx", old: "    if (submitting.current) return;\n", replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a second name save is sent while one is pending", file: "src/components/AccountPage.tsx", old: "    if (saving.current) return;\n", replacement: "", tests: GO_ACCOUNT },
+  { name: "account: the password fields keep their values after a change", file: "src/components/AccountPage.tsx", old: "        element.reset();\n", replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a mismatched confirmation is sent", file: "src/components/AccountPage.tsx", old: '    if (change.password !== change.password_confirmation) missing["password_confirmation"] = ["doesn\'t match Password"];\n', replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a conflict keeps the stale current password", file: "src/components/AccountPage.tsx", old: '          field.value = "";\n', replacement: "", tests: GO_ACCOUNT },
+  { name: "account: password managers are not told which account changes", file: "src/components/AccountPage.tsx", old: '<input type="text" name="username" autoComplete="username"', replacement: '<input type="text" name="username" autoComplete="off"', tests: GO_ACCOUNT },
+  { name: "account: the new password is offered as the current one", file: "src/components/AccountPage.tsx", old: 'autoComplete="new-password" enterKeyHint="next"', replacement: 'autoComplete="current-password" enterKeyHint="next"', tests: GO_ACCOUNT },
+  { name: "account: a refused field is not focused", file: "src/components/accountFields.ts", old: "  if (control instanceof HTMLInputElement) control.focus();\n", replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a refused field is not described by its error", file: "src/components/AccountPage.tsx", old: '"aria-describedby": describedBy(hint ?? false, invalid && ids.errors[field]),', replacement: '"aria-describedby": describedBy(hint ?? false),', tests: GO_ACCOUNT },
+  { name: "account: an uncertain password answer says nothing changed", file: "src/components/accountFields.ts", old: '    case "network":\n', replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a saved name is not shown in the header", file: "src/queries.ts", old: '      if (answer.kind === "saved") show(answer.profile);\n', replacement: "", tests: GO_ACCOUNT },
+  { name: "account: a field rejection is read as a server failure", file: "src/api/client.ts", old: "const rejected = options.rejection !== undefined && response.status === 422 && options.rejection.safeParse(payload).success;", replacement: "const rejected = false;", tests: GO_ACCOUNT },
+  { name: "account: a profile of another account is accepted", file: "src/contract.ts", old: '.refine((envelope) => envelope.profile.id === envelope.account, "The profile belongs to another account")', replacement: "", tests: GO_ACCOUNT },
+  { name: "account: the classic preview serves the Go account page", file: "src/components/AccountPage.tsx", old: 'if (mode !== "go") {', replacement: "if (false) {", tests: GO_ACCOUNT },
+  { name: "account: the Go navigation has no Account link", file: "src/components/Navigation.tsx", old: "{handoffs ? null : (", replacement: "{true ? null : (", tests: GO_ACCOUNT.concat(GO_AUTH) },
 ];
 
 const root = process.argv[2];
