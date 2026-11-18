@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -587,17 +588,29 @@ func TestA(t *testing.T) { t.Fatal("wrong") }`)
 
 func TestASetupFailureUnderAMutantRunIsASkipThatProvesNothing(t *testing.T) {
 	t.Setenv(runMarkerName, "probe")
+	readable := fixture{name: "probe", dir: t.TempDir(), doc: casesDocument{Database: "primary.sqlite3"}}
+	database, err := sql.Open("sqlite", "file:"+filepath.Join(readable.dir, "primary.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`CREATE TABLE probe (id integer)`); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
 	missing := fixture{name: "probe", dir: t.TempDir(), doc: casesDocument{Database: "missing.sqlite3"}}
 	unwritable := filepath.Join(t.TempDir(), "absent")
-	for name, prepare := range map[string]func(t *testing.T){
-		"a missing database":                    func(t *testing.T) {},
-		"a private directory that cannot exist": func(t *testing.T) { t.Setenv("TMPDIR", unwritable) },
+	for name, test := range map[string]struct {
+		fixture fixture
+		prepare func(t *testing.T)
+	}{
+		"a missing database":                    {missing, func(t *testing.T) {}},
+		"a private directory that cannot exist": {readable, func(t *testing.T) { t.Setenv("TMPDIR", unwritable) }},
 	} {
 		skipped := false
 		t.Run(name, func(t *testing.T) {
 			defer func() { skipped = t.Skipped() }()
-			prepare(t)
-			newRuntimeCopy(t, missing)
+			test.prepare(t)
+			newRuntimeCopy(t, test.fixture)
 		})
 		if !skipped {
 			t.Errorf("%s was not skipped under a mutant run", name)
