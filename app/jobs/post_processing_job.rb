@@ -7,7 +7,7 @@ require "logger"
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
-  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
+  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu fb2].freeze
   EBOOK_COVER_EXTENSIONS = %w[jpg jpeg png webp].freeze
   AUDIOBOOK_COVER_EXTENSIONS = %w[bmp gif jpeg jpg png webp].freeze
   # SABnzbd (and some torrent clients) report a completed file path instead of
@@ -1080,9 +1080,8 @@ class PostProcessingJob < ApplicationJob
     end
 
     supported_ebook_found = false
-    paths = ebook_directory_files(source)
-
-    paths.each do |path|
+    unrecognized_fb2 = nil
+    ebook_directory_files(source).each do |path|
       extension = path_extension(path)
       next unless ebook_import_candidate?(path, extension)
 
@@ -1090,11 +1089,19 @@ class PostProcessingJob < ApplicationJob
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
 
-      unless allowed_ebook_import_file?(path, extension: extension)
+      if allowed_ebook_import_file?(path, extension: extension)
+        supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
+      elsif extension == "fb2"
+        # .fb2 was ignored before FictionBook became an import format. A file
+        # we still cannot identify must not discard an EPUB or PDF beside it.
+        unrecognized_fb2 ||= path
+      else
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
+    end
 
-      supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
+    if unrecognized_fb2 && !supported_ebook_found
+      raise "Unsupported ebook import file type: #{File.basename(unrecognized_fb2)}"
     end
 
     raise "No supported ebook files found in download" unless supported_ebook_found
@@ -1144,6 +1151,8 @@ class PostProcessingJob < ApplicationJob
       head.start_with?("Rar!\x1A\x07\x00") || head.start_with?("Rar!\x1A\x07\x01\x00")
     when "djvu"
       head.start_with?("AT&TFORM") && %w[DJVU DJVM].include?(head.byteslice(12, 4))
+    when "fb2"
+      fictionbook_content?(head)
     when "jpg", "jpeg"
       head.start_with?("\xFF\xD8\xFF".b)
     when "png"
@@ -1155,6 +1164,28 @@ class PostProcessingJob < ApplicationJob
     end
   rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENXIO, Errno::ENODEV, Errno::ENOTDIR => error
     RemoteResult::Failed.new(error)
+  end
+
+  # FictionBook is XML. UTF-8, with an optional BOM, and ASCII-compatible
+  # encodings such as windows-1251 keep "<FictionBook" in the raw bytes.
+  # UTF-16 LE/BE files start with a BOM and store that marker as wide characters.
+  def fictionbook_content?(head)
+    bytes = head.b
+    marker = utf16_fictionbook_marker(bytes)
+    return bytes.byteslice(2, bytes.bytesize - 2).to_s.include?(marker) if marker
+
+    bytes.delete_prefix("\xEF\xBB\xBF".b).include?("<FictionBook")
+  end
+
+  def utf16_fictionbook_marker(bytes)
+    encoding = if bytes.start_with?("\xFF\xFE".b)
+      Encoding::UTF_16LE
+    elsif bytes.start_with?("\xFE\xFF".b)
+      Encoding::UTF_16BE
+    end
+    return unless encoding
+
+    "<FictionBook".encode(encoding).b
   end
 
   def executable_file_signature?(head)

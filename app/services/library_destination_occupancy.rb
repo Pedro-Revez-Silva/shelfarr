@@ -8,7 +8,7 @@ class LibraryDestinationOccupancy
   AUDIO_EXTENSIONS = %w[
     aa aac aax aaxc aiff alac flac m4a m4b mp3 ogg opus wav wma
   ].freeze
-  EBOOK_EXTENSIONS = %w[epub pdf mobi azw azw3 djvu].freeze
+  EBOOK_EXTENSIONS = %w[epub pdf mobi azw azw3 djvu fb2].freeze
   COMIC_EXTENSIONS = %w[cbz cbr].freeze
   MAX_SCAN_DEPTH = 128
 

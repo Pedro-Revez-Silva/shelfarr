@@ -18,7 +18,7 @@ class Upload < ApplicationRecord
   AUDIOBOOK_EXTENSIONS = (
     AudiobookBundleImportPlanner::KNOWN_AUDIO_EXTENSIONS + AUDIOBOOK_ARCHIVE_EXTENSIONS
   ).freeze
-  EBOOK_EXTENSIONS = %w[epub pdf mobi azw3].freeze
+  EBOOK_EXTENSIONS = %w[epub pdf mobi azw3 fb2].freeze
   COMICBOOK_EXTENSIONS = %w[cbz cbr].freeze
   SUPPORTED_EXTENSIONS = (AUDIOBOOK_EXTENSIONS + EBOOK_EXTENSIONS + COMICBOOK_EXTENSIONS).freeze
 
