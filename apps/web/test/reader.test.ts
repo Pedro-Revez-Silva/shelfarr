@@ -421,21 +421,29 @@ describe("review regressions", () => {
 });
 
 type Listener = (location: unknown) => void;
+type FakeLocation = { start: { cfi: string; href: string; index: number; displayed: { page: number; total: number } } };
 
-function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: () => unknown; relocate?: (target: string | undefined) => unknown }) {
+function pageAt(page: number): FakeLocation {
+  return { start: { cfi: `epubcfi(/6/2!/4/${page * 2}/1:0)`, href: "one.xhtml", index: 0, displayed: { page, total: 4 } } };
+}
+
+function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: FakeLocation; places?: (target: string | undefined) => FakeLocation | null; slowNext?: (advance: () => void) => Promise<void> }) {
   const displayed: (string | undefined)[] = [];
   const listeners: Record<string, Listener> = {};
-  const location = options.location ?? (() => ({ start: { cfi: "epubcfi(/6/2!/4/2/1:0)", href: "one.xhtml", index: 0, displayed: { page: 1, total: 4 } } }));
+  let current: FakeLocation = options.location ?? pageAt(1);
   const rendition = {
     display: async (target?: string) => {
       displayed.push(target);
-      if (options.relocate) listeners["relocated"]?.(options.relocate(target));
+      const next = options.places?.(target);
+      if (next) current = next;
     },
     next: async () => {
-      setTimeout(() => {
-        options.now.value = 5000;
-        listeners["relocated"]?.({ start: { cfi: "epubcfi(/6/2!/4/8/1:0)", href: "one.xhtml", index: 0, displayed: { page: 2, total: 4 } } });
-      }, 5);
+      const advance = () => {
+        current = pageAt(Math.min(4, current.start.displayed.page + 1));
+      };
+      if (options.slowNext) await options.slowNext(advance);
+      else advance();
+      setTimeout(() => listeners["relocated"]?.(current), 0);
     },
     prev: async () => undefined,
     on: (event: string, listener: Listener) => {
@@ -444,7 +452,7 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
     hooks: { content: { register: () => undefined } },
     themes: { default: () => undefined, fontSize: () => undefined },
     getContents: () => (options.contents ? options.contents() : []),
-    currentLocation: location,
+    currentLocation: () => current,
     getRange: () => null,
     views: () => ({ all: () => [] }),
     reportLocation: async () => undefined,
@@ -462,18 +470,30 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
   return { engine: { ePub: () => book, DOMPurify: purifier } as unknown as ReaderEngine, displayed };
 }
 
+const progressionOf = (value: unknown) => (value as { locator: { locations: { cfi: string } } }).locator.locations.cfi;
+
 describe("EPUB session review regressions", () => {
-  test("a later key press that moves nothing does not re-date the earlier turn", async () => {
-    const now = { value: 1000 };
-    const { engine } = fakeEngine({ now });
-    const moved: [unknown, number][] = [];
-    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, at) => moved.push([value, at]), key: () => undefined, failed: () => undefined }, () => now.value);
+  test("queued turns during a slow render are each saved with their own input time, and a turn that moves nothing saves nothing", async () => {
+    const now = { value: 0 };
+    const releases: (() => void)[] = [];
+    const { engine } = fakeEngine({ now, slowNext: (advance) => new Promise<void>((resolve) => releases.push(() => { advance(); resolve(); })) });
+    const moved: [string, number][] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, at) => moved.push([progressionOf(value), at]), key: () => undefined, failed: () => undefined }, () => now.value);
     await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
     session.next();
     now.value = 4000;
+    session.next();
+    now.value = 5000;
     session.previous();
     await settle();
-    expect(moved.map((entry) => entry[1])).toEqual([1000]);
+    releases.shift()?.();
+    await settle();
+    releases.shift()?.();
+    await settle();
+    expect(moved).toEqual([
+      [pageAt(2).start.cfi, 0],
+      [pageAt(3).start.cfi, 4000],
+    ]);
     session.destroy();
   });
 
@@ -489,11 +509,12 @@ describe("EPUB session review regressions", () => {
 
   test("a turn is saved with the time of the key press, not the later relocation", async () => {
     const now = { value: 1000 };
-    const { engine } = fakeEngine({ now });
+    const { engine } = fakeEngine({ now, slowNext: async (advance) => { await settle(); now.value = 5000; advance(); } });
     const moved: [unknown, number][] = [];
     const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, at) => moved.push([value, at]), key: () => undefined, failed: () => undefined }, () => now.value);
     await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
     session.next();
+    await settle();
     await settle();
     expect(moved).toHaveLength(1);
     expect(moved[0]?.[1]).toBe(1000);
@@ -519,21 +540,23 @@ describe("EPUB session review regressions", () => {
     document.body.innerHTML = '<p>Start</p><p id="user-content-ending">The ending</p>';
     const contents = { document, window, sectionIndex: 2, cfiFromNode: () => "cfi:node", cfiFromRange: () => "cfi:ending" };
     const at = (cfi: string, page: number) => ({ start: { cfi, href: "three.xhtml", index: 2, displayed: { page, total: 3 } } });
+    const now = { value: 700 };
     const { engine, displayed } = fakeEngine({
-      now: { value: 0 },
+      now,
       contents: () => [contents],
-      location: () => at("epubcfi(/6/6!/4/2/1:0)", 1),
-      relocate: (target) => (target === "cfi:ending" ? at("epubcfi(/6/6!/4/40/1:0)", 3) : at("epubcfi(/6/6!/4/2/1:0)", 1)),
+      location: at("epubcfi(/6/6!/4/30/1:0)", 2),
+      places: (target) => (target === "cfi:ending" ? at("epubcfi(/6/6!/4/40/1:0)", 3) : target === "three.xhtml" ? at("epubcfi(/6/6!/4/2/1:0)", 1) : null),
     });
-    const moved: unknown[] = [];
-    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value) => moved.push(value), key: () => undefined, failed: () => undefined });
+    const moved: [unknown, number][] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, when) => moved.push([value, when]), key: () => undefined, failed: () => undefined }, () => now.value);
     await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
     displayed.length = 0;
     session.chooseChapter("three.xhtml#ending");
+    now.value = 4000;
     await settle();
     expect(displayed).toContain("three.xhtml");
     expect(displayed.at(-1)).toBe("cfi:ending");
-    expect(moved).toEqual([{ asset_id: ASSET, locator: { href: "three.xhtml", type: "application/xhtml+xml", locations: { progression: 2 / 3, totalProgression: (2 + 2 / 3) / 3, cfi: "epubcfi(/6/6!/4/40/1:0)" } } }]);
+    expect(moved).toEqual([[{ asset_id: ASSET, locator: { href: "three.xhtml", type: "application/xhtml+xml", locations: { progression: 2 / 3, totalProgression: (2 + 2 / 3) / 3, cfi: "epubcfi(/6/6!/4/40/1:0)" } } }, 700]]);
     session.destroy();
   });
 });

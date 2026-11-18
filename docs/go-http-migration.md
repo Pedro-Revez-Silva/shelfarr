@@ -788,8 +788,10 @@ never read cookies. PDF and CBZ asset ids are `410 asset_unavailable` here; thei
   details otherwise. Back first waits (up to four seconds) for pending saves to finish in order; closing or reloading
   the tab while a place is unsaved shows the browser's leave warning. No write is ever sent with a guessed version, so a
   place made after the last confirmed save can be lost only if the tab is closed through that warning.
-* A page turn is dated by the input that caused it (the earliest one not yet reported, so a later key press that moves
-  nothing never makes an older turn look newer); a chapter-list entry inside a chapter is saved once, at its anchor.
+* Deliberate moves (page turns, chapter choices, links inside the book) run one after another; each one records the
+  place the book actually shows once it has finished, dated by its own input. A move that changes nothing records
+  nothing, and a chapter-list entry inside a chapter is recorded once, at its anchor. Relocation reports from the
+  engine only update the location shown.
 * "Keep going" links a publication to the reader only when its label says Ebook or Audiobook; a graphic EPUB (labelled
   Comic) opens from its details page, where the real files decide.
 

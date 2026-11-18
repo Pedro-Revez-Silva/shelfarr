@@ -238,9 +238,15 @@ describe("the Go online EPUB reader", () => {
     await stays(books.text, [], 2000);
     await page.getByLabel("Chapter").selectOption({ label: "Harbor Copper" });
     await frame.getByText("An outside address must not open from the book").waitFor();
+    await waitForRow(books.text, (row) => row.version === 1);
     expect(await frame.locator("script, iframe, form, input, [onclick], [onerror]").count()).toBe(0);
     expect(await frame.locator('a[href^="https:"], a[href^="javascript:"]').count()).toBe(0);
     await frame.getByText("A paragraph with a click handler.").click();
+    await frame.getByRole("link", { name: "Jump to the ending" }).click();
+    await page.locator(".epub-location").filter({ hasText: /^Page ([2-9]|\d\d+) of \d+ · Chapter 3$/ }).waitFor();
+    await frame.getByText("The ending of the sampler.").waitFor();
+    const jumped = await waitForRow(books.text, (row) => row.version === 2);
+    expect(locatorOf(jumped).href).toBe("OEBPS/three.xhtml");
     expect(await page.evaluate(() => (window as unknown as { __bookScriptRan?: unknown }).__bookScriptRan ?? null)).toBeNull();
     expect(page.url()).toBe(`${server.origin}/preview/library/${books.text}/read`);
     expect(outside).toEqual({ fetched: [], blocked: ["https://evil.test/track.png"] });
