@@ -2,7 +2,7 @@ import { ApiError } from "../api/errors";
 
 export type FieldErrors = Record<string, string[]>;
 
-export type FormOutcome = { tone: "success" | "error"; text: string } | null;
+export type FormOutcome = { tone: "success" | "error"; text: string; serial: number } | null;
 
 const FRIENDLY: Record<string, Record<string, string>> = {
   name: { "can't be blank": "Enter a display name." },

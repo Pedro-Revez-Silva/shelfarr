@@ -979,11 +979,12 @@ password managers can update the saved credential. Errors appear only after a su
 one is in flight sends nothing. A saved name updates the header and the identity without touching an unsaved password
 form, cancels any older read of the profile and re-reads it; text typed while a save is in flight is kept. A password
 answer never changes the shown identity. An answer that arrives after leaving the screen still refreshes the header, an
-answer for another account locks the page, and a session check that the server answers `404` (the cookie now belongs to
-an account outside the preview) locks the page and unmounts the forms. An uncertain answer (network or server error, or a
+answer for another account locks the page, and the latest session check answered `404` (the cookie now belongs to an
+account outside the preview) locks the page and unmounts the forms; a superseded check never does. An uncertain answer (network or server error, or a
 success whose body cannot be read) says it may have been saved and never resends by itself; a conflict clears and focuses
-the current password. Focus moves to the first refused field after its error is attached, and each refusal is also
-announced in the form's status region. Password values live only in the form: they are never in React state,
+the current password. Focus moves to the first refused field after its error is attached, and each refusal, repeated ones
+included, is also announced in the form's status region; a refusal that names both a field and a stored-record problem
+shows both. Password values live only in the form: they are never in React state,
 the query or mutation cache, storage, the URL, history or a log, and the fields are cleared after a change.
 
 ### Contract before and after

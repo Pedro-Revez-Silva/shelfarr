@@ -86,9 +86,23 @@ function describedBy(...ids: (string | false)[]): string | undefined {
 function Outcome({ outcome }: { outcome: FormOutcome }) {
   return (
     <div className="form-outcome" role="status">
-      {outcome ? <p className={outcome.tone === "error" ? "form-error" : "form-success"}>{outcome.text}</p> : null}
+      {outcome ? (
+        <p key={outcome.serial} className={outcome.tone === "error" ? "form-error" : "form-success"}>
+          {outcome.text}
+        </p>
+      ) : null}
     </div>
   );
+}
+
+function useOutcome() {
+  const [outcome, setOutcome] = useState<FormOutcome>(null);
+  const serial = useRef(0);
+  const say = (tone: "success" | "error", text: string) => {
+    serial.current += 1;
+    setOutcome({ tone, text, serial: serial.current });
+  };
+  return { outcome, say, clear: () => setOutcome(null) };
 }
 
 function useFocusOnRefusal(form: RefObject<HTMLFormElement | null>, fields: readonly string[], errors: FieldErrors): () => void {
@@ -111,20 +125,20 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
   const { queryClient, keys } = useServices();
   const [draft, setDraft] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
-  const [outcome, setOutcome] = useState<FormOutcome>(null);
+  const { outcome, say, clear } = useOutcome();
   const focusRefusal = useFocusOnRefusal(form, NAME_FIELDS, errors);
   const value = draft ?? profile.name;
 
-  function refuse(found: FieldErrors) {
+  function refuse(found: FieldErrors, explanation = "The name was not saved. Check the marked field.") {
     setErrors(found);
-    setOutcome({ tone: "error", text: "The name was not saved. Check the marked field." });
-    focusRefusal();
+    say("error", explanation);
+    if (Object.keys(found).length) focusRefusal();
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving.current) return;
-    setOutcome(null);
+    clear();
     if (isBlank(value)) {
       refuse({ name: ["can't be blank"] });
       return;
@@ -140,20 +154,17 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
         const current = edits.current === revision;
         if (answer.kind === "saved") {
           if (current) setDraft(null);
-          setOutcome({ tone: "success", text: current ? "Display name saved." : "The earlier name was saved. Your newer change is not saved yet." });
+          say("success", current ? "Display name saved." : "The earlier name was saved. Your newer change is not saved yet.");
           return;
         }
         const { own, record } = splitErrors(answer.errors, NAME_FIELDS);
-        if (record.length) {
-          setOutcome({ tone: "error", text: recordRefusal(record) });
-          return;
-        }
-        if (current) refuse(own);
-        else setOutcome({ tone: "error", text: `The earlier name was not saved: ${fieldMessage("name", own["name"] ?? [])}` });
+        if (current) refuse(own, record.length ? recordRefusal(record) : undefined);
+        else if (record.length) say("error", recordRefusal(record));
+        else say("error", `The earlier name was not saved: ${fieldMessage("name", own["name"] ?? [])}`);
       },
       onError: (error) => {
         void queryClient.invalidateQueries({ queryKey: keys.profile });
-        setOutcome({ tone: "error", text: describeWriteFailure(error, "Shelfarr could not confirm whether the name was saved. The name shown above is what the server has now; save again if it is not the one you want.") });
+        say("error", describeWriteFailure(error, "Shelfarr could not confirm whether the name was saved. Reload the page to see the name the server has, and save again if it is not the one you want."));
       },
     });
   }
@@ -178,7 +189,7 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
             onChange={(event) => {
               edits.current += 1;
               setDraft(event.target.value);
-              setOutcome(null);
+              clear();
               if (invalid) setErrors({});
             }}
           />
@@ -203,13 +214,13 @@ function PasswordForm({ profile }: { profile: Profile }) {
   const { api } = useServices();
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
-  const [outcome, setOutcome] = useState<FormOutcome>(null);
+  const { outcome, say, clear } = useOutcome();
   const focusRefusal = useFocusOnRefusal(form, PASSWORD_FIELDS, errors);
 
-  function refuse(found: FieldErrors) {
+  function refuse(found: FieldErrors, explanation = "The password was not changed. Check the marked fields.") {
     setErrors(found);
-    setOutcome({ tone: "error", text: "The password was not changed. Check the marked fields." });
-    focusRefusal();
+    say("error", explanation);
+    if (Object.keys(found).length) focusRefusal();
   }
 
   useEffect(() => {
@@ -220,7 +231,7 @@ function PasswordForm({ profile }: { profile: Profile }) {
   }, []);
 
   function clearField(field: string) {
-    setOutcome(null);
+    clear();
     if (errors[field]?.length) setErrors(({ [field]: _cleared, ...rest }) => rest);
   }
 
@@ -238,7 +249,7 @@ function PasswordForm({ profile }: { profile: Profile }) {
     if (change.current_password === "") missing["current_password"] = ["can't be blank"];
     if (change.password === "") missing["password"] = ["can't be blank"];
     if (change.password !== change.password_confirmation) missing["password_confirmation"] = ["doesn't match Password"];
-    setOutcome(null);
+    clear();
     setErrors({});
     if (Object.keys(missing).length) {
       refuse(missing);
@@ -251,17 +262,16 @@ function PasswordForm({ profile }: { profile: Profile }) {
       if (!mounted.current) return;
       if (answer.kind === "saved") {
         element.reset();
-        setOutcome({ tone: "success", text: "Password changed. You are still signed in here; every other browser signed in to this account has been signed out. Apps connected to your account stay connected." });
+        say("success", "Password changed. You are still signed in here; every other browser signed in to this account has been signed out. Apps connected to your account stay connected.");
         return;
       }
       const { own, record } = splitErrors(answer.errors, PASSWORD_FIELDS);
-      if (record.length) setOutcome({ tone: "error", text: recordRefusal(record) });
-      else refuse(own);
+      refuse(own, record.length ? recordRefusal(record) : undefined);
     } catch (error) {
       if (!mounted.current) return;
       const text = describeWriteFailure(
         error,
-        "Shelfarr could not confirm whether your password changed. It may have been saved. Your entries are still here: you can submit again, and if your current password is then refused, your password has changed since this page was opened.",
+        "Shelfarr could not confirm whether your password changed. It may have been saved. Your entries are still here and you can submit again; if the current password is then refused, it may be mistyped or the change may already have been saved.",
       );
       if (error instanceof ApiError && error.kind === "conflict") {
         const field = element.elements.namedItem("current_password");
@@ -270,7 +280,7 @@ function PasswordForm({ profile }: { profile: Profile }) {
           field.focus();
         }
       }
-      setOutcome({ tone: "error", text });
+      say("error", text);
     } finally {
       submitting.current = false;
       if (mounted.current) setPending(false);

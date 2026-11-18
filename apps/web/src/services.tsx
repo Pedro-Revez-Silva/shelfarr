@@ -75,7 +75,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
     } catch (error) {
-      if (isApiError(error) && error.kind === "not_found") guard.lock("account_changed");
+      if (generation === guard.generation && isApiError(error) && error.kind === "not_found") guard.lock("account_changed");
       else guard.finishCheck(generation, false);
     } finally {
       clearTimeout(timer);

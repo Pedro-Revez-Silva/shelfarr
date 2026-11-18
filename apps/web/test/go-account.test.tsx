@@ -249,6 +249,60 @@ describe("review regressions", () => {
     expect(document.body.innerHTML).not.toContain(CURRENT);
   });
 
+  test("a superseded session check that found this browser not allowed does not lock a page a newer check confirmed", async () => {
+    const first = deferred<{ status?: number; body: unknown }>();
+    let calls = 0;
+    const server = accountServer().on("GET", /\/api\/v1\/session$/, () => {
+      calls += 1;
+      return calls === 2 ? first.promise : { body: session() };
+    });
+    renderAccount(server);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Current password"), CURRENT);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(calls).toBe(2));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(calls).toBe(3));
+    await act(async () => Bun.sleep(20));
+    await act(async () => first.resolve(error(404, "not_found")));
+    await act(async () => Bun.sleep(20));
+    expect(screen.queryByRole("heading", { name: /account changed/i })).toBeNull();
+    expect((screen.getByLabelText("Current password") as HTMLInputElement).value).toBe(CURRENT);
+  });
+
+  test("a rejection naming both a stored-record problem and a password rule shows both and focuses the field", async () => {
+    const server = accountServer().on("POST", /\/account\/password$/, () =>
+      error(422, "invalid_password", { account: ACCOUNT, errors: { name: ["can't be blank"], password: ["is too short (minimum is 12 characters)"] } }),
+    );
+    renderAccount(server);
+    const user = userEvent.setup();
+    await screen.findByLabelText("Current password");
+    await fillPassword(user, CURRENT, "short");
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    const next = screen.getByLabelText("New password");
+    await waitFor(() => expect(document.activeElement).toBe(next));
+    expect(next.getAttribute("aria-invalid")).toBe("true");
+    expect(within(next.closest("form") as HTMLElement).getByRole("status").textContent).toContain("Name can't be blank");
+  });
+
+  test("submitting the same refused value again announces the refusal again", async () => {
+    renderAccount(accountServer());
+    const user = userEvent.setup();
+    const input = await screen.findByRole("textbox", { name: "Display name" });
+    await user.clear(input);
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    const status = within(input.closest("form") as HTMLElement).getByRole("status");
+    const first = status.firstElementChild;
+    expect(first?.textContent).toBe("The name was not saved. Check the marked field.");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    expect(status.firstElementChild?.textContent).toBe("The name was not saved. Check the marked field.");
+    expect(status.firstElementChild).not.toBe(first);
+  });
+
   test("a password answer that arrives after a newer name is saved does not bring the old name back", async () => {
     const pendingPassword = deferred<{ body: unknown }>();
     const state = { name: "Ada Reader" };
@@ -429,7 +483,7 @@ describe("changing the password", () => {
     await screen.findByLabelText("Current password");
     await fillPassword(user, CURRENT, NEXT);
     await user.click(screen.getByRole("button", { name: "Change password" }));
-    expect(await screen.findByText(/could not confirm whether your password changed/)).toBeTruthy();
+    expect(await screen.findByText(/could not confirm whether your password changed.*it may be mistyped or the change may already have been saved/)).toBeTruthy();
     expect((screen.getByLabelText("New password") as HTMLInputElement).value).toBe(NEXT);
     expect(server.called("POST", /\/account\/password$/)).toHaveLength(1);
   });
