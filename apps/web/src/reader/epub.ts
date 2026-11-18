@@ -25,6 +25,13 @@ function flatten(items: EpubNavItem[], depth = 0, into: Chapter[] = []): Chapter
   return into;
 }
 
+function usableLocator(locator: Locator | null): Locator | null {
+  const cfi = locator?.locations?.cfi;
+  if (!locator?.locations || cfi === undefined || (typeof cfi === "string" && cfi !== "")) return locator;
+  const { cfi: _unusable, ...locations } = locator.locations;
+  return { ...locator, locations };
+}
+
 export class EpubSession {
   private readonly engine: ReaderEngine;
   private readonly viewport: HTMLElement;
@@ -41,7 +48,8 @@ export class EpubSession {
   private swiped = false;
   private active = true;
   private fontSize: number = FONT_SIZES.initial;
-  private actionAt = 0;
+  private actionAt: number | null = null;
+  private staging = false;
   private readonly now: () => number;
 
   constructor(engine: ReaderEngine, viewport: HTMLElement, assetId: string, callbacks: EpubCallbacks, now: () => number = () => Date.now()) {
@@ -137,7 +145,8 @@ export class EpubSession {
     return this.book ? this.book.path.relative(`/${clean}`) : clean;
   }
 
-  private async restore(locator: Locator | null): Promise<void> {
+  private async restore(given: Locator | null): Promise<void> {
+    const locator = usableLocator(given);
     await this.showLocator(locator);
     const fraction = places.restorableFraction(locator);
     const contents = fraction === null ? null : this.rendition?.getContents()[0];
@@ -158,17 +167,25 @@ export class EpubSession {
   private async showTarget(href: string): Promise<void> {
     const hash = href.indexOf("#");
     if (hash < 0) return this.showPlace(href);
-    await this.showPlace(href.slice(0, hash));
+    this.staging = true;
+    try {
+      await this.showPlace(href.slice(0, hash));
+    } finally {
+      this.staging = false;
+    }
     const rendition = this.rendition;
     const index = rendition?.currentLocation()?.start?.index;
     const contents = rendition?.getContents().find((item) => item.sectionIndex === index) ?? null;
-    await this.showElement(contents, decodeURIComponent(href.slice(hash + 1)));
+    const shown = await this.showElement(contents, decodeURIComponent(href.slice(hash + 1)));
+    if (!shown) await rendition?.reportLocation();
   }
 
-  private async showElement(contents: EpubContents | null, fragment: string): Promise<void> {
-    if (!contents || !fragment || !this.active) return;
+  private async showElement(contents: EpubContents | null, fragment: string): Promise<boolean> {
+    if (!contents || !fragment || !this.active) return false;
     const element = contents.document.getElementById(`user-content-${fragment}`) ?? contents.document.getElementById(fragment);
-    if (element) await this.showPlace(places.elementCfi(contents, element));
+    if (!element) return false;
+    await this.showPlace(places.elementCfi(contents, element));
+    return true;
   }
 
   private contentsFor(href: string): EpubContents | null {
@@ -226,7 +243,7 @@ export class EpubSession {
       if (!this.active || !this.ready) return;
       this.lastCfi = this.pageCfi();
       this.userMoved = true;
-      this.actionAt = started;
+      this.actionAt ??= started;
       await step();
     } catch {
       if (this.active) this.callbacks.failed(message);
@@ -238,7 +255,7 @@ export class EpubSession {
     if (!this.active || !book) return;
     const start = location.start;
     this.callbacks.position({ page: start.displayed.page, total: start.displayed.total, chapter: start.index + 1, href: start.href });
-    if (!this.ready) return;
+    if (!this.ready || this.staging) return;
     const cfi = this.pageCfi(location);
     if (!this.userMoved) {
       this.lastCfi = cfi;
@@ -248,7 +265,9 @@ export class EpubSession {
     if (!cfi || cfi === this.lastCfi) return;
     this.lastCfi = cfi;
     const { fraction, total } = places.pageProgression(start, book.spine.length);
-    this.callbacks.moved({ asset_id: this.assetId, locator: { href: this.archiveHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } }, this.actionAt);
+    const at = this.actionAt ?? this.now();
+    this.actionAt = null;
+    this.callbacks.moved({ asset_id: this.assetId, locator: { href: this.archiveHref(start.href), type: "application/xhtml+xml", locations: { progression: fraction, totalProgression: total, cfi } } }, at);
   }
 
   private bookInput(contents: EpubContents): void {

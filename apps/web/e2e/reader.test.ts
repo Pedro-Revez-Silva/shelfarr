@@ -531,6 +531,39 @@ describe("saving a place when the network, the token or another device disagree"
     await context.close();
   });
 
+  test("Back after two quick turns waits for the slow first save and stores the newest place; reloading while unsaved warns first", async () => {
+    const { context, page } = await signedIn();
+    await page.goto(`${server.origin}/preview/library/${books.text}`);
+    await page.getByRole("link", { name: /^Start reading Reader Text Sampler/ }).click();
+    await settled(page);
+    let delayed = 0;
+    await page.route("**/preview/api/v1/library/*/progress", async (route: Route) => {
+      if (delayed++ === 0) await Bun.sleep(2500);
+      await route.continue();
+    });
+    const first = await location(page);
+    await page.getByRole("button", { name: "Next page" }).click();
+    const second = await changed(page, first);
+    await Bun.sleep(1800);
+    await page.getByRole("button", { name: "Next page" }).click();
+    const third = await changed(page, second);
+    const dialogs: string[] = [];
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.type());
+      void dialog.dismiss();
+    });
+    await page.reload().catch(() => undefined);
+    expect(dialogs).toEqual(["beforeunload"]);
+    expect(await location(page)).toBe(third);
+    await page.getByRole("link", { name: "Back to the book" }).click();
+    await page.waitForURL(`**/preview/library/${books.text}`);
+    const saved = only(books.text);
+    expect(saved.version).toBe(2);
+    expect(third).toMatch(/^Page 3 of/);
+    expect(locatorOf(saved).locations.progression).toBeCloseTo(2 / Number((third.match(/of (\d+)/) ?? [])[1] ?? 1), 6);
+    await context.close();
+  });
+
   test("an answer lost after the server committed is retried only on request and does not save twice", async () => {
     const { context, page } = await signedIn();
     await openReader(page, books.text);

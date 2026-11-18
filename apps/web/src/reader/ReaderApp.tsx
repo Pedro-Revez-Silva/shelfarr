@@ -88,21 +88,25 @@ export function backTarget(referrer: string, id: string, mount: string, origin: 
   return { href: details, label: "Back to the book", returns: from !== null && from.origin === origin && from.pathname === details };
 }
 
-function goBack(event: MouseEvent<HTMLAnchorElement>, target: BackTarget) {
+const LEAVE_WAIT_MS = 4000;
+
+async function goBack(event: MouseEvent<HTMLAnchorElement>, target: BackTarget, beforeLeave: (() => Promise<void>) | undefined) {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  if (target.returns && window.history.length > 1) {
-    event.preventDefault();
-    window.history.back();
-  }
+  event.preventDefault();
+  await beforeLeave?.();
+  if (target.returns && window.history.length > 1) window.history.back();
+  else window.location.assign(target.href);
 }
 
-function ReaderFrame({ id, title, author, kind, children, footer }: { id: string; title: string; author: string | null; kind?: string; children: ReactNode; footer?: ReactNode }) {
+type FrameProps = { id: string; title: string; author: string | null; kind?: string; children: ReactNode; footer?: ReactNode; beforeLeave?: () => Promise<void> };
+
+function ReaderFrame({ id, title, author, kind, children, footer, beforeLeave }: FrameProps) {
   const { boot } = useServices();
   const [target] = useState(() => backTarget(document.referrer, id, boot.mount, window.location.origin));
   return (
     <div className="reader">
       <header className="reader-header">
-        <a className="back-link reader-back" href={target.href} onClick={(event) => goBack(event, target)}>
+        <a className="back-link reader-back" href={target.href} onClick={(event) => void goBack(event, target, beforeLeave)}>
           <span aria-hidden="true">←</span>
           {target.label}
         </a>
@@ -132,6 +136,7 @@ function OpenReader({ publication, engine }: { publication: ReaderPublication; e
       }),
   );
   const showPlace = useRef<((progress: StoredProgress) => void) | null>(null);
+  const leaving = useRef<(() => void) | null>(null);
   const state = useSyncExternalStore(session.subscribe, session.getState, session.getState);
 
   useEffect(() => {
@@ -146,11 +151,26 @@ function OpenReader({ publication, engine }: { publication: ReaderPublication; e
 
   useEffect(() => guard.subscribe(() => session.stop()), [guard, session]);
 
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (session.unsaved) event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [session]);
+
   const record = useCallback((place: ProgressPlace, at?: number) => session.record(place, at), [session]);
   const flush = useCallback(() => session.flush(), [session]);
   const registerPlace = useCallback((show: ((progress: StoredProgress) => void) | null) => {
     showPlace.current = show;
   }, []);
+  const registerLeave = useCallback((leave: (() => void) | null) => {
+    leaving.current = leave;
+  }, []);
+  const beforeLeave = useCallback(async () => {
+    leaving.current?.();
+    await session.drain(LEAVE_WAIT_MS);
+  }, [session]);
   const goToRemotePlace = () => {
     const remote = session.useRemote();
     if (remote) showPlace.current?.(remote);
@@ -162,12 +182,12 @@ function OpenReader({ publication, engine }: { publication: ReaderPublication; e
     publication.assets.length === 0 ? (
       <Unreadable publication={publication} />
     ) : listening ? (
-      <AudioPlayer publication={publication} record={record} flush={flush} registerPlace={registerPlace} />
+      <AudioPlayer publication={publication} record={record} flush={flush} registerPlace={registerPlace} registerLeave={registerLeave} />
     ) : (
       <EpubReader publication={publication} engine={engine} record={record} registerPlace={registerPlace} />
     );
   return (
-    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer}>
+    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} beforeLeave={beforeLeave}>
       {body}
     </ReaderFrame>
   );

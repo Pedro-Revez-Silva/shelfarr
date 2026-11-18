@@ -785,8 +785,11 @@ never read cookies. PDF and CBZ asset ids are `410 asset_unavailable` here; thei
 * A saved place in another file or an earlier edition opens the EPUB at its beginning, says so, and is kept until a
   turn. Manual reading status is a separate row and is never changed by reading.
 * Back returns to where the reader was opened: the Library entry (with its filters and scroll) from "Keep going", the
-  details otherwise. Leaving while a save is in flight still sends the newest place, chained behind it with
-  `keepalive`; if it loses that race the compare-and-set refuses it and the earlier place stays.
+  details otherwise. Back first waits (up to four seconds) for pending saves to finish in order; closing or reloading
+  the tab while a place is unsaved shows the browser's leave warning. No write is ever sent with a guessed version, so a
+  place made after the last confirmed save can be lost only if the tab is closed through that warning.
+* A page turn is dated by the input that caused it (the earliest one not yet reported, so a later key press that moves
+  nothing never makes an older turn look newer); a chapter-list entry inside a chapter is saved once, at its anchor.
 * "Keep going" links a publication to the reader only when its label says Ebook or Audiobook; a graphic EPUB (labelled
   Comic) opens from its details page, where the real files decide.
 

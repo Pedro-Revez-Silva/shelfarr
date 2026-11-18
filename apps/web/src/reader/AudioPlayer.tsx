@@ -10,9 +10,10 @@ type Props = {
   record: (place: ProgressPlace) => void;
   flush: () => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
+  registerLeave: (leave: (() => void) | null) => void;
 };
 
-export function AudioPlayer({ publication, record, flush, registerPlace }: Props) {
+export function AudioPlayer({ publication, record, flush, registerPlace, registerLeave }: Props) {
   const { revalidate } = useServices();
   const audio = useRef<HTMLAudioElement>(null);
   const [session, setSession] = useState<AudioSession | null>(null);
@@ -47,8 +48,15 @@ export function AudioPlayer({ publication, record, flush, registerPlace }: Props
   useEffect(() => {
     if (!session) return;
     registerPlace((progress) => session.showRemote(progress));
-    return () => registerPlace(null);
-  }, [registerPlace, session]);
+    registerLeave(() => {
+      session.settle();
+      session.pause();
+    });
+    return () => {
+      registerPlace(null);
+      registerLeave(null);
+    };
+  }, [registerPlace, registerLeave, session]);
 
   return (
     <section className="player" aria-label="Audiobook player">

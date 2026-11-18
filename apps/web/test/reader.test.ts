@@ -314,21 +314,25 @@ describe("the audiobook player rules", () => {
 });
 
 describe("review regressions", () => {
-  test("leaving while an older write is in flight still sends the newest place, chained after it", async () => {
+  test("a place made while an older write is in flight is never sent with a guessed version; leaving waits for it in order", async () => {
     const gate = deferred<ProgressAnswer>();
-    const { calls, session, tick } = harness([() => gate.promise, savedAnswer(2)], stored({ version: 3 }));
+    const { calls, session, tick } = harness([() => gate.promise, savedAnswer(5)], stored({ version: 3 }));
     session.record(place(0.2));
     await settle();
     tick(2000);
     session.record(place(0.3));
     session.flush({ keepalive: true });
-    session.stop();
-    gate.resolve({ kind: "saved", progress: stored({ version: 4 }) });
     await settle();
-    expect(calls.map((call) => [call.body.locator?.locations?.progression, call.body.expected_version, call.body.observed_at, call.keepalive])).toEqual([
-      [0.2, 3, "2026-11-15T12:00:00.000Z", false],
-      [0.3, 4, "2026-11-15T12:00:02.000Z", true],
+    expect(calls).toHaveLength(1);
+    expect(session.unsaved).toBe(true);
+    const leaving = session.drain(2000);
+    gate.resolve({ kind: "saved", progress: stored({ version: 4 }) });
+    await leaving;
+    expect(calls.map((call) => [call.body.locator?.locations?.progression, call.body.expected_version])).toEqual([
+      [0.2, 3],
+      [0.3, 4],
     ]);
+    expect(session.unsaved).toBe(false);
   });
 
   test("a native place with a null CFI and fraction is a valid reader publication", () => {
@@ -365,6 +369,42 @@ describe("review regressions", () => {
     player.destroy();
   });
 
+  test("leaving during a refused automatic transition saves nothing for the unplayed track", async () => {
+    const element = new FakeAudio();
+    const recorded: unknown[] = [];
+    const player = new AudioSession(element as unknown as HTMLAudioElement, audioTracks, null, { record: (value) => recorded.push(value), flush: () => undefined, failed: () => undefined });
+    await settle();
+    await player.play();
+    element.currentTime = 24;
+    element.paused = true;
+    element.reject = new DOMException("blocked", "NotAllowedError");
+    element.dispatchEvent(new Event("pause"));
+    element.dispatchEvent(new Event("ended"));
+    await settle();
+    await settle();
+    player.settle();
+    player.pause();
+    expect(recorded).toEqual([{ asset_id: ASSET, position_seconds: 24 }]);
+    player.destroy();
+  });
+
+  test("a play attempt overtaken by a track change does not move the new track", async () => {
+    const element = new FakeAudio();
+    const pending = deferred<void>();
+    const player = new AudioSession(element as unknown as HTMLAudioElement, audioTracks, null, { record: () => undefined, flush: () => undefined, failed: () => undefined });
+    await settle();
+    element.currentTime = 32;
+    element.play = () => pending.promise;
+    const attempt = player.play();
+    player.chooseTrack(1, false);
+    pending.reject(new DOMException("aborted", "AbortError"));
+    await attempt;
+    await settle();
+    expect(element.currentTime).toBe(0);
+    expect(player.getState().problem).toBeNull();
+    player.destroy();
+  });
+
   test("a refused play keeps a paused seek exact for the next successful play", async () => {
     const element = new FakeAudio();
     const player = new AudioSession(element as unknown as HTMLAudioElement, audioTracks, null, { record: () => undefined, flush: () => undefined, failed: () => undefined });
@@ -382,13 +422,14 @@ describe("review regressions", () => {
 
 type Listener = (location: unknown) => void;
 
-function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: () => unknown }) {
+function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: () => unknown; relocate?: (target: string | undefined) => unknown }) {
   const displayed: (string | undefined)[] = [];
   const listeners: Record<string, Listener> = {};
   const location = options.location ?? (() => ({ start: { cfi: "epubcfi(/6/2!/4/2/1:0)", href: "one.xhtml", index: 0, displayed: { page: 1, total: 4 } } }));
   const rendition = {
     display: async (target?: string) => {
       displayed.push(target);
+      if (options.relocate) listeners["relocated"]?.(options.relocate(target));
     },
     next: async () => {
       setTimeout(() => {
@@ -422,6 +463,30 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
 }
 
 describe("EPUB session review regressions", () => {
+  test("a later key press that moves nothing does not re-date the earlier turn", async () => {
+    const now = { value: 1000 };
+    const { engine } = fakeEngine({ now });
+    const moved: [unknown, number][] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value, at) => moved.push([value, at]), key: () => undefined, failed: () => undefined }, () => now.value);
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    session.next();
+    now.value = 4000;
+    session.previous();
+    await settle();
+    expect(moved.map((entry) => entry[1])).toEqual([1000]);
+    session.destroy();
+  });
+
+  test("an unusable CFI from another app falls back to its chapter fraction", async () => {
+    document.body.innerHTML = '<p><img alt="Image 1"></p><p><img alt="Image 2"></p><p><img alt="Image 3"></p><p><img alt="Image 4"></p><p><img alt="Image 5"></p>';
+    const contents = { document, window, sectionIndex: 1, cfiFromNode: (node: Element) => `cfi:${node.getAttribute("alt")}`, cfiFromRange: () => "cfi:text" };
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, contents: () => [contents] });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), { href: "index.html", locations: { progression: 0.6, cfi: { vendor: "x" } } }, { ink: "#000", surface: "#fff" });
+    expect(displayed.at(-1)).toBe("cfi:Image 4");
+    session.destroy();
+  });
+
   test("a turn is saved with the time of the key press, not the later relocation", async () => {
     const now = { value: 1000 };
     const { engine } = fakeEngine({ now });
@@ -453,14 +518,22 @@ describe("EPUB session review regressions", () => {
   test("a table-of-contents entry inside a chapter finds its sanitised anchor", async () => {
     document.body.innerHTML = '<p>Start</p><p id="user-content-ending">The ending</p>';
     const contents = { document, window, sectionIndex: 2, cfiFromNode: () => "cfi:node", cfiFromRange: () => "cfi:ending" };
-    const { engine, displayed } = fakeEngine({ now: { value: 0 }, contents: () => [contents], location: () => ({ start: { cfi: "epubcfi(/6/6!/4/2/1:0)", href: "three.xhtml", index: 2, displayed: { page: 1, total: 3 } } }) });
-    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    const at = (cfi: string, page: number) => ({ start: { cfi, href: "three.xhtml", index: 2, displayed: { page, total: 3 } } });
+    const { engine, displayed } = fakeEngine({
+      now: { value: 0 },
+      contents: () => [contents],
+      location: () => at("epubcfi(/6/6!/4/2/1:0)", 1),
+      relocate: (target) => (target === "cfi:ending" ? at("epubcfi(/6/6!/4/40/1:0)", 3) : at("epubcfi(/6/6!/4/2/1:0)", 1)),
+    });
+    const moved: unknown[] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value) => moved.push(value), key: () => undefined, failed: () => undefined });
     await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
     displayed.length = 0;
     session.chooseChapter("three.xhtml#ending");
     await settle();
     expect(displayed).toContain("three.xhtml");
     expect(displayed.at(-1)).toBe("cfi:ending");
+    expect(moved).toEqual([{ asset_id: ASSET, locator: { href: "three.xhtml", type: "application/xhtml+xml", locations: { progression: 2 / 3, totalProgression: (2 + 2 / 3) / 3, cfi: "epubcfi(/6/6!/4/40/1:0)" } } }]);
     session.destroy();
   });
 });

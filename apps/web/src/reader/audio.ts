@@ -39,6 +39,7 @@ export class AudioSession {
   private switching = false;
   private playWhenReady = false;
   private awaitingTransition = false;
+  private source = 0;
   private active = true;
 
   constructor(audio: HTMLAudioElement, tracks: ReaderAsset[], saved: StoredProgress | null, callbacks: AudioCallbacks) {
@@ -88,7 +89,7 @@ export class AudioSession {
 
   async play(resume = true): Promise<void> {
     const audio = this.audio;
-    const before = { time: audio.currentTime, floor: this.checkpoints.floor, skipRewind: this.checkpoints.skipRewind, active: this.checkpoints.active };
+    const before = { source: this.source, time: audio.currentTime, floor: this.checkpoints.floor, skipRewind: this.checkpoints.skipRewind, active: this.checkpoints.active };
     if (resume && audio.paused && !audio.ended && this.snapshot.ready) {
       const from = this.checkpoints.resume(audio.currentTime);
       if (from !== audio.currentTime) audio.currentTime = from;
@@ -96,7 +97,7 @@ export class AudioSession {
     try {
       await audio.play();
     } catch (error) {
-      if (!this.active) return;
+      if (!this.active || before.source !== this.source) return;
       Object.assign(this.checkpoints, { floor: before.floor, skipRewind: before.skipRewind, active: before.active });
       if (audio.currentTime !== before.time) audio.currentTime = before.time;
       this.update({ playing: false, position: audio.currentTime, problem: error instanceof DOMException && error.name === "NotAllowedError" ? "blocked" : "failed" });
@@ -144,6 +145,7 @@ export class AudioSession {
     const index = this.tracks.findIndex((track) => track.id === progress.asset_id);
     if (index < 0) return;
     const position = progress.position_seconds ?? 0;
+    this.awaitingTransition = false;
     if (index !== this.snapshot.track) {
       this.restore = { track: index, position };
       this.snapshot = { ...this.snapshot, track: index };
@@ -160,7 +162,7 @@ export class AudioSession {
   }
 
   settle(): void {
-    if (this.snapshot.ready && !this.switching) this.checkpoints.settle(this.audio.currentTime, this.current.id);
+    if (this.snapshot.ready && !this.switching && !this.awaitingTransition) this.checkpoints.settle(this.audio.currentTime, this.current.id);
   }
 
   destroy(): void {
@@ -173,6 +175,7 @@ export class AudioSession {
   }
 
   private open(autoplay: boolean): void {
+    this.source += 1;
     this.switching = true;
     this.playWhenReady = autoplay;
     this.update({ ready: false, buffering: true, position: 0, duration: Number.NaN, problem: null, finished: false });
@@ -202,7 +205,7 @@ export class AudioSession {
   private paused(): void {
     if (!this.active) return;
     this.update({ playing: false });
-    if (this.switching || !this.snapshot.ready) return;
+    if (this.switching || !this.snapshot.ready || this.awaitingTransition) return;
     this.checkpoints.settle(this.audio.currentTime, this.current.id);
     this.callbacks.flush();
   }

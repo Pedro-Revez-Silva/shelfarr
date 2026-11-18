@@ -94,11 +94,7 @@ export class ProgressSession {
     this.clearTimer();
     if (!this.writable() || this.held || this.state.kind === "conflict") return;
     const next = this.queued;
-    if (!next) return;
-    if (this.inflight) {
-      if (options.keepalive) this.sendBehind(this.inflight, next);
-      return;
-    }
+    if (!next || this.inflight) return;
     this.queued = null;
     void this.send({ ...next.place, observed_at: next.observedAt, expected_version: this.version, client_mutation_id: this.options.uuid() }, options.keepalive ?? false);
   }
@@ -125,6 +121,19 @@ export class ProgressSession {
     this.version = Math.max(this.version, remote?.version ?? 0);
     this.set({ kind: "idle" });
     return remote;
+  }
+
+  get unsaved(): boolean {
+    return this.writable() && (this.queued !== null || this.inflight !== null || this.held !== null || this.state.kind === "conflict");
+  }
+
+  async drain(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    this.flush();
+    while (this.writable() && (this.inflight || (this.queued && !this.held && this.state.kind !== "conflict")) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (!this.inflight) this.flush();
+    }
   }
 
   dismissRemote(): void {
@@ -160,12 +169,6 @@ export class ProgressSession {
   private clearTimer(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-  }
-
-  private sendBehind(inflight: ProgressRequest, next: Observation): void {
-    this.queued = null;
-    const body = { ...next.place, observed_at: next.observedAt, expected_version: inflight.expected_version + 1, client_mutation_id: this.options.uuid() };
-    void this.options.write(body, { keepalive: true }).catch(() => undefined);
   }
 
   private async send(request: ProgressRequest, keepalive: boolean): Promise<void> {
