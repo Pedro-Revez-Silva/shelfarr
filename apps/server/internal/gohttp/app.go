@@ -235,7 +235,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeAuthToken:
 		a.exchange(w, r, result)
 	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
-		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder:
+		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)

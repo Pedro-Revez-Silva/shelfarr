@@ -39,6 +39,9 @@ const (
 	routeBrowserProgress
 	routeBrowserMedia
 	routeBrowserReadingOrder
+	routeBrowserAccount
+	routeBrowserProfile
+	routeBrowserPassword
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
@@ -215,6 +218,12 @@ func classifyPreview(method, rest string) route {
 			return route{kind: routeBrowserDecide, name: "browser_decide"}
 		}
 		return route{kind: routeWrongMethod, name: "browser_connect", allow: "GET, HEAD, POST"}
+	case rest == "account":
+		return supported(method, route{kind: routeBrowserAccount, name: "browser_account"})
+	case rest == "account/profile":
+		return served(method, route{kind: routeBrowserProfile, name: "browser_profile"}, http.MethodPut)
+	case rest == "account/password":
+		return served(method, route{kind: routeBrowserPassword, name: "browser_password"}, http.MethodPost)
 	case rest == "auth/bootstrap":
 		return served(method, route{kind: routeAuthBootstrap, name: "auth_bootstrap"}, http.MethodGet)
 	case rest == "auth/login":
