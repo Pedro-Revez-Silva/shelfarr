@@ -138,12 +138,19 @@ func sessionHolds(ctx context.Context, tx *sql.Tx, session SessionRow) (bool, er
 	return userID == session.UserID && moment.Equal(session.CreatedAt), nil
 }
 
-func lockedAccount(ctx context.Context, tx *sql.Tx, session SessionRow) (accountRecord, error) {
+func lockedAccount(ctx context.Context, tx *sql.Tx, session SessionRow, now time.Time) (accountRecord, error) {
 	holds, err := sessionHolds(ctx, tx, session)
 	if err != nil {
 		return accountRecord{}, err
 	}
 	if !holds {
+		return accountRecord{}, ErrSessionEnded
+	}
+	lifetime, err := sessionLifetime(ctx, tx)
+	if err != nil {
+		return accountRecord{}, err
+	}
+	if session.CreatedAt.Before(now.Add(-lifetime)) {
 		return accountRecord{}, ErrSessionEnded
 	}
 	record, found, err := readAccount(ctx, tx, session.UserID)
@@ -165,7 +172,8 @@ func (d *DB) UpdateName(ctx context.Context, session SessionRow, name string, cl
 	if err := fault.Hit(ctx, "profile.locked"); err != nil {
 		return ProfileResult{}, err
 	}
-	record, err := lockedAccount(ctx, tx, session)
+	now := clock()
+	record, err := lockedAccount(ctx, tx, session, now)
 	if err != nil {
 		return ProfileResult{}, err
 	}
@@ -177,7 +185,7 @@ func (d *DB) UpdateName(ctx context.Context, session SessionRow, name string, cl
 		return ProfileResult{Errors: invalid}, nil
 	}
 	if name != record.name {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET name = ?, updated_at = ? WHERE id = ?`, name, TimestampText(clock()), session.UserID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET name = ?, updated_at = ? WHERE id = ?`, name, TimestampText(now), session.UserID); err != nil {
 			return ProfileResult{}, Classify(err)
 		}
 	}
@@ -199,7 +207,8 @@ func (d *DB) ChangePassword(ctx context.Context, session SessionRow, checked Pas
 	if err := fault.Hit(ctx, "password.locked"); err != nil {
 		return PasswordResult{}, err
 	}
-	record, err := lockedAccount(ctx, tx, session)
+	now := clock()
+	record, err := lockedAccount(ctx, tx, session, now)
 	if err != nil {
 		return PasswordResult{}, err
 	}
@@ -213,7 +222,7 @@ func (d *DB) ChangePassword(ctx context.Context, session SessionRow, checked Pas
 	if len(invalid) > 0 {
 		return PasswordResult{Errors: invalid}, nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_digest = ?, updated_at = ? WHERE id = ?`, digest, TimestampText(clock()), session.UserID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_digest = ?, updated_at = ? WHERE id = ?`, digest, TimestampText(now), session.UserID); err != nil {
 		return PasswordResult{}, Classify(err)
 	}
 	ended, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ? AND id != ?`, session.UserID, session.ID)

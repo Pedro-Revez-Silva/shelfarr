@@ -287,8 +287,8 @@ module Migration
         fixed_layout_browser_scenarios
         login_scenarios
         logout_scenarios
-        account_scenarios
         @rails_final = { "sessions" => database_rows("sessions", SESSION_COLUMNS), "users" => database_rows("users", USER_COLUMNS) }
+        account_scenarios
       end
 
       def data_scenarios

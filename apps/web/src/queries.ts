@@ -71,20 +71,16 @@ export function useProfile() {
   });
 }
 
-export function useShowSavedProfile() {
-  const { keys, guard } = useServices();
+export function useDisplayName() {
+  const { api, keys, guard } = useServices();
   const client = useQueryClient();
-  return (profile: Profile) => {
+  const show = (profile: Profile) => {
     if (!guard.isActive()) return;
     client.setQueryData(keys.profile, profile);
     client.setQueryData<Session>(keys.session, (session) => (session ? { ...session, account: { ...session.account, name: profile.name } } : session));
+    void client.invalidateQueries({ queryKey: keys.profile });
     void client.invalidateQueries({ queryKey: keys.session });
   };
-}
-
-export function useDisplayName() {
-  const { api } = useServices();
-  const show = useShowSavedProfile();
   return useMutation({
     mutationFn: (name: string) => api.updateProfile(name),
     onSuccess: (answer: AccountAnswer) => {

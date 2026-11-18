@@ -323,10 +323,14 @@ type parkedChange struct {
 	outcome   chan result
 }
 
-func parkPasswordChange(t *testing.T, f fixture, copied runtimeCopy, point, password string) parkedChange {
+func parkPasswordChange(t *testing.T, f fixture, copied runtimeCopy, point, password string, clock ...string) parkedChange {
 	t.Helper()
 	directory := t.TempDir()
-	instance := accountServer(t, f, copied, serverOptions{seam: true, faults: point + "=park", faultDir: directory})
+	options := serverOptions{seam: true, faults: point + "=park", faultDir: directory}
+	if len(clock) == 1 {
+		options.clockFile = clock[0]
+	}
+	instance := accountServer(t, f, copied, options)
 	client := instance.browser()
 	id, token := client.signIn("browser_account", f.personas.Passwords["browser_account"])
 	outcome := make(chan result, 1)
@@ -391,6 +395,18 @@ func TestAccountPasswordChangesRecheckEverythingInsideTheWrite(t *testing.T) {
 			parked.instance.stop()
 			exec1(t, copied.database, `UPDATE users SET deleted_at = NULL WHERE username = 'browser_account'`)
 		}
+
+		clock := filepath.Join(t.TempDir(), "clock")
+		setClock(t, clock, "2026-11-15T12:00:00Z")
+		parked = parkPasswordChange(t, f, copied, "password.checked", "Parked-Passw0rd-1", clock)
+		setClock(t, clock, "2026-12-15T12:00:00.000001Z")
+		if response := parked.release(t, "password.checked"); response.status != http.StatusUnauthorized || response.code(t) != "signed_out" {
+			t.Fatalf("a session that expired during the check changed the password: %d %s", response.status, response.body)
+		}
+		if userValue(t, copied.database, "password_digest", "browser_account") != digest {
+			t.Fatal("an expired session changed the digest")
+		}
+		parked.instance.stop()
 
 		for _, point := range []string{"password.locked", "password.before-commit"} {
 			sessions := rows(t, copied.database, `SELECT id FROM sessions ORDER BY id`)

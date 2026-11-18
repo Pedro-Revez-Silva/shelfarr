@@ -190,6 +190,22 @@ describe("the Account page in the Go preview", () => {
     await server.stop();
   });
 
+  test("a cookie for an account outside the preview, set by another tab, locks the open page and drops the typed password", async () => {
+    const server = await fresh();
+    const { context, page } = await openAs(browser, server);
+    await openAccount(page, server.origin);
+    await page.getByLabel("Current password").fill("typed-but-not-sent");
+    const outsider = fixture.personas["outsider"];
+    await context.addCookies([{ name: "session_id", value: outsider?.cookie ?? "", url: server.origin }]);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("heading", { name: "The signed-in account changed" }).waitFor();
+    expect(await page.getByLabel("Current password").count()).toBe(0);
+    expect(await page.content()).not.toContain("typed-but-not-sent");
+    expect(stored(server).name).toBe("Browser account");
+    await context.close();
+    await server.stop();
+  });
+
   test("Tab walks the identity, name and password controls in reading order and never reaches the hidden username", async () => {
     const server = await fresh();
     const { context, page } = await openAs(browser, server);

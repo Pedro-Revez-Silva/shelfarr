@@ -950,8 +950,8 @@ Messages are the attribute messages of `User#errors` (for example `"name": ["can
 The current password is checked and the new digest computed from a read snapshot, outside any write lock, in the same
 bounded pool as sign-in (`-max-login-workers`, `503 server_busy`) and under the sign-in per-address limit (`-login-attempts`
 per `-login-window`, shared with sign-in). Then one `BEGIN IMMEDIATE` re-reads the session row (same id, user and
-creation time), the user (present, not deleted), the stored digest and the OIDC link; a session ended or account deleted
-meanwhile is `401 signed_out`, a digest or OIDC link changed meanwhile is `409 account_conflict` and nothing is written.
+creation time) and checks it against `session_max_age_days` at the transaction's own clock, the user (present, not
+deleted), the stored digest and the OIDC link; a session ended, expired or account deleted meanwhile is `401 signed_out`, a digest or OIDC link changed meanwhile is `409 account_conflict` and nothing is written.
 The digest and `updated_at` (microseconds, as Rails) change and the other sessions are deleted in that transaction, so a
 failure or crash leaves either both or neither. The name change runs in one such transaction too. The session cookie and
 its CSRF token stay valid, because the session row is unchanged.
@@ -977,9 +977,13 @@ The password form carries a hidden `autocomplete="username"` field and `current-
 password managers can update the saved credential. Errors appear only after a submit, on their fields (`aria-invalid`,
 `aria-describedby`), and focus moves to the first refused field; outcomes are announced in a status region. A submit while
 one is in flight sends nothing. A saved name updates the header and the identity without touching an unsaved password
-form; an answer that arrives after leaving the screen still refreshes the header, and an answer for another account locks
-the page. An uncertain answer (network or server error) says it may have been saved and never resends by itself; a
-conflict clears and focuses the current password. Password values live only in the form: they are never in React state,
+form, cancels any older read of the profile and re-reads it; text typed while a save is in flight is kept. A password
+answer never changes the shown identity. An answer that arrives after leaving the screen still refreshes the header, an
+answer for another account locks the page, and a session check that the server answers `404` (the cookie now belongs to
+an account outside the preview) locks the page and unmounts the forms. An uncertain answer (network or server error, or a
+success whose body cannot be read) says it may have been saved and never resends by itself; a conflict clears and focuses
+the current password. Focus moves to the first refused field after its error is attached, and each refusal is also
+announced in the form's status region. Password values live only in the form: they are never in React state,
 the query or mutation cache, storage, the URL, history or a log, and the fields are cleared after a change.
 
 ### Contract before and after

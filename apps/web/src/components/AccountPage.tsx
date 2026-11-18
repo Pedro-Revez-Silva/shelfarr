@@ -1,7 +1,7 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
 import { ApiError, failureKind } from "../api/errors";
 import type { Profile } from "../contract";
-import { useDisplayName, useProfile, useShowSavedProfile } from "../queries";
+import { useDisplayName, useProfile } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { describeWriteFailure, fieldMessage, firstInvalid, isBlank, recordRefusal, splitErrors, type FieldErrors, type FormOutcome } from "./accountFields";
@@ -91,43 +91,65 @@ function Outcome({ outcome }: { outcome: FormOutcome }) {
   );
 }
 
+function useFocusOnRefusal(form: RefObject<HTMLFormElement | null>, fields: readonly string[], errors: FieldErrors): () => void {
+  const [requested, setRequested] = useState(0);
+  const handled = useRef(0);
+  useEffect(() => {
+    if (requested === handled.current) return;
+    handled.current = requested;
+    firstInvalid(form.current, fields, errors);
+  }, [requested, form, fields, errors]);
+  return () => setRequested((count) => count + 1);
+}
+
 function DisplayNameForm({ profile }: { profile: Profile }) {
   const ids = { heading: useId(), input: useId(), error: useId() };
   const form = useRef<HTMLFormElement>(null);
   const saving = useRef(false);
+  const edits = useRef(0);
   const mutation = useDisplayName();
   const { queryClient, keys } = useServices();
   const [draft, setDraft] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [outcome, setOutcome] = useState<FormOutcome>(null);
+  const focusRefusal = useFocusOnRefusal(form, NAME_FIELDS, errors);
   const value = draft ?? profile.name;
+
+  function refuse(found: FieldErrors) {
+    setErrors(found);
+    setOutcome({ tone: "error", text: "The name was not saved. Check the marked field." });
+    focusRefusal();
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving.current) return;
     setOutcome(null);
     if (isBlank(value)) {
-      const blank = { name: ["can't be blank"] };
-      setErrors(blank);
-      firstInvalid(form.current, NAME_FIELDS, blank);
+      refuse({ name: ["can't be blank"] });
       return;
     }
     setErrors({});
     saving.current = true;
+    const revision = edits.current;
     mutation.mutate(value, {
       onSettled: () => {
         saving.current = false;
       },
       onSuccess: (answer) => {
+        const current = edits.current === revision;
         if (answer.kind === "saved") {
-          setDraft(null);
-          setOutcome({ tone: "success", text: "Display name saved." });
+          if (current) setDraft(null);
+          setOutcome({ tone: "success", text: current ? "Display name saved." : "The earlier name was saved. Your newer change is not saved yet." });
           return;
         }
         const { own, record } = splitErrors(answer.errors, NAME_FIELDS);
-        setErrors(own);
-        if (record.length) setOutcome({ tone: "error", text: recordRefusal(record) });
-        firstInvalid(form.current, NAME_FIELDS, own);
+        if (record.length) {
+          setOutcome({ tone: "error", text: recordRefusal(record) });
+          return;
+        }
+        if (current) refuse(own);
+        else setOutcome({ tone: "error", text: `The earlier name was not saved: ${fieldMessage("name", own["name"] ?? [])}` });
       },
       onError: (error) => {
         void queryClient.invalidateQueries({ queryKey: keys.profile });
@@ -154,6 +176,7 @@ function DisplayNameForm({ profile }: { profile: Profile }) {
             aria-invalid={invalid}
             aria-describedby={describedBy(invalid && ids.error)}
             onChange={(event) => {
+              edits.current += 1;
               setDraft(event.target.value);
               setOutcome(null);
               if (invalid) setErrors({});
@@ -178,10 +201,16 @@ function PasswordForm({ profile }: { profile: Profile }) {
   const submitting = useRef(false);
   const mounted = useRef(true);
   const { api } = useServices();
-  const show = useShowSavedProfile();
   const [pending, setPending] = useState(false);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [outcome, setOutcome] = useState<FormOutcome>(null);
+  const focusRefusal = useFocusOnRefusal(form, PASSWORD_FIELDS, errors);
+
+  function refuse(found: FieldErrors) {
+    setErrors(found);
+    setOutcome({ tone: "error", text: "The password was not changed. Check the marked fields." });
+    focusRefusal();
+  }
 
   useEffect(() => {
     mounted.current = true;
@@ -210,9 +239,9 @@ function PasswordForm({ profile }: { profile: Profile }) {
     if (change.password === "") missing["password"] = ["can't be blank"];
     if (change.password !== change.password_confirmation) missing["password_confirmation"] = ["doesn't match Password"];
     setOutcome(null);
-    setErrors(missing);
+    setErrors({});
     if (Object.keys(missing).length) {
-      firstInvalid(element, PASSWORD_FIELDS, missing);
+      refuse(missing);
       return;
     }
     submitting.current = true;
@@ -222,19 +251,17 @@ function PasswordForm({ profile }: { profile: Profile }) {
       if (!mounted.current) return;
       if (answer.kind === "saved") {
         element.reset();
-        show(answer.profile);
         setOutcome({ tone: "success", text: "Password changed. You are still signed in here; every other browser signed in to this account has been signed out. Apps connected to your account stay connected." });
         return;
       }
       const { own, record } = splitErrors(answer.errors, PASSWORD_FIELDS);
-      setErrors(own);
       if (record.length) setOutcome({ tone: "error", text: recordRefusal(record) });
-      firstInvalid(element, PASSWORD_FIELDS, own);
+      else refuse(own);
     } catch (error) {
       if (!mounted.current) return;
       const text = describeWriteFailure(
         error,
-        "Shelfarr could not confirm whether your password changed. It may have been saved: try again, and if your current password is refused, your new password is already in use.",
+        "Shelfarr could not confirm whether your password changed. It may have been saved. Your entries are still here: you can submit again, and if your current password is then refused, your password has changed since this page was opened.",
       );
       if (error instanceof ApiError && error.kind === "conflict") {
         const field = element.elements.namedItem("current_password");

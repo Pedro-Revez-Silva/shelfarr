@@ -80,6 +80,8 @@ export function describeWriteFailure(error: unknown, uncertain: string): string 
       return "This account's stored password is in a form this experimental server cannot check. Nothing was changed.";
     case "not_found":
       return "Account settings are not available on this server. Nothing was changed.";
+    case "contract":
+      return error.status !== null && error.status >= 400 ? "The server did not accept this request. Nothing was changed; reload the page and try again." : uncertain;
     default:
       return error.code === "request_too_large" ? "That is too long to save. Nothing was changed; shorten it and try again." : "The server did not accept this request. Nothing was changed; reload the page and try again.";
   }

@@ -74,8 +74,9 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       const session = await api.session(controller.signal, true);
       if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
-    } catch {
-      guard.finishCheck(generation, false);
+    } catch (error) {
+      if (isApiError(error) && error.kind === "not_found") guard.lock("account_changed");
+      else guard.finishCheck(generation, false);
     } finally {
       clearTimeout(timer);
     }

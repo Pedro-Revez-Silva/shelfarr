@@ -233,6 +233,87 @@ describe("changing the display name", () => {
   });
 });
 
+describe("review regressions", () => {
+  test("a session check that finds this browser no longer allowed locks the page and drops a typed password", async () => {
+    let allowed = true;
+    const server = accountServer().on("GET", /\/api\/v1\/session$/, () => (allowed ? { body: session() } : error(404, "not_found")));
+    renderAccount(server);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Current password"), CURRENT);
+    allowed = false;
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await screen.findByRole("heading", { name: /account changed/i })).toBeTruthy();
+    expect(screen.queryByLabelText("Current password")).toBeNull();
+    expect(document.body.innerHTML).not.toContain(CURRENT);
+  });
+
+  test("a password answer that arrives after a newer name is saved does not bring the old name back", async () => {
+    const pendingPassword = deferred<{ body: unknown }>();
+    const state = { name: "Ada Reader" };
+    const server = accountServer(state).on("POST", /\/account\/password$/, () => pendingPassword.promise);
+    renderAccount(server);
+    const user = userEvent.setup();
+    await screen.findByLabelText("Current password");
+    await fillPassword(user, CURRENT, NEXT);
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    const input = screen.getByRole("textbox", { name: "Display name" });
+    await user.clear(input);
+    await user.type(input, "Saved New Name");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    await screen.findByText("Display name saved.");
+    await act(async () => pendingPassword.resolve({ body: { account: ACCOUNT, profile: profile("Ada Reader") } }));
+    await screen.findByText(/Password changed/);
+    await act(async () => Bun.sleep(20));
+    expect((screen.getByRole("textbox", { name: "Display name" }) as HTMLInputElement).value).toBe("Saved New Name");
+    expect(within(screen.getByRole("region", { name: "Signed in as" })).getByText("Saved New Name")).toBeTruthy();
+  });
+
+  test("typing while a name is being saved keeps the newer text", async () => {
+    const pending = deferred<{ body: unknown }>();
+    const state = { name: "Ada Reader" };
+    const server = accountServer(state).on("PUT", /\/account\/profile$/, () => pending.promise);
+    renderAccount(server);
+    const user = userEvent.setup();
+    const input = await screen.findByRole("textbox", { name: "Display name" });
+    await user.clear(input);
+    await user.type(input, "Submitted Name");
+    await user.click(screen.getByRole("button", { name: "Save name" }));
+    await user.type(input, " and more");
+    state.name = "Submitted Name";
+    await act(async () => pending.resolve({ body: { account: ACCOUNT, profile: profile("Submitted Name") } }));
+    expect(await screen.findByText("The earlier name was saved. Your newer change is not saved yet.")).toBeTruthy();
+    expect((input as HTMLInputElement).value).toBe("Submitted Name and more");
+  });
+
+  test("a success answer that cannot be read is reported as uncertain, never as nothing changed", async () => {
+    const server = accountServer().on("POST", /\/account\/password$/, () => ({ status: 200, body: undefined, headers: { "content-type": "text/plain" } }));
+    renderAccount(server);
+    const user = userEvent.setup();
+    await screen.findByLabelText("Current password");
+    await fillPassword(user, CURRENT, NEXT);
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    expect(await screen.findByText(/could not confirm whether your password changed/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing was changed/)).toBeNull();
+  });
+
+  test("focus reaches a refused field only once its error describes it, and the refusal is announced", async () => {
+    const server = accountServer().on("POST", /\/account\/password$/, () => error(422, "invalid_password", { account: ACCOUNT, errors: { current_password: ["is incorrect"] } }));
+    renderAccount(server);
+    const user = userEvent.setup();
+    const current = await screen.findByLabelText("Current password");
+    const described: (string | null)[] = [];
+    current.addEventListener("focus", () => described.push(current.getAttribute("aria-describedby")));
+    await fillPassword(user, "Wrong-Passw0rd-1", NEXT);
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    await waitFor(() => expect(document.activeElement).toBe(current));
+    const last = described[described.length - 1] ?? "";
+    expect(document.getElementById(last)?.textContent).toContain("That is not your current password.");
+    expect(within(current.closest("form") as HTMLElement).getByRole("status").textContent).toBe("The password was not changed. Check the marked fields.");
+  });
+});
+
 describe("changing the password", () => {
   test("is a labelled form a password manager can fill and update", async () => {
     renderAccount(accountServer());
