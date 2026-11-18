@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -337,8 +338,12 @@ func fixtureDigest(t *testing.T, f fixture) string {
 				sum.Write([]byte("missing " + path))
 				return nil
 			}
-			if info, err := entry.Info(); err == nil {
-				fmt.Fprintf(sum, "%s %d %d\n", path, info.Size(), info.ModTime().UnixNano())
+			fmt.Fprintf(sum, "%s %s\n", path, entry.Type())
+			if entry.Type().IsRegular() {
+				if file, err := os.Open(path); err == nil {
+					io.Copy(sum, file)
+					file.Close()
+				}
 			}
 			return nil
 		})

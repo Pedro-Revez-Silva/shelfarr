@@ -145,7 +145,7 @@ func readJSON(t *testing.T, path string, into any) {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("cannot read %s", filepath.Base(path))
+		setupFailed(t, "cannot read "+filepath.Base(path))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -174,10 +174,10 @@ func newRuntimeCopy(t *testing.T, f fixture) runtimeCopy {
 	copied := runtimeCopy{dir: dir, database: filepath.Join(dir, "primary.sqlite3"), lock: filepath.Join(dir, "domain.lock")}
 	source, err := os.ReadFile(filepath.Join(f.dir, f.doc.Database))
 	if err != nil {
-		t.Fatal("cannot read the pre-scenario database")
+		setupFailed(t, "cannot read the pre-scenario database")
 	}
 	if err := os.WriteFile(copied.database, source, 0o600); err != nil {
-		t.Fatal(err)
+		setupFailed(t, "cannot write the private database copy")
 	}
 	database, err := sql.Open("sqlite", "file:"+copied.database)
 	if err != nil {
@@ -418,10 +418,18 @@ func accountDigest(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func setupFailed(t *testing.T, reason string) {
+	t.Helper()
+	if os.Getenv(runMarkerName) != "" {
+		t.Skip("the scenario could not be set up, which proves nothing about a mutant: " + reason)
+	}
+	t.Fatal(reason)
+}
+
 func runnerEnvironment() []string {
 	var inherited []string
 	for _, variable := range os.Environ() {
-		if strings.HasPrefix(variable, "GOMAXPROCS=") {
+		if strings.HasPrefix(variable, "GOMAXPROCS=") || strings.HasPrefix(variable, runMarkerName+"=") {
 			inherited = append(inherited, variable)
 		}
 	}
