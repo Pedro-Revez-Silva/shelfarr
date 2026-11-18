@@ -427,13 +427,18 @@ function pageAt(page: number): FakeLocation {
   return { start: { cfi: `epubcfi(/6/2!/4/${page * 2}/1:0)`, href: "one.xhtml", index: 0, displayed: { page, total: 4 } } };
 }
 
-function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: FakeLocation; places?: (target: string | undefined) => FakeLocation | null; slowNext?: (advance: () => void) => Promise<void> }) {
+function fakeEngine(options: { now: { value: number }; contents?: () => unknown[]; location?: FakeLocation; places?: (target: string | undefined) => FakeLocation | null; slowNext?: (advance: () => void) => Promise<void>; broken?: string }) {
   const displayed: (string | undefined)[] = [];
   const listeners: Record<string, Listener> = {};
+  const hooks: ((contents: unknown) => void)[] = [];
   let current: FakeLocation = options.location ?? pageAt(1);
   const rendition = {
     display: async (target?: string) => {
       displayed.push(target);
+      if (target !== undefined && target === options.broken) {
+        listeners["displayerror"]?.(new Error("missing section"));
+        await new Promise(() => undefined);
+      }
       const next = options.places?.(target);
       if (next) current = next;
     },
@@ -449,7 +454,7 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
     on: (event: string, listener: Listener) => {
       listeners[event] = listener;
     },
-    hooks: { content: { register: () => undefined } },
+    hooks: { content: { register: (hook: (contents: unknown) => void) => hooks.push(hook) } },
     themes: { default: () => undefined, fontSize: () => undefined },
     getContents: () => (options.contents ? options.contents() : []),
     currentLocation: () => current,
@@ -467,7 +472,7 @@ function fakeEngine(options: { now: { value: number }; contents?: () => unknown[
     destroy: () => undefined,
   };
   const purifier = Object.assign(() => undefined, { sanitize: (html: string) => html, addHook: () => undefined, removeHook: () => undefined });
-  return { engine: { ePub: () => book, DOMPurify: purifier } as unknown as ReaderEngine, displayed };
+  return { engine: { ePub: () => book, DOMPurify: purifier } as unknown as ReaderEngine, displayed, hooks };
 }
 
 const progressionOf = (value: unknown) => (value as { locator: { locations: { cfi: string } } }).locator.locations.cfi;
@@ -494,6 +499,54 @@ describe("EPUB session review regressions", () => {
       [pageAt(2).start.cfi, 0],
       [pageAt(3).start.cfi, 4000],
     ]);
+    session.destroy();
+  });
+
+  test("a turn still running when another device's place is adopted records nothing", async () => {
+    const releases: (() => void)[] = [];
+    const { engine } = fakeEngine({ now: { value: 0 }, slowNext: (advance) => new Promise<void>((resolve) => releases.push(() => { advance(); resolve(); })) });
+    const moved: unknown[] = [];
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: (value) => moved.push(value), key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    session.next();
+    await settle();
+    const adopted = session.showRemote({ href: "one.xhtml", locations: { cfi: "epubcfi(/6/2!/4/2/1:0)" } });
+    releases.shift()?.();
+    await adopted;
+    await settle();
+    expect(moved).toEqual([]);
+    session.next();
+    await settle();
+    releases.shift()?.();
+    await settle();
+    expect(moved).toHaveLength(1);
+    session.destroy();
+  });
+
+  test("a chapter the engine cannot display is reported and does not stall later moves", async () => {
+    const failures: string[] = [];
+    const { engine, displayed } = fakeEngine({ now: { value: 0 }, broken: "missing.xhtml" });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: (message) => failures.push(message) });
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    session.chooseChapter("missing.xhtml");
+    await settle();
+    session.chooseChapter("two.xhtml");
+    await settle();
+    expect(failures).toEqual(["This chapter couldn't be opened."]);
+    expect(displayed).toContain("two.xhtml");
+    session.destroy();
+  });
+
+  test("an in-book link to a file whose name holds an encoded # opens that file", async () => {
+    const { engine, displayed, hooks } = fakeEngine({ now: { value: 0 } });
+    const session = new EpubSession(engine, document.createElement("div"), ASSET, { position: () => undefined, moved: () => undefined, key: () => undefined, failed: () => undefined });
+    await session.open(new ArrayBuffer(1), null, { ink: "#000", surface: "#fff" });
+    const book = document.implementation.createHTMLDocument("section");
+    book.body.innerHTML = '<a href="http://shelf.test/OEBPS/special%23chapter.xhtml">next</a>';
+    hooks[0]?.({ document: book, window: { frameElement: null, getSelection: () => null }, sectionIndex: 1, cfiFromNode: () => "", cfiFromRange: () => "" });
+    book.querySelector("a")?.click();
+    await settle();
+    expect(displayed).toContain("OEBPS/special%23chapter.xhtml");
     session.destroy();
   });
 

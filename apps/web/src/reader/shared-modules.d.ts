@@ -21,6 +21,7 @@ declare module "*/app/javascript/consumer_epub_places.js" {
     prev(): Promise<unknown>;
     on(event: "relocated", listener: (location: EpubLocation) => void): void;
     on(event: "resized", listener: () => void): void;
+    on(event: "displayerror", listener: (reason: unknown) => void): void;
     hooks: { content: { register(hook: (contents: EpubContents) => void): void } };
     themes: { default(rules: Record<string, Record<string, string>>): void; fontSize(size: string): void };
     getContents(): EpubContents[];

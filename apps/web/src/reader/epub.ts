@@ -41,6 +41,8 @@ export class EpubSession {
   private rendition: EpubRendition | null = null;
   private ready = false;
   private moves: Promise<void> = Promise.resolve();
+  private epoch = 0;
+  private displayFailed: ((reason: unknown) => void) | null = null;
   private readingAnchor: string | undefined;
   private reflow: Promise<unknown> = Promise.resolve();
   private touchStart: { x: number; y: number } | null = null;
@@ -81,6 +83,7 @@ export class EpubSession {
     rendition.themes.fontSize(`${this.fontSize}%`);
     rendition.on("relocated", (location) => this.relocated(location));
     rendition.on("resized", () => this.reflowed());
+    rendition.on("displayerror", (reason) => this.displayFailed?.(reason));
     rendition.hooks.content.register((contents) => this.bookInput(contents));
     const chapters = flatten((await book.loaded.navigation).toc);
     await this.restore(locator);
@@ -109,6 +112,7 @@ export class EpubSession {
   }
 
   showRemote(locator: Locator): Promise<void> {
+    this.epoch += 1;
     const shown = this.moves.then(() => this.restore(locator));
     this.moves = shown.catch(() => undefined);
     return shown;
@@ -145,7 +149,7 @@ export class EpubSession {
     if (url.origin !== window.location.origin) return null;
     let path: string;
     try {
-      path = decodeURIComponent(url.pathname);
+      path = decodeURIComponent(url.pathname.replace(/%23/gi, "%2523"));
     } catch {
       return null;
     }
@@ -237,6 +241,7 @@ export class EpubSession {
 
   private move(step: () => Promise<unknown> | undefined, message: string): Promise<void> {
     const started = this.now();
+    const epoch = this.epoch;
     const run = this.moves.then(async () => {
       try {
         let pending: Promise<unknown>;
@@ -244,16 +249,25 @@ export class EpubSession {
           pending = this.reflow;
           await pending;
         } while (pending !== this.reflow);
-        if (!this.active || !this.ready) return;
+        if (!this.active || !this.ready || epoch !== this.epoch) return;
         const before = this.pageCfi();
-        await step();
-        if (this.active) this.reached(before, started);
+        await this.settled(step);
+        if (this.active && epoch === this.epoch) this.reached(before, started);
       } catch {
         if (this.active) this.callbacks.failed(message);
       }
     });
     this.moves = run;
     return run;
+  }
+
+  private settled(step: () => Promise<unknown> | undefined): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      this.displayFailed = reject;
+      Promise.resolve(step()).then(resolve, reject);
+    }).finally(() => {
+      this.displayFailed = null;
+    });
   }
 
   private reached(before: string | undefined, at: number): void {
