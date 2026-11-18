@@ -217,17 +217,25 @@ func (r mutantRunner) test(directory, packagePath, pattern string, tagged bool, 
 }
 
 func classifyMutantRun(ran runResult) (verdict, string) {
-	failures, completed := 0, false
+	failures, completed, crashedTest := 0, false, false
+	lastFrame := ""
 	for _, line := range strings.Split(ran.output, "\n") {
 		marker := strings.LastIndex(line, frame)
 		if marker < 0 {
+			if strings.TrimSpace(line) != "" && strings.HasPrefix(lastFrame, "--- FAIL: ") && strings.HasPrefix(line, "panic: ") && !strings.HasPrefix(line, "panic: test timed out") {
+				crashedTest = true
+			}
+			if strings.TrimSpace(line) != "" {
+				lastFrame = ""
+			}
 			continue
 		}
-		completed = false
-		switch body := line[marker+len(frame):]; {
-		case strings.HasPrefix(body, "--- FAIL: "):
+		completed, crashedTest = false, false
+		lastFrame = line[marker+len(frame):]
+		switch {
+		case strings.HasPrefix(lastFrame, "--- FAIL: "):
 			failures++
-		case body == "FAIL" || body == "PASS":
+		case lastFrame == "FAIL" || lastFrame == "PASS":
 			completed = true
 		}
 	}
@@ -237,10 +245,10 @@ func classifyMutantRun(ran runResult) (verdict, string) {
 		return unproven, "the run exhausted its budget and was cancelled:\n" + evidence
 	case ran.exitCode == 0 && completed && failures == 0:
 		return survived, ""
-	case ran.exitCode == 1 && completed && failures > 0:
+	case ran.exitCode == 1 && completed && failures > 0, ran.exitCode == 2 && crashedTest:
 		return detected, ""
 	}
-	return unproven, "the run did not finish with a failed assertion (exit " + strconv.Itoa(ran.exitCode) + "):\n" + evidence
+	return unproven, "the run did not finish with a failed assertion or a crash inside a started test (exit " + strconv.Itoa(ran.exitCode) + "):\n" + evidence
 }
 
 type mutantStep func() (verdict, string)
@@ -344,9 +352,16 @@ func TestA(t *testing.T) { fmt.Print("no newline") }`, survived},
 		"a pass": {`package probe
 import "testing"
 func TestA(t *testing.T) {}`, survived},
-		"a panic without an assertion": {`package probe
+		"a crash inside a started test": {`package probe
 import "testing"
-func TestA(t *testing.T) { panic("boom") }`, unproven},
+func TestA(t *testing.T) { var rows []int; _ = rows[0] }`, detected},
+		"a crash inside a started subtest": {`package probe
+import "testing"
+func TestA(t *testing.T) { t.Run("sub", func(t *testing.T) { var row map[string]any; _ = row["x"].(string) }) }`, detected},
+		"a panic after the tests finished": {`package probe
+import "testing"
+func TestMain(m *testing.M) { m.Run(); panic("after") }
+func TestA(t *testing.T) { t.Error("wrong") }`, unproven},
 		"a hang that meets the Go alarm": {`package probe
 import "testing"
 func TestA(t *testing.T) { select {} }`, unproven},

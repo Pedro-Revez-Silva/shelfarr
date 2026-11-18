@@ -91,7 +91,8 @@ if [ "$mutant_seconds" -lt 600 ]; then
   exit 1
 fi
 echo "mutants: ${mutant_parallel} at a time within ${mutant_seconds}s"
-(cd e2e/httpruntime && env "${fixtures[@]}" "$work/mutants.test" -test.run '^TestMutantsAreDetected$' -test.timeout "${mutant_seconds}s" -test.parallel "$mutant_parallel")
+(cd e2e/httpruntime && env "${fixtures[@]}" "$work/mutants.test" -test.v -test.run '^TestMutantsAreDetected$' -test.timeout "${mutant_seconds}s" -test.parallel "$mutant_parallel") > "$work/mutants.log" 2>&1 || { grep -v -- '--- PASS' "$work/mutants.log" | tail -200 >&2; exit 1; }
+echo "mutants killed: $(grep '^    --- PASS: TestMutantsAreDetected/' "$work/mutants.log" | grep -vc '/unmutated '), unmutated runs passed: $(grep -c '^        --- PASS: TestMutantsAreDetected/unmutated/' "$work/mutants.log")"
 
 step "go: the unchanged read-only checker still accepts both bundles"
 timeout 60 go build -o "$work/compat" ./cmd/shelfarr-compat
