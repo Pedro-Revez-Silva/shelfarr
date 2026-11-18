@@ -23,9 +23,9 @@ case "$(ruby -e 'print RUBY_VERSION')" in
   *) echo "Ruby $wanted_ruby from .ruby-version must be first on PATH" >&2; exit 2 ;;
 esac
 
-job_budget_seconds=3000
-after_mutants_seconds=720
-mutant_build_seconds=120
+deadline_epoch="${SHELFARR_VERIFY_DEADLINE_EPOCH:-$(( $(date +%s) + 3480 ))}"
+after_mutants_seconds=960
+mutant_build_seconds=180
 step() { printf '\n== [%ss] %s\n' "$SECONDS" "$*"; }
 
 clean_env() {
@@ -84,18 +84,19 @@ done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"
 mutant_parallel=$(( $(nproc) > 2 ? $(nproc) / 2 : 1 ))
-mutant_seconds=$(( job_budget_seconds - SECONDS - after_mutants_seconds - mutant_build_seconds ))
+timeout "$mutant_build_seconds" go test -c -tags e2e -o "$work/mutants.test" ./e2e/httpruntime/
+mutant_seconds=$(( deadline_epoch - $(date +%s) - after_mutants_seconds ))
 if [ "$mutant_seconds" -lt 600 ]; then
-  echo "only ${mutant_seconds}s of the ${job_budget_seconds}s job budget are left for the mutants" >&2
+  echo "only ${mutant_seconds}s are left before the deadline for the mutants" >&2
   exit 1
 fi
 echo "mutants: ${mutant_parallel} at a time within ${mutant_seconds}s"
-env "${fixtures[@]}" go test -tags e2e -count=1 -timeout "${mutant_seconds}s" -parallel "$mutant_parallel" -run TestMutantsAreDetected ./e2e/httpruntime/
+(cd e2e/httpruntime && env "${fixtures[@]}" "$work/mutants.test" -test.run '^TestMutantsAreDetected$' -test.timeout "${mutant_seconds}s" -test.parallel "$mutant_parallel")
 
 step "go: the unchanged read-only checker still accepts both bundles"
-go build -o "$work/compat" ./cmd/shelfarr-compat
+timeout 60 go build -o "$work/compat" ./cmd/shelfarr-compat
 for bundle in bundle-current bundle-upgrade; do
-  "$work/compat" compat-check --bundle "$work/$bundle" --legacy-sha1 --timeout 300s | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["passed"], r; print("compat passed", [c["name"] for c in r["checks"]])'
+  timeout 300 "$work/compat" compat-check --bundle "$work/$bundle" --legacy-sha1 --timeout 300s | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["passed"], r; print("compat passed", [c["name"] for c in r["checks"]])'
 done
 
 step "the source bundles were not modified by the HTTP runtime or by the capture"
@@ -105,8 +106,8 @@ echo "bundle digests unchanged: current $current_before upgrade $upgrade_before"
 
 step "go: clean reproducible cross-builds of the HTTP executable"
 for arch in amd64 arm64; do
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch" ./cmd/shelfarr-http
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch.again" ./cmd/shelfarr-http
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" timeout 60 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch" ./cmd/shelfarr-http
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" timeout 60 go build -trimpath -buildvcs=false -ldflags="-s -w" -o "$work/http-$arch.again" ./cmd/shelfarr-http
   cmp "$work/http-$arch" "$work/http-$arch.again"
   printf '%s %s\n' "$arch" "$(sha256sum "$work/http-$arch" | cut -d' ' -f1)"
 done

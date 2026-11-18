@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -55,49 +56,81 @@ func stageDeadline(t *testing.T) time.Time {
 	return deadline
 }
 
-func sessionOf(pid int) (int, bool) {
+type processState struct {
+	parent  int
+	session int
+}
+
+func stateOf(pid int) (processState, bool) {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
-		return 0, false
+		return processState{}, false
 	}
 	end := bytes.LastIndexByte(stat, ')')
 	if end < 0 {
-		return 0, false
+		return processState{}, false
 	}
 	fields := strings.Fields(string(stat[end+1:]))
 	if len(fields) < 4 || fields[0] == "Z" {
-		return 0, false
+		return processState{}, false
 	}
-	session, err := strconv.Atoi(fields[3])
-	return session, err == nil
+	parent, parentErr := strconv.Atoi(fields[1])
+	session, sessionErr := strconv.Atoi(fields[3])
+	return processState{parent: parent, session: session}, parentErr == nil && sessionErr == nil
+}
+
+func descendsFromThisProcess(pid int) bool {
+	for hops := 0; hops < 64 && pid > 1; hops++ {
+		state, ok := stateOf(pid)
+		if !ok {
+			return false
+		}
+		if state.parent == os.Getpid() {
+			return true
+		}
+		pid = state.parent
+	}
+	return false
+}
+
+func ownedMember(pid, session int) bool {
+	state, ok := stateOf(pid)
+	return ok && state.session == session && descendsFromThisProcess(pid)
+}
+
+var adoptOrphans sync.Once
+
+func becomeSubreaper() {
+	adoptOrphans.Do(func() { unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) })
 }
 
 func killSession(session int) {
 	for round := 0; round < 5; round++ {
 		entries, _ := os.ReadDir("/proc")
-		found := false
+		var killed []int
 		for _, entry := range entries {
 			pid, err := strconv.Atoi(entry.Name())
-			if err != nil || pid == os.Getpid() {
-				continue
-			}
-			if member, ok := sessionOf(pid); !ok || member != session {
+			if err != nil || pid == os.Getpid() || !ownedMember(pid, session) {
 				continue
 			}
 			descriptor, err := unix.PidfdOpen(pid, 0)
 			if err != nil {
 				continue
 			}
-			if member, ok := sessionOf(pid); ok && member == session {
-				unix.PidfdSendSignal(descriptor, unix.SIGKILL, nil, 0)
-				found = true
+			if ownedMember(pid, session) && unix.PidfdSendSignal(descriptor, unix.SIGKILL, nil, 0) == nil {
+				killed = append(killed, pid)
 			}
 			unix.Close(descriptor)
 		}
-		if !found {
+		for _, pid := range killed {
+			if state, ok := stateOf(pid); !ok || state.parent == os.Getpid() {
+				var status unix.WaitStatus
+				unix.Wait4(pid, &status, 0, nil)
+			}
+		}
+		if len(killed) == 0 {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -118,6 +151,7 @@ type runResult struct {
 }
 
 func runInSession(ctx context.Context, directory, program string, arguments ...string) runResult {
+	becomeSubreaper()
 	command := exec.CommandContext(ctx, program, arguments...)
 	command.Dir = directory
 	command.Env = append(os.Environ(), "GOMAXPROCS=4")
@@ -263,7 +297,7 @@ func writeProbeModule(t *testing.T, test string) string {
 }
 
 func alive(pid int) bool {
-	_, ok := sessionOf(pid)
+	_, ok := stateOf(pid)
 	return ok
 }
 
@@ -436,6 +470,7 @@ func TestTheSweepKillsEveryProcessOfTheRunsSessionAndNothingElse(t *testing.T) {
 	if member == 0 {
 		t.Fatal("the session member was never started")
 	}
+	becomeSubreaper()
 	killSession(leader.Process.Pid)
 	leader.Wait()
 	if alive(member) {

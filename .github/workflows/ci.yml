@@ -50,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Record the verification deadline inside the job timeout
+        run: echo "SHELFARR_VERIFY_DEADLINE_EPOCH=$(( $(date +%s) + 3480 ))" >> "$GITHUB_ENV"
       - name: Checkout code and pinned release history
         uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
         with:
@@ -66,7 +68,6 @@ jobs:
           go-version-file: apps/server/go.mod
           cache-dependency-path: apps/server/go.sum
       - name: Verify Go HTTP parity and fault handling
-        timeout-minutes: 50
         env:
           SHELFARR_MIGRATION_SCRATCH: ${{ runner.temp }}/shelfarr-go-http
         run: tools/migration/http/verify-http

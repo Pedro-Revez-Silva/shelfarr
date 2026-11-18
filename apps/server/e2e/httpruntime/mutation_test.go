@@ -3,6 +3,9 @@
 package httpruntime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -222,6 +225,12 @@ func TestMutantsAreDetected(t *testing.T) {
 				t.Fatalf("the %s fixture is incomplete, so no mutant run could prove anything", f.name)
 			}
 		}
+		before := fixtureDigest(t, f)
+		t.Cleanup(func() {
+			if fixtureDigest(t, f) != before {
+				t.Errorf("the %s fixture changed while mutants ran, so their verdicts prove nothing", f.name)
+			}
+		})
 	}
 	deadline := stageDeadline(t)
 	proveTheUnmutatedModulePassesEveryMutantRun(t, deadline)
@@ -310,4 +319,29 @@ func proveTheUnmutatedModulePassesEveryMutantRun(t *testing.T, deadline time.Tim
 	if t.Failed() {
 		t.FailNow()
 	}
+}
+
+func fixtureDigest(t *testing.T, f fixture) string {
+	t.Helper()
+	sum := sha256.New()
+	for _, path := range []string{filepath.Join(f.dir, "cases.json"), filepath.Join(f.dir, f.doc.Database), f.secretFile(), filepath.Join(f.dir, "secrets", "tokens.json")} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "unreadable"
+		}
+		sum.Write(data)
+	}
+	for _, root := range []string{f.doc.BundleMediaRoot, f.doc.ExtraMediaRoot} {
+		filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				sum.Write([]byte("missing " + path))
+				return nil
+			}
+			if info, err := entry.Info(); err == nil {
+				fmt.Fprintf(sum, "%s %d %d\n", path, info.Size(), info.ModTime().UnixNano())
+			}
+			return nil
+		})
+	}
+	return hex.EncodeToString(sum.Sum(nil))
 }
