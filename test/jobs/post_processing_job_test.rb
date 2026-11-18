@@ -4323,6 +4323,78 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_not File.exist?(File.join(expected_dest, "release.nfo"))
   end
 
+  test "imports a UTF-16 LE FictionBook ebook" do
+    import_fictionbook_download("utf-16le")
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    imported = File.join(expected_dest, "Test Author - Test Audiobook.fb2")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "\xFF\xFE".b, File.binread(imported, 2)
+  end
+
+  test "imports a UTF-16 BE FictionBook ebook" do
+    import_fictionbook_download("utf-16be")
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    imported = File.join(expected_dest, "Test Author - Test Audiobook.fb2")
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal "\xFE\xFF".b, File.binread(imported, 2)
+  end
+
+  test "imports an EPUB and a UTF-16 FB2 from the same release" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Book.epub"))
+    write_fictionbook_file(File.join(@temp_source, "Book.fb2"), encoding: "utf-16le")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [
+      "Test Author - Test Audiobook.epub",
+      "Test Author - Test Audiobook.fb2"
+    ], Dir.children(expected_dest).sort
+    assert_equal "\xFF\xFE".b, File.binread(File.join(expected_dest, "Test Author - Test Audiobook.fb2"), 2)
+  end
+
+  test "imports a windows-1251 FictionBook ebook" do
+    import_fictionbook_download("windows-1251")
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    imported = File.join(expected_dest, "Test Author - Test Audiobook.fb2")
+    assert @request.reload.completed?, @request.issue_description
+    contents = File.binread(imported)
+    assert_includes contents, "encoding=\"windows-1251\""
+    assert_includes contents, "\xD2\xE5\xF1\xF2".b
+  end
+
+  test "imports other ebook formats when an FB2 file is not FictionBook content" do
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_valid_ebook_file(File.join(@temp_source, "Book.epub"))
+    write_valid_ebook_file(File.join(@temp_source, "Book.pdf"))
+    File.binwrite(File.join(@temp_source, "Notes.fb2"), "<?xml version=\"1.0\"?><html><body>not a book</body></html>")
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+
+    expected_dest = File.join(@temp_dest_base, @book.author, @book.title)
+    assert @request.reload.completed?, @request.issue_description
+    assert_equal [
+      "Test Author - Test Audiobook.epub",
+      "Test Author - Test Audiobook.pdf"
+    ], Dir.children(expected_dest).sort
+    assert File.exist?(File.join(@temp_source, "Notes.fb2"))
+  end
+
   test "imports an ebook when the release folder contains a non UTF-8 nfo" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
@@ -6599,6 +6671,39 @@ class PostProcessingJobTest < ActiveJob::TestCase
     else
       raise "Unsupported test ebook extension: #{path}"
     end
+  end
+
+  def import_fictionbook_download(encoding)
+    FileUtils.rm_rf(@temp_source)
+    FileUtils.mkdir_p(@temp_source)
+    write_fictionbook_file(File.join(@temp_source, "Russian Book.fb2"), encoding: encoding)
+
+    @book.update!(book_type: :ebook)
+    SettingsService.set(:ebook_output_path, @temp_dest_base)
+    SettingsService.set(:audiobookshelf_url, "")
+
+    PostProcessingJob.perform_now(@download.id)
+  end
+
+  def write_fictionbook_file(path, encoding:)
+    declared = encoding == "windows-1251" ? "windows-1251" : "utf-16"
+    xml = <<~XML
+      <?xml version="1.0" encoding="#{declared}"?>
+      <FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+        <description><title-info><book-title>Тест</book-title></title-info></description>
+      </FictionBook>
+    XML
+    bytes = case encoding
+    when "utf-16le"
+      "\xFF\xFE".b + xml.encode(Encoding::UTF_16LE).b
+    when "utf-16be"
+      "\xFE\xFF".b + xml.encode(Encoding::UTF_16BE).b
+    when "windows-1251"
+      xml.encode(Encoding::Windows_1251).b
+    else
+      raise "Unsupported FictionBook test encoding: #{encoding}"
+    end
+    File.binwrite(path, bytes)
   end
 
   def stub_audiobookshelf_library(base_path)
