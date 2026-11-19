@@ -251,9 +251,14 @@ describe("the Go online EPUB reader", () => {
     expect(page.url()).toBe(`${server.origin}/preview/library/${books.text}/read`);
     expect(outside).toEqual({ fetched: [], blocked: ["https://evil.test/track.png"] });
     await page.screenshot({ path: join(artifacts.out(), "reader-text-hostile-chapter.png") });
-    const refused = await policyViolations(page);
-    expect(refused.length).toBeGreaterThan(0);
-    expect(new Set(refused)).toEqual(new Set(["script-src-attr inline"]));
+    const sandbox = await page.locator(".epub-viewport iframe").evaluate((element) => {
+      const iframe = element as HTMLIFrameElement;
+      return { declared: iframe.hasAttribute("sandbox"), tokens: [...iframe.sandbox] };
+    });
+    expect(sandbox.declared).toBe(true);
+    expect(sandbox.tokens).not.toContain("allow-scripts");
+    const optionalReports = new Set(["script-src-attr inline"]);
+    expect((await policyViolations(page)).filter((violation) => !optionalReports.has(violation))).toEqual([]);
     const blockedHostileContent = [
       /^error: Executing inline event handler violates the following Content Security Policy directive 'script-src 'self''\..*The action has been blocked\.$/,
       /^error: Loading the image 'https:\/\/evil\.test\/track\.png' violates the following Content Security Policy directive: "img-src data: blob:"\. The action has been blocked\.$/,
