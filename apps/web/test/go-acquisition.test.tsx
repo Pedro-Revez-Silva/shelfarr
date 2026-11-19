@@ -151,9 +151,28 @@ describe("requesting from Discover", () => {
     const before = searched();
     await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: "Search again" }));
     await waitFor(() => expect(searched()).toBe(before + 1));
+    expect(server.called("POST", /\/api\/v1\/requests$/).length).toBe(1);
     await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("button", { name: "Request ebook of Pride and Prejudice" })).toBeTruthy());
     expect(within(card("Pride and Prejudice")).getByRole("status").textContent).toBe("");
     expect(server.called("POST", /\/api\/v1\/requests$/).length).toBe(1);
+  });
+
+  test("no request is sent while the same search is being repeated", async () => {
+    const server = discoverServer(true, () => ({ status: 422, body: { error: "work_not_offered" } }));
+    render_(server, "/preview/discover?q=pride");
+    await screen.findByText("3 results from Open Library for “pride”.");
+    const user = userEvent.setup();
+    await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: /Request ebook/ }));
+    await within(card("Pride and Prejudice")).findByRole("button", { name: "Search again" });
+    const held = deferred<{ body: unknown }>();
+    server.on("GET", /\/api\/v1\/discover\?q=pride$/, () => held.promise);
+    await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: "Search again" }));
+    const retry = within(card("Pride and Prejudice")).getByRole("button", { name: "Try requesting again of Pride and Prejudice" });
+    await waitFor(() => expect(retry.getAttribute("aria-disabled")).toBe("true"));
+    await user.click(retry);
+    expect(server.called("POST", /\/api\/v1\/requests$/).length).toBe(1);
+    await act(async () => held.resolve({ body: answer("pride", true) }));
+    await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("button", { name: "Request ebook of Pride and Prejudice" })).toBeTruthy());
   });
 
   test("a success status whose answer cannot be read is reported as unconfirmed, never as nothing changed", async () => {
@@ -292,6 +311,19 @@ describe("choosing a copy on a request", () => {
     state.acquisition = acquisition();
     const section = await screen.findByRole("region", { name: "Choose a copy" }, { timeout: 20000 });
     expect(within(section).getAllByRole("radio").length).toBe(2);
+  }, 30000);
+
+  test("an admin left on a scheduled retry sees the note when the retry is refused", async () => {
+    const state = {
+      detail: requestDetail({ status: "not_found", attention_needed: false, attention_reason: null, next_retry_at: "2026-11-20T08:00:00.000Z" }),
+      acquisition: acquisition({ request: { id: "41", status: "not_found" }, candidates: [] }),
+    };
+    const server = requestServer(true, state, () => error(404, "not_found"));
+    render_(server, "/preview/requests/41");
+    await screen.findByRole("heading", { level: 1, name: "Pride and Prejudice" });
+    await waitFor(() => expect(server.called("GET", /\/acquisition$/).length).toBe(1));
+    state.acquisition = acquisition({ request: { id: "41", status: "not_found" }, candidates: [], search: { state: "refused", code: "provider_disabled", retry_at: "2026-11-20T08:15:00.000Z" } });
+    expect(await screen.findByText(/This server's settings do not allow searching for this request here/, {}, { timeout: 20000 })).toBeTruthy();
   }, 30000);
 
   for (const admin of [true, false]) {

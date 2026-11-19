@@ -612,6 +612,12 @@ func TestWebAcquisitionRefusesToStartOutsideItsPreparedVolume(t *testing.T) {
 			code: "acquisition-volume",
 		},
 		{name: "no preview account", change: replace("-preview-user-ids", ""), code: "acquisition-volume"},
+		{
+			name:  "a lock directory readable by others",
+			setup: func() { os.Chmod(locks, 0o755) },
+			undo:  func() { os.Chmod(locks, 0o700) },
+			code:  "acquisition-volume",
+		},
 		{name: "a browser origin that is not loopback", change: replace("-browser-origin", "http://shelf.example"), code: "acquisition-volume"},
 		{name: "a copied database outside any prepared volume", change: unprepared(t, volume), code: "acquisition-volume"},
 		{name: "Open Library search without a test server address", change: without("-acquisition-open-library-address"), code: "acquisition-network"},

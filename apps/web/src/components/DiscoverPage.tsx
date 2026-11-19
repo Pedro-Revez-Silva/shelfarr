@@ -337,12 +337,12 @@ function RequestEbook({ item, onRefresh, refreshing }: { item: DiscoverItem; onR
     if (request.isSuccess) status.current?.focus();
   }, [request.isSuccess]);
   const send = () => {
-    if (!request.isPending) request.mutate(item.id);
+    if (!request.isPending && !refreshing) request.mutate(item.id);
   };
   return (
     <div className="discover-request">
       {request.isSuccess ? null : (
-        <button type="button" className="button button--primary" aria-disabled={request.isPending ? true : undefined} onClick={send}>
+        <button type="button" className="button button--primary" aria-disabled={request.isPending || refreshing ? true : undefined} onClick={send}>
           {request.isPending ? "Requesting…" : request.isError ? "Try requesting again" : "Request ebook"}
           <span className="sr-only"> of {item.title}</span>
         </button>

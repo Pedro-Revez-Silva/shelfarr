@@ -60,7 +60,19 @@ func (s *Store) Acquire(ctx context.Context, domain string) (*Owner, error) {
 }
 
 func (s *Store) Hold(name string) (*os.File, error) {
-	lock, err := os.OpenFile(filepath.Join(s.Dir, LocksDir, name+".lock"), os.O_RDWR|os.O_CREATE|noFollow, 0o600)
+	return LockBeneath(s.Dir, name)
+}
+
+func CheckLockBeneath(dir, name string) error {
+	lock, err := openBeneath(dir, filepath.Join(LocksDir, name+".lock"))
+	if err != nil {
+		return Fail(CodeDatabase, err)
+	}
+	return lock.Close()
+}
+
+func LockBeneath(dir, name string) (*os.File, error) {
+	lock, err := openBeneath(dir, filepath.Join(LocksDir, name+".lock"))
 	if err != nil {
 		return nil, Fail(CodeDatabase, err)
 	}

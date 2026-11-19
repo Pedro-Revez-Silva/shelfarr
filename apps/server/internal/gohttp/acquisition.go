@@ -31,7 +31,6 @@ const (
 	longestReleaseWait    = 15 * time.Minute
 	pendingScan           = 100
 	maxRememberedJobs     = 64
-	maxParkedSearches     = 10_000
 
 	selectionQueued      = "queued"
 	selectionDownloading = "downloading"
@@ -104,7 +103,7 @@ func privateDirectory(path string) bool {
 
 func confinedDirectory(dir, inside string) bool {
 	_, err := bookfile.OpenRoot(dir, inside)
-	return err == nil
+	return err == nil && privateDirectory(inside)
 }
 
 func acquisitionPreflight(config Config) string {
@@ -125,6 +124,10 @@ func acquisitionPreflight(config Config) string {
 func openAcquisition(ctx context.Context, config Config, roots []string, logger *slog.Logger, now func() time.Time) (*acquisitionService, string) {
 	store, err := wfstore.Open(ctx, config.AcquisitionWorkdir, wfstore.Options{BusyTimeoutMillis: int(config.BusyTimeout / time.Millisecond)})
 	if err != nil {
+		return nil, "acquisition-volume"
+	}
+	if err := wfstore.CheckLockBeneath(store.Dir, acquire.AcquisitionLock); err != nil {
+		store.Close()
 		return nil, "acquisition-volume"
 	}
 	root, err := acquisition.VolumeLibraryRoot(ctx, store)
@@ -286,7 +289,7 @@ func (s *acquisitionService) park(requestID int64, state, code string, wait time
 func (s *acquisitionService) prune() {
 	forgotten := s.now().Add(-2 * longestReleaseWait)
 	for id, parked := range s.parked {
-		if parked.until.Before(forgotten) || len(s.parked) > maxParkedSearches {
+		if parked.until.Before(forgotten) {
 			delete(s.parked, id)
 		}
 	}

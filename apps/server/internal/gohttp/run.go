@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/ownership"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webassets"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/wfstore"
 )
 
 const responseGrace = 2 * time.Second
@@ -46,14 +48,11 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 			return start(code)
 		}
 	}
-	lock, err := ownership.Acquire(config.LockPath)
-	switch {
-	case errors.Is(err, ownership.ErrHeld):
-		return start("lock-held")
-	case err != nil:
-		return start("lock")
+	release, code := acquireOwnership(config)
+	if code != "" {
+		return start(code)
 	}
-	defer lock.Release()
+	defer release()
 	database, err := live.Open(ctx, config.DatabasePath, live.Options{BusyTimeout: config.BusyTimeout})
 	switch {
 	case errors.Is(err, live.ErrNotSQLite):
@@ -147,4 +146,25 @@ func (a *App) stopAcquisition(stop context.CancelFunc, wait time.Duration) {
 	case <-a.acquisition.stopped:
 	case <-time.After(wait):
 	}
+}
+
+func acquireOwnership(config Config) (func(), string) {
+	if config.AcquisitionWorkdir != "" {
+		lock, err := wfstore.LockBeneath(config.AcquisitionWorkdir, strings.TrimSuffix(acquisitionLockName, ".lock"))
+		switch {
+		case errors.Is(err, wfstore.ErrAlreadyOwned):
+			return nil, "lock-held"
+		case err != nil:
+			return nil, "acquisition-volume"
+		}
+		return func() { lock.Close() }, ""
+	}
+	lock, err := ownership.Acquire(config.LockPath)
+	switch {
+	case errors.Is(err, ownership.ErrHeld):
+		return nil, "lock-held"
+	case err != nil:
+		return nil, "lock"
+	}
+	return func() { lock.Release() }, ""
 }

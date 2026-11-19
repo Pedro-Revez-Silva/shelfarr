@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"hash/crc32"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,10 @@ func TestAReadableEPUBHasAPackageAndASpineDocument(t *testing.T) {
 	if err := readable(t, map[string]string{"META-INF/container.xml": container, "OEBPS/content.opf": opf("text/chapter.xhtml"), "OEBPS/text/chapter.xhtml": "<html/>"}); err != nil {
 		t.Fatalf("a readable EPUB was refused: %v", err)
 	}
+	withNavigation := `<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest><item id="c1" href="c.xhtml"/><item id="nav" href="nav.xhtml" properties="nav"/></manifest><spine><itemref idref="c1"/></spine></package>`
+	if err := readable(t, map[string]string{"META-INF/container.xml": container, "OEBPS/content.opf": withNavigation, "OEBPS/c.xhtml": "<html/>", "OEBPS/nav.xhtml": "<html><nav/></html>"}); err != nil {
+		t.Fatalf("a readable EPUB with navigation was refused: %v", err)
+	}
 	for name, files := range map[string]map[string]string{
 		"an empty container":               {"META-INF/container.xml": "<container/>"},
 		"a missing package":                {"META-INF/container.xml": container},
@@ -66,6 +71,10 @@ func TestAReadableEPUBHasAPackageAndASpineDocument(t *testing.T) {
 		"a package with an entity":         {"META-INF/container.xml": container, "OEBPS/content.opf": `<!DOCTYPE p [<!ENTITY x "c">]><package><metadata/><manifest><item id="c1" href="&x;"/></manifest><spine><itemref idref="c1"/></spine></package>`, "OEBPS/c": "<html/>"},
 		"a spine naming no manifest item":  {"META-INF/container.xml": container, "OEBPS/content.opf": `<package><metadata/><manifest/><spine><itemref idref="c1"/></spine></package>`},
 		"a package without metadata":       {"META-INF/container.xml": container, "OEBPS/content.opf": `<package><manifest><item id="c1" href="c.xhtml"/></manifest><spine><itemref idref="c1"/></spine></package>`, "OEBPS/c.xhtml": "<html/>"},
+		"a renamed package element":        {"META-INF/container.xml": container, "OEBPS/content.opf": strings.ReplaceAll(opf("c.xhtml"), "package", "other"), "OEBPS/c.xhtml": "<html/>"},
+		"a first spine document missing":   {"META-INF/container.xml": container, "OEBPS/content.opf": `<package><metadata/><manifest><item id="a" href="gone.xhtml"/><item id="b" href="c.xhtml"/></manifest><spine><itemref idref="a"/><itemref idref="b"/></spine></package>`, "OEBPS/c.xhtml": "<html/>"},
+		"a navigation document missing":    {"META-INF/container.xml": container, "OEBPS/content.opf": `<package><metadata/><manifest><item id="c1" href="c.xhtml"/><item id="nav" href="nav.xhtml" properties="nav"/></manifest><spine><itemref idref="c1"/></spine></package>`, "OEBPS/c.xhtml": "<html/>"},
+		"a navigation document not XML":    {"META-INF/container.xml": container, "OEBPS/content.opf": `<package><metadata/><manifest><item id="c1" href="c.xhtml"/><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/></manifest><spine toc="ncx"><itemref idref="c1"/></spine></package>`, "OEBPS/c.xhtml": "<html/>", "OEBPS/toc.ncx": "<ncx"},
 		"a first rootfile that is missing": {"META-INF/container.xml": `<container><rootfiles><rootfile full-path="missing.opf" media-type="text/plain"/><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`, "OEBPS/content.opf": opf("c.xhtml"), "OEBPS/c.xhtml": "<html/>"},
 	} {
 		if err := readable(t, files); !errors.Is(err, ErrUnreadableEPUB) {

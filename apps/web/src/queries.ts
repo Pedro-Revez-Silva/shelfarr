@@ -160,7 +160,8 @@ export function useAcquisition(id: string, enabled: boolean) {
       }),
     enabled,
     retry: false,
-    refetchInterval: ({ state }) => (selectionRunning(state.data) ? SELECTION_REFRESH_MS : state.data && MOVING_STATUSES.has(state.data.request.status) ? REQUEST_REFRESH_MS : false),
+    refetchInterval: ({ state }) =>
+      selectionRunning(state.data) ? SELECTION_REFRESH_MS : state.data && (MOVING_STATUSES.has(state.data.request.status) || state.data.request.status === "not_found") ? REQUEST_REFRESH_MS : false,
   });
 }
 

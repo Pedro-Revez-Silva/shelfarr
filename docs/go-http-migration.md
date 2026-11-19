@@ -1433,7 +1433,9 @@ checked before the lock file is created or the database opened:
 | --- | --- |
 | `acquisition-volume` | `DIR` is absolute and clean; `-database` is exactly `DIR/workflows.sqlite3` and `-lock-file` exactly `DIR/locks/http.lock`; `DIR` is a private directory, not a link, and `DIR/locks` is a private directory reached from it with `openat2` and
 `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV` (no link and no mount point, bind mounts
-included); `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
+included) that is private to its owner; the lock files `DIR/locks/http.lock` (held for the process's life) and
+`DIR/locks/acquisition.lock` (checked at start, held for each download, by the command too) are opened beneath `DIR` the
+same way and must be regular files; `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
 | `acquisition-network` | with `-open-library-search`, `-acquisition-open-library-address` names a loopback IP literal and a port from 1 to 65535 in plain decimal. Every Open Library connection is then dialled to that address, with no proxy (proxy variables are ignored) and the usual TLS name check against `openlibrary.org`, so Discover reaches only the test server |
 | `acquisition-settings` | the copy's settings pass the Gutenberg search and download checks before any request exists: schema revision and columns, Gutenberg on with a loopback IP origin, no other ebook source, no auto-selection or outbound notification channel, no library scan or import permissions, and `ebook_output_path` a canonical private directory strictly inside `DIR` that is also under a `-library-root` |
 
@@ -1503,8 +1505,9 @@ are never returned. Codes are fixed strings.
   the extracted `acquire.Search`, the same code as `shelfarr-workflows search`. It wakes on an admission or every 2 seconds
   and pages through every claimable row, so parked rows never hide later ones. A released search (unreachable, busy,
   timeout, withheld candidates) waits 1, 2, 4, 8 then 15 minutes before the next attempt; a refusal (settings changed, an
-  account deleted) waits 15 minutes; a live claim of another worker 1 minute. These waits are in memory only, are pruned
-  after 30 minutes and are shown to admins; a failed or provider-disabled request is never marked as searched.
+  account deleted) waits 15 minutes; a live claim of another worker 1 minute. These waits are in memory only, are pruned on
+  every scan 30 minutes after they end, and are shown to admins (an open request page keeps asking while a retry is
+  scheduled); a failed or provider-disabled request is never marked as searched.
 * **The admin's choice** is checked with `PlanSelection`, queued in memory (one at a time across the process; the same
   choice again is the same job, any other is `acquisition_busy`), and run by the same worker with `acquire.Download`, the
   same code as `shelfarr-workflows download`, under the same `locks/acquisition.lock`. A second admin pressing the same
@@ -1515,10 +1518,12 @@ are never returned. Codes are fixed strings.
   `authority_changed`. When the download starts and again inside the completion transaction, every configured
   output root (ebook, audiobook and comic) must be under a `-library-root`, the rule the Library applies before it serves
   anything (`failed` `library_root_not_disposable` otherwise); the completion transaction also requires the plan, root
-  included, unchanged. Before publication the website flow also requires what the bundled reader engine needs to open the
-  EPUB: the package named by the container's first `rootfile` (container read with a 64 KiB bound) and, in that package
-  (1 MiB bound, strict XML with no entities), `metadata`, `manifest` and `spine` elements and a spine item whose manifest
-  file is in the archive (`failed` `download-unreadable` otherwise, nothing
+  included, unchanged. Before publication the website flow also requires what the bundled reader engine
+  (`vendor/javascript/consumer_reader_engine.js`) needs to open the EPUB, step for step: the package named by the
+  container's first `rootfile` element (container read with a 64 KiB bound); in that package (1 MiB bound, strict XML,
+  no document type declaration or entity) a `package` element and `metadata`, `manifest` and `spine` elements; the first
+  spine item's manifest file present in the archive; and, when the manifest declares a navigation document (`nav`
+  property) or an NCX (media type or the spine's `toc`), that file present and well-formed XML (1 MiB bound) (`failed` `download-unreadable` otherwise, nothing
   linked). The command's own check is unchanged. The
   result is `completed` or `failed` with the download's code; nothing is retried by itself.
 
@@ -1549,7 +1554,8 @@ announced in the card's status region and receives focus, with "Track it in Requ
 "Open the ebook" link for a copy already in the Library, and no link for another account's request. An unconfirmed answer
 says it may or may not have been received and asks to check Requests before trying again, also when the server answered
 with a success status but an answer the page cannot read; nothing is resent by itself. A result older than the server's
-memory of the search (30 minutes, or a restart) is refused with "Search again", which repeats the same search.
+memory of the search (30 minutes, or a restart) is refused with "Search again", which repeats the same search; no request
+can be sent from the card until that search has answered.
 Request pages change only for requests the server marks with `"acquisition": true` (in scope, flag on). On such a request
 awaiting a choice, the stage reads "Copies were found and are waiting for a choice." and members read "An administrator
 chooses which copy to download."; an admin gets a
@@ -1579,8 +1585,9 @@ the schema, every setting, and `shelfarr-workflows` (its `search` and `download`
   offer memory (per account, expiry, bounds), the search back-off and the one-choice-at-a-time queue.
 * `e2e/workflows/web_test.go` runs the built `shelfarr-http` (with the test clock) and the built web assets on prepared
   copies of both bundles, with two synthetic accounts, the fake Open Library behind a loopback proxy and the captured
-  Gutenberg OPDS replies (a bind mount over `DIR/locks` was also reproduced by hand in an unprivileged user namespace:
-  refused, nothing created in the mounted directory, while the same run without the mount starts): eleven startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
+  Gutenberg OPDS replies (bind mounts over `DIR/locks`, `DIR/locks/http.lock` and `DIR/locks/acquisition.lock` were also
+  reproduced by hand in an unprivileged user namespace: each refused at start with the outside file neither created in nor
+  locked, while the same run without the mount starts): eleven startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
   directory and a lock outside the volume among them); the flag off; the whole
   journey (CSRF, Origin, cross-site, other account's token and header, malformed and unoffered bodies with no row written;
   five disconnected and eight concurrent presses giving one request; another account told only `already_requested`; the

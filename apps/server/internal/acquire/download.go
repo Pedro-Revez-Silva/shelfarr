@@ -19,7 +19,7 @@ import (
 const (
 	MaxBookBytes        = 250 << 20
 	MaxDownloadDeadline = 30 * time.Minute
-	acquisitionLock     = "acquisition"
+	AcquisitionLock     = "acquisition"
 
 	CodeDownloadInvalid = "download-invalid"
 	CodeUnreadable      = "download-unreadable"
@@ -72,7 +72,7 @@ type DownloadReport struct {
 }
 
 func Download(ctx context.Context, store *wfstore.Store, requestID, resultID int64, options DownloadOptions) (DownloadReport, error) {
-	lock, err := store.Hold(acquisitionLock)
+	lock, err := store.Hold(AcquisitionLock)
 	if errors.Is(err, wfstore.ErrAlreadyOwned) {
 		return DownloadReport{}, ErrBusy
 	}
