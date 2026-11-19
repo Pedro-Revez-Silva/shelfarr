@@ -61,8 +61,9 @@ type Client struct {
 func (c *Client) Search(ctx context.Context, query Query) (Result, error) {
 	limit := min(max(query.Limit, MinLimit), MaxLimit)
 	var result Result
+	unread := false
 	for _, title := range query.Titles {
-		found, err := c.searchTitle(ctx, &result, keywords(title, query.Author), query.Language, limit)
+		found, more, err := c.searchTitle(ctx, &result, keywords(title, query.Author), query.Language, limit)
 		if err != nil {
 			return result, err
 		}
@@ -70,6 +71,10 @@ func (c *Client) Search(ctx context.Context, query Query) (Result, error) {
 			result.Candidates, result.Withheld = found.Candidates, found.Withheld
 			return result, nil
 		}
+		unread = unread || more
+	}
+	if unread {
+		return result, fail(CodePagination)
 	}
 	return result, nil
 }
@@ -84,36 +89,34 @@ func keywords(title, author string) string {
 	return strings.Join(parts, " ")
 }
 
-func (c *Client) searchTitle(ctx context.Context, progress *Result, keywords, language string, limit int) (Result, error) {
+func (c *Client) searchTitle(ctx context.Context, progress *Result, keywords, language string, limit int) (Result, bool, error) {
 	var found Result
 	if RubyBlank(keywords) {
-		return found, nil
+		return found, false, nil
 	}
 	body, missing, err := c.fetch(ctx, progress, c.Origin.resource(searchPath, url.Values{"query": {keywords}}))
 	if err != nil || missing {
-		return found, err
+		return found, false, err
 	}
 	listings, nextPage, err := parseListings(body)
 	if err != nil {
-		return found, fail(CodeMalformed)
+		return found, false, fail(CodeMalformed)
 	}
-	if len(listings) == 0 && nextPage {
-		return found, fail(CodePagination)
-	}
+	unread := nextPage || len(listings) > limit
 	if len(listings) > limit {
 		listings = listings[:limit]
 	}
 	for _, listing := range listings {
 		body, missing, err := c.fetch(ctx, progress, c.Origin.resource("/ebooks/"+listing.id+".opds", nil))
 		if err != nil {
-			return Result{}, err
+			return Result{}, false, err
 		}
 		if missing {
 			continue
 		}
 		parsed, err := parseDetail(body, listing.id, language, c.Origin)
 		if err != nil {
-			return Result{}, fail(CodeMalformed)
+			return Result{}, false, fail(CodeMalformed)
 		}
 		switch {
 		case parsed.withheld:
@@ -122,7 +125,7 @@ func (c *Client) searchTitle(ctx context.Context, progress *Result, keywords, la
 			found.Candidates = append(found.Candidates, *parsed.candidate)
 		}
 	}
-	return found, nil
+	return found, unread, nil
 }
 
 func (c *Client) fetch(ctx context.Context, progress *Result, resource string) ([]byte, bool, error) {

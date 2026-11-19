@@ -8,7 +8,6 @@ import (
 const (
 	epubType        = "application/epub+zip"
 	acquisitionRel  = "opds-spec.org/acquisition"
-	infoOrigin      = "https://www.gutenberg.org/ebooks/"
 	maxBookIDDigits = 12
 )
 
@@ -158,7 +157,7 @@ func parseDetail(body []byte, fallbackID, requestedLanguage string, origin Origi
 		Language:    bestLanguage,
 		FileType:    "epub",
 		DownloadURL: download,
-		InfoURL:     infoOrigin + id,
+		InfoURL:     origin.text + "/ebooks/" + id,
 	}}, nil
 }
 

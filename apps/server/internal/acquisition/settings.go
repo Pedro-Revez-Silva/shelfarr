@@ -12,17 +12,18 @@ import (
 )
 
 const (
-	defaultGutenbergURL   = "https://www.gutenberg.org"
-	defaultSearchLimit    = 10
-	defaultMaxRetries     = 10
-	defaultRetryBaseHours = 24
-	defaultRetryMaxDays   = 7
-	defaultLanguage       = "en"
-	maxRetryDelayDays     = 100_000
+	defaultGutenbergURL    = "https://www.gutenberg.org"
+	zlibraryDefaultMirrors = "the default mirror list"
+	defaultSearchLimit     = 10
+	defaultMaxRetries      = 10
+	defaultRetryBaseHours  = 24
+	defaultRetryMaxDays    = 7
+	defaultLanguage        = "en"
+	maxRetryDelayDays      = 100_000
 )
 
 var (
-	storedInteger = regexp.MustCompile(`\A-?[0-9]{1,9}\z`)
+	storedInteger = regexp.MustCompile(`\A[+-]?[0-9]{1,9}\z`)
 	countryCode   = regexp.MustCompile(`\A[A-Za-z]{2}\z`)
 	rubyFalse     = map[string]bool{"0": true, "f": true, "F": true, "false": true, "FALSE": true, "off": true, "OFF": true}
 )
@@ -114,10 +115,6 @@ type Config struct {
 	defaultLang    string
 }
 
-func (c Config) sameSearch(other Config) bool {
-	return c.Origin == other.Origin && c.Limit == other.Limit
-}
-
 func loadConfig(ctx context.Context, tx *sql.Tx) (Config, error) {
 	stored, err := readSettings(ctx, tx)
 	if err != nil {
@@ -198,7 +195,7 @@ func indexerConfigured(stored settings) bool {
 }
 
 func zlibraryConfigured(stored settings) bool {
-	if !stored.truthy("zlibrary_enabled") || !stored.present("zlibrary_url", "") {
+	if !stored.truthy("zlibrary_enabled") || !stored.present("zlibrary_url", zlibraryDefaultMirrors) {
 		return false
 	}
 	passwordLogin := stored.present("zlibrary_email", "") && stored.present("zlibrary_password", "")

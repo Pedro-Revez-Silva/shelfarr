@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -113,12 +114,7 @@ func ClaimRequest(ctx context.Context, store *wfstore.Store, requestID int64, no
 		}
 		claim.RequestID = requestID
 		claim.Config = config
-		claim.Query = gutenberg.Query{
-			Titles:   TitleVariants(row.title.String),
-			Author:   row.author.String,
-			Language: effectiveLanguage(row.language, config.defaultLang),
-			Limit:    config.Limit,
-		}
+		claim.Query = queryFor(row, config)
 		return nil
 	})
 	if err != nil {
@@ -237,6 +233,21 @@ func verifySchema(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func queryFor(row requestRow, config Config) gutenberg.Query {
+	return gutenberg.Query{
+		Titles:   TitleVariants(row.title.String),
+		Author:   row.author.String,
+		Language: effectiveLanguage(row.language, config.defaultLang),
+		Limit:    config.Limit,
+	}
+}
+
+func (c Claim) searchedWith(row requestRow, config Config) bool {
+	query := queryFor(row, config)
+	return config.Origin == c.Config.Origin && slices.Equal(query.Titles, c.Query.Titles) &&
+		query.Author == c.Query.Author && query.Language == c.Query.Language && query.Limit == c.Query.Limit
 }
 
 func effectiveLanguage(language sql.NullString, fallback string) string {

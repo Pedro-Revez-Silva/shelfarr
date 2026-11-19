@@ -38,6 +38,17 @@ func TestRetryDelayMatchesScheduleRetry(t *testing.T) {
 	if got := retryAt(now, 1, Config{RetryBaseHours: 5, RetryMaxDays: 100_000}); !got.Equal(now.Add(10 * time.Hour)) {
 		t.Errorf("got %v", got)
 	}
+	if got := retryAt(now, 70, Config{RetryBaseHours: 1, RetryMaxDays: 100_000}); !got.Equal(now.Add(2_400_000 * time.Hour)) {
+		t.Errorf("the largest accepted delay: %v", got)
+	}
+	lisbon, err := time.LoadLocation("Europe/Lisbon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTransition := time.Date(2026, 3, 28, 12, 0, 0, 0, lisbon)
+	if got := retryAt(beforeTransition, 0, config); got.Sub(beforeTransition) != 24*time.Hour {
+		t.Errorf("a retry across a daylight saving change waits %v", got.Sub(beforeTransition))
+	}
 }
 
 func stored(valueType string, value any) setting {
@@ -66,6 +77,7 @@ func TestSettingsReadLikeSettingsService(t *testing.T) {
 		"text number": stored("string", "7"),
 		"json number": stored("json", "7"),
 		"padded":      stored("integer", " 7"),
+		"plus":        stored("integer", "+15"),
 	}
 	truthy := map[string]bool{"on": true, "yes": true, "off": false, "zero": false, "blank": false, "null": false, "missing": false,
 		"text false": true, "json false": false, "json list": true}
@@ -83,7 +95,7 @@ func TestSettingsReadLikeSettingsService(t *testing.T) {
 	if !values.present("missing", "https://www.gutenberg.org") {
 		t.Error("a missing setting with a default is present")
 	}
-	for key, want := range map[string]int64{"number": 12, "negative": -3, "text number": 7, "missing": 10, "null": 10} {
+	for key, want := range map[string]int64{"number": 12, "negative": -3, "text number": 7, "missing": 10, "null": 10, "plus": 15} {
 		if got, err := values.integer(key, 10); err != nil || got != want {
 			t.Errorf("integer %s = %d %v", key, got, err)
 		}
@@ -100,22 +112,24 @@ func TestOtherSourcesFollowTheirConfiguredChecks(t *testing.T) {
 		values settings
 		want   error
 	}{
-		"nothing":                 {settings{}, nil},
-		"prowlarr key only":       {settings{"prowlarr_api_key": stored("string", "k")}, nil},
-		"prowlarr":                {settings{"prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, ErrOtherSources},
-		"prowlarr with none":      {settings{"indexer_provider": stored("string", " none "), "prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, nil},
-		"jackett selected":        {settings{"indexer_provider": stored("string", "jackett"), "jackett_url": stored("string", "http://j"), "jackett_api_key": stored("string", "k")}, ErrOtherSources},
-		"jackett unconfigured":    {settings{"indexer_provider": stored("string", "jackett"), "prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, nil},
-		"anna":                    {settings{"anna_archive_enabled": stored("boolean", "t"), "anna_archive_api_key": stored("string", "k")}, ErrOtherSources},
-		"anna disabled":           {settings{"anna_archive_enabled": stored("boolean", "f"), "anna_archive_api_key": stored("string", "k")}, nil},
-		"zlibrary without login":  {settings{"zlibrary_enabled": stored("boolean", "1"), "zlibrary_url": stored("string", "http://z")}, nil},
-		"zlibrary saved session":  {settings{"zlibrary_enabled": stored("boolean", "1"), "zlibrary_url": stored("string", "http://z"), "zlibrary_remix_userid": stored("string", "1"), "zlibrary_remix_userkey": stored("string", "k")}, ErrOtherSources},
-		"ebooks.com":              {settings{"ebooks_com_enabled": stored("boolean", "true"), "ebooks_com_country_code": stored("string", " gb ")}, ErrOtherSources},
-		"ebooks.com without code": {settings{"ebooks_com_enabled": stored("boolean", "true")}, nil},
-		"auto select":             {settings{"auto_select_enabled": stored("boolean", "true")}, ErrAutoSelect},
-		"webhook":                 {settings{"webhook_enabled": stored("boolean", "true"), "webhook_url": stored("string", "http://hook")}, ErrOutbound},
-		"telegram token only":     {settings{"telegram_bot_token": stored("string", "t")}, nil},
-		"telegram":                {settings{"telegram_enabled": stored("boolean", "true"), "telegram_bot_token": stored("string", "t")}, ErrOutbound},
+		"nothing":                  {settings{}, nil},
+		"prowlarr key only":        {settings{"prowlarr_api_key": stored("string", "k")}, nil},
+		"prowlarr":                 {settings{"prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, ErrOtherSources},
+		"prowlarr with none":       {settings{"indexer_provider": stored("string", " none "), "prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, nil},
+		"jackett selected":         {settings{"indexer_provider": stored("string", "jackett"), "jackett_url": stored("string", "http://j"), "jackett_api_key": stored("string", "k")}, ErrOtherSources},
+		"jackett unconfigured":     {settings{"indexer_provider": stored("string", "jackett"), "prowlarr_url": stored("string", "http://p"), "prowlarr_api_key": stored("string", "k")}, nil},
+		"anna":                     {settings{"anna_archive_enabled": stored("boolean", "t"), "anna_archive_api_key": stored("string", "k")}, ErrOtherSources},
+		"anna disabled":            {settings{"anna_archive_enabled": stored("boolean", "f"), "anna_archive_api_key": stored("string", "k")}, nil},
+		"zlibrary without login":   {settings{"zlibrary_enabled": stored("boolean", "1"), "zlibrary_url": stored("string", "http://z")}, nil},
+		"zlibrary default mirrors": {settings{"zlibrary_enabled": stored("boolean", "true"), "zlibrary_email": stored("string", "a@b"), "zlibrary_password": stored("string", "p")}, ErrOtherSources},
+		"zlibrary null mirrors":    {settings{"zlibrary_enabled": stored("boolean", "true"), "zlibrary_url": stored("string", nil), "zlibrary_email": stored("string", "a@b"), "zlibrary_password": stored("string", "p")}, ErrOtherSources},
+		"zlibrary saved session":   {settings{"zlibrary_enabled": stored("boolean", "1"), "zlibrary_url": stored("string", "http://z"), "zlibrary_remix_userid": stored("string", "1"), "zlibrary_remix_userkey": stored("string", "k")}, ErrOtherSources},
+		"ebooks.com":               {settings{"ebooks_com_enabled": stored("boolean", "true"), "ebooks_com_country_code": stored("string", " gb ")}, ErrOtherSources},
+		"ebooks.com without code":  {settings{"ebooks_com_enabled": stored("boolean", "true")}, nil},
+		"auto select":              {settings{"auto_select_enabled": stored("boolean", "true")}, ErrAutoSelect},
+		"webhook":                  {settings{"webhook_enabled": stored("boolean", "true"), "webhook_url": stored("string", "http://hook")}, ErrOutbound},
+		"telegram token only":      {settings{"telegram_bot_token": stored("string", "t")}, nil},
+		"telegram":                 {settings{"telegram_enabled": stored("boolean", "true"), "telegram_bot_token": stored("string", "t")}, ErrOutbound},
 	} {
 		if got := otherSource(test.values); !errors.Is(got, test.want) || (got == nil) != (test.want == nil) {
 			t.Errorf("%s: %v, want %v", name, got, test.want)

@@ -398,7 +398,7 @@ func TestGutenbergSearchPublishesCandidatesForManualSelection(t *testing.T) {
 				provider_payload, confidence_score, score_breakdown, blocklisted_at, acquisition_provider_id, provider_result_id, created_at = updated_at
 				FROM search_results WHERE request_id = ? AND id > ?`, request, seeded["unrelated"])
 			want := [][]string{{"string:gutenberg:37431", "string:Pride and Prejudice, a play founded on Jane Austen's novel - Mackaye, Mary Keith Medbery [EPUB] [English]",
-				"string:Project Gutenberg", "NULL", "NULL", "NULL", "string:" + origin + "/ebooks/37431.epub.noimages", "NULL", "string:https://www.gutenberg.org/ebooks/37431",
+				"string:Project Gutenberg", "NULL", "NULL", "NULL", "string:" + origin + "/ebooks/37431.epub.noimages", "NULL", "string:" + origin + "/ebooks/37431",
 				"NULL", "string:gutenberg", "string:en", "int64:0", "string:{}", "NULL", "NULL", "NULL", "NULL", "NULL", "int64:1"}}
 			if !reflect.DeepEqual(written, want) {
 				t.Errorf("written candidate\n%v\nwant\n%v", written, want)
@@ -564,12 +564,17 @@ func TestGutenbergProviderFailuresAreNeverReadAsNoResults(t *testing.T) {
 		{name: "malformed", replies: []reply{{Path: searchPath, Status: 200, Body: opds(t, "search-truncated.xml")}}, outcome: "failed", code: "provider-malformed", evidence: "malformed"},
 		{name: "too large", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Repeat(" ", 1<<20+1)}}, outcome: "failed", code: "provider-too-large"},
 		{name: "redirect", replies: []reply{{Path: searchPath, Status: 302, Body: "/elsewhere"}, {Path: "/elsewhere", Status: 200, Body: listing}}, outcome: "failed", code: "provider-refused"},
+		{name: "maintenance page", replies: []reply{{Path: searchPath, Status: 200, Body: "<html><body><p>Down for maintenance</p></body></html>"}}, outcome: "failed", code: "provider-malformed"},
+		{name: "text after the feed", replies: []reply{{Path: searchPath, Status: 200, Body: opds(t, "search-empty.xml") + "Service Unavailable"}}, outcome: "failed", code: "provider-malformed"},
+		{name: "html detail after a candidate", replies: []reply{{Path: searchPath, Status: 200, Body: listing}, {Path: "/ebooks/42671.opds", Status: 200, Body: "<html><body><p>Down for maintenance</p></body></html>"}}, outcome: "failed", code: "provider-malformed"},
+		{name: "only another language before an unread page", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Replace(opds(t, "search-empty.xml"), "<opensearch:itemsPerPage>", `<link rel="next" href="/ebooks/search.opds/?start_index=26"/><entry><id>http://www.gutenberg.org/ebooks/42671.opds</id><link rel="subsection" href="/ebooks/42671.opds"/></entry><opensearch:itemsPerPage>`, 1)}}, outcome: "failed", code: "provider-pagination"},
 		{name: "forbidden", replies: []reply{{Path: searchPath, Status: 403, Body: "Forbidden"}}, outcome: "failed", code: "provider-refused"},
 		{name: "next page only", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Replace(opds(t, "search-empty.xml"), "<opensearch:itemsPerPage>", `<link rel="next" href="/ebooks/search.opds/?start_index=26"/><opensearch:itemsPerPage>`, 1)}}, outcome: "failed", code: "provider-pagination"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			title := "Failure " + test.name
 			request := setup.admit(t, title, "")
+			setup.fake.defaults()
 			for _, answer := range test.replies {
 				if answer.Path == searchPath {
 					answer.Query = title
@@ -682,6 +687,7 @@ func TestGutenbergSearchRefusesWorkItMustNotClaim(t *testing.T) {
 		{"a host name", [][3]string{{"gutenberg_url", "string", strings.Replace(setup.fake.server.URL, "127.0.0.1", "localhost", 1)}}, "provider_not_loopback"},
 		{"a catalogue path", [][3]string{{"gutenberg_url", "string", setup.fake.server.URL + "/catalog"}}, "provider_invalid"},
 		{"an indexer", [][3]string{{"prowlarr_url", "string", "http://127.0.0.1:9"}}, "other_sources_configured"},
+		{"z-library on its default mirrors", [][3]string{{"zlibrary_enabled", "boolean", "true"}, {"zlibrary_email", "string", "reader@example.test"}, {"zlibrary_password", "string", "synthetic"}}, "other_sources_configured"},
 		{"auto selection", [][3]string{{"auto_select_enabled", "boolean", "true"}}, "auto_select_enabled"},
 		{"a webhook", [][3]string{{"webhook_enabled", "boolean", "true"}, {"webhook_url", "string", "http://127.0.0.1:9/hook"}}, "outbound_notifications_configured"},
 		{"an unreadable limit", [][3]string{{"gutenberg_search_limit", "integer", "ten"}}, "unsupported_stored_value"},
@@ -815,6 +821,9 @@ func TestGutenbergSearchDiscardsASupersededAnswer(t *testing.T) {
 		injected := newFaults(t, map[string]string{"search.fetched": "park"})
 		run := setup.start(t, faultBinary, injected, request)
 		injected.reached(t, "search.fetched")
+		if renewed := scalar[int64](t, db, `SELECT search_claimed_at > updated_at FROM requests WHERE id = ?`, request); renewed != 1 {
+			t.Error("the heartbeats did not renew the claim")
+		}
 		exec1(t, db, `UPDATE requests SET search_generation = search_generation + 1, search_claimed_at = ? WHERE id = ?`, formatStamp(time.Now()), request)
 		before := observe(t, db, request)
 		injected.release(t, "search.fetched")
@@ -822,6 +831,43 @@ func TestGutenbergSearchDiscardsASupersededAnswer(t *testing.T) {
 			t.Fatalf("exit %d: %s", code, run.output())
 		}
 		before.requireAll(t, db, request)
+	})
+
+	t.Run("finished by its owner while the answer was being read", func(t *testing.T) {
+		request := setup.admit(t, "Pride and Prejudice", "Jane Austen")
+		injected := newFaults(t, map[string]string{"search.fetched": "park"})
+		run := setup.start(t, faultBinary, injected, request)
+		injected.reached(t, "search.fetched")
+		exec1(t, db, `UPDATE requests SET search_claimed_at = NULL, attention_needed = 1, issue_description = 'Finished elsewhere' WHERE id = ?`, request)
+		before := observe(t, db, request)
+		injected.release(t, "search.fetched")
+		if code := run.wait(); code != 4 || run.snapshot()[len(run.snapshot())-1].text("outcome") != "superseded" {
+			t.Fatalf("exit %d: %s", code, run.output())
+		}
+		before.requireAll(t, db, request)
+	})
+
+	t.Run("its language changed while the answer was being read", func(t *testing.T) {
+		request := setup.admit(t, "Pride and Prejudice", "Jane Austen")
+		exec1(t, db, `UPDATE requests SET language = NULL WHERE id = ?`, request)
+		putSetting(t, db, "default_language", "string", "en")
+		defer exec1(t, db, `DELETE FROM settings WHERE key = 'default_language'`)
+		injected := newFaults(t, map[string]string{"search.fetched": "park"})
+		run := setup.start(t, faultBinary, injected, request)
+		injected.reached(t, "search.fetched")
+		putSetting(t, db, "default_language", "string", "fr")
+		injected.release(t, "search.fetched")
+		if code := run.wait(); code != 1 {
+			t.Fatalf("exit %d: %s", code, run.output())
+		}
+		answer := run.snapshot()[len(run.snapshot())-1]
+		state := stateOf(t, db, request)
+		if answer.text("outcome") != "released" || answer.text("code") != "configuration-changed" || state.Status != 0 || state.Generation != 2 || state.Claimed {
+			t.Errorf("%v %+v", answer, state)
+		}
+		if got := scalar[int64](t, db, `SELECT COUNT(*) FROM search_results WHERE request_id = ?`, request); got != 0 {
+			t.Errorf("%d results filtered for the old language were published", got)
+		}
 	})
 
 	t.Run("claimed by another worker between two answers", func(t *testing.T) {

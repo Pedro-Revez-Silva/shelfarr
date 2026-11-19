@@ -72,10 +72,14 @@ func parseDocument(body []byte) (*element, error) {
 		case xml.EndElement:
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
-			if len(stack) > 0 {
-				current := stack[len(stack)-1]
-				current.parts = append(current.parts, part{text: string(token)})
+			if len(stack) == 0 {
+				if len(bytes.TrimSpace(token)) > 0 {
+					return nil, errMalformed
+				}
+				continue
 			}
+			current := stack[len(stack)-1]
+			current.parts = append(current.parts, part{text: string(token)})
 		}
 	}
 	if root == nil || len(stack) != 0 {
@@ -138,6 +142,9 @@ func (e *element) descendants(name string) []*element {
 }
 
 func entries(root *element) ([]*element, error) {
+	if root.name != "feed" {
+		return nil, errMalformed
+	}
 	found := root.descendants("entry")
 	if len(found) > maxEntries {
 		return nil, errMalformed

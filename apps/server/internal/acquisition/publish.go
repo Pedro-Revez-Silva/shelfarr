@@ -90,7 +90,7 @@ func Release(ctx context.Context, store *wfstore.Store, claim Claim, code string
 
 func release(ctx context.Context, tx *sql.Tx, claim Claim, stamp string) error {
 	result, err := tx.ExecContext(ctx, `UPDATE requests SET status = ?, search_generation = search_generation + 1, search_claimed_at = NULL,
-		attention_needed = 0, issue_description = NULL, updated_at = ? WHERE id = ? AND status = ? AND search_generation = ?`,
+		attention_needed = 0, issue_description = NULL, updated_at = ? WHERE id = ? AND status = ? AND search_generation = ? AND search_claimed_at IS NOT NULL`,
 		pendingStatus, stamp, claim.RequestID, searchingStatus, claim.Generation)
 	if err != nil {
 		return err
@@ -117,11 +117,11 @@ func publish(ctx context.Context, store *wfstore.Store, claim Claim, now time.Ti
 		if err != nil {
 			return err
 		}
-		_, config, err := eligible(ctx, tx, claim.RequestID)
+		current, config, err := eligible(ctx, tx, claim.RequestID)
 		if err != nil && Refusal(err) == nil {
 			return err
 		}
-		if err != nil || !config.sameSearch(claim.Config) {
+		if err != nil || !claim.searchedWith(current, config) {
 			publication = Publication{Outcome: Released, Code: CodeConfigurationChanged}
 			return release(ctx, tx, claim, stamp)
 		}
@@ -148,7 +148,7 @@ func ownedRow(ctx context.Context, tx *sql.Tx, claim Claim) (requestRow, error) 
 	if err != nil {
 		return requestRow{}, err
 	}
-	if row.status != searchingStatus || row.generation != claim.Generation {
+	if row.status != searchingStatus || row.generation != claim.Generation || !row.claimedAt.Valid {
 		return requestRow{}, ErrSuperseded
 	}
 	return row, nil
@@ -162,7 +162,7 @@ func retryAt(now time.Time, retryCount int64, config Config) time.Time {
 	case retryCount < 62 && config.RetryBaseHours <= hours>>retryCount:
 		hours = config.RetryBaseHours << retryCount
 	}
-	return now.Add(time.Duration(hours%24)*time.Hour).AddDate(0, 0, int(hours/24))
+	return now.Add(time.Duration(hours) * time.Hour)
 }
 
 func clearStoreOffers(ctx context.Context, tx *sql.Tx, requestID int64) error {

@@ -39,6 +39,11 @@ class GutenbergSearchVerifier
   TIMESTAMP = /\A\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{6}\z/
   SELECTION = "Search results found. Please review and select a result to download."
   FAILURE = "Search failed before any source returned results."
+  REQUIRED_CASES = {
+    "current" => %w[candidates killed malformed no_results retries_exhausted withheld],
+    "upgrade" => %w[candidates title_variants]
+  }.freeze
+  PUBLIC_INFO = "https://www.gutenberg.org/ebooks/"
   DOCUMENTED_OUTCOMES = {
     "malformed" => { go: "failed", rails: "candidates" },
     "withheld" => { go: "released", rails: "candidates" }
@@ -54,10 +59,12 @@ class GutenbergSearchVerifier
     @failures = []
     @checks = 0
     @report = { "bundle" => name, "cases" => {} }
+    @required = REQUIRED_CASES.fetch(name, [])
   end
 
   def call
-    expect(@cases.any? { |entry| entry["name"] == "candidates" }, "no candidates evidence for this bundle")
+    names = @cases.map { |entry| entry["name"] }.sort
+    expect(@required.any? && names == @required.sort, "evidence for #{names}, required #{@required.sort}")
     ActiveJob::Base.queue_adapter = :test
     @cases.each do |entry|
       case entry["name"]
@@ -177,6 +184,12 @@ class GutenbergSearchVerifier
         rails_row.each_key do |column|
           next if TIMESTAMPS.include?(column) || CLAIM_TIMES.include?(column)
 
+          if table == "search_results" && column == "info_url" && original[row_id].nil?
+            book = rails_row["guid"].to_s.delete_prefix("gutenberg:")
+            expect(rails_row[column] == PUBLIC_INFO + book && go_row[column] == "#{entry.fetch('origin')}/ebooks/#{book}", "#{name}: search_results[#{row_id}].info_url Rails #{rails_row[column].inspect}, Go #{go_row[column].inspect}")
+            differences["catalogue info_url"] << row_id
+            next
+          end
           if table == "search_results" && (original[row_id] ? RESCORED : UNSCORED).include?(column)
             expected = original[row_id] ? original[row_id][column] : nil
             expect(go_row[column] == expected, "#{name}: Go scored search_results[#{row_id}].#{column}")

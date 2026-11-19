@@ -646,6 +646,9 @@ literal: the public catalogue, a host name or any other address is refused befor
 use (`provider_not_loopback`), and the HTTP client additionally refuses to dial anything else. Every other source
 `SearchJob` would also ask for an ebook must be off (an active indexer, Anna's Archive, Z-Library, an enabled custom
 provider for ebooks, eBooks.com), because Go searches one provider and must not decide a multi-source search from it.
+Z-Library counts as configured on its default mirror list when no URL is stored, as in Rails; eBooks.com counts as
+configured whenever it is enabled with any two-letter country, a conservative superset of Rails' check against the
+real country list.
 `auto_select_enabled` must be off (Go never selects) and the webhook, Discord and Telegram notification channels off
 (Go cannot enqueue them). A refusal writes nothing and leaves the request pending for Rails: answer `rejected` with
 `unsupported_schema`, `unsupported_stored_value`, `request_not_found`, `request_not_pending`, `not_an_ebook`,
@@ -672,23 +675,28 @@ else `default_language`). The detail path is built from the numeric id, never ta
 `next` pages are never followed. Every response is read through a 1 MiB limit with a per-request timeout
 (`--request-timeout`, at most 1 minute) inside an overall `--deadline` (at most 20 minutes, below the lease), no
 proxy, no redirects, the Rails user agent, and parsed by a strict XML decoder that loads no DTD or external entity,
-with at most 100 entries, 20,000 elements and depth 32. After every response the claim is renewed with Rails'
+with at most 100 entries, 20,000 elements and depth 32; the root must be an Atom `feed` and no text may stand outside
+it, so an HTML maintenance page or a truncated or trailing answer is malformed, never empty. When no title gives a
+result and a search page it used linked a `next` page or listed more books than the limit, the answer was not fully
+read and is reported as `provider-pagination`, not as no results. After every response the claim is renewed with Rails'
 heartbeat compare-and-swap on `(status, search_generation)`; a lost claim stops the search before the next request.
 A candidate is stored only when Rails' choice for that book is an EPUB whose link is on the configured origin (a
 `/`-rooted path or the origin itself, no `..`, query or fragment); any other choice (MOBI, PDF, another host) is
 withheld. The decision log carries codes and counts only: no title, author, URL or response text.
 
 **Publication.** One transaction re-reads the request under Rails' transition lock statement, requires the same
-`status` searching and `search_generation`, and rechecks the account, eligibility and the origin and limit it searched;
+`status` searching and `search_generation` with the claim timestamp still set (Rails clears it when a search finishes),
+and rechecks the account, eligibility and everything the search depended on: origin, limit, title variants, author and
+effective language;
 anything else is either `superseded` (exit 4, nothing written) or a release (below). Then, as `SearchJob#complete_search`
 and `#fail_search_without_results` do:
 
 | Answer | Rows written | Outcome | Exit |
 | --- | --- | --- | --- |
-| At least one stored candidate | the request's store offers and its `store_offers_found` event deleted; its non-manual, non-blocklisted results not tied to a queued, downloading or paused download deleted (their downloads' `search_result_id` cleared); one `search_results` row per new `gutenberg:<id>` guid with Rails' title (`Title - Author [EPUB] [Language]`), `Project Gutenberg`, the authorised download URL, `https://www.gutenberg.org/ebooks/<id>`, the OPDS language, status pending, `{}` payload; an existing row with that guid kept (made rejected when blocklisted); `attention_needed`, "Search results found. Please review and select a result to download.", claim cleared, status still searching; the `attention_flagged` request event and the `request_attention` notification `mark_for_attention!` writes | `candidates` | 0 |
+| At least one stored candidate | the request's store offers and its `store_offers_found` event deleted; its non-manual, non-blocklisted results not tied to a queued, downloading or paused download deleted (their downloads' `search_result_id` cleared); one `search_results` row per new `gutenberg:<id>` guid with Rails' title (`Title - Author [EPUB] [Language]`), `Project Gutenberg`, the authorised download URL, the configured origin's `/ebooks/<id>` page, the OPDS language, status pending, `{}` payload; an existing row with that guid kept (made rejected when blocklisted); `attention_needed`, "Search results found. Please review and select a result to download.", claim cleared, status still searching; the `attention_flagged` request event and the `request_attention` notification `mark_for_attention!` writes | `candidates` | 0 |
 | A valid empty answer (an empty feed, a `404`, nothing matching) | store offers cleared; `schedule_retry!`: status not found, `retry_count + 1`, `next_retry_at` = now + min(`retry_base_delay_hours` × 2^retries, `retry_max_delay_days` × 24) hours | `no_results` | 0 |
 | ... with `retry_count` already at `max_retries` | store offers cleared; not found, `retry_count + 1`, attention "Maximum retry attempts (N) exceeded. Manual intervention required.", event and notification | `retries_exhausted` | 0 |
-| Malformed or oversized XML, a non-`404` client error, a redirect, an empty page that only links a next page | attention "Search failed before any source returned results.", event and notification, claim cleared, status searching, results untouched | `failed` with `provider-malformed`, `provider-too-large`, `provider-refused` or `provider-pagination` | 1 |
+| Malformed, oversized or non-feed XML (also halfway through the books), a non-`404` client error, a redirect, an answer that was not fully read and gave nothing | attention "Search failed before any source returned results.", event and notification, claim cleared, status searching, results untouched | `failed` with `provider-malformed`, `provider-too-large`, `provider-refused` or `provider-pagination` | 1 |
 | Unreachable, timeout, `408`/`425`/`429`/`5xx` (also halfway through the books), the overall deadline, SIGINT or SIGTERM, a configuration change, or only withheld candidates | release: status pending, `search_generation + 1`, claim, attention and description cleared; nothing else | `released` with `provider-unreachable`, `provider-timeout`, `provider-busy`, `search-deadline`, `cancelled`, `configuration-changed` or `unsupported-candidates` | 1 |
 
 A transport failure is never read as an empty answer and never ends a request: the released request is pending again,
@@ -698,8 +706,9 @@ back to Rails, which stores them as it always has. A SIGKILL before or inside th
 after which this command or `RequestQueueJob#recover_stale_searches` takes it over. A late answer from a superseded
 worker writes nothing.
 
-**Ownership and rollback.** The command holds the claim only while it runs; after it exits the request row says who
-owns it, and Rails reads every state above as its own: it shows and selects the candidates, retries `not_found`,
+**Ownership and rollback.** The claim is durable: it lives in the request row from the claim until the command
+settles it (publication or release) or, after a crash, until the 30-minute lease passes and this command or Rails
+recovers it. Every settled state is one Rails reads as its own: it shows and selects the candidates, retries `not_found`,
 dispatches a released request and recovers an abandoned claim. Reverting this slice removes the command and leaves
 the rows to Rails; there is no Go state to clean up. A copy where Go published results and Rails then runs is the
 supported rollback; Rails and this command must not run on the same database at once, which the disposable copy
@@ -712,6 +721,9 @@ transfers media.
 language stay as they were). Go refuses malformed XML where Nokogiri recovers what it can (Rails then searches the
 fragment). Go withholds MOBI, PDF and off-origin EPUB links and hands such a request back instead of storing them.
 Go refuses instead of searching when another source, auto-selection or an outbound notification channel is configured.
+Go stores the configured catalogue's own book page as `info_url` (identical to Rails' value for the public catalogue,
+which Rails hard-codes) so no stored link leaves the configured origin. Go reports an incompletely read answer with no
+valid result as `provider-pagination` where Rails schedules a retry.
 Go builds the detail path from the id and requires a loopback origin in this harness.
 
 **Verification.** `go test ./internal/gutenberg/ ./internal/acquisition/` checks the Rails selection rules (format
@@ -720,17 +732,19 @@ bounds, every transport answer class, the limit, title variants and the heartbea
 The e2e suite (`e2e/workflows/search_test.go`) runs the built binary against a loopback catalogue serving synthetic
 OPDS shaped like Gutenberg's, on both bundles, with Go-admitted requests: exact rows, catalogue requests and
 untouched rows of every other request and table for candidates (with manual, blocklisted, stale, active-download and
-store-offer rows seeded), no results, retries exhausted and title variants; eleven failure answers; every refusal with
-no catalogue contact; six concurrent runs on one request (one claim); SIGKILL after the claim and inside the
-publication with takeover after the lease; a newer claim while parked before publication, another claim between two
-responses, a configuration change and SIGTERM. `verify_gutenberg_search.rb` (run by `verify-workflows`) installs the
+store-offer rows seeded), no results, retries exhausted and title variants; fifteen failure answers (including a balanced HTML page, text
+after the feed, an HTML detail after a valid one and an unread page with only another language); every refusal with
+no catalogue contact (Z-Library on its default mirrors among them); six concurrent runs on one request (one claim);
+SIGKILL after the claim and inside the publication with takeover after the lease; heartbeats that move the lease; a
+newer claim, a claim finished elsewhere and a changed effective language while parked before publication, another
+claim between two responses, a configuration change and SIGTERM. `verify_gutenberg_search.rb` (run by `verify-workflows`) installs the
 same pre-search copies in real Rails, serves the same catalogue through WebMock with all other network blocked, runs
 `SearchJob`, and requires the same outcome, the same catalogue requests and the same rows in every table except the
-documented score columns; requires Rails' documented different outcome for the malformed and withheld answers and
+documented score and info link columns; requires every scenario of its bundle; requires Rails' documented different outcome for the malformed and withheld answers and
 that Rails searches the handed-back request once; reads the Go candidates as valid direct downloadable results,
 renders their result row and selects one (`Request#select_result!`, a queued `Download`, one `DownloadJob` enqueued
 and not performed); and recovers the killed Go claim through `RequestQueueJob` only after the lease, then finishes
-that search. Ten mutants of these rules must each fail an assertion.
+that search. Fifteen mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 
