@@ -679,7 +679,7 @@ proxy, no redirects, the Rails user agent, and parsed by a strict XML decoder th
 with at most 100 entries, 20,000 elements and depth 32; after an optional UTF-8 byte order mark, the root must be a
 `feed` in the Atom namespace and only literal XML white space may stand outside it (no character reference or CDATA),
 Atom elements are recognised only in the Atom namespace and the language only as Dublin Core `dcterms:language`, and
-only unqualified attributes are read, so an HTML maintenance page, another
+only unqualified attributes are read (a repeated attribute or an empty prefix binding is malformed), so an HTML maintenance page, another
 format or a truncated or trailing answer is malformed, never empty. When no title gives a result and a search page or
 book page it used linked a `next` page, or a search page listed more books than the limit, the answer was not fully
 read and is reported as `provider-pagination`, not as no results. After every response the claim is renewed with Rails'
@@ -751,7 +751,7 @@ documented score and info link columns; requires every scenario of its bundle; r
 that Rails searches the handed-back request once; reads the Go candidates as valid direct downloadable results,
 renders their result row and selects one (`Request#select_result!`, a queued `Download`, one `DownloadJob` enqueued
 and not performed); and recovers the killed Go claim through `RequestQueueJob` only after the lease, then finishes
-that search. Eighteen mutants of these rules must each fail an assertion.
+that search. Nineteen mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 

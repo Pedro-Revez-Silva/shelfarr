@@ -147,6 +147,8 @@ var mutants = []mutant{
 	{name: "search: elements and attributes of other namespaces are read as Atom", file: "internal/gutenberg/opds.go", edits: replace(`return "{" + name.Space + "}" + name.Local`, "return name.Local"),
 		unit: "./internal/gutenberg/"},
 	{name: "search: escaped text outside the feed is read as white space", file: "internal/gutenberg/opds.go", edits: []edit{{"bytes.Trim(body[start:decoder.InputOffset()], ", "bytes.Trim(token, ", 1}, {"\t\tstart := decoder.InputOffset()\n", "", 1}}, unit: "./internal/gutenberg/"},
+	{name: "search: a repeated or rebound attribute is read", file: "internal/gutenberg/opds.go", edits: replace(`if seen[attribute.Name] || (attribute.Name.Space == "xmlns" && attribute.Value == "") {`, "if false {"),
+		unit: "./internal/gutenberg/"},
 	{name: "search: an unread page with nothing valid is read as no results", file: "internal/gutenberg/client.go", edits: replace("if unread {", "if false {"),
 		scenario: "TestGutenbergProviderFailuresAreNeverReadAsNoResults"},
 	{name: "search: publication is not fenced by the claim generation", file: "internal/acquisition/publish.go", edits: replace("if row.status != searchingStatus || row.generation != claim.Generation || !row.claimedAt.Valid {", "if row.status != searchingStatus || !row.claimedAt.Valid {"),

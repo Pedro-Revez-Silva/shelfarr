@@ -57,10 +57,8 @@ func parseDocument(body []byte) (*element, error) {
 				return nil, errMalformed
 			}
 			node := &element{name: qualified(token.Name), attrs: map[string]string{}}
-			for _, attribute := range token.Attr {
-				if attribute.Name.Space == "" {
-					node.attrs[attribute.Name.Local] = attribute.Value
-				}
+			if err := node.readAttributes(token.Attr); err != nil {
+				return nil, err
 			}
 			if len(stack) == 0 {
 				if root != nil {
@@ -90,6 +88,20 @@ func parseDocument(body []byte) (*element, error) {
 		return nil, errMalformed
 	}
 	return root, nil
+}
+
+func (e *element) readAttributes(attributes []xml.Attr) error {
+	seen := map[xml.Name]bool{}
+	for _, attribute := range attributes {
+		if seen[attribute.Name] || (attribute.Name.Space == "xmlns" && attribute.Value == "") {
+			return errMalformed
+		}
+		seen[attribute.Name] = true
+		if attribute.Name.Space == "" {
+			e.attrs[attribute.Name.Local] = attribute.Value
+		}
+	}
+	return nil
 }
 
 func qualified(name xml.Name) string {
