@@ -24,19 +24,23 @@ var ErrUnreadableEPUB = errors.New("EPUB has no readable package")
 
 type containerDocument struct {
 	Rootfiles []struct {
-		FullPath  string `xml:"full-path,attr"`
-		MediaType string `xml:"media-type,attr"`
+		FullPath string `xml:"full-path,attr"`
 	} `xml:"rootfiles>rootfile"`
 }
 
 type packageDocument struct {
-	Items []struct {
-		ID   string `xml:"id,attr"`
-		Href string `xml:"href,attr"`
-	} `xml:"manifest>item"`
-	Spine []struct {
-		IDRef string `xml:"idref,attr"`
-	} `xml:"spine>itemref"`
+	Metadata *struct{} `xml:"metadata"`
+	Manifest *struct {
+		Items []struct {
+			ID   string `xml:"id,attr"`
+			Href string `xml:"href,attr"`
+		} `xml:"item"`
+	} `xml:"manifest"`
+	Spine *struct {
+		Itemrefs []struct {
+			IDRef string `xml:"idref,attr"`
+		} `xml:"itemref"`
+	} `xml:"spine"`
 }
 
 func CheckReadableEPUB(ctx context.Context, file io.ReaderAt, size int64) error {
@@ -57,26 +61,23 @@ func CheckReadableEPUB(ctx context.Context, file io.ReaderAt, size int64) error 
 	if err := decodeEntry(file, byName[containerName], maxContainerBytes, &container); err != nil {
 		return ErrUnreadableEPUB
 	}
-	packagePath := ""
-	for _, rootfile := range container.Rootfiles {
-		if rootfile.MediaType == "application/oebps-package+xml" {
-			packagePath = rootfile.FullPath
-			break
-		}
+	if len(container.Rootfiles) == 0 {
+		return ErrUnreadableEPUB
 	}
+	packagePath := container.Rootfiles[0].FullPath
 	packageEntry, found := byName[packagePath]
 	if packagePath == "" || !found {
 		return ErrUnreadableEPUB
 	}
 	var opf packageDocument
-	if err := decodeEntry(file, packageEntry, maxPackageBytes, &opf); err != nil {
+	if err := decodeEntry(file, packageEntry, maxPackageBytes, &opf); err != nil || opf.Metadata == nil || opf.Manifest == nil || opf.Spine == nil {
 		return ErrUnreadableEPUB
 	}
 	hrefs := map[string]string{}
-	for _, item := range opf.Items {
+	for _, item := range opf.Manifest.Items {
 		hrefs[item.ID] = item.Href
 	}
-	for _, itemref := range opf.Spine {
+	for _, itemref := range opf.Spine.Itemrefs {
 		if document, ok := resolve(path.Dir(packagePath), hrefs[itemref.IDRef]); ok {
 			if _, present := byName[document]; present {
 				return nil

@@ -1515,9 +1515,10 @@ are never returned. Codes are fixed strings.
   `authority_changed`. When the download starts and again inside the completion transaction, every configured
   output root (ebook, audiobook and comic) must be under a `-library-root`, the rule the Library applies before it serves
   anything (`failed` `library_root_not_disposable` otherwise); the completion transaction also requires the plan, root
-  included, unchanged. Before publication the website flow also requires a readable book inside the EPUB: the container's
-  package (`application/oebps-package+xml` rootfile, read with a 64 KiB bound) and, in the package (1 MiB bound, strict XML
-  with no entities), a spine item whose manifest file is in the archive (`failed` `download-unreadable` otherwise, nothing
+  included, unchanged. Before publication the website flow also requires what the bundled reader engine needs to open the
+  EPUB: the package named by the container's first `rootfile` (container read with a 64 KiB bound) and, in that package
+  (1 MiB bound, strict XML with no entities), `metadata`, `manifest` and `spine` elements and a spine item whose manifest
+  file is in the archive (`failed` `download-unreadable` otherwise, nothing
   linked). The command's own check is unchanged. The
   result is `completed` or `failed` with the download's code; nothing is retried by itself.
 
