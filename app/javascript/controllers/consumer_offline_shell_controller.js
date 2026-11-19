@@ -15,14 +15,14 @@ export default class extends Controller {
     if (!this.offline.support().ok) return this.say("Downloads aren't available", this.offline.MESSAGES.unsupported)
     this.shellTitle = document.title
     this.onlineHandler = () => this.reconnect()
-    this.pageShowHandler = event => { if (event.persisted && this.account && Date.now() >= this.expiresAt) this.expire() }
+    this.pageShowHandler = event => { if (event.persisted && this.account && this.lapsed()) this.expire() }
     window.addEventListener("online", this.onlineHandler)
     window.addEventListener("pageshow", this.pageShowHandler)
     const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
     if (!active) return this.signedOut("Sign in to use downloads", "Downloads open only for the account that saved them on this browser. Connect to the internet and sign in.")
-    if (active.expired) return this.signedOut("Sign in again", "It has been a while since this browser confirmed your account. Connect to the internet and sign in to keep using your downloads.")
-    this.account = active.account
     this.remember(active)
+    if (active.expired || this.lapsed()) return this.signedOut("Sign in again", "It has been a while since this browser confirmed your account. Connect to the internet and sign in to keep using your downloads.")
+    this.account = active.account
     this.downloadScope = this.offline.scopeOf(this.offline.deploymentOf(this.baseValue), this.account)
     const id = this.publicationId()
     if (id) await this.openPublication(id)
@@ -39,7 +39,13 @@ export default class extends Controller {
   }
 
   remember(active) {
-    if (active?.account === this.account) this.expiresAt = active.confirmedAt + active.maxAgeDays * 86_400_000
+    this.confirmedAt = active.confirmedAt
+    this.expiresAt = active.confirmedAt + active.maxAgeDays * 86_400_000
+  }
+
+  lapsed() {
+    const now = Date.now()
+    return now >= this.expiresAt || this.confirmedAt > now + 86_400_000
   }
 
   expire() {
@@ -77,6 +83,7 @@ export default class extends Controller {
   async openPublication(id) {
     const record = await this.offline.getRecord(this.offline.recordKey(this.downloadScope, id)).catch(() => null)
     const usable = record?.publication && await this.offline.verify(record).catch(() => false)
+    if (!this.account) return
     if (!usable) {
       if (record?.publication) await this.offline.markEvicted(record).catch(() => {})
       return this.showLibrary("This book isn't available on this device. Downloads that are ready are listed below.")
@@ -145,7 +152,8 @@ export default class extends Controller {
       return
     }
     await this.offline.confirmAccount({ base: this.baseValue, account: body.account, maxAgeDays: body.session_max_age_days }).catch(() => {})
-    this.remember(await this.offline.activeAccount(this.baseValue).catch(() => null))
+    const confirmed = await this.offline.activeAccount(this.baseValue).catch(() => null)
+    if (confirmed?.account === this.account) this.remember(confirmed)
     const token = document.querySelector("meta[name='csrf-token']")
     if (token && typeof body.csrf_token === "string") token.content = body.csrf_token
     this.banner("You're back online.", "Open your full library", `${this.baseValue}/read`)

@@ -155,6 +155,33 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_no_text "Pages kept for a journey."
   end
 
+  test "a downloaded ebook restored by Back with the clock set back before its confirmation is cleared and reloaded" do
+    visit at(consumer_publication_path(@ebook))
+    assert_selector ".consumer-ebook iframe", wait: 20
+    reveal_reading_controls
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@ebook))
+    within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
+    restored = page.evaluate_script(<<~JS)
+      (() => {
+        window.__restoredDocument = true
+        const now = Date.now
+        Date.now = () => now() - 2 * 86400000
+        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))
+        return { frames: document.querySelectorAll(".consumer-ebook iframe").length, title: document.title }
+      })()
+    JS
+    assert_equal 0, restored["frames"]
+    assert_not_includes restored["title"], @ebook.title
+    within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
+    assert_nil page.evaluate_script("window.__restoredDocument ?? null")
+  end
+
   test "a downloaded ebook restored by Back for the same confirmed account shows the same reader at its page" do
     visit at(consumer_publication_path(@ebook))
     assert_selector ".consumer-ebook iframe", wait: 20
