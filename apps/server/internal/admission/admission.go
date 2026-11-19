@@ -110,11 +110,11 @@ func admit(ctx context.Context, tx *sql.Tx, accountID int64, submission Submissi
 	if err := requireActiveAccount(ctx, tx, accountID); err != nil {
 		return Result{}, err
 	}
-	publication, err := newestAcquired(ctx, tx, submission.OpenLibraryWorkID)
+	publication, inLibrary, err := newestAcquired(ctx, tx, submission.OpenLibraryWorkID)
 	if err != nil {
 		return Result{}, err
 	}
-	if publication != 0 {
+	if inLibrary {
 		return Result{Outcome: AlreadyInLibrary, PublicationID: publication}, nil
 	}
 	decided, found, err := openRequest(ctx, tx, submission.OpenLibraryWorkID, accountID)
@@ -219,23 +219,25 @@ func requireActiveAccount(ctx context.Context, tx *sql.Tx, accountID int64) erro
 
 const workBooks = `SELECT id FROM books WHERE open_library_work_id = ? AND book_type = 1`
 
-func newestAcquired(ctx context.Context, tx *sql.Tx, workID string) (int64, error) {
+func newestAcquired(ctx context.Context, tx *sql.Tx, workID string) (int64, bool, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, file_path FROM books WHERE open_library_work_id = ? AND book_type = ? AND file_path IS NOT NULL ORDER BY id DESC`, workID, ebookType)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer rows.Close()
+	var newest int64
+	found := false
 	for rows.Next() {
 		var id int64
 		var path sql.NullString
 		if err := rows.Scan(&id, &path); err != nil || !utf8.ValidString(path.String) {
-			return 0, ErrStoredValue
+			return 0, false, ErrStoredValue
 		}
-		if acquired(path) {
-			return id, nil
+		if !found && acquired(path) {
+			newest, found = id, true
 		}
 	}
-	return 0, rows.Err()
+	return newest, found, rows.Err()
 }
 
 func newestBook(ctx context.Context, tx *sql.Tx, workID string) (*storedBook, error) {

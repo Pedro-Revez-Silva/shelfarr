@@ -104,6 +104,8 @@ var mutants = []mutant{
 		scenario: "TestRequestAdmissionMatchesTheRailsContract|TestRequestAdmissionConsidersEveryCopyOfTheWork"},
 	{name: "admission: the caller's own request behind another account's is not found", file: "internal/admission/admission.go", edits: replace("AND status IN (`+openStatuses+`) AND user_id = ? ORDER BY id LIMIT 1`, workID, accountID)", "AND status IN (`+openStatuses+`) AND user_id = ? AND 0 ORDER BY id LIMIT 1`, workID, accountID)"),
 		scenario: "TestRequestAdmissionMatchesTheRailsContract"},
+	{name: "admission: an acquired book with id 0 counts as absent", file: "internal/admission/admission.go", edits: replace("if inLibrary {", "if inLibrary && publication != 0 {"),
+		scenario: "TestRequestAdmissionConsidersEveryCopyOfTheWork"},
 	{name: "admission: an unknown request status is ignored", file: "internal/admission/admission.go", edits: replace("if unknown > 0 {", "if false {"),
 		scenario: "TestRequestAdmissionMatchesTheRailsContract"},
 	{name: "admission: the body is read without watching for a stop", file: "cmd/shelfarr-workflows/request.go", edits: replace("case <-ctx.Done():\n\t\treturn nil, ctx.Err()\n", ""),

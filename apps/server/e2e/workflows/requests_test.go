@@ -137,6 +137,8 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{key: "odd-status", work: "OL1017W", title: "Seeded Odd Status", bookType: 1},
 		{key: "foreign-older", work: "OL1018W", title: "Seeded Foreign Older", bookType: 1},
 		{key: "foreign-newer", work: "OL1018W", title: "Seeded Foreign Newer", bookType: 1},
+		{key: "own-older", work: "OL1019W", title: "Seeded Own Older", bookType: 1},
+		{key: "own-newer", work: "OL1019W", title: "Seeded Own Newer", bookType: 1},
 	}
 	for index, book := range books {
 		id := int64(1001 + index)
@@ -178,6 +180,7 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{508, "shared", "alice", 0},
 		{509, "odd-status", "alice", 99},
 		{510, "foreign-older", "bob", 0},
+		{511, "own-older", "alice", 0},
 	}
 	for _, request := range requests {
 		exec1(t, db, `INSERT INTO requests (id, book_id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -220,6 +223,7 @@ func admissionScenarios() []admissionExpectation {
 		{name: "newest-of-two-books", account: "alice", body: admissionBody("OL1015W", ""), oracle: true, outcome: "created", requestOnBook: "unacquired-newer", warnings: none},
 		{name: "own-request-behind-another", account: "alice", body: admissionBody("OL1016W", ""), railsOutcome: "already_requested", outcome: "existing", request: "508"},
 		{name: "foreign-request-on-older-copy", account: "alice", body: admissionBody("OL1018W", ""), railsOutcome: "created", outcome: "already_requested"},
+		{name: "own-request-on-older-copy", account: "alice", body: admissionBody("OL1019W", ""), railsOutcome: "created", outcome: "existing", request: "511"},
 		{name: "unknown-request-status", account: "bob", body: admissionBody("OL1017W", ""), outcome: "unsupported_stored_value"},
 		{name: "blank-path-not-acquired", account: "alice", body: admissionBody("OL1009W", ""), oracle: true, outcome: "created", requestOnBook: "blank-path", warnings: none},
 		{name: "graphic-kind-kept", account: "alice", body: admissionBody("OL1010W", ""), oracle: true, outcome: "created", requestOnBook: "graphic", warnings: none,
@@ -587,6 +591,20 @@ func TestRequestAdmissionConsidersEveryCopyOfTheWork(t *testing.T) {
 	answer = w.admit(plainBinary, faults{}, alice, admissionBody("OL6001W", ""))
 	if answer.outcome != "already_in_library" || answer.fields.text("publication_id") != "2001" {
 		t.Fatalf("an acquired copy among 150 answered %v", answer.fields)
+	}
+
+	exec1(t, db, `INSERT INTO books (id, open_library_work_id, book_type, title, file_path, created_at, updated_at) VALUES (0, 'OL6002W', 1, 'Book Zero', '/library/seeded/zero.epub', ?, ?)`, seededStamp, seededStamp)
+	exec1(t, db, `INSERT INTO books (id, open_library_work_id, book_type, title, created_at, updated_at) VALUES (2500, 'OL6002W', 1, 'After Zero', ?, ?)`, seededStamp, seededStamp)
+	answer = w.admit(plainBinary, faults{}, alice, admissionBody("OL6002W", ""))
+	if answer.outcome != "already_in_library" || answer.fields.text("publication_id") != "0" {
+		t.Fatalf("an acquired book with id 0 answered %v", answer.fields)
+	}
+
+	exec1(t, db, `INSERT INTO books (id, open_library_work_id, book_type, title, file_path, created_at, updated_at) VALUES (2600, 'OL6003W', 1, 'Unreadable Path', CAST(X'FF' AS TEXT), ?, ?)`, seededStamp, seededStamp)
+	exec1(t, db, `INSERT INTO books (id, open_library_work_id, book_type, title, file_path, created_at, updated_at) VALUES (2601, 'OL6003W', 1, 'Readable Path', '/library/seeded/readable.epub', ?, ?)`, seededStamp, seededStamp)
+	answer = w.admit(plainBinary, faults{}, alice, admissionBody("OL6003W", ""))
+	if answer.code != 7 || answer.outcome != "unsupported_stored_value" {
+		t.Fatalf("an unreadable path on an older copy answered %v exit %d", answer.fields, answer.code)
 	}
 }
 

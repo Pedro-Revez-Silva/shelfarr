@@ -33,7 +33,12 @@ class AdmissionVerifier
   TIMESTAMP_COLUMNS = %w[created_at updated_at].freeze
   TIMESTAMP = /\A\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{6}\z/
   REPRESENTATION_TIMES = %w[created_at updated_at].freeze
-  DOCUMENTED_DIFFERENCES = %w[acquired-older-copy own-request-behind-another foreign-request-on-older-copy].freeze
+  DOCUMENTED_DIFFERENCES = {
+    "acquired-older-copy" => { work: "openlibrary:OL1007W", go: "already_in_library", rails: "created" },
+    "own-request-behind-another" => { work: "openlibrary:OL1016W", go: "existing", rails: "already_requested" },
+    "foreign-request-on-older-copy" => { work: "openlibrary:OL1018W", go: "already_requested", rails: "created" },
+    "own-request-on-older-copy" => { work: "openlibrary:OL1019W", go: "existing", rails: "created" }
+  }.freeze
 
   def initialize(paths:, bundle:, evidence:)
     @paths = paths
@@ -79,15 +84,18 @@ class AdmissionVerifier
     oracle = @cases.count { |entry| entry["oracle"] }
     differing = @cases.select { |entry| entry["rails_outcome"] }.map { |entry| entry["name"] }.sort
     expect(created.positive? && oracle.positive?, "the evidence has #{created} created and #{oracle} oracle cases")
-    expect(differing == DOCUMENTED_DIFFERENCES.sort, "the evidence proves the differences #{differing}, documented #{DOCUMENTED_DIFFERENCES}")
+    expect(differing == DOCUMENTED_DIFFERENCES.keys.sort, "the evidence proves the differences #{differing}, documented #{DOCUMENTED_DIFFERENCES.keys}")
   end
 
   def verify_documented_differences
     @cases.select { |entry| entry["rails_outcome"] }.each do |entry|
+      documented = DOCUMENTED_DIFFERENCES.fetch(entry["name"], {})
+      expect(entry.dig("body", "work_id") == documented[:work] && entry["outcome"] == documented[:go] && entry["rails_outcome"] == documented[:rails],
+        "#{entry['name']}: the evidence does not record the documented case")
       install_database(File.join(@evidence, "before.sqlite3"))
       status, body = submit(entry.fetch("account_id"), JSON.generate(entry.fetch("body")))
       rails = outcome_of(status, body)["outcome"]
-      expect(rails == entry["rails_outcome"], "#{entry['name']}: Rails answered #{rails}, documented #{entry['rails_outcome']}")
+      expect(rails == documented[:rails], "#{entry['name']}: Rails answered #{rails}, documented #{documented[:rails]}")
       expect(rails != entry["outcome"], "#{entry['name']}: Rails and Go agree, so the difference is not real")
       (@report["documented_differences"] ||= {})[entry["name"]] = { "rails" => rails, "go" => entry["outcome"] }
     end
@@ -277,9 +285,9 @@ class AdmissionVerifier
   end
 
   def serialized_search_jobs
-    ActiveJob::Base.queue_adapter.enqueued_jobs
-      .map { |job| job.select { |key, _value| key.is_a?(String) } }
-      .select { |job| job["job_class"] == "SearchJob" }
+    jobs = ActiveJob::Base.queue_adapter.enqueued_jobs.select { |job| job[:job] == SearchJob || job["job_class"] == "SearchJob" }
+    expect(jobs.all? { |job| job["job_class"] == "SearchJob" && job[:job] == SearchJob }, "a captured SearchJob does not serialize as SearchJob")
+    jobs.map { |job| job.select { |key, _value| key.is_a?(String) } }
   end
 
   def enqueued_search_ids
