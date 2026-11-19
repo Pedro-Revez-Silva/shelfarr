@@ -65,7 +65,7 @@ type Detail struct {
 	Files       []File `json:"files"`
 }
 
-func coverStyle(id string) string {
+func CoverStyle(id string) string {
 	value := uint32(0x811c9dc5)
 	for index := 0; index < len(id); index++ {
 		value = (value ^ uint32(id[index])) * 0x01000193
@@ -230,7 +230,7 @@ func Project(publication consumer.Publication) (Summary, error) {
 	summary := Summary{
 		ID: publication.ID, Title: publication.Title, Author: presence(publication.Author), BookType: publication.BookType, ContentKind: kind,
 		FormatLabel: formatLabel(publication), Availability: "available", Action: "read",
-		Cover: Cover{URL: publication.CoverURL, Style: coverStyle(publication.ID)}, ReadingStatus: publication.ReadingStatus,
+		Cover: Cover{URL: publication.CoverURL, Style: CoverStyle(publication.ID)}, ReadingStatus: publication.ReadingStatus,
 		Progress: progressBody(publication.Progress, located), ProgressLabel: progressLabel(publication, located), ReaderURL: "/read/" + publication.ID,
 	}
 	if len(publication.Assets) == 0 {

@@ -213,7 +213,7 @@ func (v view) publication(ctx context.Context, book store.Book) (publicationBody
 	if err != nil {
 		return publicationBody{}, err
 	}
-	cover, err := safeCover(book.CoverURL)
+	cover, err := SafeCover(book.CoverURL)
 	if err != nil {
 		return publicationBody{}, err
 	}
@@ -296,7 +296,7 @@ func truncatedDescription(value sql.NullString) (string, error) {
 	return string(runes), nil
 }
 
-func safeCover(value sql.NullString) (*string, error) {
+func SafeCover(value sql.NullString) (*string, error) {
 	if !value.Valid {
 		return nil, nil
 	}

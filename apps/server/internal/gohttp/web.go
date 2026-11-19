@@ -16,6 +16,7 @@ const (
 	webLibraryPath   = "/preview/library"
 	webAccountPath   = "/preview/account"
 	webDiscoverPath  = "/preview/discover"
+	webRequestsPath  = "/preview/requests"
 	webAssetsPrefix  = "/preview/assets/"
 	webConnectPath   = "/consumer/connect"
 	webBootVersion   = 1
@@ -33,6 +34,8 @@ const (
 	viewReader   webView = "reader"
 	viewAccount  webView = "account"
 	viewDiscover webView = "discover"
+	viewRequests webView = "requests"
+	viewRequest  webView = "request"
 )
 
 var webTitles = map[webView]string{
@@ -42,6 +45,8 @@ var webTitles = map[webView]string{
 	viewReader:   "Reader · Shelfarr",
 	viewAccount:  "Account · Shelfarr",
 	viewDiscover: "Discover · Shelfarr",
+	viewRequests: "Requests · Shelfarr",
+	viewRequest:  "Request · Shelfarr",
 }
 
 type webUI struct {
@@ -137,6 +142,10 @@ func classifyWeb(method, path string) (route, bool) {
 		found = route{kind: routeWebShell, name: "web_account", id: string(viewAccount)}
 	case path == webDiscoverPath:
 		found = route{kind: routeWebShell, name: "web_discover", id: string(viewDiscover)}
+	case path == webRequestsPath:
+		found = route{kind: routeWebShell, name: "web_requests", id: string(viewRequests)}
+	case strings.HasPrefix(path, webRequestsPath+"/") && bookID.MatchString(strings.TrimPrefix(path, webRequestsPath+"/")):
+		found = route{kind: routeWebShell, name: "web_request", id: string(viewRequest)}
 	case path == webConnectPath:
 		found = route{kind: routeWebShell, name: "web_connect", id: string(viewConnect)}
 	case strings.HasPrefix(path, webAssetsPrefix) && !strings.Contains(strings.TrimPrefix(path, webAssetsPrefix), "/"):

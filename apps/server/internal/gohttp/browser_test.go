@@ -229,7 +229,7 @@ func TestAUserOutsideTheAllowlistIsNotFoundEverywhereAndCannotSignIn(t *testing.
 	cookie, _ := h.app.cookies.GenerateMessage(json.RawMessage("1"), sessionPurpose, h.clock.Now().Add(time.Hour))
 	client.cookies[sessionCookieName] = url.QueryEscape(cookie)
 	client.account = "2"
-	for _, path := range []string{"/preview/api/v1/session", "/preview/api/v1/library", "/preview/api/v1/continue", "/preview/api/v1/library/1", "/preview/api/v1/auth/bootstrap"} {
+	for _, path := range []string{"/preview/api/v1/session", "/preview/api/v1/library", "/preview/api/v1/continue", "/preview/api/v1/library/1", "/preview/api/v1/requests", "/preview/api/v1/requests/1", "/preview/api/v1/auth/bootstrap"} {
 		recorder = client.get(path)
 		if recorder.Code != http.StatusNotFound || errorCode(t, recorder) != "not_found" {
 			t.Fatalf("%s answered %d", path, recorder.Code)
