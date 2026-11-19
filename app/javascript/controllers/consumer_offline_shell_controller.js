@@ -14,8 +14,8 @@ export default class extends Controller {
     if (!this.active) return
     if (!this.offline.support().ok) return this.say("Downloads aren't available", this.offline.MESSAGES.unsupported)
     this.onlineHandler = () => this.reconnect()
-    this.pageHideHandler = event => { if (event.persisted) this.element.style.opacity = "0" }
-    this.pageShowHandler = event => { if (event.persisted) window.location.reload() }
+    this.pageHideHandler = event => { if (event.persisted) this.conceal(true) }
+    this.pageShowHandler = event => { if (event.persisted) this.restored() }
     window.addEventListener("online", this.onlineHandler)
     window.addEventListener("pagehide", this.pageHideHandler)
     window.addEventListener("pageshow", this.pageShowHandler)
@@ -37,6 +37,22 @@ export default class extends Controller {
     window.removeEventListener("online", this.onlineHandler)
     window.removeEventListener("pagehide", this.pageHideHandler)
     window.removeEventListener("pageshow", this.pageShowHandler)
+  }
+
+  conceal(concealed) {
+    this.element.style.opacity = concealed ? "0" : ""
+    this.element.inert = concealed
+  }
+
+  async restored() {
+    const active = this.account && await this.offline.activeAccount(this.baseValue).catch(() => null)
+    if (!this.active) return
+    if (!this.account || (active && !active.expired && active.account === this.account)) return this.conceal(false)
+    this.account = null
+    clearTimeout(this.retryTimer)
+    this.readerTarget.replaceChildren()
+    this.libraryTarget.hidden = true
+    window.location.reload()
   }
 
   publicationId() {
