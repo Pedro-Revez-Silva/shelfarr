@@ -1798,6 +1798,10 @@ thead th {
   display: grid;
   gap: 12px;
 }
+.copy-form fieldset {
+  border: 0;
+  min-width: 0;
+}
 .copy-form legend {
   margin-bottom: 8px;
   color: var(--muted);

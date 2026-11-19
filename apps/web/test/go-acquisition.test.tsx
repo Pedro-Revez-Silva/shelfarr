@@ -223,6 +223,7 @@ describe("choosing a copy on a request", () => {
     const user = userEvent.setup();
     await user.click(within(section).getByRole("button", { name: "Download this copy" }));
     expect(within(section).getByText("Choose one copy first.")).toBeTruthy();
+    expect(document.activeElement).toBe(within(section).getAllByRole("radio")[0] as HTMLElement);
     expect(server.called("POST", /\/selection$/)).toEqual([]);
     radios[0]?.focus();
     await user.keyboard("{ArrowDown}");

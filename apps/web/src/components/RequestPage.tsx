@@ -285,6 +285,7 @@ function CopyForm({ request, answer }: { request: RequestDetail; answer: Acquisi
   const select = useSelectResult(request.id);
   const [chosen, setChosen] = useState(answer.candidates.length === 1 ? (answer.candidates[0]?.id ?? "") : "");
   const [missing, setMissing] = useState(false);
+  const firstCopy = useRef<HTMLInputElement>(null);
   const errorId = useId();
   const legendId = useId();
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -292,6 +293,7 @@ function CopyForm({ request, answer }: { request: RequestDetail; answer: Acquisi
     if (select.isPending) return;
     if (!answer.candidates.some((candidate) => candidate.id === chosen)) {
       setMissing(true);
+      firstCopy.current?.focus();
       return;
     }
     setMissing(false);
@@ -301,9 +303,10 @@ function CopyForm({ request, answer }: { request: RequestDetail; answer: Acquisi
     <form className="copy-form" onSubmit={submit} noValidate aria-labelledby={legendId}>
       <fieldset aria-describedby={missing ? errorId : undefined}>
         <legend id={legendId}>Copies found in the Project Gutenberg catalogue</legend>
-        {answer.candidates.map((candidate) => (
+        {answer.candidates.map((candidate, index) => (
           <div className="copy-option" key={candidate.id}>
             <input
+              ref={index === 0 ? firstCopy : undefined}
               type="radio"
               id={`copy-${candidate.id}`}
               name="copy"
