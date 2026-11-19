@@ -50,6 +50,7 @@ func run(args []string, stderr *os.File) int {
 	flags.StringVar(&config.WebAssetsDir, "web-assets-dir", "", "absolute path of the built static web assets; serves the experimental browser sign-in, connection consent and Library screens when the preview allowlist is also set (default: off)")
 	flags.BoolVar(&config.OpenLibrarySearch, "open-library-search", false, "let allowlisted preview accounts search Open Library (https://openlibrary.org) from Discover; the only outbound network use of this runtime (default: off)")
 	flags.StringVar(&config.AcquisitionWorkdir, "acquisition-workdir", "", "absolute path of a disposable directory prepared by 'shelfarr-workflows prepare'; lets allowlisted accounts request Open Library ebooks and an admin choose a Project Gutenberg copy, searched and downloaded from the loopback catalogue the copy's settings name; requires -database and -lock-file inside that directory and a loopback -browser-origin (default: off)")
+	flags.StringVar(&config.OpenLibraryFixture, "acquisition-open-library-address", "", "with -acquisition-workdir and -open-library-search: loopback host:port of the test Open Library server; every Open Library connection goes there instead, with no proxy (default: none)")
 	flags.IntVar(&config.LoginAttempts, "login-attempts", 0, "sign-in attempts allowed per client address per window (default 10)")
 	flags.DurationVar(&config.LoginWindow, "login-window", 0, "rate-limit window for sign-in attempts (default 3m)")
 	flags.IntVar(&config.MaxLoginWorkers, "max-login-workers", 0, "concurrent password checks")

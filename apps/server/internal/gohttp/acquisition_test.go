@@ -173,8 +173,11 @@ func TestOneChosenDownloadAtATimeAndARepeatIsTheSameChoice(t *testing.T) {
 	if err != nil || first.state != selectionQueued {
 		t.Fatalf("first choice %+v %v", first, err)
 	}
-	if again, err := service.enqueue(selectionJob{requestID: 1, resultID: 9}); err != nil || again != first {
+	if again, err := service.enqueue(selectionJob{requestID: 1, resultID: 9}); err != nil || again.state != first.state || again.resultID != first.resultID {
 		t.Errorf("a repeated choice %+v %v", again, err)
+	}
+	if renewed, err := service.enqueue(selectionJob{requestID: 1, resultID: 9, sessionID: 5, userID: 6}); err != nil || renewed.sessionID != 5 || renewed.userID != 6 {
+		t.Errorf("a second admin's same choice did not carry their authority: %+v %v", renewed, err)
 	}
 	if _, err := service.enqueue(selectionJob{requestID: 1, resultID: 10}); err != errAcquisitionBusy {
 		t.Errorf("a different choice while one is queued: %v", err)
@@ -222,8 +225,9 @@ func minimalVolume(t *testing.T) *wfstore.Store {
 	defer database.Close()
 	if _, err := database.Exec(`CREATE TABLE wf_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 		INSERT INTO wf_meta VALUES ('disposable_token', 'synthetic');
-		CREATE TABLE books (id INTEGER PRIMARY KEY, book_type INTEGER NOT NULL);
-		CREATE TABLE requests (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, status INTEGER NOT NULL, search_claimed_at TEXT, created_at TEXT NOT NULL)`); err != nil {
+		CREATE TABLE books (id INTEGER PRIMARY KEY, book_type INTEGER NOT NULL, open_library_work_id TEXT);
+		CREATE TABLE requests (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, status INTEGER NOT NULL, search_claimed_at TEXT, next_retry_at TEXT,
+			created_via TEXT NOT NULL DEFAULT 'api', external_source TEXT DEFAULT 'consumer_app', created_at TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{wfstore.MarkerName: `{"format":1,"token":"synthetic"}`, wfstore.KeysName: `{}`} {
@@ -248,8 +252,12 @@ func TestTheWorkerFindsAClaimableRequestBehindAPageOfParkedOnes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	insert(`INSERT INTO books (id, book_type) VALUES (1, 1), (2, 0)`)
+	insert(`INSERT INTO books (id, book_type, open_library_work_id) VALUES (1, 1, 'OL1W'), (2, 0, 'OL2W'), (3, 1, NULL)`)
 	insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (1, 2, 0, '2026-11-01 00:00:00.000000')`)
+	insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (3, 3, 0, '2026-11-01 00:00:00.000000')`)
+	insert(`INSERT INTO requests (id, book_id, status, created_via, external_source, created_at) VALUES (4, 1, 0, 'web', NULL, '2026-11-01 00:00:00.000000')`)
+	insert(`INSERT INTO requests (id, book_id, status, next_retry_at, created_at) VALUES (5, 1, 2, '2026-11-19 10:45:00.000000', '2026-11-01 00:00:02.000000')`)
+	insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (6, 1, 2, '2026-11-01 00:00:00.500000')`)
 	insert(`INSERT INTO requests (id, book_id, status, search_claimed_at, created_at) VALUES (2, 1, 1, '2026-11-19 09:50:00.000000', '2026-11-01 00:00:01.000000')`)
 	for id := int64(10); id < 10+2*pendingScan+5; id++ {
 		insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (?, 1, 0, ?)`, id, wfstore.FormatTimestamp(now.Add(-time.Hour+time.Duration(id)*time.Second)))
@@ -271,5 +279,18 @@ func TestTheWorkerFindsAClaimableRequestBehindAPageOfParkedOnes(t *testing.T) {
 	now = now.Add(30 * time.Minute)
 	if id, found, _ := service.nextSearch(context.Background()); !found || id != 2 {
 		t.Fatalf("after the lease, the oldest claimable request is %d %v", id, found)
+	}
+	service.park(2, searchWaiting, "request_claimed", time.Hour)
+	now = now.Add(15 * time.Minute)
+	if id, found, _ := service.nextSearch(context.Background()); !found || id != 5 {
+		t.Fatalf("a not-found request whose retry is due is %d %v", id, found)
+	}
+	for _, outside := range []int64{1, 3, 4} {
+		if inScope, err := service.inScope(context.Background(), outside); err != nil || inScope {
+			t.Errorf("request %d is in the acquisition scope: %v", outside, err)
+		}
+	}
+	if inScope, _ := service.inScope(context.Background(), 5); !inScope {
+		t.Errorf("an Open Library ebook request from the consumer path is out of scope")
 	}
 }

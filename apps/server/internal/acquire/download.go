@@ -29,7 +29,10 @@ const (
 	CodeStaging         = "staging-unavailable"
 )
 
-var ErrBusy = errors.New("acquisition_busy")
+var (
+	ErrBusy    = errors.New("acquisition_busy")
+	ErrRevoked = errors.New("authority_changed")
+)
 
 type DownloadOutcome string
 
@@ -38,12 +41,15 @@ const (
 	Completed        DownloadOutcome = "completed"
 	DownloadFailed   DownloadOutcome = "failed"
 	Superseded       DownloadOutcome = "superseded"
+	Revoked          DownloadOutcome = "revoked"
 )
 
 type DownloadOptions struct {
 	RequestTimeout time.Duration
 	Deadline       time.Duration
 	Clock          func() time.Time
+	AllowRoot      func(root string) bool
+	Authorize      acquisition.Authorize
 }
 
 func (o DownloadOptions) now() time.Time {
@@ -85,6 +91,9 @@ func Download(ctx context.Context, store *wfstore.Store, requestID, resultID int
 		return DownloadReport{Outcome: AlreadyCompleted, DownloadID: plan.Completed}, nil
 	}
 	selection := plan.Selection
+	if options.AllowRoot != nil && !options.AllowRoot(selection.Root) {
+		return DownloadReport{}, acquisition.ErrLibraryRoot
+	}
 	root, err := bookfile.OpenRoot(store.Dir, selection.Root)
 	if err != nil {
 		return DownloadReport{}, acquisition.ErrLibraryRoot
@@ -183,7 +192,7 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 		}
 		return nil
 	}
-	downloadID, err := acquisition.Complete(ctx, store, selection, verify, options.now())
+	downloadID, err := acquisition.Complete(ctx, store, selection, options.Authorize, verify, options.now())
 	if err != nil {
 		if referenced, checkErr := acquisition.Referenced(ctx, store, selection.BookPath()); checkErr != nil || referenced {
 			fault.Observe(err)
@@ -192,6 +201,10 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 		withdraw()
 		if errors.Is(err, acquisition.ErrSuperseded) {
 			report.Outcome = Superseded
+			return report, nil
+		}
+		if errors.Is(err, ErrRevoked) {
+			report.Outcome = Revoked
 			return report, nil
 		}
 		fault.Observe(err)

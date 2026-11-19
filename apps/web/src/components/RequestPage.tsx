@@ -1,6 +1,6 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ApiError, failureKind } from "../api/errors";
+import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { Acquisition, RequestDetail } from "../contract";
 import { selectionRunning, useAcquisition, useRequest, useSelectionFinished, useSelectResult, useSession } from "../queries";
 import { useServices } from "../services";
@@ -96,7 +96,7 @@ function stage(request: RequestDetail): string {
     case "pending":
       return "Waiting for its turn to be searched.";
     case "searching":
-      return request.attention_reason === SELECTION_REASON ? "Copies were found and are waiting for a choice." : "Searching indexers for this book. This may take a moment.";
+      return request.acquisition === true && request.attention_reason === SELECTION_REASON ? "Copies were found and are waiting for a choice." : "Searching indexers for this book. This may take a moment.";
     case "not_found":
       return request.next_retry_at && Date.parse(request.next_retry_at) > Date.now() ? `Nothing suitable was found yet. Shelfarr will search again ${relativeTime(request.next_retry_at)}.` : "Nothing suitable was found yet.";
     case "downloading":
@@ -113,7 +113,6 @@ function stage(request: RequestDetail): string {
       return "The server reported a status this preview does not know yet.";
   }
 }
-
 
 function Details({ request, admin }: { request: RequestDetail; admin: boolean }) {
   const library = request.library;
@@ -132,11 +131,11 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
             <div className="attention" role="note">
               <h2>Attention Required</h2>
               <p>{request.attention_reason ?? "This request needs your attention."}</p>
-              {!admin && request.attention_reason === SELECTION_REASON ? <p>An administrator chooses which copy to download.</p> : null}
+              {!admin && request.acquisition === true && request.attention_reason === SELECTION_REASON ? <p>An administrator chooses which copy to download.</p> : null}
             </div>
           ) : null}
 
-          {admin && request.book_type === "ebook" ? <ChooseCopy request={request} /> : null}
+          {admin && request.acquisition === true ? <ChooseCopy request={request} /> : null}
 
           <div className="request-stage" role="status">
             <p>{stage(request)}</p>
@@ -268,7 +267,7 @@ function ChooseCopy({ request }: { request: RequestDetail }) {
 function SelectionStatus({ answer }: { answer: Acquisition }) {
   const selection = answer.selection;
   let text = "";
-  if (selection?.state === "queued") text = "Download queued. It starts as soon as the server finishes its current search.";
+  if (selection?.state === "queued") text = "Download queued. It starts as soon as the server finishes its current search. If the server restarts first, choose the copy again.";
   else if (selection?.state === "downloading") text = "Downloading the chosen copy. This page updates by itself.";
   else if (selection?.state === "completed") text = "Downloaded. The ebook is now in the library.";
   else if (selection?.state === "failed")
@@ -342,7 +341,7 @@ function SelectionFailure({ error }: { error: unknown }) {
   let text = "The choice could not be sent. Nothing was changed.";
   if (code === "acquisition_busy") text = "Another download is running on this server. Try again when it has finished.";
   else if (code === "not_selectable") text = "That copy can no longer be chosen. The list shows what can be chosen now.";
-  else if (kind === "network" || kind === "server" || kind === "busy") text = "The server did not confirm the choice. This page shows the current state; choose again only if nothing is downloading.";
+  else if (unconfirmed(error)) text = "The server did not confirm the choice. This page shows the current state; choose again only if nothing is downloading.";
   else if (kind === "csrf") text = "The page's security check expired. Try again.";
   return (
     <p className="field-error" role="alert">

@@ -297,7 +297,9 @@ func Referenced(ctx context.Context, store *wfstore.Store, bookPath string) (boo
 	return count > 0, nil
 }
 
-func Complete(ctx context.Context, store *wfstore.Store, selection Selection, verify func() error, now time.Time) (int64, error) {
+type Authorize func(ctx context.Context, tx *sql.Tx) error
+
+func Complete(ctx context.Context, store *wfstore.Store, selection Selection, authorize Authorize, verify func() error, now time.Time) (int64, error) {
 	var downloadID int64
 	err := store.Transact(ctx, func(tx *sql.Tx) error {
 		current, err := planIn(ctx, tx, selection.RequestID, selection.ResultID)
@@ -306,6 +308,11 @@ func Complete(ctx context.Context, store *wfstore.Store, selection Selection, ve
 		}
 		if err != nil || current.Completed != 0 || current.Selection != selection {
 			return ErrSuperseded
+		}
+		if authorize != nil {
+			if err := authorize(ctx, tx); err != nil {
+				return err
+			}
 		}
 		downloadID, err = writeCompletion(ctx, tx, selection, wfstore.FormatTimestamp(now))
 		if err != nil {

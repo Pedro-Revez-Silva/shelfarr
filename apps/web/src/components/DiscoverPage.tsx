@@ -1,6 +1,6 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApiError, failureKind } from "../api/errors";
+import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import { coverStyles, type DiscoverAnswer, type DiscoverItem, type DiscoverState, type LibraryCopyType, type RequestCreation } from "../contract";
 import { useDiscover, useRequestEbook } from "../queries";
 import { useServices } from "../services";
@@ -70,7 +70,7 @@ function Discover() {
       {state !== null && state !== "available" ? <Unavailable state={state} retryAfter={answer.data?.retry_after ?? null} checking={answer.isFetching} onCheck={() => void answer.refetch()} /> : null}
       {answer.isError ? <SearchFailure error={answer.error} query={query} onRetry={() => void answer.refetch()} /> : null}
       {query === null && answer.isPending ? <Loading label="Checking whether search is available…" /> : null}
-      {answer.data && answer.data.search === "available" && answer.data.query !== null && !answer.isError ? <Results answer={answer.data} /> : null}
+      {answer.data && answer.data.search === "available" && answer.data.query !== null && !answer.isError ? <Results answer={answer.data} onRefresh={() => void answer.refetch()} refreshing={answer.isFetching} /> : null}
     </section>
   );
 }
@@ -254,7 +254,7 @@ function Failure({ title, children, onRetry }: { title: string; children: ReactN
   );
 }
 
-function Results({ answer }: { answer: DiscoverAnswer }) {
+function Results({ answer, onRefresh, refreshing }: { answer: DiscoverAnswer; onRefresh: () => void; refreshing: boolean }) {
   const query = answer.query ?? "";
   return (
     <section className="discover-results" aria-labelledby="discover-results-heading">
@@ -273,7 +273,7 @@ function Results({ answer }: { answer: DiscoverAnswer }) {
         <ol className="discover-list">
           {answer.items.map((item) => (
             <li key={item.id}>
-              <Result item={item} requesting={answer.requesting === true} />
+              <Result item={item} requesting={answer.requesting === true} onRefresh={onRefresh} refreshing={refreshing} />
             </li>
           ))}
         </ol>
@@ -290,7 +290,7 @@ function styleFor(id: string) {
   return coverStyles[sum] ?? "clay";
 }
 
-function Result({ item, requesting }: { item: DiscoverItem; requesting: boolean }) {
+function Result({ item, requesting, onRefresh, refreshing }: { item: DiscoverItem; requesting: boolean; onRefresh: () => void; refreshing: boolean }) {
   const titleId = useId();
   const details = [item.first_publish_year !== null ? `First published ${item.first_publish_year}` : null, item.edition_count !== null ? `${item.edition_count} ${item.edition_count === 1 ? "edition" : "editions"}` : null].filter(Boolean).join(" · ");
   return (
@@ -314,7 +314,7 @@ function Result({ item, requesting }: { item: DiscoverItem; requesting: boolean 
         ) : (
           <p className="discover-meta">No copy to open in your library</p>
         )}
-        {requesting && !item.library.some((copy) => copy.book_type === "ebook") ? <RequestEbook item={item} /> : null}
+        {requesting && !item.library.some((copy) => copy.book_type === "ebook") ? <RequestEbook item={item} onRefresh={onRefresh} refreshing={refreshing} /> : null}
         <a className="discover-source" href={item.source_url} target="_blank" rel="noopener noreferrer">
           View on Open Library
           <span className="sr-only"> for {item.title} (opens in a new tab)</span>
@@ -324,7 +324,7 @@ function Result({ item, requesting }: { item: DiscoverItem; requesting: boolean 
   );
 }
 
-function RequestEbook({ item }: { item: DiscoverItem }) {
+function RequestEbook({ item, onRefresh, refreshing }: { item: DiscoverItem; onRefresh: () => void; refreshing: boolean }) {
   const request = useRequestEbook();
   const status = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -344,7 +344,7 @@ function RequestEbook({ item }: { item: DiscoverItem }) {
       <div role="status" className="discover-request-status" ref={status} tabIndex={-1}>
         {request.isPending ? <p>Sending the request for “{item.title}”…</p> : null}
         {request.isSuccess ? <RequestOutcome answer={request.data} title={item.title} /> : null}
-        {request.isError ? <RequestFailure error={request.error} /> : null}
+        {request.isError ? <RequestFailure error={request.error} onRefresh={onRefresh} refreshing={refreshing} /> : null}
       </div>
     </div>
   );
@@ -395,14 +395,22 @@ function RequestOutcome({ answer, title }: { answer: RequestCreation; title: str
   }
 }
 
-function RequestFailure({ error }: { error: unknown }) {
+function RequestFailure({ error, onRefresh, refreshing }: { error: unknown; onRefresh: () => void; refreshing: boolean }) {
   const code = error instanceof ApiError ? error.code : null;
   const kind = failureKind(error);
-  if (code === "work_not_offered") return <p className="field-error">This result is from an earlier search. Search again, then request it.</p>;
-  if (kind === "network" || kind === "server" || kind === "busy")
+  if (code === "work_not_offered")
+    return (
+      <>
+        <p className="field-error">This result is from an earlier search. Search again, then request it.</p>
+        <button type="button" className="button" aria-disabled={refreshing ? true : undefined} onClick={() => (refreshing ? undefined : onRefresh())}>
+          {refreshing ? "Searching…" : "Search again"}
+        </button>
+      </>
+    );
+  if (unconfirmed(error))
     return (
       <p className="field-error">
-        The server did not confirm the request, so it may or may not have been received. <Link to="/requests">Check Requests</Link> before trying again; asking again never creates a second request.
+        The server did not confirm the request, so it may or may not have been received. <Link to="/requests">Check Requests</Link> before trying again; while a request is open or waiting for its next search, asking again does not create a second one.
       </p>
     );
   if (kind === "csrf") return <p className="field-error">The page's security check expired. Try again.</p>;

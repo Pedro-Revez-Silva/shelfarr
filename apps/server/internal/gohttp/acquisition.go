@@ -2,11 +2,12 @@ package gohttp
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -14,7 +15,6 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquire"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquisition"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/bookfile"
-	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/wfstore"
 )
 
@@ -64,7 +64,6 @@ type acquisitionService struct {
 	offers  *offeredWorks
 	logger  *slog.Logger
 	now     func() time.Time
-	gap     time.Duration
 	wake    chan struct{}
 	stopped chan struct{}
 
@@ -74,8 +73,11 @@ type acquisitionService struct {
 	order  []int64
 	active *selectionJob
 
-	authorise func(ctx context.Context, job selectionJob) bool
+	authority func(ctx context.Context, tx *sql.Tx, job selectionJob) error
+	allowRoot func(root string) bool
 }
+
+const requestScope = `b.book_type = 1 AND b.open_library_work_id IS NOT NULL AND r.created_via = 'api' AND r.external_source = 'consumer_app'`
 
 func loopbackOrigin(origin string) bool {
 	parsed, err := url.Parse(origin)
@@ -86,31 +88,34 @@ func loopbackOrigin(origin string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func proxiedThroughLoopback() bool {
-	request, err := http.NewRequest(http.MethodGet, openlibrary.Origin+"/search.json", nil)
-	if err != nil {
-		return false
-	}
-	proxy, err := http.ProxyFromEnvironment(request)
-	if err != nil || proxy == nil {
-		return false
-	}
-	ip := net.ParseIP(proxy.Hostname())
-	return proxy.Scheme == "http" && ip != nil && ip.IsLoopback()
+func loopbackAddress(address string) bool {
+	host, port, err := net.SplitHostPort(address)
+	ip := net.ParseIP(host)
+	return err == nil && port != "" && ip != nil && ip.IsLoopback()
 }
 
-func openAcquisition(ctx context.Context, config Config, roots []string, logger *slog.Logger, now func() time.Time) (*acquisitionService, string) {
+func privateDirectory(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 && info.Mode().Perm()&0o077 == 0
+}
+
+func acquisitionPreflight(config Config) string {
 	dir := config.AcquisitionWorkdir
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir ||
 		config.DatabasePath != filepath.Join(dir, wfstore.DatabaseName) ||
 		config.LockPath != filepath.Join(dir, wfstore.LocksDir, acquisitionLockName) ||
-		config.AllowPublicBind || !loopbackOrigin(config.BrowserOrigin) {
-		return nil, "acquisition-volume"
+		config.AllowPublicBind || !loopbackOrigin(config.BrowserOrigin) || len(config.PreviewUserIDs) == 0 ||
+		!privateDirectory(dir) || !privateDirectory(filepath.Join(dir, wfstore.LocksDir)) {
+		return "acquisition-volume"
 	}
-	if config.OpenLibrarySearch && !proxiedThroughLoopback() {
-		return nil, "acquisition-network"
+	if config.OpenLibrarySearch && !loopbackAddress(config.OpenLibraryFixture) {
+		return "acquisition-network"
 	}
-	store, err := wfstore.Open(ctx, dir, wfstore.Options{BusyTimeoutMillis: int(config.BusyTimeout / time.Millisecond)})
+	return ""
+}
+
+func openAcquisition(ctx context.Context, config Config, roots []string, logger *slog.Logger, now func() time.Time) (*acquisitionService, string) {
+	store, err := wfstore.Open(ctx, config.AcquisitionWorkdir, wfstore.Options{BusyTimeoutMillis: int(config.BusyTimeout / time.Millisecond)})
 	if err != nil {
 		return nil, "acquisition-volume"
 	}
@@ -122,16 +127,11 @@ func openAcquisition(ctx context.Context, config Config, roots []string, logger 
 		store.Close()
 		return nil, "acquisition-settings"
 	}
-	gap := config.AcquisitionGap
-	if gap <= 0 {
-		gap = defaultAcquisitionGap
-	}
 	return &acquisitionService{
 		store:   store,
 		offers:  newOfferedWorks(now),
 		logger:  logger,
 		now:     now,
-		gap:     gap,
 		wake:    make(chan struct{}, 1),
 		stopped: make(chan struct{}),
 		parked:  map[int64]parkedSearch{},
@@ -163,7 +163,7 @@ func (s *acquisitionService) run(ctx context.Context) {
 			s.search(ctx, requestID)
 			continue
 		}
-		timer := time.NewTimer(s.gap)
+		timer := time.NewTimer(defaultAcquisitionGap)
 		select {
 		case <-ctx.Done():
 		case <-s.wake:
@@ -176,8 +176,9 @@ func (s *acquisitionService) run(ctx context.Context) {
 func (s *acquisitionService) nextSearch(ctx context.Context) (int64, bool, error) {
 	now := s.now()
 	stale := wfstore.FormatTimestamp(now.Add(-acquisition.StaleSearchLease))
+	due := wfstore.FormatTimestamp(now)
 	for offset := 0; ; offset += pendingScan {
-		ids, err := s.claimable(ctx, stale, offset)
+		ids, err := s.claimable(ctx, stale, due, offset)
 		if err != nil {
 			return 0, false, err
 		}
@@ -190,10 +191,11 @@ func (s *acquisitionService) nextSearch(ctx context.Context) (int64, bool, error
 	}
 }
 
-func (s *acquisitionService) claimable(ctx context.Context, stale string, offset int) ([]int64, error) {
+func (s *acquisitionService) claimable(ctx context.Context, stale, due string, offset int) ([]int64, error) {
 	rows, err := s.store.DB().QueryContext(ctx, `SELECT r.id FROM requests r JOIN books b ON b.id = r.book_id
-		WHERE b.book_type = 1 AND (r.status = 0 OR (r.status = 1 AND r.search_claimed_at IS NOT NULL AND r.search_claimed_at <= ?))
-		ORDER BY r.created_at, r.id LIMIT ? OFFSET ?`, stale, pendingScan, offset)
+		WHERE `+requestScope+` AND (r.status = 0 OR (r.status = 1 AND r.search_claimed_at IS NOT NULL AND r.search_claimed_at <= ?)
+			OR (r.status = 2 AND r.next_retry_at IS NOT NULL AND r.next_retry_at <= ?))
+		ORDER BY r.created_at, r.id LIMIT ? OFFSET ?`, stale, due, pendingScan, offset)
 	if err != nil {
 		return nil, wfstore.Wrap(err)
 	}
@@ -220,7 +222,18 @@ func (s *acquisitionService) firstUnparked(ids []int64, now time.Time) (int64, b
 	return 0, false
 }
 
+func (s *acquisitionService) inScope(ctx context.Context, requestID int64) (bool, error) {
+	var count int
+	err := s.store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM requests r JOIN books b ON b.id = r.book_id WHERE r.id = ? AND `+requestScope, requestID).Scan(&count)
+	return count == 1, wfstore.Wrap(err)
+}
+
 func (s *acquisitionService) search(ctx context.Context, requestID int64) {
+	if _, err := acquisition.RequeueDue(ctx, s.store, requestID, s.now()); err != nil {
+		s.park(requestID, searchWaiting, wfstore.CodeOf(err), failedSearchWait)
+		s.logger.Warn("acquisition", slog.String("step", "requeue"), slog.Int64("request_id", requestID), slog.String("code", wfstore.CodeOf(err)))
+		return
+	}
 	report, err := acquire.Search(ctx, s.store, requestID, acquire.SearchOptions{RequestTimeout: providerTimeout, Deadline: searchDeadline, Clock: s.now})
 	attributes := []any{slog.String("step", "search"), slog.Int64("request_id", requestID)}
 	switch {
@@ -252,12 +265,23 @@ func (s *acquisitionService) search(ctx context.Context, requestID int64) {
 func (s *acquisitionService) park(requestID int64, state, code string, wait time.Duration) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.prune()
 	s.parked[requestID] = parkedSearch{state: state, code: code, until: s.now().Add(wait), wait: wait}
+}
+
+func (s *acquisitionService) prune() {
+	forgotten := s.now().Add(-2 * longestReleaseWait)
+	for id, parked := range s.parked {
+		if parked.until.Before(forgotten) {
+			delete(s.parked, id)
+		}
+	}
 }
 
 func (s *acquisitionService) backOff(requestID int64, code string) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.prune()
 	wait := failedSearchWait
 	if previous, found := s.parked[requestID]; found && previous.state == searchRetryScheduled {
 		wait = min(previous.wait*2, longestReleaseWait)
@@ -283,6 +307,9 @@ func (s *acquisitionService) enqueue(job selectionJob) (selectionJob, error) {
 	defer s.mutex.Unlock()
 	if s.active != nil {
 		if s.active.requestID == job.requestID && s.active.resultID == job.resultID {
+			if s.active.state == selectionQueued {
+				s.active.sessionID, s.active.userID = job.sessionID, job.userID
+			}
 			return *s.active, nil
 		}
 		return *s.active, errAcquisitionBusy
@@ -342,12 +369,20 @@ func (s *acquisitionService) finish(state, code string) {
 
 func (s *acquisitionService) download(ctx context.Context, job selectionJob) {
 	attributes := []any{slog.String("step", "download"), slog.Int64("request_id", job.requestID), slog.Int64("result_id", job.resultID)}
-	if s.authorise != nil && !s.authorise(ctx, job) {
-		s.finish(selectionFailed, "authority_changed")
-		s.logger.Info("acquisition", append(attributes, slog.String("outcome", "authority_changed"))...)
-		return
+	options := acquire.DownloadOptions{RequestTimeout: providerTimeout, Deadline: downloadDeadline, Clock: s.now, AllowRoot: s.allowRoot}
+	if s.authority != nil {
+		options.Authorize = func(ctx context.Context, tx *sql.Tx) error { return s.authority(ctx, tx, job) }
+		if err := s.store.Transact(ctx, func(tx *sql.Tx) error { return options.Authorize(ctx, tx) }); err != nil {
+			code := wfstore.CodeOf(err)
+			if errors.Is(err, acquire.ErrRevoked) {
+				code = acquire.ErrRevoked.Error()
+			}
+			s.finish(selectionFailed, code)
+			s.logger.Info("acquisition", append(attributes, slog.String("outcome", selectionFailed), slog.String("code", code))...)
+			return
+		}
 	}
-	report, err := acquire.Download(ctx, s.store, job.requestID, job.resultID, acquire.DownloadOptions{RequestTimeout: providerTimeout, Deadline: downloadDeadline, Clock: s.now})
+	report, err := acquire.Download(ctx, s.store, job.requestID, job.resultID, options)
 	state, code := selectionFailed, ""
 	switch {
 	case errors.Is(err, acquire.ErrBusy):
@@ -360,6 +395,8 @@ func (s *acquisitionService) download(ctx context.Context, job selectionJob) {
 		state = selectionCompleted
 	case report.Outcome == acquire.Superseded:
 		code = string(acquire.Superseded)
+	case report.Outcome == acquire.Revoked:
+		code = acquire.ErrRevoked.Error()
 	default:
 		code = report.Code
 	}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -101,6 +102,22 @@ func NewTransport() *http.Transport {
 		MaxConnsPerHost:        MaxConcurrent,
 		MaxResponseHeaderBytes: 64 << 10,
 	}
+}
+
+func NewPinnedTransport(address string) *http.Transport {
+	transport := NewTransport()
+	transport.Proxy = nil
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: func(_, dialed string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(dialed)
+		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+			return ErrUnavailable
+		}
+		return nil
+	}}
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, address)
+	}
+	return transport
 }
 
 func New(userAgent string, transport http.RoundTripper, now func() time.Time) *Client {

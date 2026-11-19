@@ -276,6 +276,7 @@ export type RequestSummary = z.infer<typeof requestSummarySchema>;
 export const requestDetailSchema = requestSummarySchema.extend({
   attention_reason: z.string().nullable(),
   downloads: z.array(z.object({ status: z.enum(downloadStatuses), progress: percent.nullable() })),
+  acquisition: z.boolean().optional(),
 });
 export type RequestDetail = z.infer<typeof requestDetailSchema>;
 
@@ -385,7 +386,6 @@ export const requestCreationSchema = z.discriminatedUnion("outcome", [
 export type RequestCreation = z.infer<typeof requestCreationSchema>;
 
 export const selectionStates = ["queued", "downloading", "failed", "completed"] as const;
-export type SelectionState = (typeof selectionStates)[number];
 export const selectionSchema = z.object({ state: z.enum(selectionStates), result_id: identifier, code: z.string().nullable() });
 export type Selection = z.infer<typeof selectionSchema>;
 export const selectionEnvelopeSchema = z.object({ account: identifier, selection: selectionSchema });

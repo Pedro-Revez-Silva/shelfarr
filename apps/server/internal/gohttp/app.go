@@ -81,7 +81,11 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 	}
 	var search *openlibrary.Client
 	if config.OpenLibrarySearch {
-		search = openlibrary.New("Shelfarr/"+config.ServerVersion, openlibrary.NewTransport(), now)
+		transport := openlibrary.NewTransport()
+		if config.OpenLibraryFixture != "" {
+			transport = openlibrary.NewPinnedTransport(config.OpenLibraryFixture)
+		}
+		search = openlibrary.New("Shelfarr/"+config.ServerVersion, transport, now)
 	}
 	return &App{
 		openLibrary:   search,

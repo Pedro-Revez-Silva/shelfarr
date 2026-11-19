@@ -101,6 +101,7 @@ func goWebAssets(t *testing.T) string {
 
 type fakeOpenLibrary struct {
 	proxy   string
+	direct  string
 	ca      string
 	journal string
 }
@@ -133,7 +134,7 @@ func startFakeOpenLibrary(t *testing.T) fakeOpenLibrary {
 	if err := json.Unmarshal([]byte(line), &fields); err != nil {
 		t.Fatal(err)
 	}
-	ready.proxy, ready.ca, ready.journal = fields["proxy"], fields["ca"], fields["journal"]
+	ready.proxy, ready.direct, ready.ca, ready.journal = fields["proxy"], fields["direct"], fields["ca"], fields["journal"]
 	return ready
 }
 
@@ -264,7 +265,7 @@ type serverChange func(arguments []string, environment []string) ([]string, []st
 func (v *webVolume) arguments(listen string) []string {
 	arguments := []string{"-experimental", "-database", v.w.database(), "-lock-file", filepath.Join(v.w.dir, "locks", "http.lock"),
 		"-listen", listen, "-browser-origin", "http://" + listen, "-preview-user-ids", itoa(v.users["alice"]) + "," + itoa(v.users["bob"]),
-		"-open-library-search", "-acquisition-workdir", v.w.dir, "-server-version", "e2e"}
+		"-open-library-search", "-acquisition-workdir", v.w.dir, "-acquisition-open-library-address", v.openLib.direct, "-server-version", "e2e"}
 	for _, root := range v.roots {
 		arguments = append(arguments, "-library-root", root)
 	}
@@ -273,7 +274,7 @@ func (v *webVolume) arguments(listen string) []string {
 
 func (v *webVolume) environment() []string {
 	return []string{"PATH=" + os.Getenv("PATH"), "SECRET_KEY_BASE_FILE=" + v.secret, "SHELFARR_E2E_CLOCK_FILE=" + v.clock,
-		"HTTPS_PROXY=" + v.openLib.proxy, "SSL_CERT_FILE=" + v.openLib.ca}
+		"HTTPS_PROXY=http://127.0.0.1:9", "SSL_CERT_FILE=" + v.openLib.ca}
 }
 
 func (v *webVolume) launch(t *testing.T, changes ...serverChange) *webServer {
@@ -568,25 +569,25 @@ func TestWebAcquisitionRefusesToStartOutsideItsPreparedVolume(t *testing.T) {
 			return changed, environment
 		}
 	}
-	withoutProxy := func(arguments, environment []string) ([]string, []string) {
-		var kept []string
-		for _, entry := range environment {
-			if !strings.HasPrefix(entry, "HTTPS_PROXY=") {
-				kept = append(kept, entry)
+	without := func(flag string) serverChange {
+		return func(arguments, environment []string) ([]string, []string) {
+			var kept []string
+			for index := 0; index < len(arguments); index++ {
+				if arguments[index] == flag {
+					index++
+					continue
+				}
+				kept = append(kept, arguments[index])
 			}
+			return kept, environment
 		}
-		return arguments, kept
 	}
-	publicProxy := func(arguments, environment []string) ([]string, []string) {
-		var kept []string
-		for _, entry := range environment {
-			if strings.HasPrefix(entry, "HTTPS_PROXY=") {
-				entry = "HTTPS_PROXY=http://proxy.example:3128"
-			}
-			kept = append(kept, entry)
-		}
-		return arguments, kept
+	lockSibling := filepath.Join(volume.runtimes, "sibling-locks")
+	if err := os.Mkdir(lockSibling, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	outsideLock := filepath.Join(volume.runtimes, "outside.lock")
+	locks := filepath.Join(volume.w.dir, "locks")
 	cases := []struct {
 		name   string
 		change serverChange
@@ -595,11 +596,24 @@ func TestWebAcquisitionRefusesToStartOutsideItsPreparedVolume(t *testing.T) {
 		code   string
 	}{
 		{name: "the database of another prepared volume", change: replace("-database", other.database()), code: "acquisition-volume"},
-		{name: "a lock file outside the volume", change: replace("-lock-file", filepath.Join(volume.runtimes, "http.lock")), code: "acquisition-volume"},
+		{name: "a lock file outside the volume", change: replace("-lock-file", outsideLock), code: "acquisition-volume"},
+		{
+			name: "a lock directory replaced by a link out of the volume",
+			setup: func() {
+				os.Rename(locks, locks+".moved")
+				os.Symlink(lockSibling, locks)
+			},
+			undo: func() {
+				os.Remove(locks)
+				os.Rename(locks+".moved", locks)
+			},
+			code: "acquisition-volume",
+		},
+		{name: "no preview account", change: replace("-preview-user-ids", ""), code: "acquisition-volume"},
 		{name: "a browser origin that is not loopback", change: replace("-browser-origin", "http://shelf.example"), code: "acquisition-volume"},
 		{name: "a copied database outside any prepared volume", change: unprepared(t, volume), code: "acquisition-volume"},
-		{name: "Open Library search without a loopback proxy", change: withoutProxy, code: "acquisition-network"},
-		{name: "Open Library search through a proxy that is not loopback", change: publicProxy, code: "acquisition-network"},
+		{name: "Open Library search without a test server address", change: without("-acquisition-open-library-address"), code: "acquisition-network"},
+		{name: "Open Library search pinned to an address that is not loopback", change: replace("-acquisition-open-library-address", "93.184.215.14:443"), code: "acquisition-network"},
 		{
 			name:  "a public Gutenberg catalogue",
 			setup: func() { putSetting(t, volume.db, "gutenberg_url", "string", "https://www.gutenberg.org") },
@@ -641,6 +655,11 @@ func TestWebAcquisitionRefusesToStartOutsideItsPreparedVolume(t *testing.T) {
 		})
 	}
 	requireSame(t, before, digests(t, volume.db, "settings"))
+	for _, created := range []string{outsideLock, filepath.Join(lockSibling, "http.lock")} {
+		if _, err := os.Lstat(created); err == nil {
+			t.Errorf("a refused start created %s", created)
+		}
+	}
 	if journal := volume.openLib.entries(t); len(journal) != 0 {
 		t.Errorf("a refused start contacted Open Library: %v", journal)
 	}
@@ -654,13 +673,20 @@ func TestWebAcquisitionIsOffWithoutItsFlag(t *testing.T) {
 	withoutFlag := func(arguments, environment []string) ([]string, []string) {
 		var kept []string
 		for index := 0; index < len(arguments); index++ {
-			if arguments[index] == "-acquisition-workdir" {
+			if arguments[index] == "-acquisition-workdir" || arguments[index] == "-acquisition-open-library-address" {
 				index++
 				continue
 			}
 			kept = append(kept, arguments[index])
 		}
-		return kept, environment
+		var proxied []string
+		for _, entry := range environment {
+			if strings.HasPrefix(entry, "HTTPS_PROXY=") {
+				entry = "HTTPS_PROXY=" + volume.openLib.proxy
+			}
+			proxied = append(proxied, entry)
+		}
+		return kept, proxied
 	}
 	server := volume.launch(t, withoutFlag)
 	member := server.browser().signIn("bob", memberPassword)
@@ -698,10 +724,7 @@ func TestWebAcquisitionJourney(t *testing.T) {
 			server := volume.launch(t)
 			member := server.browser().signIn("bob", memberPassword)
 			admin := server.browser().signIn("alice", adminPassword)
-			waitFor(t, "the worker to settle the volume's own pending ebook requests", 30*time.Second, func() bool {
-				return scalar[int64](t, volume.db, `SELECT COUNT(*) FROM requests r JOIN books b ON b.id = r.book_id WHERE b.book_type = 1 AND r.status = 0`) == 0
-			})
-			time.Sleep(time.Second)
+			legacy := rows(t, volume.db, `SELECT * FROM requests ORDER BY id`)
 			untouched := digests(t, volume.db)
 
 			found := member.discover("pride")
@@ -906,6 +929,18 @@ func TestWebAcquisitionJourney(t *testing.T) {
 				t.Errorf("%d requests for the work after the journey", count)
 			}
 
+			for _, before := range legacy {
+				if after := rows(t, volume.db, `SELECT * FROM requests WHERE id = ?`, strings.TrimPrefix(before[0], "int64:")); !reflect.DeepEqual(after, [][]string{before}) {
+					t.Errorf("a request the website did not make was changed: %v to %v", before, after)
+				}
+			}
+			kinds := map[string]int{}
+			for _, entry := range volume.openLib.entries(t) {
+				kinds[entry["kind"].(string)]++
+			}
+			if kinds["connect"] != 0 || kinds["refused"] != 0 || kinds["direct"] == 0 {
+				t.Errorf("Open Library was reached other than through the pinned test address: %v", kinds)
+			}
 			logged := server.output()
 			for _, secret := range []string{"Pride and Prejudice", "Jane Austen", volume.fake.server.URL, volume.library, bookLink, memberPassword, adminPassword} {
 				if strings.Contains(logged, secret) {
@@ -1045,5 +1080,150 @@ func railsReadable(t *testing.T, volume *webVolume, requestID int64) {
 	var integrity string
 	if err := volume.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Errorf("integrity %q %v", integrity, err)
+	}
+}
+
+func (v *webVolume) acquisitionState(t *testing.T, admin *webClient, requestID int64) map[string]any {
+	t.Helper()
+	found := admin.get("/preview/api/v1/requests/" + itoa(requestID) + "/acquisition")
+	if found.status != 200 {
+		t.Fatalf("acquisition %d %s", found.status, found.body)
+	}
+	return found.json(t)
+}
+
+func selectionOf(state map[string]any) map[string]any {
+	selection, _ := state["selection"].(map[string]any)
+	return selection
+}
+
+func TestWebAcquisitionChecksAuthorityRetriesAndTheLibraryRoot(t *testing.T) {
+	volume := newWebVolume(t, currentBundle)
+	const zombieQuery = "Pride and Prejudice and Zombies Seth Grahame-Smith"
+	zombies := make(chan struct{})
+	volume.fake.set(reply{Path: searchPath, Query: zombieQuery, Status: 200, Body: opds(t, "search-empty.xml"), before: func() {
+		select {
+		case <-zombies:
+		case <-time.After(time.Minute):
+		}
+	}})
+	server := volume.launch(t)
+	member := server.browser().signIn("bob", memberPassword)
+	admin := server.browser().signIn("alice", adminPassword)
+	member.discover("pride")
+	pride := idOf(t, member.request(prideWork).json(t)["request"].(map[string]any)["id"])
+	volume.awaitCandidates(t, pride)
+	undead := idOf(t, member.request(zombieWork).json(t)["request"].(map[string]any)["id"])
+	waitFor(t, "the worker to stall on the second search", 15*time.Second, func() bool {
+		status, _ := volume.requestState(t, undead)
+		return status == 1
+	})
+	chosen := scalar[int64](t, volume.db, `SELECT id FROM search_results WHERE request_id = ? AND guid = ?`, pride, bookGUID)
+	choose := func(client *webClient) answer {
+		return client.post("/preview/api/v1/requests/"+itoa(pride)+"/selection", `{"result_id":"`+itoa(chosen)+`"}`)
+	}
+	if queued := choose(admin); queued.status != 202 || selectionOf(queued.json(t))["state"] != "queued" {
+		t.Fatalf("a choice behind a running search answered %d %s", queued.status, queued.body)
+	}
+
+	putSetting(t, volume.db, "session_max_age_days", "integer", "1")
+	volume.advance(t, 25*time.Hour)
+	close(zombies)
+	waitFor(t, "the empty search to settle", 15*time.Second, func() bool {
+		status, _ := volume.requestState(t, undead)
+		return status == 2
+	})
+	time.Sleep(3 * time.Second)
+	if count := scalar[int64](t, volume.db, `SELECT COUNT(*) FROM downloads WHERE request_id = ?`, pride); count != 0 {
+		t.Fatalf("a choice whose session expired while it waited downloaded %d times", count)
+	}
+	if got := admin.get("/preview/api/v1/requests/" + itoa(pride) + "/acquisition"); got.status != 401 {
+		t.Errorf("an expired session still reads the admin answer: %d", got.status)
+	}
+	member = server.browser().signIn("bob", memberPassword)
+	admin = server.browser().signIn("alice", adminPassword)
+	if selection := selectionOf(volume.acquisitionState(t, admin, pride)); selection["state"] != "failed" || selection["code"] != "authority_changed" {
+		t.Errorf("an expired choice reads %v", selection)
+	}
+
+	member.discover("pride")
+	if again := member.request(zombieWork).json(t); again["outcome"] != "existing" || idOf(t, again["request"].(map[string]any)["id"]) != undead {
+		t.Errorf("asking again while a search is scheduled answered %v", again)
+	}
+	admin.discover("pride")
+	if other := admin.request(zombieWork).json(t); !reflect.DeepEqual(keysOf(other), []string{"account", "outcome"}) || other["outcome"] != "already_requested" {
+		t.Errorf("another account asking while a search is scheduled answered %v", other)
+	}
+	if count := scalar[int64](t, volume.db, `SELECT COUNT(*) FROM requests r JOIN books b ON b.id = r.book_id WHERE b.open_library_work_id = ?`, zombieWork); count != 1 {
+		t.Errorf("%d requests for a work waiting for its next search", count)
+	}
+
+	held := make(chan struct{})
+	volume.fake.set(reply{Path: bookLink, Status: 200, Body: string(volume.epub), ContentType: epubType, before: func() {
+		select {
+		case <-held:
+		case <-time.After(time.Minute):
+		}
+	}})
+	if got := choose(admin); got.status != 202 {
+		t.Fatalf("choice %d %s", got.status, got.body)
+	}
+	waitFor(t, "the download to start", 10*time.Second, func() bool { return selectionOf(volume.acquisitionState(t, admin, pride))["state"] == "downloading" })
+	exec1(t, volume.db, `UPDATE users SET role = 0 WHERE username = 'alice'`)
+	close(held)
+	waitFor(t, "the revoked download to settle", 15*time.Second, func() bool {
+		return strings.Contains(server.output(), `"code":"authority_changed"`) && strings.Count(server.output(), `"step":"download"`) >= 2
+	})
+	if count := scalar[int64](t, volume.db, `SELECT COUNT(*) FROM downloads WHERE request_id = ?`, pride); count != 0 {
+		t.Errorf("a download chosen by an account that lost the admin role completed")
+	}
+	bookID := scalar[int64](t, volume.db, `SELECT book_id FROM requests WHERE id = ?`, pride)
+	if _, err := os.Lstat(filepath.Join(volume.library, "shelfarr-gutenberg", "book-"+itoa(bookID), "gutenberg-1342.epub")); !os.IsNotExist(err) {
+		t.Errorf("the revoked download left its file: %v", err)
+	}
+	if got := admin.get("/preview/api/v1/requests/" + itoa(pride) + "/acquisition"); got.status != 404 {
+		t.Errorf("a demoted account reads the admin answer: %d", got.status)
+	}
+	exec1(t, volume.db, `UPDATE users SET role = 1 WHERE username = 'alice'`)
+	if selection := selectionOf(volume.acquisitionState(t, admin, pride)); selection["state"] != "failed" || selection["code"] != "authority_changed" {
+		t.Errorf("a revoked download reads %v", selection)
+	}
+
+	unlisted := filepath.Join(volume.w.dir, "unlisted")
+	if err := os.Mkdir(unlisted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	putSetting(t, volume.db, "ebook_output_path", "string", unlisted)
+	volume.serveBook(volume.epub)
+	if got := choose(admin); got.status != 202 {
+		t.Fatalf("choice %d %s", got.status, got.body)
+	}
+	waitFor(t, "the drifted root to be refused", 15*time.Second, func() bool { return selectionOf(volume.acquisitionState(t, admin, pride))["state"] == "failed" })
+	if selection := selectionOf(volume.acquisitionState(t, admin, pride)); selection["code"] != "library_root_not_disposable" {
+		t.Errorf("a library root outside the served roots reads %v", selection)
+	}
+	if entries, _ := os.ReadDir(unlisted); len(entries) != 0 {
+		t.Errorf("a refused root received %d entries", len(entries))
+	}
+	putSetting(t, volume.db, "ebook_output_path", "string", volume.library)
+	if got := choose(admin); got.status != 202 {
+		t.Fatalf("choice %d %s", got.status, got.body)
+	}
+	waitFor(t, "the download to complete", 30*time.Second, func() bool {
+		status, _ := volume.requestState(t, pride)
+		return status == 5
+	})
+
+	generation := scalar[int64](t, volume.db, `SELECT search_generation FROM requests WHERE id = ?`, undead)
+	searched := len(volume.fake.requests())
+	volume.advance(t, 25*time.Hour)
+	waitFor(t, "the due retry to be searched again", 20*time.Second, func() bool {
+		return scalar[int64](t, volume.db, `SELECT retry_count FROM requests WHERE id = ?`, undead) == 2
+	})
+	if after := scalar[int64](t, volume.db, `SELECT search_generation FROM requests WHERE id = ?`, undead); after != generation+2 {
+		t.Errorf("generation %d after a requeue and a claim from %d", after, generation)
+	}
+	if again := volume.fake.requests()[searched:]; !reflect.DeepEqual(again, []string{searchPath + "?" + zombieQuery}) {
+		t.Errorf("the due retry asked the catalogue %v", again)
 	}
 }

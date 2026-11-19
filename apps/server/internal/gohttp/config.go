@@ -30,7 +30,7 @@ type Config struct {
 	OpenLibrarySearch bool
 
 	AcquisitionWorkdir string
-	AcquisitionGap     time.Duration
+	OpenLibraryFixture string
 
 	PreviewUserIDs  []string
 	BrowserOrigin   string
@@ -108,6 +108,9 @@ func (c *Config) Validate() error {
 		return ErrConfig
 	}
 	if c.WebAssetsDir != "" && (!filepath.IsAbs(c.WebAssetsDir) || filepath.Clean(c.WebAssetsDir) != c.WebAssetsDir || c.WebAssetsDir == "/") {
+		return ErrConfig
+	}
+	if c.OpenLibraryFixture != "" && (c.AcquisitionWorkdir == "" || !c.OpenLibrarySearch) {
 		return ErrConfig
 	}
 	if c.BrowserOrigin != "" {

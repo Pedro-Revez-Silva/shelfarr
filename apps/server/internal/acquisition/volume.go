@@ -3,6 +3,7 @@ package acquisition
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/wfstore"
 )
@@ -78,4 +79,21 @@ func SelectableCandidates(ctx context.Context, store *wfstore.Store, requestID i
 		return nil
 	})
 	return candidates, err
+}
+
+func RequeueDue(ctx context.Context, store *wfstore.Store, requestID int64, now time.Time) (bool, error) {
+	var requeued bool
+	err := store.Transact(ctx, func(tx *sql.Tx) error {
+		stamp := wfstore.FormatTimestamp(now)
+		result, err := tx.ExecContext(ctx, `UPDATE requests SET status = ?, search_generation = search_generation + 1, search_claimed_at = NULL,
+			attention_needed = 0, issue_description = NULL, next_retry_at = NULL, updated_at = ?
+			WHERE id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?`, pendingStatus, stamp, requestID, notFoundStatus, stamp)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		requeued = changed == 1
+		return err
+	})
+	return requeued, err
 }

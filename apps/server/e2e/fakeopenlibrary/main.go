@@ -215,8 +215,23 @@ func main() {
 	}
 	upstream := make(connections)
 	go (&http.Server{Handler: searchHandler(log, recorded), ReadHeaderTimeout: 5 * time.Second}).Serve(upstream)
+	direct, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	go func() {
+		for {
+			conn, err := direct.Accept()
+			if err != nil {
+				return
+			}
+			log.add(record{Kind: "direct", Target: upstreamHost})
+			upstream <- tls.Server(conn, tlsConfig)
+		}
+	}()
 	server := &http.Server{Handler: proxy(log, upstream, tlsConfig), ReadHeaderTimeout: 5 * time.Second}
-	ready, _ := json.Marshal(map[string]string{"proxy": "http://" + listener.Addr().String(), "ca": caPath, "journal": file.Name()})
+	ready, _ := json.Marshal(map[string]string{"proxy": "http://" + listener.Addr().String(), "direct": direct.Addr().String(), "ca": caPath, "journal": file.Name()})
 	fmt.Println(string(ready))
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)

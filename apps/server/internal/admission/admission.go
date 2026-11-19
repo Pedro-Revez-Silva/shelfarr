@@ -89,6 +89,10 @@ func Submit(ctx context.Context, store Transactor, accountID int64, submission S
 	return result, nil
 }
 
+func Admit(ctx context.Context, tx *sql.Tx, accountID int64, submission Submission, clock func() time.Time) (Result, error) {
+	return admit(ctx, tx, accountID, submission, clock)
+}
+
 type storedBook struct {
 	id                   int64
 	title                string

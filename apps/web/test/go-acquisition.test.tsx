@@ -140,12 +140,27 @@ describe("requesting from Discover", () => {
     expect(within(card("Pride and Prejudice")).getByRole("button", { name: "Try requesting again of Pride and Prejudice" })).toBeTruthy();
   });
 
-  test("a result from an earlier search asks for a new search", async () => {
+  test("a result from an earlier search offers to search the same query again and sends nothing else", async () => {
     const server = discoverServer(true, () => ({ status: 422, body: { error: "work_not_offered" } }));
     render_(server, "/preview/discover?q=pride");
     await screen.findByText("3 results from Open Library for “pride”.");
+    const user = userEvent.setup();
+    await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: /Request ebook/ }));
+    await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("status").textContent).toContain("This result is from an earlier search. Search again, then request it."));
+    const searched = () => server.called("GET", /\/api\/v1\/discover\?q=pride$/).length;
+    const before = searched();
+    await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: "Search again" }));
+    await waitFor(() => expect(searched()).toBe(before + 1));
+    expect(server.called("POST", /\/api\/v1\/requests$/).length).toBe(1);
+  });
+
+  test("a success status whose answer cannot be read is reported as unconfirmed, never as nothing changed", async () => {
+    const server = discoverServer(true, () => ({ status: 201, body: { account: ACCOUNT, outcome: "created" } }));
+    render_(server, "/preview/discover?q=pride");
+    await screen.findByText("3 results from Open Library for “pride”.");
     await userEvent.setup().click(within(card("Pride and Prejudice")).getByRole("button", { name: /Request ebook/ }));
-    await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("status").textContent).toBe("This result is from an earlier search. Search again, then request it."));
+    await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("status").textContent).toContain("The server did not confirm the request, so it may or may not have been received."));
+    expect(within(card("Pride and Prejudice")).getByRole("status").textContent).not.toContain("Nothing was changed");
   });
 });
 
@@ -166,6 +181,7 @@ function requestDetail(overrides: Partial<RequestDetail> = {}): RequestDetail {
     library: null,
     attention_reason: SELECTION_REASON,
     downloads: [],
+    acquisition: true,
     ...overrides,
   };
 }
@@ -231,7 +247,7 @@ describe("choosing a copy on a request", () => {
     await user.keyboard("{ArrowUp}");
     expect((radios[0] as HTMLInputElement).checked).toBe(true);
     await user.click(within(section).getByRole("button", { name: "Download this copy" }));
-    await waitFor(() => expect(within(section).getByRole("status").textContent).toBe("Download queued. It starts as soon as the server finishes its current search."));
+    await waitFor(() => expect(within(section).getByRole("status").textContent).toBe("Download queued. It starts as soon as the server finishes its current search. If the server restarts first, choose the copy again."));
     expect(server.called("POST", /\/selection$/).map((request) => request.body)).toEqual([{ result_id: "9" }]);
     expect(within(section).queryByRole("button", { name: "Download this copy" })).toBeNull();
     state.acquisition = acquisition({ selection: { state: "downloading", result_id: "9", code: null } });
@@ -260,13 +276,19 @@ describe("choosing a copy on a request", () => {
     expect(server.called("POST", /\/selection$/).map((request) => request.body)).toEqual([{ result_id: "10" }]);
   });
 
-  test("a server without the acquisition flow shows the request as before", async () => {
-    const state = { detail: requestDetail(), acquisition: acquisition() };
-    const server = requestServer(true, state, () => ({ status: 404, body: { error: "not_found" } })).on("GET", /\/api\/v1\/requests\/41\/acquisition$/, () => error(404, "not_found"));
-    render_(server, "/preview/requests/41");
-    await screen.findByRole("heading", { level: 1, name: "Pride and Prejudice" });
-    await waitFor(() => expect(server.called("GET", /\/acquisition$/).length).toBe(1));
-    expect(screen.queryByRole("region", { name: "Choose a copy" })).toBeNull();
-    expect(screen.queryByRole("radio")).toBeNull();
-  });
+  for (const admin of [true, false]) {
+    test(`a request outside the acquisition flow reads as before for ${admin ? "an admin" : "a member"} and asks for nothing new`, async () => {
+      const { acquisition: _omitted, ...plain } = requestDetail();
+      const state = { detail: plain, acquisition: acquisition() };
+      const server = requestServer(admin, state, () => error(404, "not_found"));
+      render_(server, "/preview/requests/41");
+      await screen.findByRole("heading", { level: 1, name: "Pride and Prejudice" });
+      await act(async () => Bun.sleep(50));
+      expect(screen.getByText("Searching indexers for this book. This may take a moment.")).toBeTruthy();
+      expect(screen.queryByText("An administrator chooses which copy to download.")).toBeNull();
+      expect(screen.queryByRole("region", { name: "Choose a copy" })).toBeNull();
+      expect(server.called("GET", /\/acquisition$/)).toEqual([]);
+      expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(1);
+    });
+  }
 });

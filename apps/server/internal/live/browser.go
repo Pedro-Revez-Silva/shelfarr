@@ -331,6 +331,10 @@ func (d *DB) IntegerSetting(ctx context.Context, key string, fallback int) (int,
 	return integerSetting(row, fallback)
 }
 
+func IntegerSettingValue(row SettingRow, fallback int) (int, error) {
+	return integerSetting(row, fallback)
+}
+
 func integerSetting(row SettingRow, fallback int) (int, error) {
 	if !row.Found || !row.Value.Valid {
 		return fallback, nil

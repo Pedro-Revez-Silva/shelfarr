@@ -41,3 +41,9 @@ export function failureKind(error: unknown): FailureKind {
 export function isLockingFailure(kind: FailureKind): kind is "signed_out" | "account_changed" {
   return kind === "signed_out" || kind === "account_changed";
 }
+
+export function unconfirmed(error: unknown): boolean {
+  const kind = failureKind(error);
+  const status = isApiError(error) ? error.status : null;
+  return kind === "network" || kind === "server" || kind === "busy" || (status !== null && status >= 200 && status < 300);
+}

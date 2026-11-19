@@ -84,6 +84,7 @@ type requestDetail struct {
 	requestSummary
 	AttentionReason *string           `json:"attention_reason"`
 	Downloads       []requestDownload `json:"downloads"`
+	Acquisition     bool              `json:"acquisition,omitempty"`
 }
 
 type requestFilterBody struct {
@@ -238,6 +239,12 @@ func (a *App) webRequest(w http.ResponseWriter, r *http.Request, session browser
 	detail := requestDetail{requestSummary: summary, AttentionReason: attentionReason(found.Row), Downloads: make([]requestDownload, 0, len(found.Downloads))}
 	for _, download := range found.Downloads {
 		detail.Downloads = append(detail.Downloads, projectDownload(download))
+	}
+	if a.acquisition != nil {
+		if detail.Acquisition, err = a.acquisition.inScope(r.Context(), id); err != nil {
+			a.storeFailure(w, result, err)
+			return
+		}
 	}
 	result.set(http.StatusOK, "")
 	writeJSON(w, http.StatusOK, map[string]any{"account": session.account(), "request": detail})

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"time"
 
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquire"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquisition"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/admission"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
@@ -20,29 +22,67 @@ import (
 const maxAcquisitionBody = 1024
 
 var (
-	errSessionGone  = errors.New("session ended")
+	errRetryWaiting = errors.New("a request for this work is waiting for its next search")
 	offeredWorkID   = regexp.MustCompile(`^OL[1-9][0-9]{0,11}W$`)
 	storedRecordID  = regexp.MustCompile(`^[1-9][0-9]{0,18}$`)
 	requestBodyKeys = map[string]bool{"work_id": true, "book_type": true}
 )
 
-type sessionBound struct {
-	store   *wfstore.Store
-	session browserSession
+type authority struct {
+	sessionID int64
+	userID    int64
+	admin     bool
 }
 
-func (s sessionBound) Transact(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	return s.store.Transact(ctx, func(tx *sql.Tx) error {
-		var present int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE id = ? AND user_id = ?`, s.session.row.ID, s.session.user.ID).Scan(&present)
-		if errors.Is(err, sql.ErrNoRows) {
-			return errSessionGone
-		}
-		if err != nil {
-			return err
-		}
-		return fn(tx)
-	})
+func (a *App) authorityIn(ctx context.Context, tx *sql.Tx, who authority) error {
+	if !a.previewAllows(who.userID) {
+		return acquire.ErrRevoked
+	}
+	var created string
+	var role sql.NullInt64
+	var deleted sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT CAST(s.created_at AS TEXT), u.role, u.deleted_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.user_id = ?`,
+		who.sessionID, who.userID).Scan(&created, &role, &deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return acquire.ErrRevoked
+	}
+	if err != nil {
+		return err
+	}
+	var setting live.SettingRow
+	err = tx.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = 'session_max_age_days'`).Scan(&setting.Value, &setting.Type)
+	switch {
+	case err == nil:
+		setting.Found = true
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+	days, err := live.IntegerSettingValue(setting, 30)
+	if err != nil || days < 0 || days > live.MaxSessionAgeDays {
+		return acquire.ErrRevoked
+	}
+	moment, err := store.ParseTimestamp(created)
+	if err != nil || moment.Before(a.now().Add(-time.Duration(days)*24*time.Hour)) || deleted.Valid || who.admin && (!role.Valid || role.Int64 != 1) {
+		return acquire.ErrRevoked
+	}
+	return nil
+}
+
+func waitingRetry(ctx context.Context, tx *sql.Tx, workID string, accountID int64) (*admission.Result, error) {
+	var requestID, owner int64
+	err := tx.QueryRowContext(ctx, `SELECT r.id, r.user_id FROM requests r JOIN books b ON b.id = r.book_id
+		WHERE b.open_library_work_id = ? AND b.book_type = 1 AND r.status = 2 AND r.next_retry_at IS NOT NULL
+		ORDER BY r.user_id = ? DESC, r.id LIMIT 1`, workID, accountID).Scan(&requestID, &owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if owner == accountID {
+		return &admission.Result{Outcome: admission.Existing, RequestID: requestID}, nil
+	}
+	return &admission.Result{Outcome: admission.AlreadyRequested}, nil
 }
 
 func strictMembers(body []byte, allowed map[string]bool) (strictjson.Value, bool) {
@@ -125,9 +165,32 @@ func (a *App) webCreateRequest(w http.ResponseWriter, r *http.Request, session b
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), a.config.RequestTimeout)
 	defer cancel()
-	decided, err := admission.Submit(ctx, sessionBound{store: a.acquisition.store, session: session}, session.user.ID, submission, a.now)
+	var decided admission.Result
+	err = a.acquisition.store.Transact(ctx, func(tx *sql.Tx) error {
+		if err := a.authorityIn(ctx, tx, authority{sessionID: session.row.ID, userID: session.user.ID}); err != nil {
+			return err
+		}
+		admitted, err := admission.Admit(ctx, tx, session.user.ID, submission, a.now)
+		if err != nil || admitted.Outcome != admission.Created {
+			decided = admitted
+			return err
+		}
+		waiting, err := waitingRetry(ctx, tx, submission.OpenLibraryWorkID, session.user.ID)
+		if err != nil {
+			return err
+		}
+		if waiting != nil {
+			decided = *waiting
+			return errRetryWaiting
+		}
+		decided = admitted
+		return nil
+	})
+	if errors.Is(err, errRetryWaiting) {
+		err = nil
+	}
 	switch {
-	case errors.Is(err, errSessionGone), errors.Is(err, admission.ErrAccountUnavailable):
+	case errors.Is(err, acquire.ErrRevoked), errors.Is(err, admission.ErrAccountUnavailable):
 		problem(w, result, http.StatusUnauthorized, "signed_out")
 		return
 	case errors.Is(err, admission.ErrInvalid), errors.Is(err, admission.ErrUnsupported):
@@ -214,6 +277,15 @@ func (a *App) adminRequest(w http.ResponseWriter, r *http.Request, session brows
 		return nil, false
 	}
 	if found == nil {
+		problem(w, result, http.StatusNotFound, "not_found")
+		return nil, false
+	}
+	inScope, err := a.acquisition.inScope(r.Context(), id)
+	if err != nil {
+		a.storeFailure(w, result, err)
+		return nil, false
+	}
+	if !inScope {
 		problem(w, result, http.StatusNotFound, "not_found")
 		return nil, false
 	}
