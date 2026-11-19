@@ -184,6 +184,20 @@ func TestOpenRefusesADatabaseWithoutWhatDiscoverReads(t *testing.T) {
 	}
 }
 
+func TestOpenRefusesADatabaseWithoutWhatTheServerOverviewReads(t *testing.T) {
+	for _, change := range []string{
+		`ALTER TABLE system_healths DROP COLUMN last_check_at`,
+		`ALTER TABLE system_healths DROP COLUMN status`,
+		`DROP TABLE system_healths`,
+	} {
+		path := livetest.Create(t)
+		livetest.Exec(t, path, change)
+		if _, err := Open(context.Background(), path, Options{}); !errors.Is(err, ErrSchemaUnsupported) {
+			t.Errorf("%s: %v", change, err)
+		}
+	}
+}
+
 func TestOpenRefusesADatabaseWithoutWhatRequestsRead(t *testing.T) {
 	for _, change := range []string{
 		`ALTER TABLE requests DROP COLUMN attention_needed`,
