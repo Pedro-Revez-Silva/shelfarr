@@ -3,7 +3,7 @@ import { createContext, useContext, useSyncExternalStore, type ReactNode } from 
 import { AccountGuard, type GuardState } from "./api/account-guard";
 import { ApiClient, type MutationLifecycle } from "./api/client";
 import { isApiError } from "./api/errors";
-import type { Boot, LibraryFilters } from "./contract";
+import type { Boot, LibraryFilters, RequestFilters, Session } from "./contract";
 
 export type Mode = "rails" | "go";
 
@@ -15,9 +15,12 @@ export type Services = {
   queryClient: QueryClient;
   keys: QueryKeys;
   revalidate: () => void;
+  keepsRole: (session: Session) => boolean;
 };
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
+
+
 
 export function createQueryKeys(account: string) {
   const root = ["account", account] as const;
@@ -31,10 +34,16 @@ export function createQueryKeys(account: string) {
     continueAll: [...root, "continue"] as const,
     publication: (id: string) => [...root, "publication", id] as const,
     discover: (query: string | null) => [...root, "discover", query] as const,
+    requests: (filters: RequestFilters) => [...root, "requests", filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
+    request: (id: string) => [...root, "request", id] as const,
+    requestsAll: [...root, "requests"] as const,
+    requestAll: [...root, "request"] as const,
   };
 }
 
 const VALIDATION_TIMEOUT_MS = 8000;
+
+
 
 function sessionLost(error: unknown): "signed_out" | "account_changed" | null {
   if (!isApiError(error)) return null;
@@ -75,17 +84,44 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
+  const requestQueries = [keys.requestsAll, keys.requestAll];
+  let recovering = false;
+  const forgetRequests = () => {
+    recovering = true;
+    for (const queryKey of requestQueries) {
+      if (queryClient.getQueriesData({ queryKey }).some(([, data]) => data !== undefined)) void queryClient.resetQueries({ queryKey });
+    }
+  };
+  const retryFailedRequests = () => {
+    if (!recovering) return;
+    recovering = false;
+    for (const queryKey of requestQueries) void queryClient.invalidateQueries({ queryKey, predicate: (query) => query.state.status === "error" });
+  };
+  const keepsRole = (session: Session): boolean => {
+    if (boot.runtime !== "go") return true;
+    const previous = queryClient.getQueryData<Session>(keys.session);
+    if (!previous || Boolean(previous.admin) === Boolean(session.admin)) return true;
+    guard.lock("access_changed");
+    return false;
+  };
   const verify = async (generation: number): Promise<void> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
     try {
       const session = await api.session(controller.signal, true);
-      if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
+      if (generation === guard.generation) keepsRole(session);
+      if (generation === guard.generation && guard.isActive()) {
+        queryClient.setQueryData(keys.session, session);
+        retryFailedRequests();
+      }
       guard.finishCheck(generation, true);
     } catch (error) {
       const lost = sessionLost(error);
       if (lost && generation === guard.generation) guard.lock(lost);
-      else guard.finishCheck(generation, false);
+      else {
+        if (generation === guard.generation) forgetRequests();
+        guard.finishCheck(generation, false);
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -102,7 +138,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     }, 0);
   };
   requestVerificationRef = revalidate;
-  return { boot, mode: boot.runtime === "go" ? "go" : "rails", guard, api, queryClient, keys, revalidate };
+  return { boot, mode: boot.runtime === "go" ? "go" : "rails", guard, api, queryClient, keys, revalidate, keepsRole };
 }
 
 const ServicesContext = createContext<Services | null>(null);

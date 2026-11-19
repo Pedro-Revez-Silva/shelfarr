@@ -38,6 +38,8 @@ var requiredColumns = map[string][]string{
 	"metadata_provider_statuses": {"provider", "status", "rate_limited_until"},
 	"consumer_progresses":        {"id", "user_id", "book_id", "asset_id", "locator", "position_seconds", "version", "observed_at", "updated_at", "client_mutation_id"},
 	"consumer_reading_states":    {"id", "user_id", "book_id", "status", "updated_at"},
+	"requests":                   {"id", "book_id", "user_id", "status", "attention_needed", "issue_description", "created_at", "updated_at", "completed_at", "next_retry_at"},
+	"downloads":                  {"id", "request_id", "status", "progress"},
 }
 
 type Options struct {

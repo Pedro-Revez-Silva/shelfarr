@@ -33,7 +33,7 @@ func webHarness(t *testing.T, adjust func(*Config)) (*browserHarness, webassetst
 	return h, listed
 }
 
-var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
+var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/preview/requests": "requests", "/preview/requests?status=active&page=2": "requests", "/preview/requests/7": "request", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
 
 func TestTheShellRoutesServeOneStaticDocumentPerViewWithAStrictPolicy(t *testing.T) {
 	h, listed := webHarness(t, nil)
@@ -127,7 +127,7 @@ func TestPathsOutsideTheScreensKeepAnsweringJSONNotTheShell(t *testing.T) {
 	client := h.client()
 	for _, path := range []string{
 		"/", "/read", "/admin", "/admin/users", "/login", "/session", "/preview/", "/preview/library/", "/preview/library/0", "/preview/library/01", "/preview/library/abc", "/preview/library/1/extra",
-		"/preview/library/99999999999999999999", "/preview/account/", "/preview/account/password", "/preview/discover/", "/preview/discover/OL1W", "/preview/search", "/preview/profile", "/preview/admin", "/preview/signin", "/preview/api", "/preview/api/", "/preview/api/v1", "/preview/api/v1/", "/preview/api/v1/unknown", "/preview/api/v2/session",
+		"/preview/library/99999999999999999999", "/preview/account/", "/preview/account/password", "/preview/discover/", "/preview/discover/OL1W", "/preview/requests/", "/preview/requests/0", "/preview/requests/abc", "/preview/requests/7/edit", "/preview/search", "/preview/profile", "/preview/admin", "/preview/signin", "/preview/api", "/preview/api/", "/preview/api/v1", "/preview/api/v1/", "/preview/api/v1/unknown", "/preview/api/v2/session",
 		"/preview/assets", "/preview/assets/", "/preview/assets/missing.0000000000000000.js", "/preview/assets/a/b.js", "/preview/assets/manifest.json", "/preview/assets/%2e%2e/manifest.json", "/preview/assets/preview.js.map",
 		"/consumer", "/consumer/connect/", "/consumer/connect/extra", "/consumer/connection", "/api/v1/requests", "/api/consumer/v1/unknown",
 	} {
@@ -178,7 +178,7 @@ func TestStaticAssetsAreServedPubliclyWithTheirDigestAndCarryNoAccountState(t *t
 func TestWithoutTheAllowlistTheScreensAreNotFoundEvenSignedOut(t *testing.T) {
 	for name, users := range map[string][]string{"unset": nil, "empty": {}} {
 		h, listed := webHarness(t, func(config *Config) { config.PreviewUserIDs = users })
-		for _, path := range []string{"/preview", "/preview/library", "/preview/library/1", "/preview/account", "/preview/discover", "/consumer/connect", "/consumer/connect?user_code=ABCD-EFGH", "/preview/assets/" + listed.Entry.Script} {
+		for _, path := range []string{"/preview", "/preview/library", "/preview/library/1", "/preview/account", "/preview/discover", "/preview/requests", "/preview/requests/1", "/consumer/connect", "/consumer/connect?user_code=ABCD-EFGH", "/preview/assets/" + listed.Entry.Script} {
 			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete} {
 				recorder := h.client().send(method, path, "", nil)
 				if recorder.Code != http.StatusNotFound || recorder.Header().Get("Allow") != "" || recorder.Header().Get("Content-Security-Policy") != "" || method != http.MethodHead && errorCode(t, recorder) != "not_found" {

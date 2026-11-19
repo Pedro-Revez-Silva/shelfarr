@@ -47,7 +47,7 @@ func TestSafeCover(t *testing.T) {
 		{"https://covers.example.test/a b.jpg", "", true},
 	}
 	for _, testCase := range cases {
-		got, err := safeCover(text(testCase.value))
+		got, err := SafeCover(text(testCase.value))
 		switch {
 		case (err != nil) != testCase.err:
 			t.Errorf("%q: err = %v", testCase.value, err)
@@ -57,7 +57,7 @@ func TestSafeCover(t *testing.T) {
 			t.Errorf("%q: got %v", testCase.value, got)
 		}
 	}
-	if got, err := safeCover(sql.NullString{}); got != nil || err != nil {
+	if got, err := SafeCover(sql.NullString{}); got != nil || err != nil {
 		t.Errorf("null cover = %v, %v", got, err)
 	}
 }

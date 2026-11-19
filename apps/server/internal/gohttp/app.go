@@ -186,7 +186,7 @@ func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, r
 }
 
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	if found.name == "browser_discover" {
+	if found.name == "browser_discover" || found.name == "browser_requests" || found.name == "browser_request" {
 		w.Header().Set("Cache-Control", "private, no-store")
 	}
 	if found.web && a.web == nil {
@@ -250,7 +250,8 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeAuthToken:
 		a.exchange(w, r, result)
 	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
-		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword, routeBrowserDiscover:
+		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword, routeBrowserDiscover,
+		routeBrowserRequests, routeBrowserRequest:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)

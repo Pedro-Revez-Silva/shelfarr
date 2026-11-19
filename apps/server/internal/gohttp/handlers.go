@@ -89,20 +89,27 @@ func (a *App) me(w http.ResponseWriter, principal *account.Principal, result *ou
 	writeJSON(w, http.StatusOK, consumer.NewMe(strconv.FormatInt(principal.UserID, 10), principal.Name, principal.Username, principal.VisibleScopes()))
 }
 
-func (a *App) publications(ctx context.Context, userID int64, books []store.Book, formats readerformats.Formats, roots []string) ([]consumer.Publication, error) {
+func (a *App) viewFor(ctx context.Context, userID int64, books []store.Book, formats readerformats.Formats, roots []string) (consumer.View, error) {
 	ids := make([]int64, len(books))
 	for index, book := range books {
 		ids[index] = book.ID
 	}
 	progress, err := a.db.ProgressFor(ctx, userID, ids)
 	if err != nil {
-		return nil, err
+		return consumer.View{}, err
 	}
 	states, err := a.db.StatesFor(ctx, userID, ids)
 	if err != nil {
+		return consumer.View{}, err
+	}
+	return consumer.NewViewFor(roots, formats.Names, progress, states, formats.Declared), nil
+}
+
+func (a *App) publications(ctx context.Context, userID int64, books []store.Book, formats readerformats.Formats, roots []string) ([]consumer.Publication, error) {
+	view, err := a.viewFor(ctx, userID, books, formats, roots)
+	if err != nil {
 		return nil, err
 	}
-	view := consumer.NewViewFor(roots, formats.Names, progress, states, formats.Declared)
 	items := make([]consumer.Publication, 0, len(books))
 	for _, book := range books {
 		item, err := view.Publication(ctx, book)

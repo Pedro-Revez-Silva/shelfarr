@@ -25,7 +25,7 @@ func publication(t *testing.T, document string) consumer.Publication {
 func TestCoverStyleIsTheRailsFnvBucket(t *testing.T) {
 	want := map[string]string{"1": "plum", "2": "moss", "10": "clay", "50": "plum", "9223372036854775807": "moss"}
 	for id, style := range want {
-		if got := coverStyle(id); got != style {
+		if got := CoverStyle(id); got != style {
 			t.Errorf("%s: %s want %s", id, got, style)
 		}
 	}

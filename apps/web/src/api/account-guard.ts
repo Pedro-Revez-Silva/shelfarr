@@ -1,6 +1,7 @@
 import { ApiError } from "./errors";
 
-export type GuardState = { status: "active" } | { status: "signed_out" } | { status: "account_changed" };
+export type GuardState = { status: "active" } | { status: "signed_out" } | { status: "account_changed" } | { status: "access_changed" };
+export type LockReason = Exclude<GuardState["status"], "active">;
 export type Trust = "trusted" | "checking" | "unverified";
 
 type Listener = () => void;
@@ -38,7 +39,7 @@ export class AccountGuard {
     return this.currentGeneration;
   }
 
-  lock(reason: "signed_out" | "account_changed"): void {
+  lock(reason: LockReason): void {
     if (!this.isActive()) return;
     this.state = { status: reason };
     this.releaseWaiters();
@@ -67,7 +68,7 @@ export class AccountGuard {
 
   assertActive(): void {
     if (this.state.status === "signed_out") throw new ApiError("signed_out", "Your session ended", 401);
-    if (this.state.status === "account_changed") throw new ApiError("account_changed", "The signed-in account changed", 401);
+    if (this.state.status === "account_changed" || this.state.status === "access_changed") throw new ApiError("account_changed", "The signed-in account changed", 401);
   }
 
   private releaseWaiters(): void {

@@ -15,6 +15,17 @@ export type Fixture = {
   passwords: Record<string, string>;
   personas: Record<string, { cookie: string; user_id: number; session_id: number | null }>;
   discover: DiscoverCases;
+  requests: RequestCases;
+};
+
+export type RailsRequestCard = { title: string; id: number; labels: string[]; requested_by: string | null };
+export type RailsRequestPage = { query: Record<string, string>; cards: RailsRequestCard[]; filters: { label: string; current: boolean }[]; pagination: string | null };
+export type RequestCases = {
+  ids: Record<string, number>;
+  issues: { listed: string; free_text: string };
+  rails_pages: Record<"browser_member" | "browser_admin", RailsRequestPage[]>;
+  rails_show_status: Record<"browser_member" | "browser_admin", Record<string, number>>;
+  rails_native_view: { id: string; status: string; stage: string; download_percent: number | null; publication_id: string | null; title: string }[];
 };
 
 export type RailsSearchResult = { work_id: string; title: string; author: string | null; first_publish_year: number | string | null; cover_id: number | null; cover_url: string | null; edition_count: number | null };
@@ -50,6 +61,7 @@ export function loadFixture(): Fixture {
     passwords: secrets.passwords,
     personas: secrets.personas,
     discover: cases.discover,
+    requests: cases.requests,
   };
 }
 

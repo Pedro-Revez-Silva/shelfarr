@@ -625,7 +625,8 @@ TypeScript/React screens the pilot needs, so a browser can sign in, deliberately
 connection and browse the existing Library and details without Rails. Reading EPUBs and listening to audiobooks online
 were added later (see [Online EPUB reader and audiobook player](#online-epub-reader-and-audiobook-player-opt-in)).
 Downloads, offline, PWA, PDF and comic rendering, Discover, requests and administration stay with Rails and are shown as
-unavailable (Open Library search was added later, see [Discover](#discover-open-library-search-opt-in)), never as dead links. No JavaScript runtime is involved at serving time.
+unavailable (Open Library search was added later, see [Discover](#discover-open-library-search-opt-in), and reading
+requests later still, see [Requests](#requests-read-only-list-and-detail-opt-in)), never as dead links. No JavaScript runtime is involved at serving time.
 
 ### Switching it on
 
@@ -1218,6 +1219,202 @@ and an asset build from the same commit.
   tests and eleven mutants cover the screen.
 
 Not proven: real Open Library traffic, Safari, Firefox and screen readers.
+
+## Requests: read-only list and detail (opt-in)
+
+Status: **experimental, default-off, read-only.** Behind the same switches as the browser screens, an allowlisted
+account gets a Requests screen between Discover and Account in the Go navigation. It lists the requests Rails created,
+with Rails' tabs, title and author search and pages of 25, and opens one request to show where it has got to. Nothing
+can be requested, queued, cancelled, retried, selected or downloaded from it: there are no such buttons. The native
+`/api/consumer/v1/requests` routes stay `501`, `server.json` advertises nothing new, and the Rails `/requests` screens,
+the Rails preview and its Requests handoff (`links.requests`) are unchanged.
+
+### Who sees what
+
+The same rule as Rails' `RequestsController`: an admin (`users.role = 1`, read on every request through the session
+guard) sees every request; anyone else sees only rows with `requests.user_id` equal to the session's user. A request of
+another account is `404 {"error":"not_found"}`, byte for byte the answer for an id that does not exist or is malformed,
+so an id reveals nothing. Admin answers carry `requested_by: {name, self}` (only `users.name`, the public display name,
+as the Rails pages show it, and whether it is the admin's own request); member answers never carry the field and the
+browser refuses a member answer that does. No username, user id, email, session or other profile value is returned.
+There is no household or sharing rule beyond this.
+
+### What is served
+
+| Route | Authentication | Answer |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/requests`, `/preview/requests/:id` | none (shells) | The HTML shell, boot view `requests` or `request`, titles `Requests · Shelfarr` and `Request · Shelfarr`, the Library policy. Signed out, sign-in returns to the same address. |
+| `GET /preview/api/v1/requests?status=&attention=&q=&page=` | session, `X-Shelfarr-Account` | The list. Other methods `405`, `Allow: GET`. |
+| `GET /preview/api/v1/requests/:id` | session, `X-Shelfarr-Account` | One request. `:id` must be `[1-9][0-9]{0,18}`, else `404`. Other methods `405`, `Allow: GET`. |
+
+```
+{"account":"12","scope":"own"|"all",
+ "filter":{"status":null|"active"|"<rails status>","attention":false,"q":null|"harbor"},
+ "counts":{"attention":2,"active":4},
+ "page":1,"per_page":25,"total":35,"total_pages":2,
+ "items":[{"id":"3","status":"pending"|"searching"|"not_found"|"downloading"|"processing"|"completed"|"failed"|"awaiting_purchase"|"unknown",
+           "attention_needed":false,"title":"…","author":"…"|null,"book_type":"ebook"|"audiobook"|"comicbook"|"unknown",
+           "cover":{"url":"https://…"|null,"style":"moss"},"download_percent":37|null,
+           "created_at":"2026-11-15T11:00:00.000Z","updated_at":"…","completed_at":"…"|null,"next_retry_at":"…"|null,
+           "library":{"state":"available","publication_id":"7"}|{"state":"unavailable"}|null,
+           "requested_by":{"name":"Alice Reader","self":false}}]}        (requested_by: admin answers only)
+
+{"account":"12","request":{…the same fields…,
+  "attention_reason":"Search results found. Please review and select a result to download."|null,
+  "downloads":[{"status":"queued"|"downloading"|"paused"|"completed"|"failed"|"unknown","progress":42|null}]}}
+```
+
+Like every preview route: `Cache-Control: private, no-store` (also on `405` and `503 server_busy`), the shared metadata
+pool, the request deadline, `503 database_busy`/`database_unavailable` instead of an empty list. The route writes
+nothing; like every preview route, the shared session guard removes a session row that has outlived
+`session_max_age_days` or belongs to a deleted account before it answers `401 signed_out`.
+
+### Filters, search and pages, matched to Rails
+
+* `status=active` is Rails' Active tab: `pending`, `searching`, `downloading` or `processing` with `attention_needed = 0`
+  (a `NULL` flag is in neither Active nor Need Attention, as in Rails). Any Rails status name filters on that status.
+  `attention=true` adds `attention_needed = 1`; any other `attention` value is ignored, as Rails ignores it. A blank
+  `status` is no filter. An unknown status, a repeated `status`, `attention`, `q` or `page`, or a malformed query is
+  `422 invalid_query` (Rails filters an unknown status to an empty list).
+* `q` is stripped of Ruby's `strip` characters, cut to 200 characters and matched, case-insensitively after Unicode NFC
+  and Ruby's full lower-casing (without Greek final-sigma context, as Ruby's `downcase`; letters added to Unicode after
+  the version of the Ruby that runs Rails, such as U+1C89, may fold in Go and not in Rails), as a substring of the book's title or author with `%`, `_` and `\` taken literally: Rails'
+  `shelfarr_request_search_lower` function, registered under another name in Go. Invalid UTF-8 is `422`.
+* `page` is read as Ruby's `to_i` (`"abc"` is 1, `"+0_0_7x"` is 7, a negative is 1), clamped to 1–1,000,000 and then to
+  the last page; an empty result is page 1 of 1.
+* Counts are Rails' tab badges: Need Attention and Active over the account's (or, for an admin, every) request, ignoring
+  the search and the current tab.
+* Order is `created_at` newest first, then `id` newest first, so equal times keep one stable order across pages (Rails
+  orders by `created_at` only).
+* Reads are bounded: one read-only transaction per answer with two counts, one `LIMIT 25 OFFSET` page joined to its
+  book and requester, one grouped download query for the page's downloading requests, and, for a detail, at most the 10
+  newest downloads. Library checks run only for acquired books on the page, at most 25: the library roots are resolved
+  once, reading places and statuses are read in one batch for the page, and each book gets the Go details projection.
+  A library root setting the runtime refuses (outside every `-library-root`, relative or otherwise unsupported) makes
+  every acquired copy on the page `unavailable` instead of failing the list; a configured root directory that merely
+  cannot be entered is skipped, as the Library skips it, and copies under the other roots keep their state.
+
+### Projection
+
+* `status` is the Rails enum name; an integer Rails does not define becomes `"unknown"` instead of a failure. A book
+  type outside ebook, audiobook and comic becomes `"unknown"`.
+* `download_percent` is `Consumer::RequestView`'s: only for a `downloading` request, the highest `progress` of its
+  queued, downloading or paused downloads, held to 0–100, else `null`.
+* `downloads` (detail only, newest first, at most 10) carry the download status and, for queued or downloading ones (the
+  Rails show page's `active?`), the progress. Release names, sizes, clients, external ids and paths are never read.
+* `library` is `null` for a book without a stored file, `available` with the publication id when the Go details page
+  would open the book for this account now (the same check Discover uses, with at least one file present), and
+  `unavailable` when a copy is recorded (`file_path` is set) that the Library here cannot open (missing, unsupported or
+  refused); the screens say exactly that and never claim the files are present. Only
+  `available` is linked ("Open in Library", `/preview/library/:id`).
+* `attention_reason` is shown only when `attention_needed` is set and the stored `issue_description` is one of the fixed
+  Rails sentences that name no provider, address or error text (no search source returned results; results to review;
+  none matched auto-select; no result selected; client authentication failed; maximum retries exceeded). Anything else,
+  which may hold a client error, address or credential, is never returned; the screen then says Rails' own fallback,
+  "This request needs your attention."
+* The cover is the book's `cover_url` only when it is a plain `https` address with a host and no user information (Rails'
+  `Consumer::SafeLink`) and none of its query parameter names, split on `&` and `;` and percent-decoded, looks like a
+  credential (token, key, secret, signature, auth, pass, credential, session, jwt, bearer, policy, `X-Amz-*`,
+  `X-Goog-*`); a name that cannot be decoded also drops it. Otherwise the generated cover. Times are UTC ISO 8601 with milliseconds.
+* A stored timestamp the runtime cannot read is `501 unsupported_stored_value`, as elsewhere.
+
+### Deliberate differences from Rails
+
+* No actions: no Cancel, Delete, Retry, View Results, manual magnet or NZB, upload, store offers, search results,
+  diagnostics (`request_events`), notes, retry count, file location or download button. Requesting stays in Rails.
+* The issue description is shown only when it is one of the fixed sentences above; Rails shows any stored text, to
+  members too (and to admins in the list). The list never shows it.
+* Download attempts show their status and progress only, newest first and at most 10; Rails lists every attempt with its
+  release name and size.
+* "Open in Library" appears only when the Go details page opens the copy. Rails shows a file location and download link
+  whenever `file_path` is present, and the native `Consumer::RequestView` reports a completed request with a missing file
+  as `available` with a publication id; Go says the copy cannot be opened here and does not link it.
+* Rails' "In Library" and "Possibly in Library" badges from Audiobookshelf matching are not shown.
+* Relative and absolute times are rendered in the browser's time zone and English formats ("3 days ago", "November 15,
+  2026 at 11:00 AM"); Rails uses the server's time zone and `time_ago_in_words`.
+* Ties on `created_at` are ordered by id; an unknown status name is `422`; an unknown stored status or type is shown as
+  unknown where Rails' page fails.
+* Pages refresh by themselves every 15 seconds while a shown request is pending, searching, downloading or processing,
+  or not found with a next search scheduled (only while the tab is visible); Rails pushes changes over Turbo Streams.
+* A cover whose address carries a credential-like query parameter is replaced by the generated cover; Rails shows it.
+
+### Browser screen
+
+Requests (`/preview/requests`) shows "My Requests" or, for an admin, "All Requests", a sentence that making, cancelling
+or retrying requests is not part of the preview, Rails' tabs as links (All, Need Attention and Active with their counts,
+Store Offers, Completed, Not Found, Cancelled; the current one marked `aria-current="page"`, not by colour alone), a
+labelled search that keeps the current tab, a status line ("35 requests · Page 1 of 2"), and a card per request: cover,
+title linking to the request, author, format, status and attention badges, a labelled progress bar with its percentage
+while downloading, who asked (admins, other people's requests), when it was requested and completed, and "Open in
+Library" for an openable copy. Previous and Next keep the tab and search. Rails' empty states are kept ("No requests yet",
+"No requests need attention", "No matching requests"), with Discover offered for an empty list. The address holds
+`status`, `attention`, `q` and `page`, so a direct load, reload, Back and Forward return to the same list; an unknown
+tab value in the address is ignored and `page` (up to 64 characters; a longer value is dropped and page 1 is shown) is
+passed to the server as written, which reads it as Rails does. Each filter has its own cache entry, so a late answer for an earlier filter never
+replaces the current one.
+
+A request (`/preview/requests/:id`) shows the format, title, author, badges, Rails' "Attention Required" box, a
+sentence for its stage (announced politely when it changes) with a progress bar while downloading, who asked (admins),
+when it was requested and completed, the next search time for a not-found request, "Open in Library" or the honest
+"cannot open" sentence, and its download attempts. In the same tab "Back to Requests" returns to the list it came from,
+filters included; opened in a new tab it goes to the unfiltered list. A missing or foreign request says "This request
+is not available". The account guard, session checks and
+locking work as on every other page. Both screens wait for the session before asking for requests. A role change
+locks the page, as an account change does: once a Go page has a session answer, any later one (a refresh, or a check on
+focus, visibility or after an uncertain answer) that finds the account became or stopped being an admin locks it (the
+reader and connect pages have no session answer until their first check, so that check sets their starting role; the
+classic Rails preview keeps its page as before), or when a request answer's reach differs from
+the verified role (an admin's list or a detail naming its requester for a member, or the reverse), the guard clears every
+cached answer and the page shows "This account's access changed" with "Continue as the current account", which loads the screens again for the
+role the account has now. Nothing from the earlier role is shown or kept. A request that answers `404` has the session
+checked again, so a lost admin role is noticed there too. A session check that ends the session (`401`) or finds another
+account locks the page as before. A check that is inconclusive (for example `503`) does not prove a role change, so it
+does not lock; it drops every cached Requests list and request once, so no earlier view returns from another tab,
+filter or Back, and the page settles on its retryable error or "not available" without asking again by itself. The next
+successful check asks again for a shown list or request that failed meanwhile (a retry still in flight at that moment
+can leave Try again showing); other filters and requests fetch when they are opened again.
+
+### Contract before and after
+
+```
+GET /preview/requests, /preview/requests/:id    before 404 not_found   after 200 shell, boot {"version":1,"runtime":"go","view":"requests"|"request","mount":"/preview","api":"/preview/api/v1"}
+GET /preview/api/v1/requests                    before 404 not_found   after 200 {"account","scope","filter","counts","page","per_page","total","total_pages","items"}
+                                                                       or 422 invalid_query
+GET /preview/api/v1/requests/:id                before 404 not_found   after 200 {"account","request"} or 404 not_found
+other methods on both                           before 404 not_found   after 405, Allow: GET
+Go boot block "view"                            before …|account|discover   after adds requests, request
+```
+
+Unchanged: `/api/consumer/v1/requests` and `/api/consumer/v1/requests/:id` (`501`), `server.json`,
+`/preview/api/v1/session` (`links.requests` keeps the Rails path for the Rails preview), cookies, CSRF tokens, the Rails
+preview and every Rails screen, the schema and every setting. The runtime now also requires
+`requests(id, book_id, user_id, status, attention_needed, issue_description, created_at, updated_at, completed_at,
+next_retry_at)` and `downloads(id, request_id, status, progress)`, present in the supported revision. A new frontend
+served by an older binary shows Requests and reports that it is not available (the JSON `404`); serve a binary and an
+asset build from the same commit. Rollback: deploy the previous binary and asset build; nothing is stored.
+
+### Verification
+
+* Go unit tests (`internal/gohttp`, `internal/live`): a member's exact list and detail with nobody else's data, an
+  admin's list with only display names, a foreign, missing and malformed id with one identical `404`, every tab, the
+  Unicode search with `%` and `_`, the counts, Rails' `to_i` pages and clamping, 60 requests over three pages in a stable
+  order, progress from active downloads only, unknown statuses, types and download statuses, unsafe covers, the
+  allowlisted and free-text attention texts with no address, credential, release name or path in any answer, the guards,
+  `405` with `no-store`, the native routes still `501`, no request or download row changed, and the schema check.
+* `tools/migration/web/verify-web`: the Rails fixture creates requests with the real models for a member (every status,
+  attention with a listed and a free-text description, a future retry, two downloads, a completed audiobook the Library
+  opens and a completed book whose file is gone), an admin, another allowlisted account, an account outside the
+  allowlist and 22 queued ones, and records what the real Rails `/requests` page shows a member and an admin for twelve
+  tab, search and page combinations (titles, ids, labels, "Requested by", tab counts, current tab, pagination), what
+  `/requests/:id` answers each of them for every request, and `Consumer::RequestView` for the member. Real headless
+  Chromium against the production binary and asset build checks the same lists, tabs, counts and pages against those
+  Rails captures, the same `404`s, no secret in any answer, no row written, stages, progress, the attention texts, the
+  honest unavailable copy, "Open in Library" opening the real details page, the address through direct loads, reload,
+  Back and Forward, another tab switching account, keyboard order, and axe with no overflow or small targets in light
+  and dark, desktop, phone and 320 px, at 100% and 200% text. Unit tests and eleven mutants cover the screens.
+
+Not proven: Safari, Firefox and screen readers; a library with thousands of requests (the reads are the bounded
+queries above, and Rails' own page runs the same `COUNT` and `OFFSET`).
 
 ## Database access
 

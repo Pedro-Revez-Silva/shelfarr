@@ -7,14 +7,19 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
-import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, Session } from "./contract";
+import { ApiError, isApiError } from "./api/errors";
+import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices } from "./services";
 
 export function useSession() {
-  const { api, keys } = useServices();
+  const { api, keys, keepsRole } = useServices();
   return useQuery({
     queryKey: keys.session,
-    queryFn: ({ signal }) => api.session(signal),
+    queryFn: async ({ signal }) => {
+      const session = await api.session(signal);
+      if (!keepsRole(session)) throw new ApiError("account_changed", "This account's access changed");
+      return session;
+    },
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
@@ -73,6 +78,56 @@ export function useDiscover(query: string | null) {
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+  });
+}
+
+const REQUEST_REFRESH_MS = 15_000;
+const MOVING_STATUSES = new Set(["pending", "searching", "downloading", "processing"]);
+
+export function stillChanging(request: Pick<RequestSummary, "status" | "next_retry_at">): boolean {
+  return MOVING_STATUSES.has(request.status) || (request.status === "not_found" && request.next_retry_at !== null);
+}
+
+function useRoleCheck() {
+  const { queryClient, keys, guard } = useServices();
+  return <T,>(broad: boolean, answer: T): T => {
+    const session = queryClient.getQueryData<Session>(keys.session);
+    if (session && broad === Boolean(session.admin)) return answer;
+    guard.lock("access_changed");
+    throw new ApiError("account_changed", "This account's access changed");
+  };
+}
+
+export function useRequests(filters: RequestFilters) {
+  const { api, keys } = useServices();
+  const ready = useSession().data !== undefined;
+  const check = useRoleCheck();
+  return useQuery({
+    queryKey: keys.requests(filters),
+    queryFn: async ({ signal }) => {
+      const list = await api.requests(filters, signal);
+      return check(list.scope === "all", list);
+    },
+    enabled: ready,
+    refetchInterval: ({ state }) => (state.data?.items.some(stillChanging) ? REQUEST_REFRESH_MS : false),
+  });
+}
+
+export function useRequest(id: string) {
+  const { api, keys, revalidate } = useServices();
+  const ready = useSession().data !== undefined;
+  const check = useRoleCheck();
+  return useQuery({
+    queryKey: keys.request(id),
+    queryFn: async ({ signal }) => {
+      const detail = await api.requestDetail(id, signal).catch((error: unknown) => {
+        if (isApiError(error) && error.kind === "not_found") revalidate();
+        throw error;
+      });
+      return check(detail.requested_by !== undefined, detail);
+    },
+    enabled: ready,
+    refetchInterval: ({ state }) => (state.data && stillChanging(state.data) ? REQUEST_REFRESH_MS : false),
   });
 }
 
