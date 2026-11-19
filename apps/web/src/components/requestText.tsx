@@ -70,7 +70,7 @@ export function StatusBadges({ request }: { request: RequestSummary }) {
       <li className={`badge badge--status badge--${request.status}`}>{STATUS_LABELS[request.status]}</li>
       {request.attention_needed ? (
         <li className="badge badge--attention">
-          <span aria-hidden="true">⚠ </span>Attention
+          <span aria-hidden="true">⚠</span>Attention
         </li>
       ) : null}
     </ul>

@@ -181,7 +181,10 @@ function Results({ list, filters, filter }: { list: RequestList; filters: Reques
   if (list.items.length === 0) return <Empty filters={filters} filter={filter} />;
   const others = (page: number) => keep(filters, { page });
   return (
-    <>
+    <section className="request-results" aria-labelledby="request-results-heading">
+      <h2 id="request-results-heading" className="sr-only">
+        Requests on this page
+      </h2>
       <ol className="request-list">
         {list.items.map((request) => (
           <li key={request.id}>
@@ -208,7 +211,7 @@ function Results({ list, filters, filter }: { list: RequestList; filters: Reques
           </div>
         </nav>
       ) : null}
-    </>
+    </section>
   );
 }
 
