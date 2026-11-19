@@ -231,23 +231,6 @@ describe("the Requests page", () => {
     expect(await screen.findByRole("heading", { name: "Harbor Lights", level: 3 })).toBeTruthy();
   });
 
-  test("a session check that finds the admin role gone drops every other account's request and asks again as a member", async () => {
-    let admin = true;
-    const server = requestsServer(() => ({ body: admin ? list([request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } })], { scope: "all" }) : list([completed]) })).on("GET", /\/api\/v1\/session$/, () => ({
-      body: session(admin ? { admin: { url: "/admin" } } : {}),
-    }));
-    const { services } = renderRequests(server, "/preview/requests?status=completed");
-    expect(await screen.findByRole("heading", { name: "All Requests", level: 1 })).toBeTruthy();
-    expect(screen.getByText("Requested by Bob")).toBeTruthy();
-    admin = false;
-    await act(async () => services.revalidate());
-    expect(await screen.findByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
-    expect(await screen.findByRole("heading", { name: "Quiet Shelf", level: 3 })).toBeTruthy();
-    expect(screen.queryByText("Someone Else's")).toBeNull();
-    expect(screen.queryByText(/Requested by/)).toBeNull();
-    expect(lists(server).map(params)).toEqual([{ status: "completed" }, { status: "completed" }]);
-  });
-
   test("a not-found request waiting for its next search keeps being checked, a settled one does not", async () => {
     const retry = "2026-11-20T08:00:00.000Z";
     expect(
@@ -269,42 +252,40 @@ describe("the Requests page", () => {
     ]);
   });
 
-  test("a late answer with an admin's reach is never shown to a session verified as a member, and the session is checked again", async () => {
-    const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
-    const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({ body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) } }));
-    const { view } = renderRequests(server);
-    expect(await screen.findByRole("heading", { name: "Changed somewhere else" }, { timeout: 4000 })).toBeTruthy();
+  test("a session check that finds the role changed locks the page and drops every request it had loaded", async () => {
+    let admin = true;
+    const server = requestsServer(() => ({ body: admin ? list([request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } })], { scope: "all", counts: { attention: 12345, active: 1 } }) : list([completed]) })).on(
+      "GET",
+      /\/api\/v1\/session$/,
+      () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }),
+    );
+    const { services } = renderRequests(server, "/preview/requests?status=completed");
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 3 })).toBeTruthy();
+    admin = false;
+    await act(async () => services.revalidate());
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
     expect(screen.queryByText("Someone Else's")).toBeNull();
-    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
-    view.unmount();
-    renderRequests(server, "/preview/requests/3");
-    expect(await screen.findByRole("heading", { name: "Changed somewhere else" }, { timeout: 4000 })).toBeTruthy();
-    expect(screen.queryByText("Someone Else's")).toBeNull();
-    expect(screen.queryByText("Bob")).toBeNull();
+    expect(screen.queryByText(/12345|Requested by/)).toBeNull();
+    expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
+    expect(document.title).toBe("Access changed · Shelfarr");
   });
 
-  test("a narrower answer during a poll hides the old admin counts at once, and a re-check that keeps the role recovers by itself", async () => {
-    let calls = 0;
-    const server = requestsServer(() => {
-      calls += 1;
-      if (calls === 1) return { body: list([request({ requested_by: { name: "Bob", self: false } })], { scope: "all", counts: { attention: 12345, active: 23456 } }) };
-      if (calls === 2) return { body: list([request()], { counts: { attention: 0, active: 1 } }) };
-      return { body: list([request({ title: "Back Again", requested_by: { name: "Bob", self: false } })], { scope: "all", counts: { attention: 7, active: 8 } }) };
-    }).on("GET", /\/api\/v1\/session$/, () => ({ body: session({ admin: { url: "/admin" } }) }));
-    const { services } = renderRequests(server);
-    expect(await screen.findByRole("link", { name: "Need Attention 12345" })).toBeTruthy();
-    act(() => {
-      void services.queryClient.refetchQueries({ queryKey: services.keys.requests("all", {}) });
-    });
-    await waitFor(() => {
-      expect(screen.queryByText(/12345|23456/)).toBeNull();
-      expect(screen.queryByText("Requested by Bob")).toBeNull();
-      expect(screen.getByRole("heading", { name: "Requests", level: 1 })).toBeTruthy();
-    });
-    expect(calls).toBe(2);
-    expect(await screen.findByRole("heading", { name: "Back Again", level: 3 }, { timeout: 4000 })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Need Attention 7" })).toBeTruthy();
-    expect(calls).toBe(3);
+  test("a list or request answer whose reach differs from the verified role locks the page and is never shown", async () => {
+    const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
+    const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({
+      body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) },
+    }));
+    for (const url of ["/preview/requests", "/preview/requests/3"]) {
+      const { view, services } = renderRequests(server, url);
+      expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+      expect(screen.queryByText("Someone Else's")).toBeNull();
+      expect(screen.queryByText("Bob")).toBeNull();
+      expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
+      view.unmount();
+    }
+    const admin = requestsServer(() => ({ body: list([request()]) })).on("GET", /\/api\/v1\/session$/, () => ({ body: session({ admin: { url: "/admin" } }) }));
+    renderRequests(admin);
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
   });
 
   test("a list holding a request that waits for its next search asks again by itself", async () => {

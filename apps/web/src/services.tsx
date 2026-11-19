@@ -3,7 +3,7 @@ import { createContext, useContext, useSyncExternalStore, type ReactNode } from 
 import { AccountGuard, type GuardState } from "./api/account-guard";
 import { ApiClient, type MutationLifecycle } from "./api/client";
 import { isApiError } from "./api/errors";
-import type { Boot, LibraryFilters, RequestFilters } from "./contract";
+import type { Boot, LibraryFilters, RequestFilters, Session } from "./contract";
 
 export type Mode = "rails" | "go";
 
@@ -19,7 +19,7 @@ export type Services = {
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
 
-export type RequestScope = "own" | "all";
+
 
 export function createQueryKeys(account: string) {
   const root = ["account", account] as const;
@@ -33,16 +33,14 @@ export function createQueryKeys(account: string) {
     continueAll: [...root, "continue"] as const,
     publication: (id: string) => [...root, "publication", id] as const,
     discover: (query: string | null) => [...root, "discover", query] as const,
-    requests: (scope: RequestScope, filters: RequestFilters) => [...root, "requests", scope, filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
-    request: (scope: RequestScope, id: string) => [...root, "request", scope, id] as const,
+    requests: (filters: RequestFilters) => [...root, "requests", filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
+    request: (id: string) => [...root, "request", id] as const,
   };
 }
 
 const VALIDATION_TIMEOUT_MS = 8000;
 
-export function retryFailure(count: number, error: unknown): boolean {
-  return isApiError(error) ? (error.kind === "network" || error.kind === "server" || error.kind === "busy") && count < 2 : count < 1;
-}
+
 
 function sessionLost(error: unknown): "signed_out" | "account_changed" | null {
   if (!isApiError(error)) return null;
@@ -69,7 +67,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
         staleTime: 30_000,
         gcTime: 10 * 60_000,
         refetchOnReconnect: true,
-        retry: retryFailure,
+        retry: (count, error) => (isApiError(error) ? (error.kind === "network" || error.kind === "server" || error.kind === "busy") && count < 2 : count < 1),
       },
       mutations: { retry: false, networkMode: "always" },
     },
@@ -88,6 +86,8 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
     try {
       const session = await api.session(controller.signal, true);
+      const previous = queryClient.getQueryData<Session>(keys.session);
+      if (generation === guard.generation && previous && Boolean(previous.admin) !== Boolean(session.admin)) guard.lock("access_changed");
       if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
     } catch (error) {

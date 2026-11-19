@@ -1,8 +1,9 @@
 import { createContext, useContext } from "react";
+import type { LockReason } from "../api/account-guard";
 
 export type GoSession = {
   signOut: () => Promise<boolean>;
-  recover: (reason: "signed_out" | "account_changed") => void;
+  recover: (reason: LockReason) => void;
 };
 
 const GoSessionContext = createContext<GoSession | null>(null);

@@ -1,7 +1,7 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { useId, useState, type FormEvent } from "react";
 import { MAX_REQUEST_QUERY, type RequestFilters, type RequestList, type RequestSummary } from "../contract";
-import { scopeChanged, useRequests, useSession } from "../queries";
+import { useRequests, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -73,10 +73,9 @@ function Requests() {
   const navigate = useNavigate();
   const session = useSession();
   const list = useRequests(filters);
-  const stale = list.isError || scopeChanged(list.failureReason);
-  const current = stale ? undefined : list.data;
+  const current = list.isError ? undefined : list.data;
   const everyone = current ? current.scope === "all" : Boolean(session.data?.admin);
-  const heading = stale ? "Requests" : everyone ? "All Requests" : "My Requests";
+  const heading = everyone ? "All Requests" : "My Requests";
   usePageTitle(q ? `Requests: ${q}` : heading);
   const key = currentFilter(filters);
 
@@ -90,7 +89,7 @@ function Requests() {
         <p className="eyebrow">Requests</p>
         <PageHeading id="requests-heading">{heading}</PageHeading>
         <p className="lede">
-          {stale ? "Requests on this server" : everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. Making, cancelling or retrying requests is not part of this preview yet.
+          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. Making, cancelling or retrying requests is not part of this preview yet.
         </p>
       </header>
 

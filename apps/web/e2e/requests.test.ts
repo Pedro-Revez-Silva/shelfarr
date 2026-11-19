@@ -217,6 +217,23 @@ describe("Requests in the Go preview, against Rails-created requests", () => {
     await server.stop();
   });
 
+  test("an admin demoted while the page is open is locked out of every request it had loaded, and continues as a member", async () => {
+    const server = await serve();
+    const { context, page } = await open(server);
+    await signInAt(page, server.origin, "browser_admin");
+    await page.getByRole("heading", { name: "Request Other Owner Secret", level: 3 }).waitFor();
+    server.execute("UPDATE users SET role = 0 WHERE id = ?", fixture.users["browser_admin"] ?? 0);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("heading", { name: "This account's access changed", level: 1 }).waitFor();
+    expect(await page.getByText(/Request Other Owner Secret|Requested by/).count()).toBe(0);
+    await page.getByRole("button", { name: "Continue as the current account" }).click();
+    await page.getByRole("heading", { name: "My Requests", level: 1 }).waitFor();
+    await page.getByRole("heading", { name: "Request Admin Own", level: 3 }).waitFor();
+    expect(await page.getByText(/Request Other Owner Secret|Requested by/).count()).toBe(0);
+    await context.close();
+    await server.stop();
+  });
+
   test("the keyboard reaches the tabs, the search, each request and its library link in reading order", async () => {
     const server = await serve();
     const { context, page } = await open(server);
