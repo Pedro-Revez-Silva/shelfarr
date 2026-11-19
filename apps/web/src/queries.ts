@@ -134,16 +134,13 @@ export function useRequest(id: string) {
 export function useServerOverview() {
   const { api, keys, revalidate } = useServices();
   const admin = useSession().data?.admin !== undefined;
-  const check = useRoleCheck();
   return useQuery({
     queryKey: keys.serverOverview,
-    queryFn: async ({ signal }) => {
-      const overview = await api.serverOverview(signal).catch((error: unknown) => {
+    queryFn: ({ signal }) =>
+      api.serverOverview(signal).catch((error: unknown) => {
         if (failureKind(error) === "not_found") revalidate();
         throw error;
-      });
-      return check(true, overview);
-    },
+      }),
     enabled: admin,
   });
 }

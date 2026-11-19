@@ -178,6 +178,39 @@ describe("the server overview", () => {
     expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
   });
 
+  test("a session check that cannot confirm the account drops the cached overview instead of keeping it on screen", async () => {
+    let failing = false;
+    const server = new FakeServer()
+      .on("GET", SESSION, () => (failing ? error(503, "database_busy") : { body: session({ admin: { url: "/admin" } }) }))
+      .on("GET", OVERVIEW, () => (failing ? error(503, "database_busy") : { body: overview() }));
+    const { services } = renderAdmin(server);
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    failing = true;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(screen.queryByText("1,234")).toBeNull(), { timeout: 4000 });
+    expect(services.queryClient.getQueriesData({ queryKey: services.keys.serverOverview }).filter(([, data]) => data !== undefined)).toEqual([]);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Server overview");
+    failing = false;
+    await act(async () => services.revalidate());
+    expect(await screen.findByText("1,234", {}, { timeout: 8000 })).toBeTruthy();
+  }, 20_000);
+
+  test("an overview refused while the session cannot be confirmed says it is for administrators, not that something is missing", async () => {
+    let refused = false;
+    const server = new FakeServer()
+      .on("GET", SESSION, () => (refused ? error(503, "database_busy") : { body: session({ admin: { url: "/admin" } }) }))
+      .on("GET", OVERVIEW, () => (refused ? error(404, "not_found") : { body: overview() }));
+    const { services } = renderAdmin(server);
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    refused = true;
+    await act(async () => {
+      await services.queryClient.refetchQueries({ queryKey: services.keys.serverOverview }).catch(() => undefined);
+    });
+    expect(await screen.findByRole("heading", { name: "Only administrators can see this page", level: 2 }, { timeout: 8000 })).toBeTruthy();
+    expect(screen.queryByText("1,234")).toBeNull();
+    expect(screen.queryByText(/not in your library/)).toBeNull();
+  }, 20_000);
+
   test("an overview for another account locks the page and is never shown", async () => {
     const server = adminServer({ answer: () => ({ body: overview({ account: "99" }) }) });
     const { services } = renderAdmin(server);
