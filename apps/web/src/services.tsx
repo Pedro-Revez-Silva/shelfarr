@@ -15,6 +15,7 @@ export type Services = {
   queryClient: QueryClient;
   keys: QueryKeys;
   revalidate: () => void;
+  keepsRole: (session: Session) => boolean;
 };
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
@@ -81,13 +82,18 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
+  const keepsRole = (session: Session): boolean => {
+    const previous = queryClient.getQueryData<Session>(keys.session);
+    if (!previous || Boolean(previous.admin) === Boolean(session.admin)) return true;
+    guard.lock("access_changed");
+    return false;
+  };
   const verify = async (generation: number): Promise<void> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
     try {
       const session = await api.session(controller.signal, true);
-      const previous = queryClient.getQueryData<Session>(keys.session);
-      if (generation === guard.generation && previous && Boolean(previous.admin) !== Boolean(session.admin)) guard.lock("access_changed");
+      if (generation === guard.generation) keepsRole(session);
       if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
       guard.finishCheck(generation, true);
     } catch (error) {
@@ -110,7 +116,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     }, 0);
   };
   requestVerificationRef = revalidate;
-  return { boot, mode: boot.runtime === "go" ? "go" : "rails", guard, api, queryClient, keys, revalidate };
+  return { boot, mode: boot.runtime === "go" ? "go" : "rails", guard, api, queryClient, keys, revalidate, keepsRole };
 }
 
 const ServicesContext = createContext<Services | null>(null);

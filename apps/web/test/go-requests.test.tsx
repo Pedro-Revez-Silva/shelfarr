@@ -270,6 +270,39 @@ describe("the Requests page", () => {
     expect(document.title).toBe("Access changed · Shelfarr");
   });
 
+  test("an ordinary session refresh that finds the role changed locks the page too", async () => {
+    let admin = true;
+    const server = requestsServer(() => ({ body: list([request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } })], { scope: "all" }) })).on("GET", /\/api\/v1\/session$/, () => ({
+      body: session(admin ? { admin: { url: "/admin" } } : {}),
+    }));
+    const { services } = renderRequests(server);
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 3 })).toBeTruthy();
+    admin = false;
+    await act(async () => {
+      await services.queryClient.refetchQueries({ queryKey: services.keys.session }).catch(() => undefined);
+    });
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+    expect(screen.queryByText("Someone Else's")).toBeNull();
+    expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
+  });
+
+  test("a request that is no longer found has the session checked, and a lost admin role locks the page", async () => {
+    let admin = true;
+    const server = requestsServer()
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }))
+      .on("GET", /\/api\/v1\/requests\/3$/, () => (admin ? { body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) } } : error(404, "not_found")));
+    const { services } = renderRequests(server, "/preview/requests/3");
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 1 })).toBeTruthy();
+    const checks = server.called("GET", /\/api\/v1\/session$/).length;
+    admin = false;
+    await act(async () => {
+      await services.queryClient.refetchQueries({ queryKey: services.keys.request("3") }).catch(() => undefined);
+    });
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+    expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThan(checks);
+    expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
+  });
+
   test("a list or request answer whose reach differs from the verified role locks the page and is never shown", async () => {
     const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
     const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({

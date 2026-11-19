@@ -7,15 +7,19 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
-import { ApiError } from "./api/errors";
+import { ApiError, isApiError } from "./api/errors";
 import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices } from "./services";
 
 export function useSession() {
-  const { api, keys } = useServices();
+  const { api, keys, keepsRole } = useServices();
   return useQuery({
     queryKey: keys.session,
-    queryFn: ({ signal }) => api.session(signal),
+    queryFn: async ({ signal }) => {
+      const session = await api.session(signal);
+      if (!keepsRole(session)) throw new ApiError("account_changed", "This account's access changed");
+      return session;
+    },
     staleTime: 15_000,
     refetchOnWindowFocus: false,
   });
@@ -110,13 +114,16 @@ export function useRequests(filters: RequestFilters) {
 }
 
 export function useRequest(id: string) {
-  const { api, keys } = useServices();
+  const { api, keys, revalidate } = useServices();
   const ready = useSession().data !== undefined;
   const check = useRoleCheck();
   return useQuery({
     queryKey: keys.request(id),
     queryFn: async ({ signal }) => {
-      const detail = await api.requestDetail(id, signal);
+      const detail = await api.requestDetail(id, signal).catch((error: unknown) => {
+        if (isApiError(error) && error.kind === "not_found") revalidate();
+        throw error;
+      });
       return check(detail.requested_by !== undefined, detail);
     },
     enabled: ready,
