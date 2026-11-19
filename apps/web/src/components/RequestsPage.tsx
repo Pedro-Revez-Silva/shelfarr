@@ -219,7 +219,6 @@ function Empty({ filters, filter }: { filters: RequestFilters; filter: string })
   if (!filters.q && filter === "all") {
     return (
       <EmptyState title="No requests yet">
-        <p>Search for books and request them to add to your library. Requesting is not part of this preview yet; Discover shows what is already in the library.</p>
         <Link to="/discover" className="button">
           Discover books
         </Link>
