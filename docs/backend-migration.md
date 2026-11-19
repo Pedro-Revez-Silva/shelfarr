@@ -68,6 +68,7 @@ apps/server/                Go module (not built, shipped or referenced by the R
   internal/inventory/       library inventory workflow (M1)
   internal/qbit/            qBittorrent HTTP adapter (M1)
   internal/monitor/         download monitor and completion handoff (M1)
+  internal/admission/       admission of one Open Library ebook request (M1, see Request admission)
   internal/netguard/        loopback-only HTTP client and bounded reads (M1)
   internal/fault/           failpoints, compiled only with -tags faultinject (M1)
   e2e/                      executable tests, corrupted-bundle controls and mutants (build tag e2e)
@@ -427,6 +428,7 @@ shelfarr-workflows prepare --bundle DIR --workdir NEW_DIR
 shelfarr-workflows run --workdir DIR [--workflows inventory,downloads] [--once] [options]
 shelfarr-workflows trigger|cancel|resume --workdir DIR --workflow inventory|downloads
 shelfarr-workflows status --workdir DIR
+shelfarr-workflows request --workdir DIR --account ID < request.json
 ```
 
 There is no database-path flag and no default path. `prepare` opens an M0 fixture bundle with the M0 verifier,
@@ -440,7 +442,8 @@ ignores proxy variables and refuses redirects. Output is structured JSON lines o
 text (including library identifiers, which are reported as ordinals), URLs, paths, credentials and response bodies are never printed.
 
 Exit codes: `0` completed, `1` a recoverable failure was reported, `2` usage, `3` the domain already has an owner,
-`4` this process was superseded (fenced), `5` the directory is not a prepared disposable copy, `6` `prepare` refused.
+`4` this process was superseded (fenced), `5` the directory is not a prepared disposable copy, `6` `prepare` refused,
+`7` `request` rejected the submission (see Request admission).
 
 ### Ownership and persisted authority
 
@@ -527,6 +530,89 @@ incomplete, empty and erroring inventories, configuration change and cancellatio
 superseded owner, writer contention, hung peers, shutdown and restart, panics, credential and loopback isolation),
 32 mutants of the critical invariants (each must fail an assertion), the unchanged read-only checker on both bundles,
 reproducible cross-builds and an untouched-repository check.
+
+### Request admission (one Open Library ebook)
+
+`shelfarr-workflows request --workdir DIR --account ID < request.json` admits one request on a prepared disposable
+copy. It is the first Go write of `books` and `requests`, for exactly one shape: an Open Library work requested as an
+ebook. The caller is trusted: it names the account by id, and nothing in the body can choose or change the account.
+No HTTP route, browser screen or native API accepts it, and the Go HTTP runtime still answers `requests` with `501`.
+
+The body is the native app's `POST /api/consumer/v1/requests` body, read from standard input (64 KiB at most) and
+checked with the same rules as `API::Consumer::V1::RequestsController#create_input`: `work_id` (`source:id`, 160
+characters), `book_type`, a `title` of at most 500 characters that is not blank after stripping, optional `author`,
+`cover_url` and `language` (500, 500 and 16 characters, stripped, blank becomes absent), an integer `year` from 1 to
+3000, at most 20 well-formed `source_work_ids`. `user_id`, `username` and every other field are ignored. A malformed
+body is `invalid_request`. A well-formed body this slice does not admit is `unsupported_request` and writes nothing:
+a source other than `openlibrary:OL<digits>W`, `audiobook`, or any `source_work_ids`.
+
+One `BEGIN IMMEDIATE` transaction on the copy, which SQLite serialises against every other writer, checks the schema
+revision (`20261112150000`) and the columns it uses, re-reads the account, decides and writes. The decision is
+`DuplicateDetectionService.check` and `RequestCreationService` for this shape:
+
+| Stored state | Answer (stdout, one JSON line) | Rails consumer API | Exit |
+| --- | --- | --- | --- |
+| The newest ebook `Book` with this `open_library_work_id` has a file path that is not blank | `already_in_library`, `publication_id` | `409 already_in_library` | 0 |
+| That book has an open request (pending, searching, downloading, processing, awaiting purchase; lowest id) of the caller | `existing`, `request_id` | `200 existing: true` | 0 |
+| ... of another account | `already_requested`, nothing else | `409 already_requested` | 0 |
+| Otherwise | `created`, `request_id`, `warnings` (Rails' texts: another format of the work, else a failed or not-found request on the book) | `201` | 0 |
+| Missing or soft-deleted account, including one deleted after the caller authorised it | rejected `account_unavailable` | `401` | 7 |
+| A malformed or unsupported body | rejected `invalid_request` / `unsupported_request` | `422 invalid_request` / Rails admits it | 7 |
+| A schema revision or column Go does not know, or a stored value it does not model (an unknown `content_kind`, invalid UTF-8, an acquisition reservation without its owner on a book that would change) | rejected `unsupported_schema` / `unsupported_stored_value` | the last one is Rails' `422` validation failure | 7 |
+| A busy or failing database, an interruption | `error` with `db-busy`, `db-error` or `cancelled`; nothing written | | 1 |
+
+Rows written (the whole list), all in that one transaction:
+
+* `books`: reuse of the matched ebook (also one found through another provider whose row carries this Open Library id),
+  filling only blank `title`, `author`, `cover_url`, `year` and `metadata_source` the way `BookMetadataBackfillService`
+  does, and moving `updated_at` only when something changed; or an insert with `open_library_work_id`, `book_type`
+  ebook, the caller's metadata, `content_kind` book, `metadata_source` `openlibrary` and the column defaults.
+* `requests`: one insert, `status` pending, `created_via` `api`, `external_source` `consumer_app`, `request_scope`
+  `single`, `language` from the body or else the `default_language` setting (else `en`), the defaults for every other
+  column (`search_generation` 0, `search_claimed_at` and `next_retry_at` empty), Rails timestamps.
+* `activity_logs`: the `request.created` row `ActivityTracker` writes for a bearer request (no IP address).
+
+No `wf_` table, setting or queue row is written. A crash or an error before the commit leaves nothing: no book without
+its request, and a retry of the same body is then `created` once and `existing` after that.
+
+**Handoff.** The pending `requests` row is the durable queue entry; there is no second enqueue state and Go never
+writes a Solid Queue row. An acquisition owner takes it by Rails' own claim, the one `SearchJob#claim_search!` runs:
+`UPDATE requests SET status = 1, search_generation = search_generation + 1, search_claimed_at = now, attention_needed = 0,
+issue_description = NULL, updated_at = now WHERE id = ? AND status = 0`, in `created_at` order (`Request.processable`;
+the next worker breaks ties by `id`). Exactly one claimant can win a row. Today that owner is Rails: after the Go
+process has exited and Rails runs on the database, `RequestQueueJob` dispatches each pending request once per run and
+`SearchJob` claims it once. Go and Rails are never owners at the same time: the command holds no lease after it exits,
+and Rails never runs on a disposable copy. A future Go acquisition worker takes over by being the only process that runs
+this claim while Rails' `RequestQueueJob` is not scheduled.
+
+**Rollback.** The rows are ordinary Rails rows. Reverting this slice removes the command and leaves admitted rows to
+Rails, which dispatches, shows and cancels them like its own (`Request#cancel!`). There is no Go state to clean up.
+
+**Deferred parity (not implemented here).** Rails' metadata lookup from the provider when a request is created
+(Go stores only the caller's metadata); `NotificationService.request_created` outbound notifications; the immediate
+`SearchJob` Rails enqueues when `immediate_search_enabled` (default on) or auto-approval applies, so a Go-admitted
+request is searched at the next `RequestQueueJob` run (every 5 minutes) after Rails runs again; audiobooks, comics,
+collections, other providers and source-id aliases. **Deliberate differences:** admission is serialised for all
+accounts, not only per account in one Puma process, so two accounts racing for the same work create one request, not
+two; a text with NUL is `invalid_request`; a cover is kept only as a plain `https` URL that Rails stores unchanged,
+anything else (an uppercase scheme, a default port, a fragment) is dropped where Rails would keep a normalised copy;
+stored values Rails would coerce are refused instead.
+
+**Verification.** `go test ./internal/admission/` checks every input rule and the cover grammar. The e2e suite
+(`e2e/workflows/requests_test.go`, run by `verify-workflows`) seeds Rails-shaped rows on both bundles (acquired, active,
+failed and not-found history, another format, a completed request whose file is gone, an alias book with blank metadata,
+two books for one work, a whitespace path, a graphic kind, awaiting purchase, a comic, two existing fixture
+books given an Open Library id, an ownerless reservation, a deleted account, a default language) and submits 30 cases through the
+real binary, with assertions on every answer and row. It also runs eight concurrent attempts of one account (one
+`created`, seven `existing`), eight attempts from two accounts (one request, the other account told only
+`already_requested`), a SIGKILL after the book insert and an injected failure before commit (nothing written, then
+one request on retry), an account deleted while the command waits before its transaction, and a newer schema.
+`verify_request_admission.rb` then runs the same cases through the real `POST /api/consumer/v1/requests` on an
+identical copy (the provider lookup replaced by an empty answer, network blocked), requires the same answers, ids,
+warnings and rows in `books`, `requests` and `activity_logs` and no difference elsewhere, opens the Go-written
+database in Rails, requires valid models and `Consumer::RequestView` equal to Rails' own, recognised repeats, and one
+`SearchJob` per pending request from `RequestQueueJob`, each claimed once and never dispatched again. Thirteen
+mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 
