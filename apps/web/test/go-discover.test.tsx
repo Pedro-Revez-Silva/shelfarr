@@ -9,7 +9,7 @@ import { discoverSchema, type DiscoverAnswer, type DiscoverItem } from "../src/c
 import { createAppRouter } from "../src/router";
 import { createServices } from "../src/services";
 import { ACCOUNT, deferred, FakeServer, page, renderApp, session, summary, type RecordedRequest } from "./helpers";
-import { error } from "./go-helpers";
+import { error, libraryServer, renderGo, signedIn, signedOut } from "./go-helpers";
 
 function item(overrides: Partial<DiscoverItem> = {}): DiscoverItem {
   return {
@@ -115,6 +115,25 @@ describe("the Go Discover page", () => {
     expect(document.title).toBe("Discover: the lord & rings · Shelfarr");
     expect(server.requests.filter((request) => request.method !== "GET")).toEqual([]);
     expect(screen.getByRole("status").textContent).toBe("2 results from Open Library for “the lord & rings”.");
+  });
+
+  test("a signed-out direct load says it returns to the search, then shows the searched results after sign-in", async () => {
+    let signed = false;
+    const server = libraryServer(() => (signed ? signedIn() : signedOut()))
+      .on("POST", /\/auth\/login$/, () => {
+        signed = true;
+        return { body: signedIn() };
+      })
+      .on("GET", /\/api\/v1\/discover(\?|$)/, (request) => ({ body: answer(queryOf(request), [item()]) }));
+    renderGo({ server, view: "discover", url: "/preview/discover?q=dune" });
+    expect(await screen.findByText("Sign in to find books. You will come straight back to your search.")).toBeTruthy();
+    expect(searches(server)).toEqual([]);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Username"), "ada");
+    await user.type(screen.getByLabelText("Password"), "Secret-Passw0rd");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText("1 result from Open Library for “dune”.")).toBeTruthy();
+    expect(searches(server).map(queryOf)).toEqual(["dune"]);
   });
 
   test("shows each result with its Open Library attribution and only the library copies the server named", async () => {
