@@ -824,8 +824,17 @@ func TestWebAcquisitionJourney(t *testing.T) {
 
 			volume.awaitCandidates(t, requestID)
 			detail := member.get("/preview/api/v1/requests/" + itoa(requestID))
-			if detail.status != 200 || !strings.Contains(string(detail.body), selectionMessage) || strings.Contains(string(detail.body), "requested_by") {
+			if detail.status != 200 || !strings.Contains(string(detail.body), selectionMessage) || strings.Contains(string(detail.body), "requested_by") ||
+				detail.json(t)["request"].(map[string]any)["acquisition"] != true {
 				t.Errorf("member detail %d %s", detail.status, detail.body)
+			}
+			for _, before := range legacy {
+				id := strings.TrimPrefix(before[0], "int64:")
+				if found := admin.get("/preview/api/v1/requests/" + id); found.status == 200 {
+					if _, marked := found.json(t)["request"].(map[string]any)["acquisition"]; marked {
+						t.Errorf("a request the website did not make is marked for acquisition: %s", found.body)
+					}
+				}
 			}
 			for _, probe := range []answer{member.get("/preview/api/v1/requests/" + itoa(requestID) + "/acquisition"), member.post("/preview/api/v1/requests/"+itoa(requestID)+"/selection", `{"result_id":"1"}`)} {
 				if probe.status != 404 || probe.code(t) != "not_found" {

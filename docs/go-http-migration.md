@@ -1593,7 +1593,7 @@ the schema, every setting, and `shelfarr-workflows` (its `search` and `download`
   copies of both bundles, with two synthetic accounts, the fake Open Library behind a loopback proxy and the captured
   Gutenberg OPDS replies (bind mounts over `DIR/locks`, `DIR/locks/http.lock` and `DIR/locks/acquisition.lock` were also
   reproduced by hand in an unprivileged user namespace: each refused at start with the outside file neither created in nor
-  locked, while the same run without the mount starts): eleven startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
+  locked, while the same run without the mount starts): twelve startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
   directory and a lock outside the volume among them); the flag off; the whole
   journey (CSRF, Origin, cross-site, other account's token and header, malformed and unoffered bodies with no row written;
   five disconnected and eight concurrent presses giving one request; another account told only `already_requested`; the
