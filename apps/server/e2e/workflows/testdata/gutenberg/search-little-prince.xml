@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
+<id>http://www.gutenberg.org/ebooks/search.opds/?query=The+Little+Prince</id>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Books: search results</title>
+<link type="application/atom+xml;profile=opds-catalog" rel="self" title="This Page" href="/ebooks/search.opds/?query=The+Little+Prince"/>
+<opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>The Little Prince</title>
+<content type="text">Antoine de Saint-Exupéry</content>
+<id>http://www.gutenberg.org/ebooks/25344.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/25344.opds"/>
+</entry>
+</feed>

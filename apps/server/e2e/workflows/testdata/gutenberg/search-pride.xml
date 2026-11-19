@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:relevance="http://a9.com/-/opensearch/extensions/relevance/1.0/">
+<id>http://www.gutenberg.org/ebooks/search.opds/?query=Pride+and+Prejudice+Jane+Austen</id>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Books: Pride and Prejudice Jane Austen (sorted by popularity)</title>
+<link type="application/atom+xml;profile=opds-catalog" rel="self" title="This Page" href="/ebooks/search.opds/?query=Pride+and+Prejudice+Jane+Austen"/>
+<link type="application/atom+xml;profile=opds-catalog" rel="start" title="Start Page" href="/ebooks.opds/"/>
+<link type="application/atom+xml;profile=opds-catalog" rel="next" title="Next Page" href="/ebooks/search.opds/?query=Pride+and+Prejudice+Jane+Austen&amp;start_index=26"/>
+<opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+<opensearch:startIndex>1</opensearch:startIndex>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Sort Alphabetically by Title</title>
+<id>http://www.gutenberg.org/ebooks/search.opds/?sort_order=title&amp;query=Pride+and+Prejudice+Jane+Austen</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/search.opds/?sort_order=title&amp;query=Pride+and+Prejudice+Jane+Austen"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Pride and Prejudice</title>
+<content type="text">Jane Austen</content>
+<id>http://www.gutenberg.org/ebooks/1342.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/1342.opds"/>
+<link type="image/jpeg" rel="http://opds-spec.org/image/thumbnail" href="/cache/epub/1342/pg1342.cover.small.jpg"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Orgueil et prévention</title>
+<content type="text">Jane Austen</content>
+<id>http://www.gutenberg.org/ebooks/42671.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/42671.opds"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Pride and Prejudice</title>
+<content type="text">Jane Austen</content>
+<id>http://www.gutenberg.org/ebooks/1342.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/1342.opds"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Pride and Prejudice, a play founded on Jane Austen's novel</title>
+<content type="text">Mary Keith Medbery Mackaye</content>
+<id>http://www.gutenberg.org/ebooks/37431.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/37431.opds"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Withdrawn listing</title>
+<id>http://www.gutenberg.org/ebooks/90001.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="subsection" href="/ebooks/90001.opds"/>
+</entry>
+</feed>

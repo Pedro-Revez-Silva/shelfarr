@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/" xmlns:thr="http://purl.org/syndication/thread/1.0">
+<id>http://www.gutenberg.org/ebooks/1342.opds</id>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Pride and Prejudice by Austen, Jane</title>
+<link type="application/atom+xml;profile=opds-catalog" rel="self" title="This Page" href="/ebooks/1342.opds"/>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Pride and Prejudice</title>
+<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>This edition had all images removed.</p></div></content>
+<id>urn:gutenberg:1342:2</id>
+<published>1998-06-01T00:00:00+00:00</published>
+<rights>Public domain in the USA.</rights>
+<author>
+<name>Austen, Jane</name>
+<uri>https://www.gutenberg.org/ebooks/author/68</uri>
+</author>
+<category scheme="http://purl.org/dc/terms/LCSH" term="Courtship -- Fiction"/>
+<dcterms:language>en</dcterms:language>
+<dcterms:issued>1998-06-01</dcterms:issued>
+<link type="application/epub+zip" rel="http://opds-spec.org/acquisition" title="EPUB3 (E-readers incl. Send-to-Kindle)" href="/ebooks/1342.epub3.images" length="123456"/>
+<link type="application/epub+zip" rel="http://opds-spec.org/acquisition" title="EPUB (older E-readers)" href="/ebooks/1342.epub.images" length="123456"/>
+<link type="application/epub+zip" rel="http://opds-spec.org/acquisition" title="EPUB (no images, older E-readers)" href="/ebooks/1342.epub.noimages" length="123456"/>
+<link type="application/x-mobipocket-ebook" rel="http://opds-spec.org/acquisition" title="Kindle" href="/ebooks/1342.kf8.images" length="123456"/>
+<link type="text/html" rel="http://opds-spec.org/acquisition" title="Read online (web)" href="/ebooks/1342.html.images" length="123456"/>
+<link type="text/plain; charset=utf-8" rel="http://opds-spec.org/acquisition" title="Plain Text UTF-8" href="/ebooks/1342.txt.utf-8" length="123456"/>
+<link type="image/jpeg" rel="http://opds-spec.org/image" href="/cache/epub/1342/pg1342.cover.medium.jpg"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Readers also downloaded…</title>
+<id>http://www.gutenberg.org/ebooks/1342/also/.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="related" href="/ebooks/1342/also/.opds"/>
+</entry>
+</feed>

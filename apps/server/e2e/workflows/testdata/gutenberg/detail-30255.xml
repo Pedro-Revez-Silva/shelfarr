@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:opds="http://opds-spec.org/" xmlns:thr="http://purl.org/syndication/thread/1.0">
+<id>http://www.gutenberg.org/ebooks/30255.opds</id>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>The Mirrored Edition by Example, Author</title>
+<link type="application/atom+xml;profile=opds-catalog" rel="self" title="This Page" href="/ebooks/30255.opds"/>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>The Mirrored Edition</title>
+<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>This edition had all images removed.</p></div></content>
+<id>urn:gutenberg:30255:2</id>
+<published>1998-06-01T00:00:00+00:00</published>
+<rights>Public domain in the USA.</rights>
+<author>
+<name>Example, Author</name>
+<uri>https://www.gutenberg.org/ebooks/author/68</uri>
+</author>
+<category scheme="http://purl.org/dc/terms/LCSH" term="Courtship -- Fiction"/>
+<dcterms:language>en</dcterms:language>
+<dcterms:issued>1998-06-01</dcterms:issued>
+<link type="application/epub+zip" rel="http://opds-spec.org/acquisition" title="EPUB3 (E-readers incl. Send-to-Kindle)" href="https://mirror.example/ebooks/30255.epub3.images" length="123456"/>
+<link type="image/jpeg" rel="http://opds-spec.org/image" href="/cache/epub/30255/pg30255.cover.medium.jpg"/>
+</entry>
+<entry>
+<updated>2026-11-19T10:00:00Z</updated>
+<title>Readers also downloaded…</title>
+<id>http://www.gutenberg.org/ebooks/30255/also/.opds</id>
+<link type="application/atom+xml;profile=opds-catalog" rel="related" href="/ebooks/30255/also/.opds"/>
+</entry>
+</feed>

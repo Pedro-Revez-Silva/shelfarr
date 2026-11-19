@@ -39,6 +39,7 @@ const (
   shelfarr-workflows trigger|cancel|resume --workdir DIR --workflow inventory|downloads
   shelfarr-workflows status --workdir DIR
   shelfarr-workflows request --workdir DIR --account ID < request.json
+  shelfarr-workflows search --workdir DIR --request ID [--request-timeout 15s] [--deadline 5m]
 Experimental. Works only on a directory created by 'prepare' from a fixture bundle.`
 )
 
@@ -128,6 +129,12 @@ func run(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 		return admitRequest(*workdir, accountID, stdin, out)
+	case "search":
+		options, valid := parseSearch(arguments[1:], flags, workdir, stderr)
+		if !valid {
+			return exitUsage
+		}
+		return searchRequest(*workdir, options, out)
 	}
 	fmt.Fprintln(stderr, usage)
 	return exitUsage
