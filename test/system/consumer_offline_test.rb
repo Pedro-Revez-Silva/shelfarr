@@ -140,11 +140,34 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     ConsumerReachability.offline = true
     visit at(consumer_publication_path(@ebook))
     within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
+    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
+    assert_no_selector ".consumer-ebook iframe", visible: true
     expire_offline_account
     page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
     assert_text "Sign in again", wait: 15
-    assert_no_selector ".consumer-ebook iframe"
+    assert_no_selector ".consumer-ebook iframe", visible: :all
     assert_no_text "Pages kept for a journey."
+  end
+
+  test "a downloaded ebook restored by Back for the same confirmed account shows the same reader again" do
+    visit at(consumer_publication_path(@ebook))
+    assert_selector ".consumer-ebook iframe", wait: 20
+    reveal_reading_controls
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@ebook))
+    within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
+    page.execute_script("window.__sameDocument = true")
+    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
+    assert_no_selector ".consumer-ebook iframe", visible: true
+    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
+    within_frame(find(".consumer-ebook iframe", wait: 15)) { assert_text "Pages kept for a journey." }
+    assert_selector ".consumer-ebook iframe", count: 1
+    assert page.evaluate_script("window.__sameDocument === true")
   end
 
   test "another account never sees these downloads, and the sign-in page forgets the offline account" do

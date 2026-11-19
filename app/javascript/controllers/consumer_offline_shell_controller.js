@@ -14,8 +14,10 @@ export default class extends Controller {
     if (!this.active) return
     if (!this.offline.support().ok) return this.say("Downloads aren't available", this.offline.MESSAGES.unsupported)
     this.onlineHandler = () => this.reconnect()
+    this.pageHideHandler = event => { if (event.persisted) this.element.hidden = true }
     this.pageShowHandler = event => { if (event.persisted) this.restored() }
     window.addEventListener("online", this.onlineHandler)
+    window.addEventListener("pagehide", this.pageHideHandler)
     window.addEventListener("pageshow", this.pageShowHandler)
     const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
     if (!active) return this.signedOut("Sign in to use downloads", "Downloads open only for the account that saved them on this browser. Connect to the internet and sign in.")
@@ -33,14 +35,17 @@ export default class extends Controller {
     clearTimeout(this.retryTimer)
     clearTimeout(this.bannerTimer)
     window.removeEventListener("online", this.onlineHandler)
+    window.removeEventListener("pagehide", this.pageHideHandler)
     window.removeEventListener("pageshow", this.pageShowHandler)
   }
 
   async restored() {
-    if (!this.account) return
-    const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
-    if (!this.active || !this.account) return
-    if (active && !active.expired && active.account === this.account) return
+    const active = this.account && await this.offline.activeAccount(this.baseValue).catch(() => null)
+    if (!this.active) return
+    if (!this.account || (active && !active.expired && active.account === this.account)) {
+      this.element.hidden = false
+      return
+    }
     this.account = null
     clearTimeout(this.retryTimer)
     this.readerTarget.replaceChildren()
