@@ -1349,7 +1349,8 @@ while downloading, who asked (admins, other people's requests), when it was requ
 Library" for an openable copy. Previous and Next keep the tab and search. Rails' empty states are kept ("No requests yet",
 "No requests need attention", "No matching requests"), with Discover offered for an empty list. The address holds
 `status`, `attention`, `q` and `page`, so a direct load, reload, Back and Forward return to the same list; an unknown
-tab value in the address is ignored and `page` is passed to the server as written, which reads it as Rails does. Each filter has its own cache entry, so a late answer for an earlier filter never
+tab value in the address is ignored and `page` (up to 64 characters; a longer value is dropped and page 1 is shown) is
+passed to the server as written, which reads it as Rails does. Each filter has its own cache entry, so a late answer for an earlier filter never
 replaces the current one.
 
 A request (`/preview/requests/:id`) shows the format, title, author, badges, Rails' "Attention Required" box, a
@@ -1361,8 +1362,9 @@ is not available". The account guard, session checks and
 locking work as on every other page. Request answers are cached per account and per role, and both screens wait for
 the session: when a session check finds that an admin is no longer one, every admin answer is dropped and the list
 or request is asked for again as a member. An answer whose reach differs from the verified role (an admin's list or a
-detail naming its requester for a member, or the reverse) is never shown or cached: the session is checked again and
-the page asks again for the role it then has.
+detail naming its requester for a member, or the reverse) is never shown or cached: the old answer, its counts and
+heading are hidden at once, the session is checked again, and the page asks once more after about a second, for the
+role it then has; if the role still disagrees it says "Changed somewhere else" with Try again.
 
 ### Contract before and after
 
