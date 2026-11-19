@@ -168,3 +168,18 @@ func TestOpenRefusesADatabaseWithoutWhatPairingReadsAndWrites(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenRefusesADatabaseWithoutWhatDiscoverReads(t *testing.T) {
+	for _, change := range []string{
+		`ALTER TABLE books DROP COLUMN open_library_work_id`,
+		`ALTER TABLE metadata_provider_statuses DROP COLUMN rate_limited_until`,
+		`ALTER TABLE metadata_provider_statuses DROP COLUMN status`,
+		`DROP TABLE metadata_provider_statuses`,
+	} {
+		path := livetest.Create(t)
+		livetest.Exec(t, path, change)
+		if _, err := Open(context.Background(), path, Options{}); !errors.Is(err, ErrSchemaUnsupported) {
+			t.Errorf("%s: %v", change, err)
+		}
+	}
+}
