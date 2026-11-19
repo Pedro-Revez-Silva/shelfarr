@@ -51,8 +51,16 @@ go vet -tags faultinject ./...
 go test -race -count=1 ./...
 
 step "go: the workflow executable against both bundles, with race-instrumented binaries"
+mkdir -m 700 "$work/admission"
 SHELFARR_WORKFLOW_RACE=1 SHELFARR_WORKFLOW_BUNDLE="$work/bundle-current" SHELFARR_WORKFLOW_UPGRADE_BUNDLE="$work/bundle-upgrade" \
-  go test -tags e2e -count=1 -timeout 20m -skip TestMutantsAreDetected ./e2e/workflows/
+  SHELFARR_ADMISSION_EVIDENCE="$work/admission" go test -tags e2e -count=1 -timeout 20m -skip TestMutantsAreDetected ./e2e/workflows/
+
+step "ruby: real Rails answers the same requests, reads the Go-admitted rows and dispatches them once"
+for bundle in current upgrade; do
+  (cd "$root" && clean_env TMPDIR="$work" timeout 600 bundle exec ruby tools/migration/requests/verify_request_admission.rb \
+    --bundle "$work/bundle-$bundle" --evidence "$work/admission/$bundle" --out "$work/admission-rails-$bundle") \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin); assert not r["failures"] and r["checks"] > 0, r["failures"]; print(r["bundle"], r["checks"], "checks", r["dispatched_go_requests"], "Go requests dispatched once")'
+done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"
 SHELFARR_WORKFLOW_BUNDLE="$work/bundle-current" SHELFARR_WORKFLOW_UPGRADE_BUNDLE="$work/bundle-upgrade" \

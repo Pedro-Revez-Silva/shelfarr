@@ -31,17 +31,19 @@ const (
 	exitFenced       = 4
 	exitRefused      = 5
 	exitPrepare      = 6
+	exitRejected     = 7
 
 	usage = `usage:
   shelfarr-workflows prepare --bundle DIR --workdir NEW_DIR
   shelfarr-workflows run --workdir DIR [--workflows inventory,downloads] [--once] [options]
   shelfarr-workflows trigger|cancel|resume --workdir DIR --workflow inventory|downloads
   shelfarr-workflows status --workdir DIR
+  shelfarr-workflows request --workdir DIR --account ID < request.json
 Experimental. Works only on a directory created by 'prepare' from a fixture bundle.`
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
 type reporter struct {
@@ -83,7 +85,7 @@ func (r *reporter) failures() int {
 	return r.errors
 }
 
-func run(arguments []string, stdout, stderr io.Writer) int {
+func run(arguments []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(arguments) == 0 {
 		fmt.Fprintln(stderr, usage)
 		return exitUsage
@@ -115,6 +117,17 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return status(*workdir, out)
 	case "run":
 		return runService(arguments[1:], flags, workdir, out, stderr)
+	case "request":
+		account := flags.String("account", "", "")
+		accountID, valid := int64(0), false
+		if flags.Parse(arguments[1:]) == nil && *workdir != "" && flags.NArg() == 0 {
+			accountID, valid = parseAccount(*account)
+		}
+		if !valid {
+			fmt.Fprintln(stderr, usage)
+			return exitUsage
+		}
+		return admitRequest(*workdir, accountID, stdin, out)
 	}
 	fmt.Fprintln(stderr, usage)
 	return exitUsage
