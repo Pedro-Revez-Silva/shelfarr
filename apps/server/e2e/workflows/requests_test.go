@@ -14,7 +14,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 )
 
 const admissionEvidenceEnvironment = "SHELFARR_ADMISSION_EVIDENCE"
@@ -66,6 +68,7 @@ type admissionCase struct {
 	Body          json.RawMessage `json:"body"`
 	Oracle        bool            `json:"oracle"`
 	Difference    string          `json:"difference,omitempty"`
+	RailsOutcome  string          `json:"rails_outcome,omitempty"`
 	Outcome       string          `json:"outcome"`
 	RequestID     string          `json:"request_id,omitempty"`
 	PublicationID string          `json:"publication_id,omitempty"`
@@ -78,7 +81,9 @@ type admissionExpectation struct {
 	body          string
 	oracle        bool
 	difference    string
+	railsOutcome  string
 	outcome       string
+	request       string
 	sameRequestAs string
 	requestOnBook string
 	publication   string
@@ -126,6 +131,10 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{key: "awaiting", work: "OL1011W", title: "Seeded Awaiting", bookType: 1},
 		{key: "comic", work: "OL1013W", title: "Seeded Comic", path: "/library/seeded/comic.cbz", bookType: 2, contentKind: 1},
 		{key: "reserved-ownerless", work: "OL1014W", token: "seeded-ownerless-token", bookType: 1, blankTitle: true},
+		{key: "unacquired-older", work: "OL1015W", title: "Seeded Unacquired Older", bookType: 1},
+		{key: "unacquired-newer", work: "OL1015W", title: "Seeded Unacquired Newer", bookType: 1},
+		{key: "shared", work: "OL1016W", title: "Seeded Shared", bookType: 1},
+		{key: "odd-status", work: "OL1017W", title: "Seeded Odd Status", bookType: 1},
 	}
 	for index, book := range books {
 		id := int64(1001 + index)
@@ -163,6 +172,9 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{504, "completed-elsewhere", "alice", 5},
 		{505, "awaiting", "alice", 7},
 		{506, "acquired", "bob", 0},
+		{507, "shared", "bob", 0},
+		{508, "shared", "alice", 0},
+		{509, "odd-status", "alice", 99},
 	}
 	for _, request := range requests {
 		exec1(t, db, `INSERT INTO requests (id, book_id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -201,7 +213,10 @@ func admissionScenarios() []admissionExpectation {
 		{name: "completed-without-file", account: "bob", body: admissionBody("OL1005W", ""), oracle: true, outcome: "created", requestOnBook: "completed-elsewhere", warnings: none},
 		{name: "alias-backfill", account: "bob", body: admissionBody("OL1006W", `"author":"Alias Author","cover_url":"https://covers.example.test/1006.jpg","year":2001`), oracle: true, outcome: "created", requestOnBook: "alias", warnings: none,
 			stored: map[string]string{"b.title": "string:Admitted OL1006W", "b.author": "string:Alias Author", "b.cover_url": "string:https://covers.example.test/1006.jpg", "b.year": "int64:2001", "b.metadata_source": "string:hardcover", "b.hardcover_id": "string:hc-1006"}},
-		{name: "newest-duplicate-book", account: "alice", body: admissionBody("OL1007W", ""), oracle: true, outcome: "created", requestOnBook: "newer-copy", warnings: none},
+		{name: "acquired-older-copy", account: "alice", body: admissionBody("OL1007W", ""), railsOutcome: "created", outcome: "already_in_library", publication: "older-copy"},
+		{name: "newest-of-two-books", account: "alice", body: admissionBody("OL1015W", ""), oracle: true, outcome: "created", requestOnBook: "unacquired-newer", warnings: none},
+		{name: "own-request-behind-another", account: "alice", body: admissionBody("OL1016W", ""), railsOutcome: "already_requested", outcome: "existing", request: "508"},
+		{name: "unknown-request-status", account: "bob", body: admissionBody("OL1017W", ""), outcome: "unsupported_stored_value"},
 		{name: "blank-path-not-acquired", account: "alice", body: admissionBody("OL1009W", ""), oracle: true, outcome: "created", requestOnBook: "blank-path", warnings: none},
 		{name: "graphic-kind-kept", account: "alice", body: admissionBody("OL1010W", ""), oracle: true, outcome: "created", requestOnBook: "graphic", warnings: none,
 			stored: map[string]string{"b.title": "string:Seeded Graphic Novel", "b.content_kind": "int64:1", "b.metadata_source": "string:openlibrary"}},
@@ -258,7 +273,7 @@ func TestRequestAdmissionMatchesTheRailsContract(t *testing.T) {
 				body := strings.ReplaceAll(scenario.body, "ALICE_ID", itoa(library.users["alice"]))
 				answer := w.admit(plainBinary, faults{}, account, body)
 				entry := admissionCase{Name: scenario.name, Account: scenario.account, AccountID: accountID, Body: json.RawMessage(body), Oracle: scenario.oracle,
-					Difference: scenario.difference, Outcome: answer.outcome, RequestID: answer.fields.text("request_id"), PublicationID: answer.fields.text("publication_id"), Warnings: warningsOf(answer.fields)}
+					Difference: scenario.difference, RailsOutcome: scenario.railsOutcome, Outcome: answer.outcome, RequestID: answer.fields.text("request_id"), PublicationID: answer.fields.text("publication_id"), Warnings: warningsOf(answer.fields)}
 				checkAdmission(t, db, library, cmp.Or(bundle.defaultLanguage, "en"), scenario, entry, answer, byName)
 				if entry.Outcome == "created" {
 					created++
@@ -307,6 +322,9 @@ func checkAdmission(t *testing.T, db *sql.DB, library seededLibrary, defaultLang
 	}
 	if scenario.publication != "" && entry.PublicationID != library.resolve(scenario.publication) {
 		t.Errorf("%s: publication %q, want %q", scenario.name, entry.PublicationID, library.resolve(scenario.publication))
+	}
+	if scenario.request != "" && entry.RequestID != scenario.request {
+		t.Errorf("%s: request %q, want %q", scenario.name, entry.RequestID, scenario.request)
 	}
 	if scenario.sameRequestAs != "" && entry.RequestID != byName[scenario.sameRequestAs].RequestID {
 		t.Errorf("%s: request %q, want the earlier %q", scenario.name, entry.RequestID, byName[scenario.sameRequestAs].RequestID)
@@ -546,14 +564,51 @@ func TestRequestAdmissionRechecksTheAccountInsideTheTransaction(t *testing.T) {
 }
 
 func TestRequestAdmissionRefusesAnUnknownSchema(t *testing.T) {
-	w := prepare(t, currentBundle)
-	db := w.open()
-	library := seedAdmissionLibrary(t, db, "")
-	exec1(t, db, `INSERT INTO schema_migrations (version) VALUES ('29991231000000')`)
-	before := digests(t, db)
-	answer := w.admit(plainBinary, faults{}, itoa(library.users["alice"]), admissionBody("OL5003W", ""))
-	if answer.code != 7 || answer.outcome != "unsupported_schema" {
-		t.Fatalf("a newer schema answered %v exit %d", answer.fields, answer.code)
+	for name, change := range map[string]string{
+		"a newer revision":                 `INSERT INTO schema_migrations (version) VALUES ('29991231000000')`,
+		"a column the Rails claim needs":   `ALTER TABLE requests DROP COLUMN issue_description`,
+		"a column the queue reconciles on": `DROP INDEX index_requests_on_next_retry_at; ALTER TABLE requests DROP COLUMN next_retry_at`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := prepare(t, currentBundle)
+			db := w.open()
+			library := seedAdmissionLibrary(t, db, "")
+			exec1(t, db, change)
+			before := digests(t, db)
+			answer := w.admit(plainBinary, faults{}, itoa(library.users["alice"]), admissionBody("OL5003W", ""))
+			if answer.code != 7 || answer.outcome != "unsupported_schema" {
+				t.Fatalf("answered %v exit %d", answer.fields, answer.code)
+			}
+			requireSame(t, before, digests(t, db))
+		})
 	}
-	requireSame(t, before, digests(t, db))
+}
+
+func TestRequestAdmissionStopsWhileWaitingForItsBody(t *testing.T) {
+	w := prepare(t, currentBundle)
+	command := exec.Command(plainBinary, "request", "--workdir", w.dir, "--account", "1")
+	command.Env = []string{"PATH=" + os.Getenv("PATH")}
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdin.Close()
+	var stdout bytes.Buffer
+	command.Stdout = &stdout
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	time.Sleep(200 * time.Millisecond)
+	command.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		command.Process.Kill()
+		t.Fatal("the command kept waiting for its body after SIGTERM")
+	}
+	if code := command.ProcessState.ExitCode(); code != 1 || strings.TrimSpace(stdout.String()) != `{"code":"cancelled","event":"error","workflow":"request"}` {
+		t.Fatalf("exit %d, output %q", code, stdout.String())
+	}
 }

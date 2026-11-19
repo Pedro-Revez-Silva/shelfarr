@@ -46,6 +46,7 @@ class AdmissionVerifier
   end
 
   def call
+    require_evidence
     lookups = count_metadata_lookups
     ActiveJob::Base.queue_adapter = :test
     install_database(File.join(@evidence, "before.sqlite3"))
@@ -60,6 +61,7 @@ class AdmissionVerifier
     verify_rails_reads_go_rows(rails_answers)
     verify_rails_answers_repeats
     verify_dispatch
+    verify_documented_differences
     expect(WebMock::RequestRegistry.instance.requested_signatures.hash.empty?, "a network request was attempted")
     finish
   end
@@ -69,6 +71,24 @@ class AdmissionVerifier
   def expect(condition, message)
     @checks += 1
     @failures << message unless condition
+  end
+
+  def require_evidence
+    created = @cases.count { |entry| entry["outcome"] == "created" }
+    oracle = @cases.count { |entry| entry["oracle"] }
+    differing = @cases.count { |entry| entry["rails_outcome"] }
+    expect(created.positive? && oracle.positive? && differing.positive?, "the evidence has #{created} created, #{oracle} oracle and #{differing} differing cases")
+  end
+
+  def verify_documented_differences
+    @cases.select { |entry| entry["rails_outcome"] }.each do |entry|
+      install_database(File.join(@evidence, "before.sqlite3"))
+      status, body = submit(entry.fetch("account_id"), JSON.generate(entry.fetch("body")))
+      rails = outcome_of(status, body)["outcome"]
+      expect(rails == entry["rails_outcome"], "#{entry['name']}: Rails answered #{rails}, documented #{entry['rails_outcome']}")
+      expect(rails != entry["outcome"], "#{entry['name']}: Rails and Go agree, so the difference is not real")
+      (@report["documented_differences"] ||= {})[entry["name"]] = { "rails" => rails, "go" => entry["outcome"] }
+    end
   end
 
   def count_metadata_lookups
@@ -279,20 +299,25 @@ class AdmissionVerifier
 
     ActiveJob::Base.queue_adapter.enqueued_jobs.clear
     RequestQueueJob.perform_now
-    dispatched = enqueued_search_ids
+    jobs = ActiveJob::Base.queue_adapter.enqueued_jobs.select { |job| job[:job] == SearchJob }
+    dispatched = jobs.map { |job| job[:args] }
     reconciled = Request.processable.limit(RequestQueueJob::MAX_PROCESS_BATCH_SIZE).pluck(:id)
-    expect(dispatched == reconciled && (pending - reconciled).empty?, "RequestQueueJob dispatched #{dispatched}, pending #{reconciled}")
-    created.each { |id| expect(dispatched.count(id) == 1, "request #{id} dispatched #{dispatched.count(id)} times") }
-    job = ActiveJob::Base.queue_adapter.enqueued_jobs.find { |candidate| candidate[:job] == SearchJob && candidate[:args] == [ created.first ] }
+    expect(dispatched == reconciled.map { |id| [ id ] } && (pending - reconciled).empty?, "RequestQueueJob dispatched #{dispatched}, pending #{reconciled}")
+    created.each { |id| expect(dispatched.count([ id ]) == 1, "request #{id} dispatched #{dispatched.count([ id ])} times") }
+    job = jobs.find { |candidate| candidate[:args] == [ created.first ] }
+    expect(job, "no SearchJob was captured for the first Go request")
     @report["captured_job"] = job && { "job_class" => job[:job].name, "arguments" => job[:args], "queue" => job[:queue] }
 
     created.each do |id|
-      SearchJob.perform_now(id)
+      payload = jobs.find { |candidate| candidate[:args] == [ id ] }
+      next expect(false, "request #{id} has no captured SearchJob") unless payload
+
+      payload[:job].perform_now(*payload[:args])
       claimed = Request.find(id)
-      SearchJob.perform_now(id)
+      payload[:job].perform_now(*payload[:args])
       again = Request.find(id)
-      expect(!claimed.pending? && claimed.search_generation == 1, "request #{id}: SearchJob did not claim it once (#{claimed.status}, generation #{claimed.search_generation})")
-      expect(again.search_generation == 1 && again.updated_at == claimed.updated_at && again.status == claimed.status, "request #{id}: a second SearchJob acted on a claimed request")
+      expect(!claimed.pending? && claimed.search_generation == 1, "request #{id}: its captured SearchJob did not claim it once (#{claimed.status}, generation #{claimed.search_generation})")
+      expect(again.search_generation == 1 && again.updated_at == claimed.updated_at && again.status == claimed.status, "request #{id}: running its captured SearchJob again acted on a claimed request")
     end
     ActiveJob::Base.queue_adapter.enqueued_jobs.clear
     RequestQueueJob.perform_now

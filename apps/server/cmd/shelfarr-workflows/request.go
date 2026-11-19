@@ -15,6 +15,8 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/wfstore"
 )
 
+const codeInputUnreadable = "input-unreadable"
+
 var accountPattern = regexp.MustCompile(`\A[1-9][0-9]{0,18}\z`)
 
 var rejections = []error{
@@ -36,9 +38,9 @@ func parseAccount(text string) (int64, bool) {
 func admitRequest(workdir string, accountID int64, stdin io.Reader, out *reporter) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	body, err := io.ReadAll(io.LimitReader(stdin, admission.MaxBodyBytes+1))
+	body, err := readBody(ctx, stdin)
 	if err != nil {
-		out.emit("error", map[string]any{"workflow": "request", "code": wfstore.CodeCancelled})
+		out.emit("error", map[string]any{"workflow": "request", "code": wfstore.CodeOf(err)})
 		return exitRecoverable
 	}
 	submission, err := admission.ParseSubmission(body)
@@ -63,6 +65,28 @@ func admitRequest(workdir string, accountID int64, stdin io.Reader, out *reporte
 	}
 	out.emit("request", decision(result))
 	return exitOK
+}
+
+type bodyRead struct {
+	body []byte
+	err  error
+}
+
+func readBody(ctx context.Context, stdin io.Reader) ([]byte, error) {
+	read := make(chan bodyRead, 1)
+	go func() {
+		body, err := io.ReadAll(io.LimitReader(stdin, admission.MaxBodyBytes+1))
+		read <- bodyRead{body: body, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case result := <-read:
+		if result.err != nil {
+			return nil, wfstore.Fail(codeInputUnreadable, result.err)
+		}
+		return result.body, nil
+	}
 }
 
 func reject(err error, out *reporter) int {

@@ -547,19 +547,20 @@ body is `invalid_request`. A well-formed body this slice does not admit is `unsu
 a source other than `openlibrary:OL<digits>W`, `audiobook`, or any `source_work_ids`.
 
 One `BEGIN IMMEDIATE` transaction on the copy, which SQLite serialises against every other writer, checks the schema
-revision (`20261112150000`) and the columns it uses, re-reads the account, decides and writes. The decision is
-`DuplicateDetectionService.check` and `RequestCreationService` for this shape:
+revision (`20261112150000`) and the columns it and the Rails claim below use, re-reads the account, decides and
+writes. The decision is `DuplicateDetectionService.check` and `RequestCreationService` for this shape, over every ebook
+`Book` carrying this `open_library_work_id` (at most 100; more is `unsupported_stored_value`):
 
 | Stored state | Answer (stdout, one JSON line) | Rails consumer API | Exit |
 | --- | --- | --- | --- |
-| The newest ebook `Book` with this `open_library_work_id` has a file path that is not blank | `already_in_library`, `publication_id` | `409 already_in_library` | 0 |
-| That book has an open request (pending, searching, downloading, processing, awaiting purchase; lowest id) of the caller | `existing`, `request_id` | `200 existing: true` | 0 |
-| ... of another account | `already_requested`, nothing else | `409 already_requested` | 0 |
-| Otherwise | `created`, `request_id`, `warnings` (Rails' texts: another format of the work, else a failed or not-found request on the book) | `201` | 0 |
+| One of them has a file path that is not blank (the newest such book is named) | `already_in_library`, `publication_id` | `409 already_in_library` | 0 |
+| The caller has an open request (pending, searching, downloading, processing, awaiting purchase; lowest id) on one of them | `existing`, `request_id` | `200 existing: true` | 0 |
+| Another account has one | `already_requested`, nothing else | `409 already_requested` | 0 |
+| Otherwise, on the newest of them or a new book | `created`, `request_id`, `warnings` (Rails' texts: another format of the work, else a failed or not-found request on the book) | `201` | 0 |
 | Missing or soft-deleted account, including one deleted after the caller authorised it | rejected `account_unavailable` | `401` | 7 |
 | A malformed or unsupported body | rejected `invalid_request` / `unsupported_request` | `422 invalid_request` / Rails admits it | 7 |
-| A schema revision or column Go does not know, or a stored value it does not model (an unknown `content_kind`, invalid UTF-8, an acquisition reservation without its owner on a book that would change) | rejected `unsupported_schema` / `unsupported_stored_value` | the last one is Rails' `422` validation failure | 7 |
-| A busy or failing database, an interruption | `error` with `db-busy`, `db-error` or `cancelled`; nothing written | | 1 |
+| A schema revision or column Go does not know, or a stored value it does not model (an unknown `content_kind` or request `status`, invalid UTF-8, an acquisition reservation without its owner on a book that would change) | rejected `unsupported_schema` / `unsupported_stored_value` | the last one is Rails' `422` validation failure | 7 |
+| A busy or failing database, an interruption (also while it waits for the body), unreadable input | `error` with `db-busy`, `db-error`, `cancelled` or `input-unreadable`; nothing written | | 1 |
 
 Rows written (the whole list), all in that one transaction:
 
@@ -579,9 +580,10 @@ its request, and a retry of the same body is then `created` once and `existing` 
 writes a Solid Queue row. An acquisition owner takes it by Rails' own claim, the one `SearchJob#claim_search!` runs:
 `UPDATE requests SET status = 1, search_generation = search_generation + 1, search_claimed_at = now, attention_needed = 0,
 issue_description = NULL, updated_at = now WHERE id = ? AND status = 0`, in `created_at` order (`Request.processable`;
-the next worker breaks ties by `id`). Exactly one claimant can win a row. Today that owner is Rails: after the Go
-process has exited and Rails runs on the database, `RequestQueueJob` dispatches each pending request once per run and
-`SearchJob` claims it once. Go and Rails are never owners at the same time: the command holds no lease after it exits,
+the next worker breaks ties by `id`). Exactly one claimant can win a pending row. Today that owner is Rails: after the
+Go process has exited and Rails runs on the database, each `RequestQueueJob` run dispatches the oldest pending requests
+(`queue_batch_size`, 5 by default) and `SearchJob` claims each pending attempt once; a later retry makes the request
+pending again and is a new attempt. Go and Rails are never owners at the same time: the command holds no lease after it exits,
 and Rails never runs on a disposable copy. A future Go acquisition worker takes over by being the only process that runs
 this claim while Rails' `RequestQueueJob` is not scheduled.
 
@@ -591,28 +593,33 @@ Rails, which dispatches, shows and cancels them like its own (`Request#cancel!`)
 **Deferred parity (not implemented here).** Rails' metadata lookup from the provider when a request is created
 (Go stores only the caller's metadata); `NotificationService.request_created` outbound notifications; the immediate
 `SearchJob` Rails enqueues when `immediate_search_enabled` (default on) or auto-approval applies, so a Go-admitted
-request is searched at the next `RequestQueueJob` run (every 5 minutes) after Rails runs again; audiobooks, comics,
-collections, other providers and source-id aliases. **Deliberate differences:** admission is serialised for all
-accounts, not only per account in one Puma process, so two accounts racing for the same work create one request, not
-two; a text with NUL is `invalid_request`; a cover is kept only as a plain `https` URL that Rails stores unchanged,
+request waits for `RequestQueueJob` (every 5 minutes, oldest first, a batch per run) after Rails runs again;
+audiobooks, comics, collections, other providers and source-id aliases. **Deliberate differences:** admission is
+serialised for all accounts, not only per account in one Puma process, so two accounts racing for the same work create
+one request, not two; where several ebook books share the work (data an older version or a race left behind), Rails
+looks only at the newest and its lowest open request, so it requests an already acquired work again when an older copy
+holds the file and answers `already_requested` to an account whose own request is behind another's; Go answers
+`already_in_library` and `existing` there, so an acquired book or an own open request is never duplicated or hidden; a text with NUL is `invalid_request`; a cover is kept only as a plain `https` URL that Rails stores unchanged,
 anything else (an uppercase scheme, a default port, a fragment) is dropped where Rails would keep a normalised copy;
-stored values Rails would coerce are refused instead.
+stored values Rails would coerce or skip (an unknown request status) are refused instead.
 
 **Verification.** `go test ./internal/admission/` checks every input rule and the cover grammar. The e2e suite
 (`e2e/workflows/requests_test.go`, run by `verify-workflows`) seeds Rails-shaped rows on both bundles (acquired, active,
 failed and not-found history, another format, a completed request whose file is gone, an alias book with blank metadata,
-two books for one work, a whitespace path, a graphic kind, awaiting purchase, a comic, two existing fixture
-books given an Open Library id, an ownerless reservation, a deleted account, a default language) and submits 30 cases through the
+two books for one work with and without a file, two accounts' requests on one book, an unknown status, a whitespace path, a graphic kind, awaiting purchase, a comic, two existing fixture
+books given an Open Library id, an ownerless reservation, a deleted account, a default language) and submits 33 cases through the
 real binary, with assertions on every answer and row. It also runs eight concurrent attempts of one account (one
 `created`, seven `existing`), eight attempts from two accounts (one request, the other account told only
 `already_requested`), a SIGKILL after the book insert and an injected failure before commit (nothing written, then
-one request on retry), an account deleted while the command waits before its transaction, and a newer schema.
+one request on retry), an account deleted while the command waits before its transaction, a newer schema, and SIGTERM while it waits for
+its body.
 `verify_request_admission.rb` then runs the same cases through the real `POST /api/consumer/v1/requests` on an
 identical copy (the provider lookup replaced by an empty answer, network blocked), requires the same answers, ids,
-warnings and rows in `books`, `requests` and `activity_logs` and no difference elsewhere, opens the Go-written
+warnings and rows (the two precedence cases above run alone on a fresh copy and must give Rails' different answer) in `books`, `requests` and `activity_logs` and no difference elsewhere, opens the Go-written
 database in Rails, requires valid models and `Consumer::RequestView` equal to Rails' own, recognised repeats, and one
-`SearchJob` per pending request from `RequestQueueJob`, each claimed once and never dispatched again. Thirteen
-mutants of these rules must each fail an assertion.
+`SearchJob` per pending request from `RequestQueueJob` (its batch raised to 100 in that copy), whose captured payload
+claims each Go request once and does nothing when run again, and no second dispatch. It refuses evidence with no
+created, compared or differing case. Seventeen mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 
