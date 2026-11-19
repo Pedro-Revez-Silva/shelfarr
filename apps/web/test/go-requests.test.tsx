@@ -6,6 +6,7 @@ import { App } from "../src/App";
 import { resetFirstPage } from "../src/components/PageHeading";
 import { trimQuery } from "../src/components/RequestsPage";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestList, type RequestSummary } from "../src/contract";
+import { stillChanging } from "../src/queries";
 import { createAppRouter } from "../src/router";
 import { createServices } from "../src/services";
 import { ACCOUNT, deferred, FakeServer, page, renderApp, session, summary, type RecordedRequest } from "./helpers";
@@ -109,7 +110,8 @@ describe("the Requests page", () => {
   test("shows a member's requests with Rails labels, progress and a library link only for a copy the Library opens", async () => {
     const server = requestsServer();
     renderRequests(server);
-    expect(await screen.findByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Harbor Lights", level: 3 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe("3 requests");
     const cards = screen.getAllByRole("article");
     expect(cards.map((card) => within(card).getByRole("heading", { level: 3 }).textContent)).toEqual(["Harbor Lights", "Missing Files", "Quiet Shelf"]);
@@ -117,6 +119,8 @@ describe("the Requests page", () => {
     expect(within(cards[0]!).getByRole("progressbar", { name: "Download progress for Harbor Lights" }).getAttribute("value")).toBe("42");
     expect(within(cards[1]!).getByRole("list", { name: "Request state" }).textContent).toBe("AudiobookCompleted");
     expect(within(cards[1]!).queryByRole("link", { name: /Open in Library/ })).toBeNull();
+    expect(within(cards[1]!).getByText("A copy is recorded, but the Library here cannot open it right now.")).toBeTruthy();
+    expect(within(cards[2]!).queryByText(/A copy is recorded/)).toBeNull();
     expect(within(cards[2]!).getByRole("link", { name: "Open in Library for Quiet Shelf" }).getAttribute("href")).toBe("/preview/library/10");
     expect(within(cards[0]!).getByRole("link", { name: "Harbor Lights" }).getAttribute("href")).toBe("/preview/requests/3");
     expect(screen.queryByText(/Requested by/)).toBeNull();
@@ -169,12 +173,12 @@ describe("the Requests page", () => {
 
   test("pages are links that keep the filters, and an unknown filter in the address is ignored", async () => {
     const server = requestsServer((recorded) => {
-      const at = Number(params(recorded)["page"] ?? "1");
+      const at = Math.max(1, Number(params(recorded)["page"] ?? "1"));
       return { body: list([request({ id: String(at + 100), title: `Page ${at}` })], { page: at, total: 60, total_pages: 3 }) };
     });
     const { history } = renderRequests(server, "/preview/requests?status=bogus&attention=yes&q=a&page=0");
     expect(await screen.findByRole("heading", { name: "Page 1", level: 3 })).toBeTruthy();
-    expect(params(lists(server)[0]!)).toEqual({ q: "a" });
+    expect(params(lists(server)[0]!)).toEqual({ q: "a", page: "0" });
     const pages = screen.getByRole("navigation", { name: "Request pages" });
     expect(within(pages).queryByRole("link", { name: "Previous page" })).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("60 requests · Page 1 of 3");
@@ -223,6 +227,44 @@ describe("the Requests page", () => {
     expect(screen.getByRole("status").textContent).toBe("The requests could not be loaded.");
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("heading", { name: "Harbor Lights", level: 3 })).toBeTruthy();
+  });
+
+  test("a session check that finds the admin role gone drops every other account's request and asks again as a member", async () => {
+    let admin = true;
+    const server = requestsServer(() => ({ body: admin ? list([request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } })], { scope: "all" }) : list([completed]) })).on("GET", /\/api\/v1\/session$/, () => ({
+      body: session(admin ? { admin: { url: "/admin" } } : {}),
+    }));
+    const { services } = renderRequests(server, "/preview/requests?status=completed");
+    expect(await screen.findByRole("heading", { name: "All Requests", level: 1 })).toBeTruthy();
+    expect(screen.getByText("Requested by Bob")).toBeTruthy();
+    admin = false;
+    await act(async () => services.revalidate());
+    expect(await screen.findByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Quiet Shelf", level: 3 })).toBeTruthy();
+    expect(screen.queryByText("Someone Else's")).toBeNull();
+    expect(screen.queryByText(/Requested by/)).toBeNull();
+    expect(lists(server).map(params)).toEqual([{ status: "completed" }, { status: "completed" }]);
+  });
+
+  test("a not-found request waiting for its next search keeps being checked, a settled one does not", async () => {
+    const retry = "2026-11-20T08:00:00.000Z";
+    expect(
+      (["pending", "searching", "downloading", "processing", "not_found", "completed", "failed", "awaiting_purchase", "unknown"] as const).map((status) => [
+        status,
+        stillChanging({ status, next_retry_at: null }),
+        stillChanging({ status, next_retry_at: retry }),
+      ]),
+    ).toEqual([
+      ["pending", true, true],
+      ["searching", true, true],
+      ["downloading", true, true],
+      ["processing", true, true],
+      ["not_found", false, true],
+      ["completed", false, false],
+      ["failed", false, false],
+      ["awaiting_purchase", false, false],
+      ["unknown", false, false],
+    ]);
   });
 
   test("an answer for another account locks the page and shows none of its requests", async () => {
@@ -300,7 +342,7 @@ describe("one request", () => {
   test("a known copy the Library cannot open is said honestly and not linked", async () => {
     const server = requestsServer().on("GET", /\/api\/v1\/requests\/2$/, () => ({ body: { account: ACCOUNT, request: { ...unavailable, attention_reason: null, downloads: [{ status: "completed", progress: null }] } } }));
     renderRequests(server, "/preview/requests/2");
-    expect(await screen.findByText("Completed. Shelfarr has its files, but the Library here cannot open them right now.")).toBeTruthy();
+    expect(await screen.findByText("Completed. A copy is recorded, but the Library here cannot open it right now.")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Open in Library" })).toBeNull();
   });
 });

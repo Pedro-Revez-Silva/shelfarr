@@ -1,7 +1,7 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import { failureKind } from "../api/errors";
 import type { RequestDetail } from "../contract";
-import { useRequest } from "../queries";
+import { useRequest, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -26,7 +26,17 @@ export function RequestPage() {
 function RequestView() {
   const { requestId } = routeApi.useParams();
   const request = useRequest(requestId);
+  const session = useSession();
   usePageTitle(request.data?.title ?? (request.isError ? "Request not found" : "Loading request"));
+
+  if (session.isError && !session.data) {
+    return (
+      <section className="request-details">
+        <BackToRequests />
+        <ErrorPanel error={session.error} onRetry={() => void session.refetch()} />
+      </section>
+    );
+  }
 
   if (request.isPending) {
     return (
@@ -91,7 +101,7 @@ function stage(request: RequestDetail): string {
     case "processing":
       return "The download finished and is being added to the library.";
     case "completed":
-      return request.library?.state === "available" ? "Completed and in the library." : request.library?.state === "unavailable" ? "Completed. Shelfarr has its files, but the Library here cannot open them right now." : "Completed.";
+      return request.library?.state === "available" ? "Completed and in the library." : request.library?.state === "unavailable" ? "Completed. A copy is recorded, but the Library here cannot open it right now." : "Completed.";
     case "failed":
       return "This request was cancelled or failed and is no longer being worked on.";
     case "awaiting_purchase":
@@ -132,7 +142,7 @@ function Details({ request }: { request: RequestDetail }) {
             </Link>
           ) : library?.state === "unavailable" && request.status !== "completed" ? (
             <p className="notice" role="note">
-              Shelfarr has files for this book, but the Library here cannot open them right now.
+              A copy is recorded for this book, but the Library here cannot open it right now.
             </p>
           ) : null}
 

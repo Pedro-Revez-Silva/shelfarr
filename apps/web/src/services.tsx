@@ -19,6 +19,8 @@ export type Services = {
 
 export type QueryKeys = ReturnType<typeof createQueryKeys>;
 
+export type RequestScope = "own" | "all";
+
 export function createQueryKeys(account: string) {
   const root = ["account", account] as const;
   return {
@@ -31,8 +33,8 @@ export function createQueryKeys(account: string) {
     continueAll: [...root, "continue"] as const,
     publication: (id: string) => [...root, "publication", id] as const,
     discover: (query: string | null) => [...root, "discover", query] as const,
-    requests: (filters: RequestFilters) => [...root, "requests", filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
-    request: (id: string) => [...root, "request", id] as const,
+    requests: (scope: RequestScope, filters: RequestFilters) => [...root, "requests", scope, filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
+    request: (scope: RequestScope, id: string) => [...root, "request", scope, id] as const,
   };
 }
 

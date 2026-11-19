@@ -144,7 +144,7 @@ describe("Requests in the Go preview, against Rails-created requests", () => {
     await page.getByText("Next retry").waitFor();
 
     await page.goto(`${server.origin}/preview/requests/${ids["completed_missing"]}`);
-    await page.getByText("Completed. Shelfarr has its files, but the Library here cannot open them right now.").waitFor();
+    await page.getByText("Completed. A copy is recorded, but the Library here cannot open it right now.").waitFor();
     expect(await page.getByRole("link", { name: "Open in Library" }).count()).toBe(0);
     expect(native[String(ids["completed_missing"])]?.stage).toBe("available");
 

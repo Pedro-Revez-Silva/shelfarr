@@ -117,9 +117,9 @@ function Requests() {
 
       <RequestSearch key={q ?? ""} query={q} onSearch={search} />
 
-      <ListStatus list={list.data} pending={list.isPending} failed={list.isError} />
+      <ListStatus list={list.data} pending={list.isPending && !session.isError} failed={list.isError || (session.isError && !session.data)} />
 
-      {list.isPending ? <Loading label="Loading requests…" /> : null}
+      {session.isError && !session.data ? <ErrorPanel error={session.error} onRetry={() => void session.refetch()} /> : list.isPending ? <Loading label="Loading requests…" /> : null}
       {list.isError ? <ErrorPanel error={list.error} onRetry={() => void list.refetch()} /> : null}
       {list.data && !list.isError ? <Results list={list.data} filters={filters} filter={key} /> : null}
     </section>
@@ -143,7 +143,6 @@ function RequestSearch({ query, onSearch }: { query: string | undefined; onSearc
             type="search"
             name="q"
             value={text}
-            maxLength={MAX_REQUEST_QUERY}
             enterKeyHint="search"
             autoComplete="off"
             autoCorrect="off"
@@ -269,6 +268,7 @@ function RequestCard({ request }: { request: RequestSummary }) {
             </span>
           ) : null}
         </p>
+        {request.library?.state === "unavailable" ? <p className="request-meta">A copy is recorded, but the Library here cannot open it right now.</p> : null}
         {available ? (
           <Link to="/library/$publicationId" params={{ publicationId: available }} className="button button--subtle request-open">
             Open in Library<span className="sr-only"> for {request.title}</span>
