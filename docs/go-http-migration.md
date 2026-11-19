@@ -1480,7 +1480,8 @@ four `COUNT(*)` statements and one `LIMIT 1` row per service, ten bounded reads.
   saved Down stays Down. Go reads Rails' own `YYYY-MM-DD HH:MM:SS[.ffffff]` form; an ISO 8601 value with a `T` written
   by hand, which Rails would also read, is shown as not checked.
 * `message` and `last_success_at` are never read: a stored message can hold a provider address, credentials or an error
-  text. No setting, path, provider URL, update result or schema detail is read or returned.
+  text. The answer carries no setting, path, provider URL, update result or schema detail; the only setting read is the
+  session age the guard checks.
 
 ### Browser screen
 
@@ -1498,8 +1499,11 @@ waits for the session, asks for the overview only when the session says admin, c
 signed-in account and arrives under the admin role, and treats a `404` as a reason to check the session again. A role
 removed while the page is open is noticed by the next session check (focus, visibility, `pageshow`, a refresh, or the
 `404`) and locks the page with "This account's access changed", clearing every cached answer; an inconclusive check
-drops the cached overview with the cached requests. Leaving the page drops the overview from memory, so returning to
-it (Back, a link) shows nothing until the server has answered again for the current role. Nothing is stored in the
+drops the cached overview with the cached requests. The page shows only an overview the server answered after the page
+was entered, and only while the account is confirmed: entering it (a link, Back, Forward, reload) always asks the
+server again and shows "Loading the server overview…" until that answer arrives, and while a session check is in flight
+(focus, visibility, `pageshow`) the counts and results are hidden until the check confirms the account; a check that
+finds the role gone locks the page instead. Leaving the page drops the overview from memory. Nothing is stored in the
 browser.
 
 ### Deliberate differences from Rails
@@ -1541,10 +1545,11 @@ previous binary and asset build; nothing is stored, and Admin disappears from th
 * Web unit tests: the contract refuses a missing, reordered, extra or unknown service and a negative count; the
   navigation, build, counts, Needs attention (plural and singular), health rows and times; Review requests and Back; a
   member's direct load asking nothing; a role removed by a session check or noticed through a `404` locking the page and
-  clearing the cache; Back to the overview after a demotion never showing the earlier counts; a session check that
+  clearing the cache; Back to the overview after a demotion, or entering it with an answer still cached, never showing
+  the earlier counts; the overview hidden while a session check is pending and shown again once it confirms the admin; a session check that
   cannot confirm the account dropping the cached overview; a refused overview while checks fail saying it is for
   administrators; an answer for another account; a server failure with Try again; the classic preview keeping its
-  handoff. Behavioural mutants of these rules (thirteen Go, fifteen web) are each caught by an assertion, except removing
+  handoff. Behavioural mutants of these rules (thirteen Go, twenty web) are each caught by an assertion, except removing
   the early member check, which the role check inside the snapshot makes redundant.
 * `apps/web/e2e/admin.test.ts` over `tools/migration/browser` fixtures: the Rails fixture records saved results with
   the real `SystemHealth` methods (a down indexer whose message holds an address and key, a degraded client, a 40-day
@@ -1557,7 +1562,9 @@ previous binary and asset build; nothing is stored, and Admin disappears from th
   the page is open locking it on focus, and axe with no overflow or small targets in light and dark, desktop, phone and
   320 px at 100% and 200% text.
 
-Not proven: Safari, Firefox and screen readers.
+Not proven: Safari, Firefox and screen readers. The phone tab bar's labels use fixed pixel sizes shared by every Go
+page; with Admin it holds five items, and at 320 px with 200% text they break inside words, as Discover and Requests
+already did with four.
 
 ## Requesting one ebook on a prepared disposable volume (opt-in)
 

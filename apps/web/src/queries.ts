@@ -143,6 +143,7 @@ export function useServerOverview() {
       }),
     enabled: admin,
     gcTime: 0,
+    refetchOnMount: "always",
   });
 }
 

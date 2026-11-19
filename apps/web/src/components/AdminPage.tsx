@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { useState, useSyncExternalStore } from "react";
 import { failureKind } from "../api/errors";
 import type { HealthService, HealthStatus, ServerOverview, ServiceHealth } from "../contract";
 import { useServerOverview, useSession } from "../queries";
@@ -49,9 +50,13 @@ function AdminsOnly() {
 
 function Overview() {
   usePageTitle("Server overview");
+  const { guard, queryClient, keys } = useServices();
+  const [cachedAtEntry] = useState(() => queryClient.getQueryState(keys.serverOverview)?.dataUpdatedAt ?? 0);
   const session = useSession();
   const overview = useServerOverview();
+  const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
   const admin = session.data?.admin !== undefined;
+  const current = trust === "trusted" && overview.dataUpdatedAt > cachedAtEntry ? overview.data : undefined;
 
   return (
     <section className="overview" aria-labelledby="overview-heading">
@@ -74,8 +79,8 @@ function Overview() {
         <AdminsOnly />
       ) : overview.isError ? (
         <ErrorPanel error={overview.error} onRetry={() => void overview.refetch()} />
-      ) : overview.data ? (
-        <OverviewBody overview={overview.data} />
+      ) : current ? (
+        <OverviewBody overview={current} />
       ) : (
         <Loading label="Loading the server overview…" />
       )}

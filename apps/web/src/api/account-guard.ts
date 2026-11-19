@@ -12,6 +12,7 @@ export class AccountGuard {
   private trustState: Trust = "trusted";
   private currentGeneration = 0;
   private readonly listeners = new Set<Listener>();
+  private readonly trustListeners = new Set<Listener>();
   private readonly settleWaiters = new Set<() => void>();
 
   constructor(account: string) {
@@ -24,6 +25,15 @@ export class AccountGuard {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  };
+
+  getTrust = (): Trust => this.trustState;
+
+  subscribeTrust = (listener: Listener): (() => void) => {
+    this.trustListeners.add(listener);
+    return () => {
+      this.trustListeners.delete(listener);
     };
   };
 
@@ -50,6 +60,7 @@ export class AccountGuard {
     if (!this.isActive()) return this.currentGeneration;
     this.currentGeneration += 1;
     this.trustState = "checking";
+    this.trustChanged();
     return this.currentGeneration;
   }
 
@@ -57,6 +68,7 @@ export class AccountGuard {
     if (generation !== this.currentGeneration || !this.isActive()) return;
     this.trustState = confirmed ? "trusted" : "unverified";
     this.releaseWaiters();
+    this.trustChanged();
   }
 
   async untilSettled(): Promise<boolean> {
@@ -69,6 +81,10 @@ export class AccountGuard {
   assertActive(): void {
     if (this.state.status === "signed_out") throw new ApiError("signed_out", "Your session ended", 401);
     if (this.state.status === "account_changed" || this.state.status === "access_changed") throw new ApiError("account_changed", "The signed-in account changed", 401);
+  }
+
+  private trustChanged(): void {
+    for (const listener of [...this.trustListeners]) listener();
   }
 
   private releaseWaiters(): void {

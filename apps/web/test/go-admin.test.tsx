@@ -158,6 +158,58 @@ describe("the server overview", () => {
     expect(shown.some(Boolean)).toBe(false);
   }, 20_000);
 
+  test("an overview still cached when the page is entered is never shown; only a new answer is", async () => {
+    let admin = true;
+    const server = adminServer({ admin: () => admin, answer: () => (admin ? { body: overview() } : error(404, "not_found")) });
+    const { services, history } = renderAdmin(server, "/preview/library");
+    await screen.findByRole("heading", { name: "Library", level: 1 });
+    services.queryClient.setQueryData(services.keys.serverOverview, overview());
+    admin = false;
+    const shown: boolean[] = [];
+    const observer = new MutationObserver(() => shown.push(document.body.textContent?.includes("1,234") ?? false));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    act(() => history.push("/preview/admin"));
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 }, { timeout: 8000 })).toBeTruthy();
+    observer.disconnect();
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.some(Boolean)).toBe(false);
+    expect(server.called("GET", OVERVIEW).length).toBe(1);
+  }, 20_000);
+
+  test("while a session check is pending the overview is hidden, and it locks when the check finds the role gone", async () => {
+    let admin = true;
+    let hold: Promise<void> | null = null;
+    const server = adminServer({ admin: () => admin });
+    server.on("GET", SESSION, async () => {
+      if (hold) await hold;
+      return { body: session(admin ? { admin: { url: "/admin" } } : {}) };
+    });
+    const { services } = renderAdmin(server);
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    let release!: () => void;
+    hold = new Promise<void>((resolve) => (release = resolve));
+    admin = false;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(services.guard.trust).toBe("checking");
+    expect(screen.queryByText("1,234")).toBeNull();
+    expect(screen.queryByText("Indexer")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Loading the server overview…");
+    await act(async () => release());
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+  }, 20_000);
+
+  test("after a session check confirms the admin, the overview comes back", async () => {
+    const server = adminServer();
+    const { services } = renderAdmin(server);
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    await act(async () => services.revalidate());
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    expect(services.guard.trust).toBe("trusted");
+  });
+
   test("a member sees no Admin link, and opening the page directly asks for no server data", async () => {
     const server = adminServer({ admin: () => false });
     renderAdmin(server);
@@ -204,8 +256,8 @@ describe("the server overview", () => {
     expect(await screen.findByText("1,234")).toBeTruthy();
     failing = true;
     await act(async () => services.revalidate());
-    await waitFor(() => expect(screen.queryByText("1,234")).toBeNull(), { timeout: 4000 });
-    expect(services.queryClient.getQueriesData({ queryKey: services.keys.serverOverview }).filter(([, data]) => data !== undefined)).toEqual([]);
+    await waitFor(() => expect(services.queryClient.getQueriesData({ queryKey: services.keys.serverOverview }).filter(([, data]) => data !== undefined)).toEqual([]), { timeout: 4000 });
+    expect(screen.queryByText("1,234")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Server overview");
     failing = false;
     await act(async () => services.revalidate());
