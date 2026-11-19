@@ -1078,7 +1078,7 @@ The same settings Rails' `MetadataService` reads, read-only and on every request
 | --- | --- |
 | `open_library_enabled` false | `"search": "provider_disabled"`, nothing sent |
 | `metadata_source` set to `hardcover`, `google_books` or `comic_vine` (surrounding whitespace ignored, as Rails strips it) | `"search": "provider_not_selected"`, nothing sent; `auto`, `openlibrary` and any other value keep Open Library |
-| `open_library_search_limit` | the `limit` sent, at most 20 (Rails sends any value); 0 or a negative value returns no results without contacting Open Library or reading the Library (Rails sends it). Every form Rails' settings form accepts and `to_i` reads is read: surrounding white space, a sign, a `0d` prefix, `_` between digits and any number of digits |
+| `open_library_search_limit` | the `limit` sent, at most 20 (Rails sends any value); 0 or a negative value returns no results without contacting Open Library or reading the Library (Rails sends it). Every form Rails' settings form accepts and `to_i` reads is read: surrounding ASCII white space, a sign, a `0d` prefix, `_` between digits and any number of digits; anything else is `501` |
 | `metadata_provider_statuses` row for `openlibrary` with `rate_limited_until` in the future, or `status = auth_failed` | `"search": "provider_paused"` with `retry_after` seconds when known, nothing sent (Rails skips the provider then) |
 
 A setting stored with a type Rails would not write (`open_library_enabled` that is not `boolean`, a limit that is not
@@ -1131,9 +1131,9 @@ as the Rails screens load them, within the existing `img-src 'self' https:` poli
 acquired (non-blank `file_path`, a type the Go Library serves), with `open_library_work_id` exactly the work's id, and
 projected for this account exactly as `GET /preview/api/v1/library/:id` projects it (the same file listing, stored-value
 checks and plain-text description), with at least one file available. The newest such copy wins; a newer copy whose files
-are missing, or that the details page would refuse, is skipped for an older one. For each work and format only the 3
-newest copies are considered, and one answer examines at most 30 copies, first copies of every work and format before
-any older fallback, so one work with many copies cannot hide another's. The library roots are checked before Open
+are missing, or that the details page would refuse, is skipped for an older one. The newest copy of every work and
+format in the answer is always checked (at most 60); older fallbacks are limited to the next 2 copies of each work and
+format and to 30 per answer, so one work with many copies cannot hide another's. The library roots are checked before Open
 Library is contacted. A row holding the
 same work under another source (for example `hardcover_id` as well) still matches through its Open Library column; ids
 stored in another form, other case or with a `/works/` prefix do not, exactly as in Rails' `Book.preload_by_work_ids`.
@@ -1170,7 +1170,8 @@ through a search. A query repeated in the address is rewritten to the last one, 
 Library's address is. Rate limits, an unreachable or unusable Open
 Library, a refused query and an older server (`404`) each have a message and a Try again button where it can help;
 nothing is retried by itself. Each query has its own cache entry for the account (five minutes, no refetch on focus),
-so Back reuses the answer; a failed search is sent again only by Try again, never by coming back to it; a newer search
+so Back reuses the answer; a failed search or check is sent again only by Try again, never by coming back to it or
+by Back from another search; a newer search
 or leaving the page cancels the older request and a late answer cannot appear. The account guard, session checks and locking work as on every other page.
 
 ### Contract before and after
@@ -1200,7 +1201,8 @@ and an asset build from the same commit.
   copy with a missing file skipped, pending, blank, case, prefix, odd type), named failures without leaks in answers or
   logs, a disconnect cancelling the upstream request, a stalled search leaving the Library's capacity free, a search
   the server dropped on a connection never being sent twice, a newest copy the details page refuses skipped for an older
-  one while forty copies of one work leave another work's link intact, Rails' integer forms of the limit, and uncached
+  one while forty copies of one work leave another work's link intact, twenty works with three formats each all
+  linked, Rails' integer forms of the limit, and uncached
   refusals.
 * `tools/migration/web/verify-web`: the Rails fixture gives reader books Open Library work ids (one also with a
   Hardcover id), adds a newer pending request for one and a pending-only book requested by another account, and records
