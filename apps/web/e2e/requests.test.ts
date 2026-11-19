@@ -62,7 +62,11 @@ async function filters(page: Page) {
 }
 
 async function compareWithRails(page: Page, origin: string, rails: RailsRequestPage, scope: "own" | "all") {
-  const answered = page.waitForResponse((response) => new URL(response.url()).pathname === "/preview/api/v1/requests");
+  const wanted = JSON.stringify(Object.entries(rails.query).sort());
+  const answered = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/preview/api/v1/requests" && JSON.stringify([...url.searchParams.entries()].sort()) === wanted;
+  });
   await page.goto(`${origin}${addressOf(rails.query)}`);
   const response = await answered;
   expect(response.status()).toBe(200);
