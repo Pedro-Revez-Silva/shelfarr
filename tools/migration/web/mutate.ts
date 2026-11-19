@@ -83,9 +83,9 @@ const mutants: Mutant[] = [
   { name: "discover: an over-long query from the address is sent", file: "src/components/DiscoverPage.tsx", old: 'if ([...query].length > MAX_QUERY_CHARACTERS) return { kind: "too_long" };', replacement: "", tests: GO_DISCOVER },
   { name: "discover: an unavailable answer is kept for minutes", file: "src/queries.ts", old: 'state.data?.search === "available" ? (query === null', replacement: 'state.data ? (query === null', tests: GO_DISCOVER },
   { name: "discover: a search replaces the focused field", file: "src/components/DiscoverPage.tsx", old: "<SearchForm source=", replacement: '<SearchForm key={q ?? ""} source=', tests: GO_DISCOVER },
-  { name: "discover: a failed search is sent again on a revisit", file: "src/queries.ts", old: "    retryOnMount: false,\n", replacement: "", tests: GO_DISCOVER },
   { name: "discover: a stale unavailable answer hides a newer failure", file: "src/components/DiscoverPage.tsx", old: "const state = answer.isError ? null : (answer.data?.search ?? null);", replacement: "const state = answer.data?.search ?? null;", tests: GO_DISCOVER },
   { name: "discover: the field keeps a draft from another address", file: "src/components/DiscoverPage.tsx", old: "<SearchForm source={q ?? \"\"} initial=", replacement: "<SearchForm source={checked.kind === \"ready\" ? checked.query : (q ?? \"\")} initial=", tests: GO_DISCOVER },
+  { name: "discover: a cached failure is sent again by navigation", file: "src/queries.ts", old: '    enabled: ({ state }) => state.status !== "error",\n', replacement: "", tests: GO_DISCOVER },
   { name: "discover: the classic preview serves the Go discover page", file: "src/components/DiscoverPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_DISCOVER },
 ];
 

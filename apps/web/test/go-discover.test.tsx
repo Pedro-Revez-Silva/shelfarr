@@ -246,6 +246,43 @@ describe("the Go Discover page", () => {
     expect(searches(server).map(queryOf)).toEqual(["dune"]);
   });
 
+  test("a failed check of a paused search is not sent again by leaving and coming back", async () => {
+    let calls = 0;
+    const server = discoverServer((query) => {
+      calls += 1;
+      return calls === 1 ? { body: answer(query, [], { search: "provider_paused", retry_after: 5 }) } : error(502, "search_failed");
+    });
+    const { router } = renderDiscover(server, "/preview/discover?q=dune");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Check again" }));
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    act(() => {
+      void router.navigate({ to: "/library" });
+    });
+    await screen.findByRole("heading", { level: 1, name: "Library" });
+    act(() => router.history.back());
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    await act(async () => Bun.sleep(50));
+    expect(searches(server).map(queryOf)).toEqual(["dune", "dune"]);
+  });
+
+  test("a failed search is not sent again by searching something else and going Back", async () => {
+    const server = discoverServer((query) => (query === "dune" ? error(502, "search_failed") : { body: answer(query, [item()]) }));
+    const { router } = renderDiscover(server, "/preview/discover?q=dune");
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    const user = userEvent.setup();
+    const input = field();
+    await user.clear(input);
+    await user.type(input, "emma{Enter}");
+    await screen.findByText("1 result from Open Library for “emma”.");
+    act(() => router.history.back());
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    await act(async () => Bun.sleep(50));
+    expect(searches(server).map(queryOf)).toEqual(["dune", "emma"]);
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(searches(server).map(queryOf)).toEqual(["dune", "emma", "dune"]));
+  });
+
   test("moving between two addresses for the same search puts the field back to that search", async () => {
     const server = discoverServer();
     const { router } = renderDiscover(server, "/preview/discover?q=+dune+");
