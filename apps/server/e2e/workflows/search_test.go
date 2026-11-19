@@ -27,12 +27,14 @@ const (
 var searchTables = []string{"requests", "search_results", "downloads", "store_offers", "request_events", "notifications"}
 
 type reply struct {
-	Path   string `json:"path"`
-	Query  string `json:"query,omitempty"`
-	Status int    `json:"status"`
-	Body   string `json:"body"`
-	delay  time.Duration
-	before func()
+	Path        string `json:"path"`
+	Query       string `json:"query,omitempty"`
+	Status      int    `json:"status"`
+	Body        string `json:"body"`
+	ContentType string `json:"content_type,omitempty"`
+	delay       time.Duration
+	before      func()
+	serve       func(http.ResponseWriter)
 }
 
 type catalogue struct {
@@ -108,8 +110,15 @@ func (c *catalogue) ServeHTTP(writer http.ResponseWriter, request *http.Request)
 		case <-time.After(answer.delay):
 		}
 	}
+	if answer.serve != nil {
+		answer.serve(writer)
+		return
+	}
 	if answer.Status >= 300 && answer.Status < 400 {
 		writer.Header().Set("Location", answer.Body)
+	}
+	if answer.ContentType != "" {
+		writer.Header().Set("Content-Type", answer.ContentType)
 	}
 	writer.WriteHeader(answer.Status)
 	writer.Write([]byte(answer.Body))
@@ -160,7 +169,12 @@ type searchSetup struct {
 
 func newSearchSetup(t *testing.T, bundle string) *searchSetup {
 	t.Helper()
-	setup := &searchSetup{w: prepare(t, bundle), fake: newCatalogue(t), users: map[string]int64{}, nextWork: 7001}
+	return newSearchSetupIn(t, bundle, t.TempDir())
+}
+
+func newSearchSetupIn(t *testing.T, bundle, parent string) *searchSetup {
+	t.Helper()
+	setup := &searchSetup{w: prepareIn(t, bundle, parent), fake: newCatalogue(t), users: map[string]int64{}, nextWork: 7001}
 	setup.db = setup.w.open()
 	for _, username := range []string{"alice", "bob", "carol"} {
 		setup.users[username] = scalar[int64](t, setup.db, `SELECT id FROM users WHERE username = ?`, username)

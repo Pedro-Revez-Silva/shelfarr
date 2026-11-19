@@ -32,16 +32,9 @@ func (s *Store) Acquire(ctx context.Context, domain string) (*Owner, error) {
 	if !validDomain(domain) {
 		return nil, Fail(CodeUsage, nil)
 	}
-	lock, err := os.OpenFile(filepath.Join(s.Dir, LocksDir, domain+".lock"), os.O_RDWR|os.O_CREATE|noFollow, 0o600)
+	lock, err := s.Hold(domain)
 	if err != nil {
-		return nil, Fail(CodeDatabase, err)
-	}
-	if err := lockExclusive(lock); err != nil {
-		lock.Close()
-		if errors.Is(err, errLockHeld) {
-			return nil, ErrAlreadyOwned
-		}
-		return nil, Fail(CodeDatabase, err)
+		return nil, err
 	}
 	identity := make([]byte, 8)
 	if _, err := rand.Read(identity); err != nil {
@@ -64,6 +57,21 @@ func (s *Store) Acquire(ctx context.Context, domain string) (*Owner, error) {
 		return nil, err
 	}
 	return owner, nil
+}
+
+func (s *Store) Hold(name string) (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(s.Dir, LocksDir, name+".lock"), os.O_RDWR|os.O_CREATE|noFollow, 0o600)
+	if err != nil {
+		return nil, Fail(CodeDatabase, err)
+	}
+	if err := lockExclusive(lock); err != nil {
+		lock.Close()
+		if errors.Is(err, errLockHeld) {
+			return nil, ErrAlreadyOwned
+		}
+		return nil, Fail(CodeDatabase, err)
+	}
+	return lock, nil
 }
 
 func (o *Owner) Release() {

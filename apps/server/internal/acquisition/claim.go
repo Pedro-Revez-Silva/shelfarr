@@ -209,30 +209,7 @@ func verifySchema(ctx context.Context, tx *sql.Tx) error {
 	if !known {
 		return ErrSchemaUnsupported
 	}
-	for table, columns := range requiredColumns {
-		present := map[string]bool{}
-		rows, err := tx.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				rows.Close()
-				return err
-			}
-			present[name] = true
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-		for _, column := range columns {
-			if !present[column] {
-				return ErrSchemaUnsupported
-			}
-		}
-	}
-	return nil
+	return verifyColumns(ctx, tx, requiredColumns)
 }
 
 func queryFor(row requestRow, config Config) gutenberg.Query {

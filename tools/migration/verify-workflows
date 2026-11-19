@@ -51,9 +51,9 @@ go vet -tags faultinject ./...
 go test -race -count=1 ./...
 
 step "go: the workflow executable against both bundles, with race-instrumented binaries"
-mkdir -m 700 "$work/admission" "$work/search"
+mkdir -m 700 "$work/admission" "$work/search" "$work/download"
 SHELFARR_WORKFLOW_RACE=1 SHELFARR_WORKFLOW_BUNDLE="$work/bundle-current" SHELFARR_WORKFLOW_UPGRADE_BUNDLE="$work/bundle-upgrade" \
-  SHELFARR_ADMISSION_EVIDENCE="$work/admission" SHELFARR_SEARCH_EVIDENCE="$work/search" \
+  SHELFARR_ADMISSION_EVIDENCE="$work/admission" SHELFARR_SEARCH_EVIDENCE="$work/search" SHELFARR_DOWNLOAD_EVIDENCE="$work/download" \
   go test -tags e2e -count=1 -timeout 20m -skip TestMutantsAreDetected ./e2e/workflows/
 
 step "ruby: real Rails answers the same requests, reads the Go-admitted rows and dispatches them once"
@@ -68,6 +68,13 @@ for bundle in current upgrade; do
   (cd "$root" && clean_env TMPDIR="$work" timeout 600 bundle exec ruby tools/migration/requests/verify_gutenberg_search.rb \
     --bundle "$work/bundle-$bundle" --name "$bundle" --evidence "$work/search" --out "$work/search-rails-$bundle") \
     | python3 -c 'import json,sys; r=json.load(sys.stdin); assert not r["failures"] and r["checks"] > 0, r["failures"]; print(r["bundle"], r["checks"], "checks", sorted(r["cases"]), "selected", sorted(r["selected"].values()))'
+done
+
+step "ruby: real Rails selects and downloads the same result, matches the Go rows, reads and delivers the Go EPUB"
+for bundle in current upgrade; do
+  (cd "$root" && clean_env TMPDIR="$work" timeout 600 bundle exec ruby tools/migration/requests/verify_gutenberg_download.rb \
+    --bundle "$work/bundle-$bundle" --name "$bundle" --evidence "$work/download" --out "$work/download-rails-$bundle") \
+    | python3 -c 'import json,sys; r=json.load(sys.stdin); assert not r["failures"] and r["checks"] > 0, r["failures"]; print(r["bundle"], r["checks"], "checks", {k: sorted(v["rails_download"]["differences"]) for k, v in r["cases"].items()})'
 done
 
 step "go: mutants of the critical invariants must each be rejected by an assertion"

@@ -38,6 +38,7 @@ const (
 )
 
 var (
+	buildScratch  string
 	faultBinary   string
 	plainBinary   string
 	currentBundle string
@@ -55,16 +56,17 @@ func setupAndRun(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, currentBundleEnvironment+" and "+upgradeBundleEnvironment+" must name fixture bundles from tools/migration/produce_fixture.rb")
 		return 2
 	}
-	if override := os.Getenv("SHELFARR_WORKFLOW_FAULT_BINARY"); override != "" {
-		faultBinary, plainBinary = override, os.Getenv("SHELFARR_WORKFLOW_PLAIN_BINARY")
-		return m.Run()
-	}
 	scratch, err := os.MkdirTemp("", "shelfarr-workflows-e2e-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	defer os.RemoveAll(scratch)
+	buildScratch = scratch
+	if override := os.Getenv("SHELFARR_WORKFLOW_FAULT_BINARY"); override != "" {
+		faultBinary, plainBinary = override, os.Getenv("SHELFARR_WORKFLOW_PLAIN_BINARY")
+		return m.Run()
+	}
 	module, err := filepath.Abs("../..")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -335,7 +337,12 @@ type workdir struct {
 
 func prepare(t *testing.T, bundle string) *workdir {
 	t.Helper()
-	dir := filepath.Join(t.TempDir(), "work")
+	return prepareIn(t, bundle, t.TempDir())
+}
+
+func prepareIn(t *testing.T, bundle, parent string) *workdir {
+	t.Helper()
+	dir := filepath.Join(parent, "work")
 	run := spawn(t, plainBinary, nil, "prepare", "--bundle", bundle, "--workdir", dir)
 	if code := run.wait(); code != 0 {
 		t.Fatalf("prepare exited %d: %s", code, run.output())
