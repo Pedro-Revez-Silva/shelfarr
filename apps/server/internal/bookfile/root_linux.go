@@ -3,7 +3,10 @@
 package bookfile
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +35,12 @@ type Identity struct {
 	Inode  uint64
 }
 
+type Owned struct {
+	Identity Identity
+	Size     int64
+	SHA256   []byte
+}
+
 type Placement struct {
 	Folders []string
 	Name    string
@@ -42,10 +51,8 @@ func (p Placement) Relative() string {
 }
 
 type Root struct {
-	Path     string
 	workdir  string
 	relative string
-	fd       int
 	identity Identity
 }
 
@@ -60,25 +67,26 @@ func OpenRoot(workdir, path string) (*Root, error) {
 	}
 	fd, identity, err := openConfined(realWorkdir, relative)
 	if err != nil {
-		return nil, err
+		return nil, ErrRootRefused
 	}
-	return &Root{Path: path, workdir: realWorkdir, relative: relative, fd: fd, identity: identity}, nil
+	unix.Close(fd)
+	return &Root{workdir: realWorkdir, relative: relative, identity: identity}, nil
 }
 
 func openConfined(workdir, relative string) (int, Identity, error) {
 	base, err := unix.Open(workdir, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return -1, Identity{}, ErrRootRefused
+		return -1, Identity{}, err
 	}
 	defer unix.Close(base)
 	fd, err := unix.Openat2(base, relative, &unix.OpenHow{Flags: directoryAll, Resolve: confined})
 	if err != nil {
-		return -1, Identity{}, ErrRootRefused
+		return -1, Identity{}, err
 	}
 	identity, err := privateDirectory(fd)
 	if err != nil {
 		unix.Close(fd)
-		return -1, Identity{}, ErrRootRefused
+		return -1, Identity{}, err
 	}
 	return fd, identity, nil
 }
@@ -94,23 +102,16 @@ func privateDirectory(fd int) (Identity, error) {
 	return Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}, nil
 }
 
-func (r *Root) Close() {
-	if r.fd >= 0 {
-		unix.Close(r.fd)
-		r.fd = -1
-	}
-}
-
-func (r *Root) Unchanged() error {
+func (r *Root) open() (int, error) {
 	fd, identity, err := openConfined(r.workdir, r.relative)
 	if err != nil {
-		return ErrRootChanged
+		return -1, ErrRootChanged
 	}
-	unix.Close(fd)
 	if identity != r.identity {
-		return ErrRootChanged
+		unix.Close(fd)
+		return -1, ErrRootChanged
 	}
-	return nil
+	return fd, nil
 }
 
 type Staged struct {
@@ -120,7 +121,12 @@ type Staged struct {
 }
 
 func (r *Root) Stage() (*Staged, error) {
-	fd, err := unix.Openat(r.fd, ".", unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, fileMode)
+	root, err := r.open()
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(root)
+	fd, err := unix.Openat(root, ".", unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, fileMode)
 	if err != nil {
 		return nil, ErrStaging
 	}
@@ -146,61 +152,61 @@ func (s *Staged) Seal() error {
 func (s *Staged) Close() { s.File.Close() }
 
 func (r *Root) folder(placement Placement, create bool) (int, error) {
-	current, err := unix.Dup(r.fd)
+	current, err := r.open()
 	if err != nil {
 		return -1, err
 	}
 	for _, name := range placement.Folders {
-		created := false
-		if create {
-			switch err := unix.Mkdirat(current, name, folderMode); {
-			case err == nil:
-				created = true
-			case !errors.Is(err, unix.EEXIST):
-				unix.Close(current)
-				return -1, err
-			}
-		}
-		next, err := unix.Openat2(current, name, &unix.OpenHow{Flags: directoryAll, Resolve: confined})
-		if err != nil {
-			unix.Close(current)
-			if errors.Is(err, unix.ENOENT) {
-				return -1, err
-			}
-			return -1, ErrUnsafe
-		}
-		if _, err := privateDirectory(next); err != nil {
-			unix.Close(current)
-			unix.Close(next)
-			return -1, ErrUnsafe
-		}
-		if created {
-			if err := unix.Fsync(current); err != nil {
-				unix.Close(current)
-				unix.Close(next)
-				return -1, err
-			}
-		}
+		next, err := r.child(current, name, create)
 		unix.Close(current)
+		if err != nil {
+			return -1, err
+		}
 		current = next
 	}
 	return current, nil
 }
 
-func (r *Root) Publish(staged *Staged, placement Placement) error {
+func (r *Root) child(parent int, name string, create bool) (int, error) {
+	if create {
+		if err := unix.Mkdirat(parent, name, folderMode); err != nil && !errors.Is(err, unix.EEXIST) {
+			return -1, err
+		}
+	}
+	next, err := unix.Openat2(parent, name, &unix.OpenHow{Flags: directoryAll, Resolve: confined})
+	if errors.Is(err, unix.ENOENT) {
+		return -1, err
+	}
+	if err != nil {
+		return -1, ErrUnsafe
+	}
+	if _, err := privateDirectory(next); err != nil {
+		unix.Close(next)
+		return -1, ErrUnsafe
+	}
+	if create {
+		if err := unix.Fsync(parent); err != nil {
+			unix.Close(next)
+			return -1, err
+		}
+	}
+	return next, nil
+}
+
+func (r *Root) Publish(staged *Staged, placement Placement) (bool, error) {
 	folder, err := r.folder(placement, true)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer unix.Close(folder)
 	source := "/proc/self/fd/" + strconv.Itoa(int(staged.File.Fd()))
 	if err := unix.Linkat(unix.AT_FDCWD, source, folder, placement.Name, unix.AT_SYMLINK_FOLLOW); err != nil {
 		if errors.Is(err, unix.EEXIST) {
-			return ErrExists
+			return false, ErrExists
 		}
-		return err
+		return false, err
 	}
-	return unix.Fsync(folder)
+	return true, unix.Fsync(folder)
 }
 
 func (r *Root) Identify(placement Placement) (Identity, bool, error) {
@@ -226,31 +232,51 @@ func (r *Root) Identify(placement Placement) (Identity, bool, error) {
 	return Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}, true, nil
 }
 
-func (r *Root) Remove(placement Placement, owned Identity) (bool, error) {
+func (r *Root) Remove(placement Placement, owned Owned) (bool, error) {
 	folder, err := r.folder(placement, false)
-	if errors.Is(err, unix.ENOENT) || errors.Is(err, ErrUnsafe) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer unix.Close(folder)
-	var status unix.Stat_t
-	err = unix.Fstatat(folder, placement.Name, &status, unix.AT_SYMLINK_NOFOLLOW)
 	if errors.Is(err, unix.ENOENT) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if status.Mode&unix.S_IFMT != unix.S_IFREG || (Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}) != owned {
-		return false, nil
+	defer unix.Close(folder)
+	mine, err := ownedBy(folder, placement.Name, owned)
+	if errors.Is(err, unix.ENOENT) {
+		return false, unix.Fsync(folder)
+	}
+	if err != nil || !mine {
+		return false, err
 	}
 	if err := unix.Unlinkat(folder, placement.Name, 0); err != nil {
 		return false, err
 	}
-	if err := unix.Fsync(folder); err != nil {
-		return true, err
+	return true, unix.Fsync(folder)
+}
+
+func ownedBy(folder int, name string, owned Owned) (bool, error) {
+	fd, err := unix.Openat(folder, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		return false, err
+	case errors.Is(err, unix.ELOOP), errors.Is(err, unix.ENXIO):
+		return false, nil
+	case err != nil:
+		return false, err
 	}
-	return true, nil
+	file := os.NewFile(uintptr(fd), "library-file")
+	defer file.Close()
+	var status unix.Stat_t
+	if err := unix.Fstat(fd, &status); err != nil {
+		return false, err
+	}
+	identity := Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}
+	if status.Mode&unix.S_IFMT != unix.S_IFREG || identity != owned.Identity || status.Size != owned.Size {
+		return false, nil
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(file, owned.Size+1)); err != nil {
+		return false, err
+	}
+	return bytes.Equal(hash.Sum(nil), owned.SHA256), nil
 }

@@ -433,21 +433,18 @@ func (a *acquisitionSetup) deliverThroughGoCatalogue(t *testing.T, bundle string
 }
 
 type downloadCase struct {
-	Name       string  `json:"name"`
-	Bundle     string  `json:"bundle"`
-	RequestID  int64   `json:"request_id"`
-	ResultID   int64   `json:"result_id"`
-	BookID     int64   `json:"book_id"`
-	DownloadID int64   `json:"download_id"`
-	Origin     string  `json:"origin"`
-	BookLink   string  `json:"book_link"`
-	BookFile   string  `json:"book_file"`
-	BookPath   string  `json:"book_path"`
-	SHA256     string  `json:"sha256"`
-	Bytes      int     `json:"bytes"`
-	AssetID    string  `json:"asset_id"`
-	Library    string  `json:"library"`
-	Routes     []reply `json:"routes"`
+	Name       string `json:"name"`
+	Bundle     string `json:"bundle"`
+	RequestID  int64  `json:"request_id"`
+	ResultID   int64  `json:"result_id"`
+	BookID     int64  `json:"book_id"`
+	DownloadID int64  `json:"download_id"`
+	Origin     string `json:"origin"`
+	BookLink   string `json:"book_link"`
+	BookFile   string `json:"book_file"`
+	BookPath   string `json:"book_path"`
+	SHA256     string `json:"sha256"`
+	AssetID    string `json:"asset_id"`
 }
 
 func downloadEvidence(t *testing.T, name string) string {
@@ -498,8 +495,7 @@ func TestGutenbergDownloadPublishesOneLibraryEbook(t *testing.T) {
 			writeJSON(t, filepath.Join(evidence, "case.json"), downloadCase{
 				Name: "completed", Bundle: bundle.name, RequestID: setup.request, ResultID: setup.result, DownloadID: download,
 				BookID: setup.book, Origin: setup.fake.server.URL,
-				BookLink: bookLink, BookFile: bookFile, BookPath: setup.bookPath(), SHA256: digestOf(setup.epub), Bytes: len(setup.epub),
-				AssetID: assetID, Library: setup.library, Routes: setup.fake.table(),
+				BookLink: bookLink, BookFile: bookFile, BookPath: setup.bookPath(), SHA256: digestOf(setup.epub), AssetID: assetID,
 			})
 		})
 	}
@@ -606,6 +602,9 @@ func TestGutenbergDownloadRefusesBeforeAnyEffect(t *testing.T) {
 		}},
 		{"book already acquired", "book_acquired", nil, func(t *testing.T, a *acquisitionSetup) {
 			exec1(t, a.db, `UPDATE books SET file_path = '/library/elsewhere.epub' WHERE id = ?`, a.book)
+		}},
+		{"book path of a tab", "book_acquired", nil, func(t *testing.T, a *acquisitionSetup) {
+			exec1(t, a.db, `UPDATE books SET file_path = char(9) WHERE id = ?`, a.book)
 		}},
 		{"book reserved by another acquisition", "book_acquired", nil, func(t *testing.T, a *acquisitionSetup) {
 			exec1(t, a.db, `UPDATE books SET acquisition_reservation_token = 'seeded', acquisition_reservation_owner_type = 'Download', acquisition_reservation_owner_id = 9 WHERE id = ?`, a.book)
@@ -773,7 +772,6 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 				writeJSON(t, filepath.Join(evidence, "case.json"), downloadCase{
 					Name: "interrupted", Bundle: "current", RequestID: setup.request, ResultID: setup.result, DownloadID: download, BookID: setup.book,
 					Origin: setup.fake.server.URL, BookLink: bookLink, BookFile: bookFile, BookPath: setup.bookPath(), SHA256: digestOf(setup.epub),
-					Bytes: len(setup.epub), Library: setup.library, Routes: setup.fake.table(),
 				})
 			}
 		})
@@ -932,17 +930,45 @@ func TestGutenbergDownloadDiscardsASupersededSelection(t *testing.T) {
 			if code != 4 || answer.text("outcome") != "superseded" {
 				t.Errorf("exit %d: %s", code, running.output())
 			}
-			library := setup.folders()
-			if strings.HasPrefix(entry.name, "library root moved") {
-				library = nil
-				moved := &acquisitionSetup{library: setup.library + ".moved"}
-				if got := moved.entries(t); !reflect.DeepEqual(got, setup.folders()) {
-					t.Errorf("the moved root keeps %v", got)
-				}
+			if !strings.HasPrefix(entry.name, "library root moved") {
+				setup.requireUnchanged(t, frozen{tables: changed.tables, library: setup.folders()})
+				return
 			}
-			setup.requireUnchanged(t, frozen{tables: changed.tables, library: library})
+			requireSame(t, changed.tables, digests(t, setup.db))
+			moved := &acquisitionSetup{library: setup.library + ".moved"}
+			if got, want := moved.entries(t), append(setup.folders(), "shelfarr-gutenberg/book-"+itoa(setup.book)+"/gutenberg-1342.epub"); !reflect.DeepEqual(got, want) {
+				t.Errorf("the moved root holds %v", got)
+			}
+			if intents := setup.intent(t); len(intents) != 1 {
+				t.Errorf("a file the command cannot reach lost its intent: %v", intents)
+			}
+			setup.fake.reset()
+			rerun := setup.download(t, plainBinary, faults{}, setup.result)
+			if rerun.code != 0 || !strings.Contains(rerun.output, `"event":"recovered"`) || !strings.Contains(rerun.output, `"removed":false`) {
+				t.Errorf("rerun exit %d: %s", rerun.code, rerun.output)
+			}
+			if got := moved.entries(t); len(got) != 3 {
+				t.Errorf("recovery reached into the moved root: %v", got)
+			}
 		})
 	}
+	t.Run("library root moved out of the disposable directory before publication", func(t *testing.T) {
+		setup := newAcquisition(t, currentBundle, "")
+		before := setup.freeze(t)
+		injected := newFaults(t, map[string]string{"download.fetched": "park"})
+		running := setup.start(t, faultBinary, injected, setup.result)
+		injected.reached(t, "download.fetched")
+		outside := filepath.Join(filepath.Dir(setup.w.dir), "outside-library")
+		if err := os.Rename(setup.library, outside); err != nil {
+			t.Fatal(err)
+		}
+		injected.release(t, "download.fetched")
+		code := running.wait()
+		setup.requireNothingWritten(t, result{code: code, events: running.snapshot(), output: running.output()}, frozen{tables: before.tables, library: nil}, 1, "failed", "library-root-changed")
+		if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+			t.Errorf("published outside the disposable directory: %v", entries)
+		}
+	})
 	for _, point := range []string{"download.linked", "download.before-commit"} {
 		t.Run("failure at "+point, func(t *testing.T) {
 			setup := newAcquisition(t, currentBundle, "")

@@ -31,6 +31,7 @@ const (
 	codeDownloadExpired = "download-deadline"
 	codeFileExists      = "library-file-exists"
 	codePathUnsafe      = "library-path-unsafe"
+	codeRootChanged     = "library-root-changed"
 	codeRecoveryBlocked = "recovery-blocked"
 	codeStaging         = "staging-unavailable"
 )
@@ -104,7 +105,6 @@ func downloadResult(workdir string, options downloadOptions, out *reporter) int 
 	if err != nil {
 		return reject(acquisition.ErrLibraryRoot, out)
 	}
-	defer root.Close()
 	staged, err := root.Stage()
 	if err != nil {
 		return failDownload(fields, codeStaging, out)
@@ -113,6 +113,9 @@ func downloadResult(workdir string, options downloadOptions, out *reporter) int 
 	digest, failure := fetch(ctx, selection, staged, options)
 	if failure != "" {
 		return failDownload(fields, failure, out)
+	}
+	if ctx.Err() != nil {
+		return failDownload(fields, wfstore.CodeCancelled, out)
 	}
 	fields["bytes"] = staged.Size
 	fields["sha256"] = digest
@@ -159,26 +162,38 @@ func fetch(ctx context.Context, selection acquisition.Selection, staged *bookfil
 
 func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, staged *bookfile.Staged, selection acquisition.Selection, fields map[string]any, out *reporter) int {
 	placement := bookfile.Placement{Folders: selection.Folders[:], Name: selection.Name}
+	digest, _ := fields["sha256"].(string)
 	intent := acquisition.Intent{RequestID: selection.RequestID, BookID: selection.BookID, Root: selection.Root, Folders: placement.Folders,
-		Name: placement.Name, Device: staged.Identity.Device, Inode: staged.Identity.Inode}
+		Name: placement.Name, Device: staged.Identity.Device, Inode: staged.Identity.Inode, Size: staged.Size, SHA256: digest}
+	owned, err := ownedFile(intent)
+	if err != nil {
+		return downloadError(err, out)
+	}
 	if err := acquisition.RecordIntent(ctx, store, intent); err != nil {
 		return downloadError(err, out)
+	}
+	discard := func() {
+		if _, err := root.Remove(placement, owned); err == nil {
+			acquisition.ForgetIntent(ctx, store, intent)
+		}
 	}
 	if err := fault.Hit(ctx, "download.intent"); err != nil {
 		return downloadError(err, out)
 	}
-	discard := func() {
-		if _, err := root.Remove(placement, staged.Identity); err == nil {
+	linked, err := root.Publish(staged, placement)
+	if err != nil {
+		if linked {
+			discard()
+		} else {
 			acquisition.ForgetIntent(ctx, store, intent)
 		}
-	}
-	if err := root.Publish(staged, placement); err != nil {
-		discard()
-		if errors.Is(err, bookfile.ErrExists) {
+		switch {
+		case errors.Is(err, bookfile.ErrExists):
 			return failDownload(fields, codeFileExists, out)
-		}
-		if errors.Is(err, bookfile.ErrUnsafe) {
+		case errors.Is(err, bookfile.ErrUnsafe):
 			return failDownload(fields, codePathUnsafe, out)
+		case errors.Is(err, bookfile.ErrRootChanged):
+			return failDownload(fields, codeRootChanged, out)
 		}
 		fault.Observe(err)
 		return failDownload(fields, codeStaging, out)
@@ -188,9 +203,6 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 		return downloadError(err, out)
 	}
 	verify := func() error {
-		if err := root.Unchanged(); err != nil {
-			return acquisition.ErrSuperseded
-		}
 		found, present, err := root.Identify(placement)
 		if err != nil || !present || found != staged.Identity {
 			return acquisition.ErrSuperseded
@@ -216,6 +228,14 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 	return exitOK
 }
 
+func ownedFile(intent acquisition.Intent) (bookfile.Owned, error) {
+	digest, err := hex.DecodeString(intent.SHA256)
+	if err != nil || len(digest) != sha256.Size {
+		return bookfile.Owned{}, acquisition.ErrStoredValue
+	}
+	return bookfile.Owned{Identity: bookfile.Identity{Device: intent.Device, Inode: intent.Inode}, Size: intent.Size, SHA256: digest}, nil
+}
+
 func recoverPublication(ctx context.Context, store *wfstore.Store, out *reporter) error {
 	intent, err := acquisition.PendingIntent(ctx, store)
 	if err != nil || intent == nil {
@@ -225,7 +245,6 @@ func recoverPublication(ctx context.Context, store *wfstore.Store, out *reporter
 	if err != nil {
 		return wfstore.Fail(codeRecoveryBlocked, err)
 	}
-	defer root.Close()
 	placement := bookfile.Placement{Folders: intent.Folders, Name: intent.Name}
 	referenced, err := acquisition.Referenced(ctx, store, intent.Root+"/"+placement.Relative())
 	if err != nil {
@@ -233,7 +252,11 @@ func recoverPublication(ctx context.Context, store *wfstore.Store, out *reporter
 	}
 	removed := false
 	if !referenced {
-		if removed, err = root.Remove(placement, bookfile.Identity{Device: intent.Device, Inode: intent.Inode}); err != nil {
+		owned, err := ownedFile(*intent)
+		if err != nil {
+			return wfstore.Fail(codeRecoveryBlocked, err)
+		}
+		if removed, err = root.Remove(placement, owned); err != nil {
 			return wfstore.Fail(codeRecoveryBlocked, err)
 		}
 	}

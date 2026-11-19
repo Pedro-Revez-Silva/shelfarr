@@ -156,7 +156,7 @@ func planIn(ctx context.Context, tx *sql.Tx, requestID, resultID int64) (Plan, e
 	if err := selectable(selection); err != nil {
 		return Plan{}, err
 	}
-	if !gutenberg.RubyBlank(bookPath.String) || reservation.Valid {
+	if strings.Trim(bookPath.String, " ") != "" || reservation.Valid {
 		return Plan{}, ErrBookAcquired
 	}
 	var blocking int64
@@ -298,6 +298,8 @@ type Intent struct {
 	Name      string   `json:"name"`
 	Device    uint64   `json:"device"`
 	Inode     uint64   `json:"inode"`
+	Size      int64    `json:"size"`
+	SHA256    string   `json:"sha256"`
 }
 
 func (i Intent) encode() (string, error) {
