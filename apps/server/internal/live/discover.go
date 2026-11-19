@@ -63,7 +63,7 @@ func (d *DB) OpenLibrarySettings(ctx context.Context, now time.Time) (OpenLibrar
 	return OpenLibrarySettings{State: OpenLibraryAvailable, Limit: limit}, nil
 }
 
-var wholeNumber = regexp.MustCompile(`^[+-]?[0-9]+$`)
+var railsDecimal = regexp.MustCompile(`^([+-]?)(?:0[dD])?([0-9]+(?:_[0-9]+)*)$`)
 
 func (d *DB) openLibraryLimit(ctx context.Context) (int, error) {
 	row, err := d.Setting(ctx, "open_library_search_limit")
@@ -73,14 +73,14 @@ func (d *DB) openLibraryLimit(ctx context.Context) (int, error) {
 	if !row.Found || !row.Value.Valid {
 		return openlibrary.MaxResults, nil
 	}
-	text := strings.TrimSpace(row.Value.String)
-	if row.Type != "integer" || !wholeNumber.MatchString(text) {
+	parts := railsDecimal.FindStringSubmatch(strings.TrimSpace(row.Value.String))
+	if row.Type != "integer" || parts == nil {
 		return 0, store.ErrUnsupported
 	}
-	if strings.HasPrefix(text, "-") {
+	digits := strings.TrimLeft(strings.ReplaceAll(parts[2], "_", ""), "0")
+	if parts[1] == "-" {
 		return 0, nil
 	}
-	digits := strings.TrimLeft(strings.TrimPrefix(text, "+"), "0")
 	if len(digits) > 2 {
 		return openlibrary.MaxResults, nil
 	}
@@ -119,7 +119,7 @@ type WorkCopy struct {
 	Book   store.Book
 }
 
-const maxWorkCopies = 200
+const CopiesPerFormat = 3
 
 func (d *DB) AcquiredCopiesOfOpenLibraryWorks(ctx context.Context, workIDs []string, types []int) ([]WorkCopy, error) {
 	if len(workIDs) == 0 || len(types) == 0 {
@@ -133,8 +133,10 @@ func (d *DB) AcquiredCopiesOfOpenLibraryWorks(ctx context.Context, workIDs []str
 	}
 	typeMarks, typeArguments := typePlaceholders(types)
 	arguments = append(arguments, typeArguments...)
-	arguments = append(arguments, maxWorkCopies)
-	rows, err := d.read.QueryContext(ctx, `SELECT `+bookColumns+`, books.open_library_work_id FROM books WHERE books.open_library_work_id IN (`+strings.Join(workMarks, ",")+`) AND `+acquired+` AND books.book_type IN (`+typeMarks+`) ORDER BY books.id DESC LIMIT ?`, arguments...)
+	arguments = append(arguments, CopiesPerFormat)
+	rows, err := d.read.QueryContext(ctx, `SELECT id, title, author, description, cover_url, file_path, book_type, content_kind, work FROM (SELECT `+bookColumns+`, books.open_library_work_id AS work,
+		ROW_NUMBER() OVER (PARTITION BY books.open_library_work_id, books.book_type ORDER BY books.id DESC) AS depth FROM books
+		WHERE books.open_library_work_id IN (`+strings.Join(workMarks, ",")+`) AND `+acquired+` AND books.book_type IN (`+typeMarks+`)) WHERE depth <= ? ORDER BY depth, id DESC`, arguments...)
 	if err != nil {
 		return nil, Classify(err)
 	}

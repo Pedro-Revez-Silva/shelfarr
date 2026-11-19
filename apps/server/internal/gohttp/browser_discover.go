@@ -16,11 +16,13 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/media"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/webpreview"
 )
 
 const (
 	discoverServerOff   = "server_off"
 	maxDiscoverRequests = 8
+	maxCopyProbes       = 30
 )
 
 var discoverCopyTypes = []struct {
@@ -103,6 +105,11 @@ func (a *App) webDiscover(w http.ResponseWriter, r *http.Request, session browse
 		writeJSON(w, http.StatusOK, answer)
 		return
 	}
+	if settings.Limit <= 0 {
+		result.set(http.StatusOK, "")
+		writeJSON(w, http.StatusOK, answer)
+		return
+	}
 	roots, err := a.resolveRoots(r.Context())
 	if err != nil {
 		mapFailure(w, result, err)
@@ -113,7 +120,7 @@ func (a *App) webDiscover(w http.ResponseWriter, r *http.Request, session browse
 		a.discoverFailure(w, result, err)
 		return
 	}
-	items, err := a.discoverItems(r.Context(), roots, works)
+	items, err := a.discoverItems(r.Context(), session.user.ID, roots, works)
 	if err != nil {
 		mapFailure(w, result, err)
 		return
@@ -168,24 +175,26 @@ func (a *App) discoverFailure(w http.ResponseWriter, result *outcome, err error)
 
 func unlinkable(err error) bool {
 	return errors.Is(err, library.ErrReference) || errors.Is(err, library.ErrUnsupportedPath) || errors.Is(err, library.ErrUnsupportedRoot) ||
-		errors.Is(err, consumer.ErrUnsupportedValue) || errors.Is(err, store.ErrUnsupported) || errors.Is(err, store.ErrTimestamp) || errors.Is(err, media.ErrNoPinnedOpen)
+		errors.Is(err, consumer.ErrUnsupportedValue) || errors.Is(err, store.ErrUnsupported) || errors.Is(err, store.ErrTimestamp) || errors.Is(err, media.ErrNoPinnedOpen) ||
+		errors.Is(err, webpreview.ErrUnsupported)
 }
 
-func (a *App) openableCopies(ctx context.Context, roots []string, copies []live.WorkCopy) (map[string]map[int]int64, error) {
-	view := consumer.NewViewFor(roots, webFormats.Names, nil, nil, true)
+func (a *App) openableCopies(ctx context.Context, userID int64, roots []string, copies []live.WorkCopy) (map[string]map[int]int64, error) {
 	held := map[string]map[int]int64{}
+	probes := 0
 	for _, found := range copies {
 		if _, chosen := held[found.WorkID][found.Book.BookType]; chosen {
 			continue
 		}
-		publication, err := view.Publication(ctx, found.Book)
-		if unlinkable(err) {
-			continue
+		if probes >= maxCopyProbes {
+			break
 		}
+		probes++
+		opens, err := a.detailOpens(ctx, userID, roots, found.Book)
 		if err != nil {
 			return nil, err
 		}
-		if len(publication.Assets) == 0 {
+		if !opens {
 			continue
 		}
 		if held[found.WorkID] == nil {
@@ -196,7 +205,25 @@ func (a *App) openableCopies(ctx context.Context, roots []string, copies []live.
 	return held, nil
 }
 
-func (a *App) discoverItems(ctx context.Context, roots []string, works []openlibrary.Work) ([]discoverItem, error) {
+func (a *App) detailOpens(ctx context.Context, userID int64, roots []string, book store.Book) (bool, error) {
+	items, err := a.publications(ctx, userID, []store.Book{book}, webFormats, roots)
+	if unlinkable(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	detail, err := webpreview.ProjectDetail(items[0])
+	if unlinkable(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return detail.Availability == "available", nil
+}
+
+func (a *App) discoverItems(ctx context.Context, userID int64, roots []string, works []openlibrary.Work) ([]discoverItem, error) {
 	ids := make([]string, len(works))
 	for index, work := range works {
 		ids[index] = work.ID
@@ -209,7 +236,7 @@ func (a *App) discoverItems(ctx context.Context, roots []string, works []openlib
 	if err != nil {
 		return nil, err
 	}
-	held, err := a.openableCopies(ctx, roots, copies)
+	held, err := a.openableCopies(ctx, userID, roots, copies)
 	if err != nil {
 		return nil, err
 	}

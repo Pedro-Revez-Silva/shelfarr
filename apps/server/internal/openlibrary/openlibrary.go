@@ -43,7 +43,7 @@ var (
 	ErrUnavailable = errors.New("open library could not be reached")
 	ErrFailed      = errors.New("open library answered with something this server does not accept")
 	workKey        = regexp.MustCompile(`^/works/(OL[1-9][0-9]{0,11}W)$`)
-	delaySeconds   = regexp.MustCompile(`^[1-9][0-9]*$`)
+	delaySeconds   = regexp.MustCompile(`^[0-9]+$`)
 )
 
 type Throttled struct {
@@ -142,9 +142,10 @@ func (c *Client) admit() (func(), error) {
 
 func (c *Client) pause(header string) time.Duration {
 	wait := defaultPause
-	if digits := strings.TrimLeft(strings.TrimSpace(header), "0"); delaySeconds.MatchString(digits) {
+	if trimmed := strings.TrimSpace(header); delaySeconds.MatchString(trimmed) {
+		digits := strings.TrimLeft(trimmed, "0")
 		wait = longestPause
-		if seconds, err := strconv.Atoi(digits); err == nil && len(digits) <= 6 {
+		if seconds, err := strconv.Atoi("0" + digits); err == nil && len(digits) <= 6 {
 			wait = time.Duration(seconds) * time.Second
 		}
 	}

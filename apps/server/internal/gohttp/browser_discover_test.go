@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,9 @@ func TestDiscoverFollowsTheShelfarrOpenLibrarySettingsWithoutWritingProviderHeal
 		{"negative limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '-3', 'integer')`}, "available", nil, ""},
 		{"limit beyond any integer", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '100000000000000000000000', 'integer')`}, "available", nil, "20"},
 		{"padded limit", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', ' +007 ', 'integer')`}, "available", nil, "7"},
+		{"limit with a digit separator", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '1_0', 'integer')`}, "available", nil, "10"},
+		{"limit with a decimal prefix", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0d07', 'integer')`}, "available", nil, "7"},
+		{"negative limit with a prefix", []string{`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '-0D1_2', 'integer')`}, "available", nil, ""},
 		{"rails backoff", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'rate_limited', '2026-11-15 12:01:30.623456')`}, "provider_paused", float64(91), ""},
 		{"rails backoff over", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'down', '2026-11-15 12:00:00.123456')`}, "available", nil, "20"},
 		{"another provider's backoff", []string{`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('hardcover', 'rate_limited', '2026-11-16 12:00:00')`}, "available", nil, "20"},
@@ -218,6 +222,8 @@ func TestDiscoverRefusesSettingsItCannotReadInsteadOfGuessing(t *testing.T) {
 	for _, statement := range []string{
 		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_enabled', 'yes', 'string')`,
 		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '20 results', 'integer')`,
+		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '1__0', 'integer')`,
+		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0x10', 'integer')`,
 		`INSERT INTO settings (key, value, value_type) VALUES ('metadata_source', '["openlibrary"]', 'json')`,
 		`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'rate_limited', 'soon')`,
 	} {
@@ -416,5 +422,66 @@ func TestAStalledSearchDoesNotTakeTheLibrarysRequestCapacity(t *testing.T) {
 	close(release)
 	if status := <-done; status != http.StatusOK {
 		t.Fatalf("search %d", status)
+	}
+}
+
+func TestOnlyACopyTheDetailsPageServesIsLinkedAndEachFormatFindsItsOwn(t *testing.T) {
+	h, _ := newDiscoverHarness(t, true)
+	for id := 30; id <= 69; id++ {
+		livetest.Exec(t, h.path, `INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (?, 'Rings', ?, 1, 'OL27448W')`, id, h.file("rings-"+strconv.Itoa(id)+".epub", "an epub"))
+	}
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (70, 'Rings', ?, 1, 'OL27448W')`, filepath.Join(h.root, "gone.epub"))
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, description, file_path, book_type, open_library_work_id) VALUES (71, 'Rings', 'line one'||char(13)||char(10)||'line two', ?, 1, 'OL27448W')`, h.file("rings-71.epub", "an epub"))
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (14, 'Harbor', ?, 2, 'OL82563W')`, h.file("harbor.cbz", comicArchive("p1.png")))
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	if detail := client.get("/preview/api/v1/library/71"); detail.Code != http.StatusNotImplemented {
+		t.Fatalf("the newest copy was expected to be refused by the details page, got %d", detail.Code)
+	}
+	got := discoverBody(t, client.discover("q=rings"))
+	items := got["items"].([]any)
+	links := map[string]any{}
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		links[item["id"].(string)] = item["library"]
+	}
+	want := map[string]any{
+		"OL27448W": []any{map[string]any{"book_type": "ebook", "publication_id": "69"}},
+		"OL82563W": []any{map[string]any{"book_type": "comicbook", "publication_id": "14"}},
+		"OL10W":    []any{},
+		"OL11W":    []any{},
+	}
+	if !reflect.DeepEqual(links, want) {
+		t.Fatalf("links %v", links)
+	}
+	if detail := client.get("/preview/api/v1/library/69"); detail.Code != http.StatusOK {
+		t.Fatalf("the linked copy does not open: %d", detail.Code)
+	}
+}
+
+func TestAZeroLimitAnswersWithoutLookingAtTheLibraryOrOpenLibrary(t *testing.T) {
+	h, fake := newDiscoverHarness(t, true)
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0', 'integer')`)
+	livetest.Exec(t, h.path, `UPDATE settings SET value = 'relative/path' WHERE key = 'ebook_output_path'`)
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	got := discoverBody(t, client.discover("q=dune"))
+	if got["search"] != "available" || len(got["items"].([]any)) != 0 || fake.count() != 0 {
+		t.Fatalf("zero limit %v after %d", got, fake.count())
+	}
+}
+
+func TestRefusedAndBusyDiscoverAnswersAreNotCached(t *testing.T) {
+	h, _ := newDiscoverHarness(t, true)
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	if recorder := client.send(http.MethodPost, "/preview/api/v1/discover?q=dune", "", map[string]string{"X-Shelfarr-Account": "1"}); recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("405 %d %v", recorder.Code, recorder.Header())
+	}
+	for range maxDiscoverRequests {
+		h.app.discover <- struct{}{}
+	}
+	if recorder := client.discover("q=dune"); recorder.Code != http.StatusServiceUnavailable || errorCode(t, recorder) != "server_busy" || recorder.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("busy %d %v", recorder.Code, recorder.Header())
 	}
 }

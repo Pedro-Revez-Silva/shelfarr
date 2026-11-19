@@ -255,6 +255,13 @@ func TestTooManyRequestsPausesEverySearchWithoutContactingOpenLibrary(t *testing
 	if _, err := client.Search(context.Background(), "dune", 5); !errors.As(err, &throttled) || throttled.RetryAfter != time.Minute || calls.Load() != 2 {
 		t.Fatalf("date header %v calls %d", err, calls.Load())
 	}
+	for _, header := range []string{"0", " 000 "} {
+		moment.advance(15 * time.Minute)
+		retryAfter = header
+		if _, err := client.Search(context.Background(), "dune", 5); !errors.As(err, &throttled) || throttled.RetryAfter != time.Second {
+			t.Fatalf("immediate %q: %v", header, err)
+		}
+	}
 	for _, header := range []string{"999999", "9223372037", "99999999999999999999"} {
 		moment.advance(15 * time.Minute)
 		retryAfter = header

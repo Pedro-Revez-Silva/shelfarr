@@ -186,6 +186,9 @@ func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, r
 }
 
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
+	if found.name == "browser_discover" {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
 	if found.web && a.web == nil {
 		found = route{kind: routeNone}
 	}
