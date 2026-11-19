@@ -1416,6 +1416,144 @@ asset build from the same commit. Rollback: deploy the previous binary and asset
 Not proven: Safari, Firefox and screen readers; a library with thousands of requests (the reads are the bounded
 queries above, and Rails' own page runs the same `COUNT` and `OFFSET`).
 
+## Requesting one ebook on a prepared disposable volume (opt-in)
+
+Status: **experimental, default-off, test volumes only.** With `-acquisition-workdir DIR`, an allowlisted account can
+request an Open Library ebook from Discover, follow it on Requests, and read the EPUB in the Go Library once an admin has
+chosen a Project Gutenberg copy. Everything runs on a directory made by `shelfarr-workflows prepare` (see
+[backend-migration.md](backend-migration.md)), against the loopback catalogue its own settings name. It is not a
+production mode: no other provider, format, scheduler or Rails job is involved, and Rails never runs on such a volume.
+
+### Switching it on, and the startup check
+
+`shelfarr-http -acquisition-workdir DIR` refuses to start (exit 2) unless all of these hold:
+
+| Refusal | Condition |
+| --- | --- |
+| `acquisition-volume` | `DIR` is absolute and clean; `-database` is exactly `DIR/workflows.sqlite3` and `-lock-file` exactly `DIR/locks/http.lock`; `-allow-non-loopback` is off and `-browser-origin` is a loopback IP literal; `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
+| `acquisition-network` | with `-open-library-search`, the proxy the Open Library client would use is an `http://` loopback IP literal (so Discover reaches only a local fixture) |
+| `acquisition-settings` | the copy's settings pass the Gutenberg search and download checks before any request exists: schema revision and columns, Gutenberg on with a loopback IP origin, no other ebook source, no auto-selection or outbound notification channel, no library scan or import permissions, and `ebook_output_path` a canonical private directory strictly inside `DIR` that is also under a `-library-root` |
+
+Without the flag nothing changes: `POST /preview/api/v1/requests` is `405 Allow: GET`, the two new routes are `404`, the
+Discover answer has no `requesting` member and no worker runs. Rollback is a restart without the flag or the previous
+binary; every row written is an ordinary Rails row (below), so nothing needs undoing.
+
+### What is served (only with the flag)
+
+| Route | Who | Answer |
+| --- | --- | --- |
+| `GET /preview/api/v1/discover?q=` | session | adds `"requesting": true`; the works it returns are remembered for that account for 30 minutes (at most 200 per account, 128 accounts, in memory) |
+| `POST /preview/api/v1/requests` `{"work_id":"OL…W","book_type":"ebook"}` | session, Origin, CSRF, `X-Shelfarr-Account` | admits the work through the existing admission code (below) |
+| `GET /preview/api/v1/requests/:id/acquisition` | admin | the copies an admin can choose and the worker's state for that request |
+| `POST /preview/api/v1/requests/:id/selection` `{"result_id":"…"}` | admin, Origin, CSRF, `X-Shelfarr-Account` | starts the download of one chosen copy |
+
+All four are `Cache-Control: private, no-store`, use the metadata pool and go through the shared session guard. A member
+asking for either admin route gets the same `404 not_found` as a missing request.
+
+```
+POST /preview/api/v1/requests
+  201 {"account":"2","outcome":"created","request":{"id":"41"},"warnings":[]}
+  200 {"account":"2","outcome":"existing","request":{"id":"41"}}           (the caller's own open request)
+  200 {"account":"2","outcome":"already_requested"}                         (another account's; no id, no name)
+  200 {"account":"2","outcome":"already_in_library","library":{"publication_id":"13"}|null}   (null: a copy is recorded the Library cannot open)
+  422 invalid_request | work_not_offered     401 signed_out     422 invalid_csrf     503 database_busy|database_unavailable
+
+GET /preview/api/v1/requests/:id/acquisition
+  200 {"account":"1","request":{"id":"41","status":"searching"},
+       "candidates":[{"id":"9","title":"Pride and Prejudice - Austen, Jane [EPUB] [English]"}],
+       "selection":null|{"state":"queued"|"downloading"|"failed"|"completed","result_id":"9","code":null|"provider-busy"},
+       "search":null|{"state":"retry_scheduled"|"waiting"|"refused","code":"provider-busy","retry_at":"2026-11-19T10:01:00.000Z"}}
+
+POST /preview/api/v1/requests/:id/selection
+  202 {"account":"1","selection":{"state":"queued","result_id":"9","code":null}}
+  200 {"account":"1","selection":{"state":"completed","result_id":"9","code":null}}   (the copy that completed it)
+  409 {"error":"acquisition_busy"}   409 {"error":"not_selectable","reason":"result_not_selectable"|…}   422 invalid_request
+```
+
+The body names only the work; title, author, year and cover come from the Discover answer this server gave the same
+account, and the native consumer body is then built and checked by `admission.ParseSubmission`, so a client cannot choose
+the metadata, the account or the format. Candidates are listed only when `PlanSelection` would accept them now
+(pending, not blocklisted, an EPUB on the configured origin); download, info and GUID links, provider details and paths
+are never returned. Codes are fixed strings.
+
+### Admission, worker and download
+
+* **Admission** is `admission.Submit` in one `BEGIN IMMEDIATE` transaction on the volume, which first requires the
+  session row to still exist for that account (`401 signed_out` otherwise) and then makes the same decision and writes the
+  same `books`, `requests` and `activity_logs` rows as `shelfarr-workflows request`. It runs to completion even if the
+  browser disconnects (bounded by `-request-timeout`); a retry, a double press, a reload or a second account then gets
+  `existing`, `already_requested` or `already_in_library`, never a second request. The pending row is the queue entry.
+* **One serial worker** per process takes the oldest pending ebook request (or a searching one whose claim is older than the
+  30-minute lease) with Rails' claim and runs the extracted `acquire.Search`, the same code as `shelfarr-workflows search`.
+  It wakes on an admission or every 2 seconds. A released search (unreachable, busy, timeout, withheld candidates) waits 1,
+  2, 4, 8 then 15 minutes before the next attempt; a refusal (settings changed) waits 15 minutes; a live claim of another
+  worker 1 minute. These waits are in memory only and are shown to admins; a failed or provider-disabled request is never
+  marked as searched.
+* **The admin's choice** is checked with `PlanSelection`, queued in memory (one at a time across the process; the same
+  choice again is the same job, any other is `acquisition_busy`), and run by the same worker with `acquire.Download`, the
+  same code as `shelfarr-workflows download`, under the same `locks/acquisition.lock`. Before it starts, the worker checks
+  again that the admin's session exists and the account is still an allowlisted, undeleted admin
+  (`failed`, `authority_changed` otherwise). The result is `completed` or `failed` with the download's code; nothing is
+  retried by itself.
+
+### What is durable, and interrupted states
+
+| Interrupted | Durable state | After a restart |
+| --- | --- | --- |
+| Browser disconnects during admission | the admission either committed or did not | pressing again answers `existing` or creates it once |
+| Process stops during a search | SIGTERM: the claim is released (pending again); SIGKILL: the claim stays | the next worker reclaims it after the 30-minute lease, as Rails' `RequestQueueJob` would |
+| Process stops while a choice is queued or downloading | nothing (the download writes only in its completion transaction; an unlinked file is anonymous) | the request still awaits a choice; the admin sees no selection and chooses again |
+| Process stops after the download linked its file, before commit | an unreferenced, validated EPUB at its final name | the next download of that copy adopts it |
+| After the completion commit | the completed Rails rows and the library file | `already_completed`; the request reads as completed and the book opens in the Library and reader |
+
+The in-memory state (offers, waits, the queued choice) is lost on restart by design; the browser shows only what the server
+reports and never claims success it has not seen.
+
+### Browser screens
+
+Discover shows "Request ebook" on a result without an ebook in the Library, and only when the server answers
+`requesting: true`; the note under the results says the server is a test setup that looks only in its own copy of the
+Project Gutenberg catalogue. One press sends one request: the button is marked busy while it waits, the result is
+announced in the card's status region and receives focus, with "Track it in Requests" for the caller's own request, an
+"Open the ebook" link for a copy already in the Library, and no link for another account's request. An unconfirmed answer
+says it may or may not have been received and asks to check Requests before trying again; nothing is resent by itself.
+On a request awaiting a choice, members read "An administrator chooses which copy to download."; an admin gets a
+"Choose a copy" fieldset of radio buttons and "Download this copy", then the queued, downloading (with an indeterminate
+progress bar), failed (with a plain reason and the choice offered again) or downloaded state, refreshed every 2 seconds
+while it runs. When the request completes the usual "Open in Library" link appears.
+
+### Contract before and after
+
+```
+POST /preview/api/v1/requests                    before 405 Allow: GET     after (flag) 201/200 admission answers above; (no flag) unchanged
+GET  /preview/api/v1/requests/:id/acquisition    before 404                after (flag) 200 admin / 404 member; (no flag) unchanged
+POST /preview/api/v1/requests/:id/selection      before 404                after (flag) 202/200/409/422 admin / 404 member; (no flag) unchanged
+GET  /preview/api/v1/discover                    before {…}                after (flag) adds "requesting": true; (no flag) unchanged
+shelfarr-http -acquisition-workdir DIR           before unknown flag       after opt-in, refused unless the startup check passes
+```
+
+Unchanged: the native `/api/consumer/v1/requests` and `discover` routes (`501`), `server.json`, the Rails screens and jobs,
+the schema, every setting, and `shelfarr-workflows` (its `search` and `download` now call the extracted
+`internal/acquire` entry points; their output is unchanged and pinned by the existing workflow suite).
+
+### Verification
+
+* `go test ./internal/gohttp/` checks the route gating with and without the volume, the request and choice bodies, the
+  offer memory (per account, expiry, bounds), the search back-off and the one-choice-at-a-time queue.
+* `e2e/workflows/web_test.go` runs the built `shelfarr-http` (with the test clock) and the built web assets on prepared
+  copies of both bundles, with two synthetic accounts, the fake Open Library behind a loopback proxy and the captured
+  Gutenberg OPDS replies: nine startup refusals with no row, catalogue or Open Library contact; the flag off; the whole
+  journey (CSRF, Origin, cross-site, other account's token and header, malformed and unoffered bodies with no row written;
+  five disconnected and eight concurrent presses giving one request; another account told only `already_requested`; the
+  worker's candidates; members refused the admin routes; no link, GUID or provider detail in the admin answer; refused
+  choices; a double choice giving one download; the exact library bytes; the request, Library, reader and media bytes for
+  the member; `already_in_library` afterwards; no title, path or catalogue address in the log); and a restart suite (a
+  SIGKILL during a stalled search reclaimed only after the lease, a busy catalogue backed off and never read as no results,
+  `acquisition_busy` during a download, a SIGKILL during the download leaving no row and a later choice completing).
+* Web unit tests (`test/go-acquisition.test.tsx`) and a run in Chrome against the built binary and assets.
+
+Not proven: real Open Library or Gutenberg traffic, more than one worker process, and Safari, Firefox or screen readers.
+
 ## Database access
 
 `internal/live` opens the database read-write only for the two statements above and `query_only` for
