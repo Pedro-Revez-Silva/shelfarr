@@ -35,3 +35,8 @@ test("the PDF engine has no remote or evaluated code paths", async () => {
     expect(source).not.toMatch(/https?:\/\/(?!www\.w3\.org|ns\.adobe\.com|www\.xfa\.org|foo\.bar|example\.com)[a-z]/i)
   }
 })
+
+test("the EPUB engine registers no window unload listener", async () => {
+  const source = await readFile(join(vendor, "consumer_reader_engine.js"), "utf8")
+  expect(source).not.toMatch(/addEventListener\(\s*["']unload["']/)
+})
