@@ -1371,7 +1371,8 @@ checked again, so a lost admin role is noticed there too. A session check that e
 account locks the page as before. A check that is inconclusive (for example `503`) does not prove a role change, so it
 does not lock; it drops every cached Requests list and request once, so no earlier view returns from another tab,
 filter or Back, and the page settles on its retryable error or "not available" without asking again by itself. The next
-successful check asks again for the Requests that failed meanwhile.
+successful check asks again for a shown list or request that failed meanwhile (a retry still in flight at that moment
+can leave Try again showing); other filters and requests fetch when they are opened again.
 
 ### Contract before and after
 
