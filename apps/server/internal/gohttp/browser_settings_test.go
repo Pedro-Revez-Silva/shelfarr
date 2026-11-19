@@ -246,7 +246,7 @@ func TestAValueEqualToWhatIsSavedIsNotWrittenAndAnUnreadableValueCanBeReplaced(t
 	if *repaired.OpenLibrary.SearchLimit != 20 || repaired.Discover.Search != "available" {
 		t.Fatalf("repaired %+v", repaired)
 	}
-	if row := livetest.Query(t, h.path, `SELECT value, value_type FROM settings WHERE key = 'open_library_search_limit'`); !reflect.DeepEqual(row, [][]any{{"20", "integer"}}) {
+	if row := livetest.Query(t, h.path, `SELECT value, value_type, category, description, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) FROM settings WHERE key = 'open_library_search_limit'`); !reflect.DeepEqual(row, [][]any{{"20", "integer", "open_library", "Maximum number of search results to return", "2026-01-01 00:00:00", "2026-11-15 12:00:00.123456"}}) {
 		t.Fatalf("repair wrote %v", row)
 	}
 	fresh, _ := newDiscoverHarness(t, true)

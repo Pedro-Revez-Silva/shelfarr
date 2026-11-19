@@ -178,7 +178,8 @@ func (d *DB) SaveMetadataSettings(ctx context.Context, clock func() time.Time, r
 func writeSetting(ctx context.Context, tx *sql.Tx, row SettingRow, key, valueType, value, stamp string) error {
 	var err error
 	if row.Found {
-		_, err = tx.ExecContext(ctx, `UPDATE settings SET value = ?, value_type = ?, updated_at = ? WHERE key = ?`, value, valueType, stamp, key)
+		_, err = tx.ExecContext(ctx, `UPDATE settings SET value = ?, value_type = ?, category = ?, description = ?, updated_at = ? WHERE key = ?`,
+			value, valueType, openLibraryCategory, settingDescriptions[key], stamp, key)
 	} else {
 		_, err = tx.ExecContext(ctx, `INSERT INTO settings (key, value, value_type, category, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			key, value, valueType, openLibraryCategory, settingDescriptions[key], stamp, stamp)
