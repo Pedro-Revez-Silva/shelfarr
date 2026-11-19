@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
 import { ApiError, isApiError } from "./api/errors";
-import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import type { Acquisition, LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices } from "./services";
 
 export function useSession() {
@@ -129,6 +129,63 @@ export function useRequest(id: string) {
     enabled: ready,
     refetchInterval: ({ state }) => (state.data && stillChanging(state.data) ? REQUEST_REFRESH_MS : false),
   });
+}
+
+export function useRequestEbook() {
+  const { api, keys, guard } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (workId: string) => api.requestEbook(workId),
+    onSuccess: () => {
+      if (!guard.isActive()) return;
+      void client.invalidateQueries({ queryKey: keys.requestsAll });
+    },
+  });
+}
+
+const SELECTION_REFRESH_MS = 2_000;
+
+export function selectionRunning(answer: Acquisition | undefined): boolean {
+  return answer?.selection?.state === "queued" || answer?.selection?.state === "downloading";
+}
+
+export function useAcquisition(id: string, enabled: boolean) {
+  const { api, keys, revalidate } = useServices();
+  return useQuery({
+    queryKey: keys.acquisition(id),
+    queryFn: ({ signal }) =>
+      api.acquisition(id, signal).catch((error: unknown) => {
+        if (isApiError(error) && error.kind === "not_found") revalidate();
+        throw error;
+      }),
+    enabled,
+    retry: false,
+    refetchInterval: ({ state }) => (selectionRunning(state.data) ? SELECTION_REFRESH_MS : state.data && MOVING_STATUSES.has(state.data.request.status) ? REQUEST_REFRESH_MS : false),
+  });
+}
+
+export function useSelectResult(id: string) {
+  const { api, keys, guard } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (resultId: string) => api.selectResult(id, resultId),
+    onSettled: () => {
+      if (!guard.isActive()) return;
+      void client.invalidateQueries({ queryKey: keys.acquisition(id) });
+    },
+  });
+}
+
+export function useSelectionFinished(id: string) {
+  const { keys, guard } = useServices();
+  const client = useQueryClient();
+  return () => {
+    if (!guard.isActive()) return;
+    void client.invalidateQueries({ queryKey: keys.request(id) });
+    void client.invalidateQueries({ queryKey: keys.requestsAll });
+    void client.invalidateQueries({ queryKey: keys.libraryAll });
+    void client.invalidateQueries({ queryKey: keys.continueAll });
+  };
 }
 
 export function useProfile() {

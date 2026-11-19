@@ -55,6 +55,7 @@ type discoverAnswer struct {
 	Account    string           `json:"account"`
 	Provider   discoverProvider `json:"provider"`
 	Search     string           `json:"search"`
+	Requesting *bool            `json:"requesting,omitempty"`
 	RetryAfter *int             `json:"retry_after,omitempty"`
 	Query      *string          `json:"query"`
 	Items      []discoverItem   `json:"items"`
@@ -82,6 +83,10 @@ func (a *App) webDiscover(w http.ResponseWriter, r *http.Request, session browse
 		return
 	}
 	answer := discoverAnswer{Account: session.account(), Provider: discoverProvider{Name: openlibrary.ProviderName, URL: openlibrary.Origin}, Items: []discoverItem{}}
+	if a.acquisition != nil {
+		requesting := true
+		answer.Requesting = &requesting
+	}
 	if present {
 		query, problemKind := openlibrary.NormaliseQuery(raw)
 		if problemKind != "" {
@@ -124,6 +129,9 @@ func (a *App) webDiscover(w http.ResponseWriter, r *http.Request, session browse
 	if err != nil {
 		mapFailure(w, result, err)
 		return
+	}
+	if a.acquisition != nil {
+		a.acquisition.offers.remember(session.user.ID, works)
 	}
 	answer.Items = items
 	result.set(http.StatusOK, "")

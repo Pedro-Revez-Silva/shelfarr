@@ -45,6 +45,9 @@ const (
 	routeBrowserDiscover
 	routeBrowserRequests
 	routeBrowserRequest
+	routeBrowserRequestCreate
+	routeBrowserAcquisition
+	routeBrowserSelection
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
@@ -229,10 +232,16 @@ func classifyPreview(method, rest string) route {
 		return served(method, route{kind: routeBrowserPassword, name: "browser_password"}, http.MethodPost)
 	case rest == "discover":
 		return served(method, route{kind: routeBrowserDiscover, name: "browser_discover"}, http.MethodGet)
+	case rest == "requests" && method == http.MethodPost:
+		return route{kind: routeBrowserRequestCreate, name: "browser_request_create"}
 	case rest == "requests":
 		return served(method, route{kind: routeBrowserRequests, name: "browser_requests"}, http.MethodGet)
 	case len(segments) == 2 && segments[0] == "requests" && segmentOK(segments[1]):
 		return served(method, route{kind: routeBrowserRequest, name: "browser_request", id: segments[1]}, http.MethodGet)
+	case len(segments) == 3 && segments[0] == "requests" && segments[2] == "acquisition" && segmentOK(segments[1]):
+		return served(method, route{kind: routeBrowserAcquisition, name: "browser_acquisition", id: segments[1]}, http.MethodGet)
+	case len(segments) == 3 && segments[0] == "requests" && segments[2] == "selection" && segmentOK(segments[1]):
+		return served(method, route{kind: routeBrowserSelection, name: "browser_selection", id: segments[1]}, http.MethodPost)
 	case rest == "auth/bootstrap":
 		return served(method, route{kind: routeAuthBootstrap, name: "auth_bootstrap"}, http.MethodGet)
 	case rest == "auth/login":

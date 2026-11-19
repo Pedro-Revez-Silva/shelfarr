@@ -42,6 +42,7 @@ type App struct {
 	web           *webUI
 	openLibrary   *openlibrary.Client
 	discover      chan struct{}
+	acquisition   *acquisitionService
 }
 
 func NewApp(config Config, database *live.DB, explicitRoots []string, logger *slog.Logger, now func() time.Time) (*App, error) {
@@ -104,6 +105,21 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		previewIDs:    previewIDs,
 		web:           web,
 	}, nil
+}
+
+func (a *App) gateAcquisition(found route) route {
+	switch {
+	case a.acquisition != nil && found.kind == routeWrongMethod && found.name == "browser_requests":
+		found.allow = "GET, POST"
+	case a.acquisition != nil:
+	case found.kind == routeBrowserRequestCreate:
+		return route{kind: routeWrongMethod, name: "browser_requests", allow: http.MethodGet}
+	case found.kind == routeBrowserAcquisition, found.kind == routeBrowserSelection:
+		return route{kind: routeNone}
+	case found.kind == routeWrongMethod && (found.name == "browser_acquisition" || found.name == "browser_selection"):
+		return route{kind: routeNone}
+	}
+	return found
 }
 
 func setDefaultHeaders(header http.Header) {
@@ -186,7 +202,9 @@ func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, r
 }
 
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
-	if found.name == "browser_discover" || found.name == "browser_requests" || found.name == "browser_request" {
+	found = a.gateAcquisition(found)
+	switch found.name {
+	case "browser_discover", "browser_requests", "browser_request", "browser_request_create", "browser_acquisition", "browser_selection":
 		w.Header().Set("Cache-Control", "private, no-store")
 	}
 	if found.web && a.web == nil {
@@ -251,7 +269,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 		a.exchange(w, r, result)
 	case routeBrowserSession, routeBrowserLibrary, routeBrowserContinue, routeBrowserPublication, routeBrowserStatus, routeBrowserConnect, routeBrowserDecide,
 		routeBrowserReader, routeBrowserProgress, routeBrowserMedia, routeBrowserReadingOrder, routeBrowserAccount, routeBrowserProfile, routeBrowserPassword, routeBrowserDiscover,
-		routeBrowserRequests, routeBrowserRequest:
+		routeBrowserRequests, routeBrowserRequest, routeBrowserRequestCreate, routeBrowserAcquisition, routeBrowserSelection:
 		a.browserData(w, r, found, result)
 	case routeAuthBootstrap:
 		a.bootstrap(w, r, result)

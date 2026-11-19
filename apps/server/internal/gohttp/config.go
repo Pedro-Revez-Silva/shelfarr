@@ -29,6 +29,9 @@ type Config struct {
 
 	OpenLibrarySearch bool
 
+	AcquisitionWorkdir string
+	AcquisitionGap     time.Duration
+
 	PreviewUserIDs  []string
 	BrowserOrigin   string
 	PasswordlessEnv bool

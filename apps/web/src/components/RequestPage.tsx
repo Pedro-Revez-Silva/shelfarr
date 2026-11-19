@@ -1,7 +1,8 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
-import { failureKind } from "../api/errors";
-import type { RequestDetail } from "../contract";
-import { useRequest, useSession } from "../queries";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { ApiError, failureKind } from "../api/errors";
+import type { Acquisition, RequestDetail } from "../contract";
+import { selectionRunning, useAcquisition, useRequest, useSelectionFinished, useSelectResult, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -69,7 +70,7 @@ function RequestView() {
     );
   }
 
-  return <Details request={request.data} />;
+  return <Details request={request.data} admin={session.data?.admin !== undefined} />;
 }
 
 function BackToRequests() {
@@ -88,12 +89,14 @@ function BackToRequests() {
   );
 }
 
+const SELECTION_REASON = "Search results found. Please review and select a result to download.";
+
 function stage(request: RequestDetail): string {
   switch (request.status) {
     case "pending":
       return "Waiting for its turn to be searched.";
     case "searching":
-      return "Searching indexers for this book. This may take a moment.";
+      return request.attention_reason === SELECTION_REASON ? "Copies were found and are waiting for a choice." : "Searching indexers for this book. This may take a moment.";
     case "not_found":
       return request.next_retry_at && Date.parse(request.next_retry_at) > Date.now() ? `Nothing suitable was found yet. Shelfarr will search again ${relativeTime(request.next_retry_at)}.` : "Nothing suitable was found yet.";
     case "downloading":
@@ -111,7 +114,8 @@ function stage(request: RequestDetail): string {
   }
 }
 
-function Details({ request }: { request: RequestDetail }) {
+
+function Details({ request, admin }: { request: RequestDetail; admin: boolean }) {
   const library = request.library;
   return (
     <article className="request-details" aria-labelledby="request-heading">
@@ -128,8 +132,11 @@ function Details({ request }: { request: RequestDetail }) {
             <div className="attention" role="note">
               <h2>Attention Required</h2>
               <p>{request.attention_reason ?? "This request needs your attention."}</p>
+              {!admin && request.attention_reason === SELECTION_REASON ? <p>An administrator chooses which copy to download.</p> : null}
             </div>
           ) : null}
+
+          {admin && request.book_type === "ebook" ? <ChooseCopy request={request} /> : null}
 
           <div className="request-stage" role="status">
             <p>{stage(request)}</p>
@@ -194,5 +201,149 @@ function Details({ request }: { request: RequestDetail }) {
         </section>
       ) : null}
     </article>
+  );
+}
+
+const SEARCH_NOTES: Record<NonNullable<Acquisition["search"]>["state"], string> = {
+  retry_scheduled: "The last search could not reach the catalogue, so Shelfarr will search again",
+  waiting: "Another search for this request was still running, so Shelfarr will look again",
+  refused: "This server's settings do not allow searching for this request here. Shelfarr will check again",
+};
+
+const FAILURE_TEXT: Record<string, string> = {
+  "provider-refused": "The catalogue refused the download.",
+  "provider-busy": "The catalogue was busy.",
+  "provider-unreachable": "The catalogue could not be reached.",
+  "provider-timeout": "The catalogue took too long to answer.",
+  "provider-too-large": "The file was larger than this server accepts.",
+  "download-not-a-book": "The catalogue sent something that is not an ebook.",
+  "download-invalid": "The file was not a readable EPUB.",
+  "download-truncated": "The download stopped before the whole file arrived.",
+  "download-deadline": "The download took too long.",
+  "library-file-exists": "A different file is already in the library at this book's place.",
+  cancelled: "The server was stopped during the download.",
+  superseded: "The request changed while the copy was downloading.",
+  authority_changed: "Your account was no longer allowed to choose a copy when the download was due to start.",
+  acquisition_busy: "Another download was running on this server.",
+};
+
+function ChooseCopy({ request }: { request: RequestDetail }) {
+  const acquisition = useAcquisition(request.id, true);
+  const finished = useSelectionFinished(request.id);
+  const state = acquisition.data?.selection?.state;
+  const previous = useRef(state);
+  useEffect(() => {
+    if (previous.current !== state && (state === "completed" || state === "failed")) finished();
+    previous.current = state;
+  }, [state, finished]);
+
+  if (acquisition.isPending) return null;
+  if (acquisition.isError) {
+    if (failureKind(acquisition.error) === "not_found") return null;
+    return (
+      <section className="choose-copy" aria-labelledby="choose-copy-heading">
+        <h2 id="choose-copy-heading">Choose a copy</h2>
+        <ErrorPanel error={acquisition.error} onRetry={() => void acquisition.refetch()} />
+      </section>
+    );
+  }
+  const answer = acquisition.data;
+  if (answer.search && request.status === "pending") {
+    return (
+      <p className="notice" role="note">
+        {SEARCH_NOTES[answer.search.state]} <Time iso={answer.search.retry_at} relative />.
+      </p>
+    );
+  }
+  if (request.status === "completed" || (answer.selection === null && (answer.candidates.length === 0 || request.status !== "searching"))) return null;
+  return (
+    <section className="choose-copy" aria-labelledby="choose-copy-heading">
+      <h2 id="choose-copy-heading">Choose a copy</h2>
+      <SelectionStatus answer={answer} />
+      {request.status === "searching" && answer.candidates.length > 0 && !selectionRunning(answer) ? <CopyForm request={request} answer={answer} /> : null}
+    </section>
+  );
+}
+
+function SelectionStatus({ answer }: { answer: Acquisition }) {
+  const selection = answer.selection;
+  let text = "";
+  if (selection?.state === "queued") text = "Download queued. It starts as soon as the server finishes its current search.";
+  else if (selection?.state === "downloading") text = "Downloading the chosen copy. This page updates by itself.";
+  else if (selection?.state === "completed") text = "Downloaded. The ebook is now in the library.";
+  else if (selection?.state === "failed")
+    text = `The download did not finish. ${FAILURE_TEXT[selection.code ?? ""] ?? "The server could not confirm it."} Nothing was added to the library${answer.candidates.length > 0 ? "; you can choose a copy again." : "."}`;
+  return (
+    <div className="request-stage" role="status">
+      {text ? <p>{text}</p> : null}
+      {selectionRunning(answer) ? <progress aria-label="Download in progress" /> : null}
+    </div>
+  );
+}
+
+function CopyForm({ request, answer }: { request: RequestDetail; answer: Acquisition }) {
+  const select = useSelectResult(request.id);
+  const [chosen, setChosen] = useState(answer.candidates.length === 1 ? (answer.candidates[0]?.id ?? "") : "");
+  const [missing, setMissing] = useState(false);
+  const errorId = useId();
+  const legendId = useId();
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (select.isPending) return;
+    if (!answer.candidates.some((candidate) => candidate.id === chosen)) {
+      setMissing(true);
+      return;
+    }
+    setMissing(false);
+    select.mutate(chosen);
+  };
+  return (
+    <form className="copy-form" onSubmit={submit} noValidate aria-labelledby={legendId}>
+      <fieldset aria-describedby={missing ? errorId : undefined}>
+        <legend id={legendId}>Copies found in the Project Gutenberg catalogue</legend>
+        {answer.candidates.map((candidate) => (
+          <div className="copy-option" key={candidate.id}>
+            <input
+              type="radio"
+              id={`copy-${candidate.id}`}
+              name="copy"
+              value={candidate.id}
+              checked={chosen === candidate.id}
+              onChange={() => {
+                setChosen(candidate.id);
+                setMissing(false);
+              }}
+            />
+            <label htmlFor={`copy-${candidate.id}`}>{candidate.title}</label>
+          </div>
+        ))}
+      </fieldset>
+      {missing ? (
+        <p id={errorId} className="field-error">
+          <span aria-hidden="true">⚠ </span>Choose one copy first.
+        </p>
+      ) : null}
+      <div className="form-actions">
+        <button type="submit" className="button button--primary" aria-disabled={select.isPending ? true : undefined}>
+          {select.isPending ? "Sending…" : "Download this copy"}
+        </button>
+      </div>
+      {select.isError ? <SelectionFailure error={select.error} /> : null}
+    </form>
+  );
+}
+
+function SelectionFailure({ error }: { error: unknown }) {
+  const code = error instanceof ApiError ? error.code : null;
+  const kind = failureKind(error);
+  let text = "The choice could not be sent. Nothing was changed.";
+  if (code === "acquisition_busy") text = "Another download is running on this server. Try again when it has finished.";
+  else if (code === "not_selectable") text = "That copy can no longer be chosen. The list shows what can be chosen now.";
+  else if (kind === "network" || kind === "server" || kind === "busy") text = "The server did not confirm the choice. This page shows the current state; choose again only if nothing is downloading.";
+  else if (kind === "csrf") text = "The page's security check expired. Try again.";
+  return (
+    <p className="field-error" role="alert">
+      {text}
+    </p>
   );
 }

@@ -223,6 +223,7 @@ export const discoverSchema = z.object({
   account: identifier,
   provider: z.object({ name: z.literal("Open Library"), url: z.literal("https://openlibrary.org") }),
   search: z.enum(discoverStates),
+  requesting: z.boolean().optional(),
   retry_after: z.number().int().nonnegative().optional(),
   query: z.string().nullable(),
   items: z.array(discoverItemSchema),
@@ -374,3 +375,26 @@ export type ProgressRequest = ProgressPlace & {
   client_mutation_id: string;
   resolve_conflict?: true;
 };
+
+export const requestCreationSchema = z.discriminatedUnion("outcome", [
+  z.object({ account: identifier, outcome: z.literal("created"), request: z.object({ id: identifier }), warnings: z.array(z.string()) }),
+  z.object({ account: identifier, outcome: z.literal("existing"), request: z.object({ id: identifier }) }),
+  z.object({ account: identifier, outcome: z.literal("already_requested") }),
+  z.object({ account: identifier, outcome: z.literal("already_in_library"), library: z.object({ publication_id: identifier }).nullable() }),
+]);
+export type RequestCreation = z.infer<typeof requestCreationSchema>;
+
+export const selectionStates = ["queued", "downloading", "failed", "completed"] as const;
+export type SelectionState = (typeof selectionStates)[number];
+export const selectionSchema = z.object({ state: z.enum(selectionStates), result_id: identifier, code: z.string().nullable() });
+export type Selection = z.infer<typeof selectionSchema>;
+export const selectionEnvelopeSchema = z.object({ account: identifier, selection: selectionSchema });
+
+export const acquisitionSchema = z.object({
+  account: identifier,
+  request: z.object({ id: identifier, status: z.enum(requestStatuses) }),
+  candidates: z.array(z.object({ id: identifier, title: z.string() })),
+  selection: selectionSchema.nullable(),
+  search: z.object({ state: z.enum(["retry_scheduled", "refused", "waiting"]), code: z.string(), retry_at: timestamp }).nullable(),
+});
+export type Acquisition = z.infer<typeof acquisitionSchema>;

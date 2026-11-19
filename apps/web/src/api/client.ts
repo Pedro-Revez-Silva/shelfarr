@@ -15,6 +15,7 @@ import {
 } from "../contract";
 import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
+import { acquisitionSchema, requestCreationSchema, selectionEnvelopeSchema, type Acquisition, type RequestCreation, type Selection } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
@@ -80,6 +81,9 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   account_conflict: "conflict",
   invalid_query: "invalid",
   search_rate_limited: "rate_limited",
+  work_not_offered: "invalid",
+  not_selectable: "conflict",
+  acquisition_busy: "conflict",
 };
 
 export class ApiClient {
@@ -186,6 +190,26 @@ export class ApiClient {
   async requestDetail(id: string, signal?: AbortSignal): Promise<RequestDetail> {
     const envelope = await this.request({ path: `/requests/${encodeURIComponent(id)}`, schema: requestEnvelopeSchema, signal, account: (value) => value.account });
     return envelope.request;
+  }
+
+  requestEbook(workId: string, signal?: AbortSignal): Promise<RequestCreation> {
+    return this.request({ path: "/requests", schema: requestCreationSchema, method: "POST", body: { work_id: workId, book_type: "ebook" }, signal, account: (value) => value.account });
+  }
+
+  acquisition(id: string, signal?: AbortSignal): Promise<Acquisition> {
+    return this.request({ path: `/requests/${encodeURIComponent(id)}/acquisition`, schema: acquisitionSchema, signal, account: (value) => value.account });
+  }
+
+  async selectResult(id: string, resultId: string, signal?: AbortSignal): Promise<Selection> {
+    const envelope = await this.request({
+      path: `/requests/${encodeURIComponent(id)}/selection`,
+      schema: selectionEnvelopeSchema,
+      method: "POST",
+      body: { result_id: resultId },
+      signal,
+      account: (value) => value.account,
+    });
+    return envelope.selection;
   }
 
   async account(signal?: AbortSignal): Promise<Profile> {

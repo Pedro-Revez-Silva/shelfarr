@@ -1763,3 +1763,59 @@ thead th {
   display: grid;
   gap: 20px;
 }
+
+.discover-request {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  margin-top: 4px;
+}
+.discover-request .button {
+  min-height: 44px;
+}
+.discover-request-status {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.discover-request-status:focus {
+  outline: none;
+}
+.discover-request-status:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+.choose-copy {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+.choose-copy h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+.copy-form {
+  display: grid;
+  gap: 12px;
+}
+.copy-form legend {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.copy-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+.copy-option input {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  accent-color: var(--accent);
+}
+.copy-option label {
+  min-width: 0;
+}

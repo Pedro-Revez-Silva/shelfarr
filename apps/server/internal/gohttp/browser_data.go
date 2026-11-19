@@ -39,7 +39,8 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		problem(w, result, http.StatusUnauthorized, "account_changed")
 		return
 	}
-	mutation := found.kind == routeBrowserStatus || found.kind == routeBrowserDecide || found.kind == routeBrowserProfile || found.kind == routeBrowserPassword || found.kind == routeBrowserProgress && r.Method == http.MethodPut
+	mutation := found.kind == routeBrowserStatus || found.kind == routeBrowserDecide || found.kind == routeBrowserProfile || found.kind == routeBrowserPassword || found.kind == routeBrowserProgress && r.Method == http.MethodPut ||
+		found.kind == routeBrowserRequestCreate || found.kind == routeBrowserSelection
 	if mutation && !a.mutationAllowed(w, r, *session, result) {
 		return
 	}
@@ -78,6 +79,12 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.webRequests(w, r, *session, result)
 	case routeBrowserRequest:
 		a.webRequest(w, r, *session, found.id, result)
+	case routeBrowserRequestCreate:
+		a.webCreateRequest(w, r, *session, result)
+	case routeBrowserAcquisition:
+		a.webAcquisition(w, r, *session, found.id, result)
+	case routeBrowserSelection:
+		a.webSelectResult(w, r, *session, found.id, result)
 	}
 }
 

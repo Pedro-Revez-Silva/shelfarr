@@ -69,9 +69,22 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 	if err != nil {
 		return start("config")
 	}
+	if config.AcquisitionWorkdir != "" {
+		service, code := openAcquisition(ctx, config, roots, logger, clock)
+		if service == nil {
+			return start(code)
+		}
+		defer service.close()
+		app.attachAcquisition(service)
+	}
 	listener, err := net.Listen("tcp", config.Listen)
 	if err != nil {
 		return start("listen")
+	}
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer app.stopAcquisition(stopWorker, config.ShutdownTimeout)
+	if app.acquisition != nil {
+		go app.acquisition.run(workerCtx)
 	}
 	server := newServer(app, config)
 	if announce != nil {
@@ -102,5 +115,28 @@ func newServer(handler http.Handler, config Config) *http.Server {
 		MaxHeaderBytes:    config.MaxHeaderBytes,
 		BaseContext:       func(net.Listener) context.Context { return context.Background() },
 		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+}
+
+func (a *App) attachAcquisition(service *acquisitionService) {
+	service.authorise = func(ctx context.Context, job selectionJob) bool {
+		session, err := a.db.SessionByID(ctx, job.sessionID)
+		if err != nil || session == nil || session.UserID != job.userID {
+			return false
+		}
+		user, err := a.db.BrowserUserByID(ctx, job.userID)
+		return err == nil && user != nil && !user.Deleted && user.Admin && a.previewAllows(user.ID)
+	}
+	a.acquisition = service
+}
+
+func (a *App) stopAcquisition(stop context.CancelFunc, wait time.Duration) {
+	stop()
+	if a.acquisition == nil {
+		return
+	}
+	select {
+	case <-a.acquisition.stopped:
+	case <-time.After(wait):
 	}
 }

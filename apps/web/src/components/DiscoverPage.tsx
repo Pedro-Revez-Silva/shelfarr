@@ -1,8 +1,8 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, failureKind } from "../api/errors";
-import { coverStyles, type DiscoverAnswer, type DiscoverItem, type DiscoverState, type LibraryCopyType } from "../contract";
-import { useDiscover } from "../queries";
+import { coverStyles, type DiscoverAnswer, type DiscoverItem, type DiscoverState, type LibraryCopyType, type RequestCreation } from "../contract";
+import { useDiscover, useRequestEbook } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -260,7 +260,10 @@ function Results({ answer }: { answer: DiscoverAnswer }) {
     <section className="discover-results" aria-labelledby="discover-results-heading">
       <h2 id="discover-results-heading">Results from Open Library</h2>
       <p className="discover-note">
-        Only Open Library is searched here; Shelfarr's classic search may also use other sources your server has set up. Requesting books is not part of this preview yet.
+        Only Open Library is searched here; Shelfarr's classic search may also use other sources your server has set up.{" "}
+        {answer.requesting
+          ? "You can request an ebook that is not in your library yet. This server is a test setup: it looks for the ebook only in its own copy of the Project Gutenberg catalogue."
+          : "Requesting books is not part of this preview yet."}
       </p>
       {answer.items.length === 0 ? (
         <EmptyState title={`Nothing found for “${query}”`}>
@@ -270,7 +273,7 @@ function Results({ answer }: { answer: DiscoverAnswer }) {
         <ol className="discover-list">
           {answer.items.map((item) => (
             <li key={item.id}>
-              <Result item={item} />
+              <Result item={item} requesting={answer.requesting === true} />
             </li>
           ))}
         </ol>
@@ -287,7 +290,7 @@ function styleFor(id: string) {
   return coverStyles[sum] ?? "clay";
 }
 
-function Result({ item }: { item: DiscoverItem }) {
+function Result({ item, requesting }: { item: DiscoverItem; requesting: boolean }) {
   const titleId = useId();
   const details = [item.first_publish_year !== null ? `First published ${item.first_publish_year}` : null, item.edition_count !== null ? `${item.edition_count} ${item.edition_count === 1 ? "edition" : "editions"}` : null].filter(Boolean).join(" · ");
   return (
@@ -311,6 +314,7 @@ function Result({ item }: { item: DiscoverItem }) {
         ) : (
           <p className="discover-meta">No copy to open in your library</p>
         )}
+        {requesting && !item.library.some((copy) => copy.book_type === "ebook") ? <RequestEbook item={item} /> : null}
         <a className="discover-source" href={item.source_url} target="_blank" rel="noopener noreferrer">
           View on Open Library
           <span className="sr-only"> for {item.title} (opens in a new tab)</span>
@@ -318,4 +322,89 @@ function Result({ item }: { item: DiscoverItem }) {
       </div>
     </article>
   );
+}
+
+function RequestEbook({ item }: { item: DiscoverItem }) {
+  const request = useRequestEbook();
+  const status = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (request.isSuccess) status.current?.focus();
+  }, [request.isSuccess]);
+  const send = () => {
+    if (!request.isPending) request.mutate(item.id);
+  };
+  return (
+    <div className="discover-request">
+      {request.isSuccess ? null : (
+        <button type="button" className="button button--primary" aria-disabled={request.isPending ? true : undefined} onClick={send}>
+          {request.isPending ? "Requesting…" : request.isError ? "Try requesting again" : "Request ebook"}
+          <span className="sr-only"> of {item.title}</span>
+        </button>
+      )}
+      <div role="status" className="discover-request-status" ref={status} tabIndex={-1}>
+        {request.isPending ? <p>Sending the request for “{item.title}”…</p> : null}
+        {request.isSuccess ? <RequestOutcome answer={request.data} title={item.title} /> : null}
+        {request.isError ? <RequestFailure error={request.error} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function TrackLink({ id, title }: { id: string; title: string }) {
+  return (
+    <Link to="/requests/$requestId" params={{ requestId: id }} className="button button--subtle">
+      Track it in Requests<span className="sr-only"> for {title}</span>
+    </Link>
+  );
+}
+
+function RequestOutcome({ answer, title }: { answer: RequestCreation; title: string }) {
+  switch (answer.outcome) {
+    case "created":
+      return (
+        <>
+          <p>Requested. Shelfarr will look for the ebook and add it to your library when it is found.</p>
+          {answer.warnings.map((warning) => (
+            <p key={warning} className="discover-meta">
+              {warning}
+            </p>
+          ))}
+          <TrackLink id={answer.request.id} title={title} />
+        </>
+      );
+    case "existing":
+      return (
+        <>
+          <p>You have already requested this ebook. Nothing new was added.</p>
+          <TrackLink id={answer.request.id} title={title} />
+        </>
+      );
+    case "already_requested":
+      return <p>Someone else has already requested this ebook. Once it arrives it will be in the library for everyone here.</p>;
+    case "already_in_library":
+      return answer.library ? (
+        <>
+          <p>This ebook is already in your library.</p>
+          <Link to="/library/$publicationId" params={{ publicationId: answer.library.publication_id }} className="button button--subtle">
+            Open the ebook<span className="sr-only"> of {title} in your library</span>
+          </Link>
+        </>
+      ) : (
+        <p>A copy of this ebook is already recorded, but the Library here cannot open it right now. Nothing new was requested.</p>
+      );
+  }
+}
+
+function RequestFailure({ error }: { error: unknown }) {
+  const code = error instanceof ApiError ? error.code : null;
+  const kind = failureKind(error);
+  if (code === "work_not_offered") return <p className="field-error">This result is from an earlier search. Search again, then request it.</p>;
+  if (kind === "network" || kind === "server" || kind === "busy")
+    return (
+      <p className="field-error">
+        The server did not confirm the request, so it may or may not have been received. <Link to="/requests">Check Requests</Link> before trying again; asking again never creates a second request.
+      </p>
+    );
+  if (kind === "csrf") return <p className="field-error">The page's security check expired. Try again.</p>;
+  return <p className="field-error">The request could not be made. Nothing was changed.</p>;
 }
