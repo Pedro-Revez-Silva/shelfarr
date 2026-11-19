@@ -128,6 +128,25 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_in_delta turned.to_f, progress.observed_at.to_f, 15
   end
 
+  test "a downloaded ebook restored by Back after the offline account expired asks to sign in again" do
+    visit at(consumer_publication_path(@ebook))
+    assert_selector ".consumer-ebook iframe", wait: 20
+    reveal_reading_controls
+    within(".consumer-offline") do
+      click_button "Download"
+      assert_text "Available offline", wait: 20
+    end
+
+    ConsumerReachability.offline = true
+    visit at(consumer_publication_path(@ebook))
+    within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
+    expire_offline_account
+    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
+    assert_text "Sign in again", wait: 15
+    assert_no_selector ".consumer-ebook iframe"
+    assert_no_text "Pages kept for a journey."
+  end
+
   test "another account never sees these downloads, and the sign-in page forgets the offline account" do
     download_audiobook
     # Signing out shows the sign-in page, which forgets the offline account.
@@ -483,6 +502,22 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
   end
 
   # Synthetic reads of this test origin's offline storage.
+  def expire_offline_account
+    page.evaluate_async_script(<<~JS, "#{Capybara.current_session.server.base_url}#{BASE}")
+      const [deployment, done] = arguments
+      const request = indexedDB.open("shelfarr-offline", 1)
+      request.onsuccess = () => {
+        const db = request.result
+        const store = db.transaction("accounts", "readwrite").objectStore("accounts")
+        const read = store.get(deployment)
+        read.onsuccess = () => {
+          const write = store.put({ ...read.result, confirmedAt: Date.now() - (read.result.maxAgeDays + 1) * 86400000 })
+          write.onsuccess = () => { db.close(); done(true) }
+        }
+      }
+    JS
+  end
+
   def offline_account
     page.evaluate_async_script(<<~JS, "#{Capybara.current_session.server.base_url}#{BASE}")
       const [deployment, done] = arguments
