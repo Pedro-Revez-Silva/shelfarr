@@ -14,7 +14,9 @@ export default class extends Controller {
     if (!this.active) return
     if (!this.offline.support().ok) return this.say("Downloads aren't available", this.offline.MESSAGES.unsupported)
     this.onlineHandler = () => this.reconnect()
+    this.pageShowHandler = event => { if (event.persisted) this.restored() }
     window.addEventListener("online", this.onlineHandler)
+    window.addEventListener("pageshow", this.pageShowHandler)
     const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
     if (!active) return this.signedOut("Sign in to use downloads", "Downloads open only for the account that saved them on this browser. Connect to the internet and sign in.")
     if (active.expired) return this.signedOut("Sign in again", "It has been a while since this browser confirmed your account. Connect to the internet and sign in to keep using your downloads.")
@@ -31,6 +33,18 @@ export default class extends Controller {
     clearTimeout(this.retryTimer)
     clearTimeout(this.bannerTimer)
     window.removeEventListener("online", this.onlineHandler)
+    window.removeEventListener("pageshow", this.pageShowHandler)
+  }
+
+  async restored() {
+    if (!this.account) return
+    const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
+    if (!this.active || !this.account) return
+    if (active && !active.expired && active.account === this.account) return
+    this.account = null
+    clearTimeout(this.retryTimer)
+    this.readerTarget.replaceChildren()
+    window.location.reload()
   }
 
   publicationId() {
