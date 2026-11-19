@@ -1367,9 +1367,11 @@ classic Rails preview keeps its page as before), or when a request answer's reac
 the verified role (an admin's list or a detail naming its requester for a member, or the reverse), the guard clears every
 cached answer and the page shows "This account's access changed" with "Continue as the current account", which loads the screens again for the
 role the account has now. Nothing from the earlier role is shown or kept. A request that answers `404` has the session
-checked again, so a lost admin role is noticed there too. A session check that fails (for example `503`) does not prove a
-role change, so it does not lock; it drops every cached Requests list and request instead, so no earlier view returns
-from another tab, filter or Back until a check succeeds and the server answers again.
+checked again, so a lost admin role is noticed there too. A session check that ends the session (`401`) or finds another
+account locks the page as before. A check that is inconclusive (for example `503`) does not prove a role change, so it
+does not lock; it drops every cached Requests list and request once, so no earlier view returns from another tab,
+filter or Back, and the page settles on its retryable error or "not available" without asking again by itself. The next
+successful check asks again for the Requests that failed meanwhile.
 
 ### Contract before and after
 
