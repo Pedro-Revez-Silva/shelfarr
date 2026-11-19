@@ -1277,7 +1277,7 @@ nothing; like every preview route, the shared session guard removes a session ro
   `status` is no filter. An unknown status, a repeated `status`, `attention`, `q` or `page`, or a malformed query is
   `422 invalid_query` (Rails filters an unknown status to an empty list).
 * `q` is stripped of Ruby's `strip` characters, cut to 200 characters and matched, case-insensitively after Unicode NFC
-  and full lower-casing, as a substring of the book's title or author with `%`, `_` and `\` taken literally: Rails'
+  and Ruby's full lower-casing (without Greek final-sigma context, as Ruby's `downcase`), as a substring of the book's title or author with `%`, `_` and `\` taken literally: Rails'
   `shelfarr_request_search_lower` function, registered under another name in Go. Invalid UTF-8 is `422`.
 * `page` is read as Ruby's `to_i` (`"abc"` is 1, `"+0_0_7x"` is 7, a negative is 1), clamped to 1–1,000,000 and then to
   the last page; an empty result is page 1 of 1.
@@ -1287,7 +1287,10 @@ nothing; like every preview route, the shared session guard removes a session ro
   orders by `created_at` only).
 * Reads are bounded: one read-only transaction per answer with two counts, one `LIMIT 25 OFFSET` page joined to its
   book and requester, one grouped download query for the page's downloading requests, and, for a detail, at most the 10
-  newest downloads. Library checks run only for acquired books on the page, at most 25, each the Go details projection.
+  newest downloads. Library checks run only for acquired books on the page, at most 25: the library roots are resolved
+  once, reading places and statuses are read in one batch for the page, and each book gets the Go details projection.
+  A library root the runtime refuses or cannot read makes every acquired copy on the page `unavailable` instead of
+  failing the list.
 
 ### Projection
 
@@ -1299,7 +1302,8 @@ nothing; like every preview route, the shared session guard removes a session ro
   Rails show page's `active?`), the progress. Release names, sizes, clients, external ids and paths are never read.
 * `library` is `null` for a book without a stored file, `available` with the publication id when the Go details page
   would open the book for this account now (the same check Discover uses, with at least one file present), and
-  `unavailable` when Shelfarr has a stored file the Library here cannot open (missing, unsupported or refused). Only
+  `unavailable` when a copy is recorded (`file_path` is set) that the Library here cannot open (missing, unsupported or
+  refused); the screens say exactly that and never claim the files are present. Only
   `available` is linked ("Open in Library", `/preview/library/:id`).
 * `attention_reason` is shown only when `attention_needed` is set and the stored `issue_description` is one of the fixed
   Rails sentences that name no provider, address or error text (no search source returned results; results to review;
@@ -1307,7 +1311,8 @@ nothing; like every preview route, the shared session guard removes a session ro
   which may hold a client error, address or credential, is never returned; the screen then says Rails' own fallback,
   "This request needs your attention."
 * The cover is the book's `cover_url` only when it is a plain `https` address with a host and no user information (Rails'
-  `Consumer::SafeLink`); otherwise the generated cover. Times are UTC ISO 8601 with milliseconds.
+  `Consumer::SafeLink`) and none of its query parameter names looks like a credential (token, key, secret, signature,
+  auth, pass, credential, session, `X-Amz-*`, `X-Goog-*`); otherwise the generated cover. Times are UTC ISO 8601 with milliseconds.
 * A stored timestamp the runtime cannot read is `501 unsupported_stored_value`, as elsewhere.
 
 ### Deliberate differences from Rails
@@ -1326,8 +1331,9 @@ nothing; like every preview route, the shared session guard removes a session ro
   2026 at 11:00 AM"); Rails uses the server's time zone and `time_ago_in_words`.
 * Ties on `created_at` are ordered by id; an unknown status name is `422`; an unknown stored status or type is shown as
   unknown where Rails' page fails.
-* Pages refresh by themselves every 15 seconds while a shown request is pending, searching, downloading or processing
-  (only while the tab is visible); Rails pushes changes over Turbo Streams.
+* Pages refresh by themselves every 15 seconds while a shown request is pending, searching, downloading or processing,
+  or not found with a next search scheduled (only while the tab is visible); Rails pushes changes over Turbo Streams.
+* A cover whose address carries a credential-like query parameter is replaced by the generated cover; Rails shows it.
 
 ### Browser screen
 
@@ -1346,9 +1352,12 @@ replaces the current one.
 A request (`/preview/requests/:id`) shows the format, title, author, badges, Rails' "Attention Required" box, a
 sentence for its stage (announced politely when it changes) with a progress bar while downloading, who asked (admins),
 when it was requested and completed, the next search time for a not-found request, "Open in Library" or the honest
-"cannot open" sentence, and its download attempts. "Back to Requests" returns to the list it came from, filters
-included; a missing or foreign request says "This request is not available". The account guard, session checks and
-locking work as on every other page.
+"cannot open" sentence, and its download attempts. In the same tab "Back to Requests" returns to the list it came from,
+filters included; opened in a new tab it goes to the unfiltered list. A missing or foreign request says "This request
+is not available". The account guard, session checks and
+locking work as on every other page. Request answers are cached per account and per role, and both screens wait for
+the session: when a session check finds that an admin is no longer one, every admin answer is dropped and the list
+or request is asked for again as a member.
 
 ### Contract before and after
 
