@@ -3,6 +3,7 @@ package gohttp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -42,6 +43,8 @@ var attentionReasons = map[string]bool{
 }
 
 var retriesExhausted = regexp.MustCompile(`^Maximum retry attempts \([0-9]{1,4}\) exceeded\. Manual intervention required\.$`)
+
+var credentialParameter = regexp.MustCompile(`(?i)token|key|secret|sig|auth|pass|credential|session|^x-amz-|^x-goog-`)
 
 var rubyInteger = regexp.MustCompile(`^[ \t\n\v\f\r]*([+-]?)([0-9]+(?:_[0-9]+)*)`)
 
@@ -266,33 +269,40 @@ func attentionReason(row live.RequestRow) *string {
 
 func (a *App) requestLibraries(ctx context.Context, userID int64, rows []live.RequestRow) (map[int64]*requestLibrary, error) {
 	libraries := map[int64]*requestLibrary{}
-	var roots []string
+	var books []store.Book
 	for _, row := range rows {
 		book := row.Book
 		if _, seen := libraries[book.ID]; seen || !book.FilePath.Valid || strings.TrimSpace(book.FilePath.String) == "" {
 			continue
 		}
-		if _, served := requestBookTypes[book.BookType]; !served {
-			libraries[book.ID] = &requestLibrary{State: "unavailable"}
-			continue
+		libraries[book.ID] = &requestLibrary{State: "unavailable"}
+		if _, served := requestBookTypes[book.BookType]; served {
+			books = append(books, book)
 		}
-		if roots == nil {
-			resolved, err := a.resolveRoots(ctx)
-			if err != nil {
-				return nil, err
-			}
-			roots = resolved
-		}
-		opens, err := a.detailOpens(ctx, userID, roots, book)
+	}
+	if len(books) == 0 {
+		return libraries, nil
+	}
+	roots, err := a.resolveRoots(ctx)
+	if errors.Is(err, errRootNotAllowed) || unlinkable(err) {
+		return libraries, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	view, err := a.viewFor(ctx, userID, books, webFormats, roots)
+	if err != nil {
+		return nil, err
+	}
+	for _, book := range books {
+		opens, err := viewOpens(ctx, view, book)
 		if err != nil {
 			return nil, err
 		}
-		if !opens {
-			libraries[book.ID] = &requestLibrary{State: "unavailable"}
-			continue
+		if opens {
+			id := strconv.FormatInt(book.ID, 10)
+			libraries[book.ID] = &requestLibrary{State: "available", PublicationID: &id}
 		}
-		id := strconv.FormatInt(book.ID, 10)
-		libraries[book.ID] = &requestLibrary{State: "available", PublicationID: &id}
 	}
 	return libraries, nil
 }
@@ -323,10 +333,7 @@ func summariseRequest(row live.RequestRow, progress map[int64]int, libraries map
 		return requestSummary{}, err
 	}
 	bookID := strconv.FormatInt(row.Book.ID, 10)
-	cover, err := consumer.SafeCover(row.Book.CoverURL)
-	if err != nil {
-		cover = nil
-	}
+	cover := publicCover(row.Book.CoverURL)
 	summary := requestSummary{
 		ID: strconv.FormatInt(row.ID, 10), Status: status, AttentionNeeded: row.Attention, Title: row.Book.Title, BookType: bookType,
 		Cover: webpreview.Cover{URL: cover, Style: webpreview.CoverStyle(bookID)}, CreatedAt: created, UpdatedAt: updated, CompletedAt: completed, NextRetryAt: retry,
@@ -342,6 +349,23 @@ func summariseRequest(row live.RequestRow, progress map[int64]int, libraries map
 		summary.RequestedBy = &requester{Name: row.RequesterName.String, Self: row.UserID == session.user.ID}
 	}
 	return summary, nil
+}
+
+func publicCover(value sql.NullString) *string {
+	cover, err := consumer.SafeCover(value)
+	if err != nil || cover == nil {
+		return nil
+	}
+	parsed, err := url.Parse(*cover)
+	if err != nil {
+		return nil
+	}
+	for name := range parsed.Query() {
+		if credentialParameter.MatchString(name) {
+			return nil
+		}
+	}
+	return cover
 }
 
 func isoTimestamp(text string) (string, error) {

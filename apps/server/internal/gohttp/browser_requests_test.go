@@ -149,22 +149,26 @@ func TestAnAdminSeesEveryRequestWithOnlyTheRequestersDisplayName(t *testing.T) {
 
 func TestRequestFiltersSearchAndPagesFollowRails(t *testing.T) {
 	h := newRequestsHarness(t)
-	livetest.Exec(t, h.path, `INSERT INTO books (id, title, author, book_type) VALUES (20, 'Crème Brûlée', 'ÉMILE ZOLA', 1), (21, 'Plain 100%_x', NULL, 1)`)
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, author, book_type) VALUES (20, 'Crème Brûlée', 'ÉMILE ZOLA', 1), (21, 'Plain 100%_x', NULL, 1), (22, 'ΟΔΟΣ', 'İLKER', 1)`)
 	h.request(seededRequest{id: 20, book: 20, user: 1, status: 0, attention: nil, created: "2026-11-14 09:00:00"})
 	h.request(seededRequest{id: 21, book: 21, user: 1, status: 4, attention: 0, created: "2026-11-14 09:00:00"})
+	h.request(seededRequest{id: 22, book: 22, user: 1, status: 6, attention: 0, created: "2026-11-01 09:00:00"})
 	client := h.client()
 	client.signIn("alice", alicePassword)
 	cases := map[string][]string{
-		"":                                {"21", "20", "5", "4", "3", "2", "1"},
+		"":                                {"21", "20", "5", "4", "3", "2", "1", "22"},
 		"status=active":                   {"21", "3"},
 		"attention=true":                  {"5", "4"},
-		"attention=yes":                   {"21", "20", "5", "4", "3", "2", "1"},
+		"attention=yes":                   {"21", "20", "5", "4", "3", "2", "1", "22"},
 		"status=completed":                {"2", "1"},
 		"status=not_found":                {"4"},
 		"status=pending":                  {"20"},
 		"status=awaiting_purchase":        {},
-		"status=failed":                   {},
-		"status=":                         {"21", "20", "5", "4", "3", "2", "1"},
+		"status=failed":                   {"22"},
+		"q=%CF%83":                        {"22"},
+		"q=%CE%9F%CE%94%CE%9F%CF%82":      {},
+		"q=i%CC%87lker":                   {"22"},
+		"status=":                         {"21", "20", "5", "4", "3", "2", "1", "22"},
 		"status=active&attention=true":    {},
 		"status=searching&attention=true": {"5"},
 		"q=cr%C3%A8me":                    {"20"},
@@ -176,9 +180,9 @@ func TestRequestFiltersSearchAndPagesFollowRails(t *testing.T) {
 		"q=_":                             {"21"},
 		"q=book&status=completed":         {"2", "1"},
 		"q=nothing":                       {},
-		"page=abc":                        {"21", "20", "5", "4", "3", "2", "1"},
-		"page=-3":                         {"21", "20", "5", "4", "3", "2", "1"},
-		"page=99":                         {"21", "20", "5", "4", "3", "2", "1"},
+		"page=abc":                        {"21", "20", "5", "4", "3", "2", "1", "22"},
+		"page=-3":                         {"21", "20", "5", "4", "3", "2", "1", "22"},
+		"page=99":                         {"21", "20", "5", "4", "3", "2", "1", "22"},
 	}
 	for query, want := range cases {
 		body := requestsBody(t, client.get("/preview/api/v1/requests?"+query))
@@ -237,6 +241,10 @@ func TestOlderAndUnknownRequestValuesAreShownHonestly(t *testing.T) {
 	h := newBrowserHarness(t, nil)
 	livetest.Exec(t, h.path, `INSERT INTO books (id, title, book_type, file_path) VALUES (1, 'Future', 7, '/elsewhere/Future.epub'), (2, 'Odd cover', 1, NULL)`)
 	livetest.Exec(t, h.path, `UPDATE books SET cover_url = 'https://covers.example.test/a b.jpg' WHERE id = 2`)
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, book_type, cover_url) VALUES (3, 'Signed cover', 1, 'https://covers.example.test/p.jpg?X-Amz-Signature=abc'), (4, 'Token cover', 1, 'https://covers.example.test/p.jpg?id=9&access_token=synthetic'), (5, 'Plain query cover', 1, 'https://books.example.test/content?id=9&zoom=1')`)
+	h.request(seededRequest{id: 3, book: 3, user: 2, status: 0, attention: 0, created: "2026-10-01 07:00:00"})
+	h.request(seededRequest{id: 4, book: 4, user: 2, status: 0, attention: 0, created: "2026-10-01 06:00:00"})
+	h.request(seededRequest{id: 5, book: 5, user: 2, status: 0, attention: 0, created: "2026-10-01 05:00:00"})
 	h.request(seededRequest{id: 1, book: 1, user: 2, status: 9, attention: nil, created: "2026-11-01 08:00:00", completed: "2026-11-02 08:00:00"})
 	h.request(seededRequest{id: 2, book: 2, user: 2, status: 3, attention: 0, created: "2026-11-01 07:00:00"})
 	h.download(2, 7, 50)
@@ -251,6 +259,13 @@ func TestOlderAndUnknownRequestValuesAreShownHonestly(t *testing.T) {
 	}
 	if odd["download_percent"] != nil || odd["cover"].(map[string]any)["url"] != nil {
 		t.Fatalf("odd %v", odd)
+	}
+	covers := []any{}
+	for _, item := range items[2:] {
+		covers = append(covers, item.(map[string]any)["cover"].(map[string]any)["url"])
+	}
+	if !reflect.DeepEqual(covers, []any{nil, nil, "https://books.example.test/content?id=9&zoom=1"}) {
+		t.Fatalf("covers with credentials %v", covers)
 	}
 	detail := requestsBody(t, client.get("/preview/api/v1/requests/2"))["request"].(map[string]any)
 	if !reflect.DeepEqual(detail["downloads"], []any{map[string]any{"status": "downloading", "progress": nil}, map[string]any{"status": "unknown", "progress": nil}}) {
@@ -293,6 +308,26 @@ func TestRequestRoutesKeepTheBrowserGuardsAnswerOnlyGetAndWriteNothing(t *testin
 	for _, path := range []string{"/api/consumer/v1/requests", "/api/consumer/v1/requests/1"} {
 		if recorder := h.harness.do(http.MethodGet, path, authorised()); recorder.Code != http.StatusNotImplemented || errorCode(t, recorder) != "not_implemented_in_go_runtime" {
 			t.Fatalf("native %s %d", path, recorder.Code)
+		}
+	}
+}
+
+func TestARefusedLibraryRootLeavesRequestsReadableWithTheirCopiesUnavailable(t *testing.T) {
+	h := newRequestsHarness(t)
+	client := h.client()
+	client.signIn("bob", bobPassword)
+	for _, value := range []string{t.TempDir(), "relative/comics"} {
+		livetest.Exec(t, h.path, `UPDATE settings SET value = ? WHERE key = 'comicbook_output_path'`, value)
+		body := requestsBody(t, client.get("/preview/api/v1/requests"))
+		libraries := []any{}
+		for _, item := range body["items"].([]any) {
+			libraries = append(libraries, item.(map[string]any)["library"])
+		}
+		if !reflect.DeepEqual(libraries, []any{nil, map[string]any{"state": "unavailable"}, map[string]any{"state": "unavailable"}}) {
+			t.Fatalf("%s: %v", value, libraries)
+		}
+		if detail := requestsBody(t, client.get("/preview/api/v1/requests/1"))["request"].(map[string]any); !reflect.DeepEqual(detail["library"], map[string]any{"state": "unavailable"}) {
+			t.Fatalf("%s detail %v", value, detail["library"])
 		}
 	}
 }

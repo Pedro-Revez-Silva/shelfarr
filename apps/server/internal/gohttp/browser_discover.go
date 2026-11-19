@@ -213,14 +213,22 @@ func (a *App) openableCopies(ctx context.Context, userID int64, roots []string, 
 }
 
 func (a *App) detailOpens(ctx context.Context, userID int64, roots []string, book store.Book) (bool, error) {
-	items, err := a.publications(ctx, userID, []store.Book{book}, webFormats, roots)
+	view, err := a.viewFor(ctx, userID, []store.Book{book}, webFormats, roots)
+	if err != nil {
+		return false, err
+	}
+	return viewOpens(ctx, view, book)
+}
+
+func viewOpens(ctx context.Context, view consumer.View, book store.Book) (bool, error) {
+	item, err := view.Publication(ctx, book)
 	if unlinkable(err) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	detail, err := webpreview.ProjectDetail(items[0])
+	detail, err := webpreview.ProjectDetail(item)
 	if unlinkable(err) {
 		return false, nil
 	}

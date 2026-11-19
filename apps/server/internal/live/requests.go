@@ -52,7 +52,7 @@ func foldArgument(_ *sqlite.FunctionContext, arguments []driver.Value) (driver.V
 }
 
 func FoldRequestText(value string) string {
-	return cases.Lower(language.Und).String(norm.NFC.String(value))
+	return cases.Lower(language.Und, cases.HandleFinalSigma(false)).String(norm.NFC.String(value))
 }
 
 type RequestScope struct {
