@@ -26,6 +26,8 @@ CREATE TABLE consumer_progresses (id integer PRIMARY KEY, user_id integer NOT NU
 CREATE TABLE consumer_reading_states (id integer PRIMARY KEY, user_id integer NOT NULL, book_id integer NOT NULL, status integer NOT NULL DEFAULT 0, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL);
 CREATE TABLE requests (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, book_id integer NOT NULL, user_id integer NOT NULL, status integer NOT NULL DEFAULT 0, attention_needed boolean DEFAULT 0, issue_description text, notes text, retry_count integer DEFAULT 0, next_retry_at datetime, completed_at datetime, created_via varchar NOT NULL DEFAULT 'web', request_scope varchar NOT NULL DEFAULT 'single', search_generation bigint NOT NULL DEFAULT 0, created_at datetime NOT NULL, updated_at datetime NOT NULL);
 CREATE TABLE downloads (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, request_id integer NOT NULL, name varchar, status integer NOT NULL DEFAULT 0, progress integer DEFAULT 0, size_bytes bigint, download_path varchar, external_id varchar, download_client_id varchar, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00');
+CREATE TABLE system_healths (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', last_check_at datetime, last_success_at datetime, message text, service varchar NOT NULL, status integer NOT NULL DEFAULT 0, updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00');
+CREATE UNIQUE INDEX index_system_healths_on_service ON system_healths (service);
 INSERT INTO schema_migrations (version) VALUES ('20261112150000');
 `
 

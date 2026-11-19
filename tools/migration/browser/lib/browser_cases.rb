@@ -60,6 +60,8 @@ module Migration
         configure_preview
         seed_sessions
         seed_account_people
+        seed_system_health
+        @admin_overview = capture_admin_overview
         checkpoint_and_copy
         run_browser_scenarios
         write_browser_outputs
@@ -209,6 +211,51 @@ module Migration
           "rails_pages" => cookies.to_h { |name, cookie| [ name, REQUEST_FILTERS.map { |query| rails_request_page(cookie, query) } ] },
           "rails_show_status" => cookies.to_h { |name, cookie| [ name, @requests.transform_values { |request| rails_request_status(cookie, request.id) } ] },
           "rails_native_view" => travel_to(NOON, with_usec: true) { Consumer::RequestView.many(member_requests) }
+        }
+      end
+
+      HEALTH_SECRET = "Failed to connect to http://admin:hunter2@10.9.8.7:9696/api?apikey=overview-secret"
+
+      def seed_system_health
+        travel_to(NOON - 5.minutes, with_usec: true) { SystemHealth.for_service("indexer").check_failed!(message: HEALTH_SECRET) }
+        travel_to(NOON - 3.days, with_usec: true) { SystemHealth.for_service("download_client").check_failed!(message: "qBittorrent refused the login", degraded: true) }
+        travel_to(NOON - 40.days, with_usec: true) { SystemHealth.for_service("output_paths").check_succeeded!(message: "All output paths are writable") }
+        SystemHealth.for_service("audiobookshelf")
+        travel_to(NOON - 2.hours, with_usec: true) { SystemHealth.for_service("hardcover").mark_not_configured! }
+        travel_to(NOON - 1.minute, with_usec: true) { SystemHealth.create!(service: "prowlarr", status: :healthy, message: "legacy alias row", last_check_at: Time.current, last_success_at: Time.current) }
+      end
+
+      def rails_admin_page(user)
+        row = Session.create!(user: user, created_at: NOON - 1.minute, updated_at: NOON - 1.minute, ip_address: "127.0.0.1")
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.host! "www.example.com"
+        travel_to(NOON, with_usec: true) { session.get "/admin", headers: { "Cookie" => "session_id=#{session_cookie(row, expires: NOON + 30.days)}", "Accept" => "text/html" } }
+        [ session.response.status, session.response.body ]
+      ensure
+        row&.destroy!
+      end
+
+      def capture_admin_overview
+        status, body = rails_admin_page(@people.fetch("browser_admin").fetch(:user))
+        raise "Rails answered #{status} for /admin" unless status == 200
+
+        page = Nokogiri::HTML(body)
+        health = SystemHealth.all.index_by(&:service)
+        {
+          "secret" => HEALTH_SECRET,
+          "counts" => { "users" => User.active.count, "books" => Book.count, "active_requests" => Request.active.count, "attention_requests" => Request.needs_attention.count },
+          "services" => SystemHealth::SERVICES.map do |service|
+            entry = health[service]
+            { "service" => service, "status" => entry&.status, "checked_at" => entry&.last_check_at&.utc&.iso8601(3) }
+          end,
+          "rails_page" => {
+            "tiles" => page.css("div.grid.grid-cols-2 > div").map { |tile| tile.element_children.map { |child| child.text.squish } },
+            "health" => page.css("#system-health li").map do |item|
+              { "label" => item.at_css("span.font-medium").text.squish, "status" => item.at_css("div.text-right > span").text.squish, "checked" => item.at_css("span.block.text-xs").text.squish }
+            end,
+            "attention" => page.css("section[aria-labelledby='attention-heading'] li p.font-medium").map { |paragraph| paragraph.text.squish }
+          },
+          "rails_member_status" => rails_admin_page(@people.fetch("browser_member").fetch(:user)).first
         }
       end
 
@@ -542,7 +589,7 @@ module Migration
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
                      "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
-                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "requests" => capture_requests, "steps" => @steps }
+                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "requests" => capture_requests, "admin_overview" => @admin_overview, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }

@@ -1416,6 +1416,139 @@ asset build from the same commit. Rollback: deploy the previous binary and asset
 Not proven: Safari, Firefox and screen readers; a library with thousands of requests (the reads are the bounded
 queries above, and Rails' own page runs the same `COUNT` and `OFFSET`).
 
+## Server overview: read-only admin counts and saved health (opt-in)
+
+Status: **experimental, default-off, read-only.** Behind the same switches as the browser screens, an allowlisted
+admin gets Admin after Account in the Go navigation. It opens a Server overview with the build Go already reports, the
+four counts of Rails' admin dashboard and the last saved result of each of the six services Rails' health check
+records. It runs no check, contacts no provider or release feed, reads no setting and offers no action. Account stays
+the personal page; the overview is about the server. The Rails `/admin` page, its health check, update check, settings
+and every other admin screen, the Rails preview and its Admin handoff (`admin.url`) are unchanged.
+
+### Who sees what
+
+An admin is `users.role = 1`. The route first applies the shared session guard (preview allowlist, signed session,
+`session_max_age_days`, deleted account, one `X-Shelfarr-Account` equal to the session's account). A session whose
+account is not an admin is `404 {"error":"not_found"}` before anything is read. Then, inside the read-only transaction
+that also reads the counts, the session row, its age, the account's deletion and the allowlist are checked again (the
+same check that guards request admission and selection) and the account's role is read again: a session removed,
+expired or deleted meanwhile is `401 signed_out`; a role removed meanwhile is the same `404`. The counts and the
+results are therefore never sent for an account that is not an admin in the snapshot they were read from.
+
+### What is served
+
+| Route | Authentication | Answer |
+| --- | --- | --- |
+| `GET`, `HEAD /preview/admin` | none (shell) | The HTML shell, boot view `admin`, title `Server overview · Shelfarr`, the Library policy. Signed out, sign-in returns to the same address. |
+| `GET /preview/api/v1/admin/overview` | session, `X-Shelfarr-Account`, admin | The overview. Other methods `405`, `Allow: GET`. |
+
+```
+{"account":"12",
+ "counts":{"users":3,"books":40,"active_requests":4,"attention_requests":2},
+ "services":[{"service":"indexer","status":"down","checked_at":"2026-11-15T11:55:00.123Z"},
+             {"service":"download_client","status":"degraded","checked_at":"…"},
+             {"service":"download_paths","status":null,"checked_at":null},
+             {"service":"output_paths","status":"healthy","checked_at":"…"},
+             {"service":"audiobookshelf","status":"not_configured","checked_at":null},
+             {"service":"hardcover","status":"unknown","checked_at":"…"}]}
+```
+
+`Cache-Control: private, no-store` on every answer, including `401`, `404` and `405`. The route writes nothing and
+holds one read-only transaction for four `COUNT(*)` statements and, per service, one `LIMIT 1` row: nine bounded
+scalar reads in one snapshot.
+
+### Meanings, matched to Rails
+
+* `users` is `User.active.count`: `deleted_at IS NULL`, so soft-deleted accounts are not counted. `books` is
+  `Book.count`. `active_requests` is `Request.active.count`: status `pending`, `searching`, `downloading` or
+  `processing`, including those that need attention. `attention_requests` is `Request.needs_attention.count`:
+  `attention_needed = 1` (a `NULL` flag is not counted), whatever the status.
+* Rails labels `active_requests` "Pending requests". The overview says "Requests in progress", because `pending` is also
+  one of the four statuses it counts. It is not linked to the Requests page's Active tab, which leaves out requests that
+  need attention, so the numbers differ by design.
+* `services` are `SystemHealth::SERVICES`, always all six and in that order. The row is the one whose `service` is
+  exactly that name, as the dashboard's `index_by(&:service)` finds it; if a database without the unique index held two,
+  the newest id wins, as `index_by` keeps the last. A legacy `prowlarr` row, which `SystemHealth.for_service` would read
+  as `indexer`, is not shown, as the dashboard does not show it. Rows for any other service are not read.
+* `status` is the Rails enum name (`healthy`, `degraded`, `down`, `not_configured`); `null` when the service has no row
+  (Rails' "Not checked"); `unknown` when the stored value is not one of the enum's integers or `last_check_at` cannot be
+  read. `checked_at` is `last_check_at` in UTC with milliseconds, `null` when Rails recorded no check time.
+* `message` and `last_success_at` are never read: a stored message can hold a provider address, credentials or an error
+  text. No setting, path, provider URL, update result or schema detail is read or returned.
+
+### Browser screen
+
+Server overview (`/preview/admin`) shows the Admin eyebrow, the heading, one sentence, the build
+(`/preview/api/v1/session`'s `server.version`, the same value `server.json` reports), then "Needs attention": each
+service whose saved result is down or degraded, and the number of requests that need attention with "Review requests",
+which opens `/preview/requests?attention=true` (the Requests page's Need Attention tab); or "Nothing needs attention in
+the saved results." Four counts follow (Users, Books, Requests in progress, Need attention, marked when above zero), then
+"System health", introduced as "Saved results from the last health check. Opening this page does not run a check.", with
+each service's Rails label (Indexer, Download client, Download paths, Output paths, Library platform, Hardcover), its
+status in words ("Never checked" when no row exists) and "Checked 3 days ago" (a `<time>` with the exact time as its
+title) or "Not checked yet". Status is never shown by colour alone. A member who opens the address directly sees "Only
+administrators can see this page" and nothing is asked of the server; Admin is not in a member's navigation. The page
+waits for the session, asks for the overview only when the session says admin, checks that an answer belongs to the
+signed-in account and arrives under the admin role, and treats a `404` as a reason to check the session again. A role
+removed while the page is open is noticed by the next session check (focus, visibility, `pageshow`, a refresh, or the
+`404`) and locks the page with "This account's access changed", clearing every cached answer; an inconclusive check
+drops the cached overview with the cached requests. Nothing is stored in the browser.
+
+### Deliberate differences from Rails
+
+* No Run check, Check for updates, release channel or backup steps, settings cards, Manage links or Run setup again:
+  Rails keeps them. The Release card is reduced to the build line; no update result is read.
+* No health message is shown (Rails shows it beside each result and in Needs attention), and no "Open … settings" link,
+  since those screens stay in Rails.
+* "Requests in progress" instead of "Pending requests"; "Never checked" instead of "Not checked" for a missing row.
+* Times are relative in the browser's time zone and English ("3 days ago"); Rails uses `time_ago_in_words` on the
+  server.
+* An unknown stored status or unreadable check time is shown as "Unknown status" where Rails' page would fail or show
+  nothing.
+
+### Contract before and after
+
+```
+GET /preview/admin                         before 404 not_found   after 200 shell, boot {"version":1,"runtime":"go","view":"admin","mount":"/preview","api":"/preview/api/v1"}
+GET /preview/api/v1/admin/overview         before 404 not_found   after 200 {"account","counts","services"} (admin), 404 not_found (member), 401 signed_out|account_changed
+other methods on the overview              before 404 not_found   after 405, Allow: GET
+Go boot block "view"                       before …|requests|request   after adds admin
+```
+
+Unchanged: `/preview/api/v1/session` (still `admin: {"url": "/admin"}` for an admin, used by the Rails preview's
+handoff), `server.json`, the native API, cookies, CSRF tokens, the Rails preview and every Rails screen, the schema and
+every setting. The runtime now also requires `system_healths(id, service, status, last_check_at)`, present in the
+supported revision since the table was created. A new frontend served by an older binary shows the overview's "only
+administrators" state (the JSON `404`); serve a binary and an asset build from the same commit. Rollback: deploy the
+previous binary and asset build; nothing is stored, and Admin disappears from the Go navigation.
+
+### Verification
+
+* Go unit tests (`internal/gohttp`): an admin's exact counts with a soft-deleted account, a `NULL` attention flag and
+  every request status; the six services with a down, degraded, healthy, not configured, missing and unknown result, a
+  legacy `prowlarr` row and an unrelated row ignored, and no message, address or credential in the answer; stored text,
+  negative and unreadable values as `unknown`; anonymous `401`, member `404`, wrong or missing account header `401`,
+  every other method `405` with `no-store`, the preview off or the admin unlisted `404`; a role removed, an account
+  deleted and a session removed between the guard and the snapshot answering `404`, `401` and `401`; no row changed;
+  the shell and its `HEAD`.
+* Web unit tests: the contract refuses a missing, reordered, extra or unknown service and a negative count; the
+  navigation, build, counts, Needs attention (plural and singular), health rows and times; Review requests and Back; a
+  member's direct load asking nothing; a role removed by a session check or noticed through a `404` locking the page and
+  clearing the cache; an answer for another account; a server failure with Try again; the classic preview keeping its
+  handoff.
+* `apps/web/e2e/admin.test.ts` over `tools/migration/browser` fixtures: the Rails fixture records saved results with
+  the real `SystemHealth` methods (a down indexer whose message holds an address and key, a degraded client, a 40-day
+  old healthy result, an unconfigured service without and with a check time, no row for download paths and a legacy
+  `prowlarr` row), the real Rails dashboard counts and the real `/admin` page an admin sees (tiles, health labels,
+  statuses and check lines, Needs attention) and that Rails redirects a member. Headless Chromium against the
+  production binary and asset build checks Go's answer equals Rails' counts and results, no stored message in any
+  answer or page, the page against Rails' page item by item, reload, keyboard activation of Review requests, the
+  attention tab, Back, no row written, a member's and an anonymous or wrong-account call refused, a role removed while
+  the page is open locking it on focus, and axe with no overflow or small targets in light and dark, desktop, phone and
+  320 px at 100% and 200% text.
+
+Not proven: Safari, Firefox and screen readers.
+
 ## Requesting one ebook on a prepared disposable volume (opt-in)
 
 Status: **experimental, default-off, test volumes only.** With `-acquisition-workdir DIR`, an allowlisted account can

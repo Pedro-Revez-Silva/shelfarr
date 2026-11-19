@@ -33,7 +33,7 @@ func webHarness(t *testing.T, adjust func(*Config)) (*browserHarness, webassetst
 	return h, listed
 }
 
-var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/preview/requests": "requests", "/preview/requests?status=active&page=2": "requests", "/preview/requests/7": "request", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
+var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/preview/requests": "requests", "/preview/requests?status=active&page=2": "requests", "/preview/requests/7": "request", "/preview/admin": "admin", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
 
 func TestTheShellRoutesServeOneStaticDocumentPerViewWithAStrictPolicy(t *testing.T) {
 	h, listed := webHarness(t, nil)
@@ -127,7 +127,7 @@ func TestPathsOutsideTheScreensKeepAnsweringJSONNotTheShell(t *testing.T) {
 	client := h.client()
 	for _, path := range []string{
 		"/", "/read", "/admin", "/admin/users", "/login", "/session", "/preview/", "/preview/library/", "/preview/library/0", "/preview/library/01", "/preview/library/abc", "/preview/library/1/extra",
-		"/preview/library/99999999999999999999", "/preview/account/", "/preview/account/password", "/preview/discover/", "/preview/discover/OL1W", "/preview/requests/", "/preview/requests/0", "/preview/requests/abc", "/preview/requests/7/edit", "/preview/search", "/preview/profile", "/preview/admin", "/preview/signin", "/preview/api", "/preview/api/", "/preview/api/v1", "/preview/api/v1/", "/preview/api/v1/unknown", "/preview/api/v2/session",
+		"/preview/library/99999999999999999999", "/preview/account/", "/preview/account/password", "/preview/discover/", "/preview/discover/OL1W", "/preview/requests/", "/preview/requests/0", "/preview/requests/abc", "/preview/requests/7/edit", "/preview/search", "/preview/profile", "/preview/admin/", "/preview/admin/users", "/preview/admin/overview", "/preview/signin", "/preview/api", "/preview/api/", "/preview/api/v1", "/preview/api/v1/", "/preview/api/v1/unknown", "/preview/api/v2/session",
 		"/preview/assets", "/preview/assets/", "/preview/assets/missing.0000000000000000.js", "/preview/assets/a/b.js", "/preview/assets/manifest.json", "/preview/assets/%2e%2e/manifest.json", "/preview/assets/preview.js.map",
 		"/consumer", "/consumer/connect/", "/consumer/connect/extra", "/consumer/connection", "/api/v1/requests", "/api/consumer/v1/unknown",
 	} {

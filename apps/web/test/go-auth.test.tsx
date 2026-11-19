@@ -17,7 +17,7 @@ describe("the Go browser contract", () => {
     expect(readStartup(document)).toEqual({ kind: "go", boot: goBoot("connect") });
     document.body.innerHTML = `<script type="application/json" id="shelfarr-boot">${JSON.stringify({ version: 1, account: "5", mount: "/preview", api: "/preview/api/v1", classic_library: "/read" })}</script>`;
     expect(readStartup(document).kind).toBe("rails");
-    document.body.innerHTML = `<script type="application/json" id="shelfarr-boot">${JSON.stringify({ ...goBoot(), view: "admin" })}</script>`;
+    document.body.innerHTML = `<script type="application/json" id="shelfarr-boot">${JSON.stringify({ ...goBoot(), view: "settings" })}</script>`;
     expect(() => readStartup(document)).toThrow(BootError);
     expect(goBootSchema.safeParse({ ...goBoot(), api: "https://evil.test" }).success).toBe(false);
   });

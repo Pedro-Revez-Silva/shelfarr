@@ -7,7 +7,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
-import { ApiError, isApiError } from "./api/errors";
+import { ApiError, failureKind, isApiError } from "./api/errors";
 import type { Acquisition, LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices } from "./services";
 
@@ -128,6 +128,23 @@ export function useRequest(id: string) {
     },
     enabled: ready,
     refetchInterval: ({ state }) => (state.data && stillChanging(state.data) ? REQUEST_REFRESH_MS : false),
+  });
+}
+
+export function useServerOverview() {
+  const { api, keys, revalidate } = useServices();
+  const admin = useSession().data?.admin !== undefined;
+  const check = useRoleCheck();
+  return useQuery({
+    queryKey: keys.serverOverview,
+    queryFn: async ({ signal }) => {
+      const overview = await api.serverOverview(signal).catch((error: unknown) => {
+        if (failureKind(error) === "not_found") revalidate();
+        throw error;
+      });
+      return check(true, overview);
+    },
+    enabled: admin,
   });
 }
 

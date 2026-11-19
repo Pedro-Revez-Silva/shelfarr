@@ -16,6 +16,7 @@ import {
 import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
 import { acquisitionSchema, requestCreationSchema, selectionEnvelopeSchema, type Acquisition, type RequestCreation, type Selection } from "../contract";
+import { serverOverviewSchema, type ServerOverview } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
@@ -210,6 +211,10 @@ export class ApiClient {
       account: (value) => value.account,
     });
     return envelope.selection;
+  }
+
+  serverOverview(signal?: AbortSignal): Promise<ServerOverview> {
+    return this.request({ path: "/admin/overview", schema: serverOverviewSchema, signal, account: (value) => value.account });
   }
 
   async account(signal?: AbortSignal): Promise<Profile> {

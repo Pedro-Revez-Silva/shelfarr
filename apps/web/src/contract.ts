@@ -128,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({
@@ -398,3 +398,22 @@ export const acquisitionSchema = z.object({
   search: z.object({ state: z.enum(["retry_scheduled", "refused", "waiting"]), code: z.string(), retry_at: timestamp }).nullable(),
 });
 export type Acquisition = z.infer<typeof acquisitionSchema>;
+
+export const healthServices = ["indexer", "download_client", "download_paths", "output_paths", "audiobookshelf", "hardcover"] as const;
+export type HealthService = (typeof healthServices)[number];
+export const healthStatuses = ["healthy", "degraded", "down", "not_configured", "unknown"] as const;
+export type HealthStatus = (typeof healthStatuses)[number];
+
+const tally = z.number().int().nonnegative();
+
+export const serviceHealthSchema = z.object({ service: z.enum(healthServices), status: z.enum(healthStatuses).nullable(), checked_at: timestamp.nullable() });
+export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
+
+export const serverOverviewSchema = z
+  .object({
+    account: identifier,
+    counts: z.object({ users: tally, books: tally, active_requests: tally, attention_requests: tally }),
+    services: z.array(serviceHealthSchema),
+  })
+  .refine((overview) => overview.services.length === healthServices.length && overview.services.every((entry, index) => entry.service === healthServices[index]), "Every health service must be listed once, in order");
+export type ServerOverview = z.infer<typeof serverOverviewSchema>;

@@ -1823,3 +1823,129 @@ thead th {
 .copy-option label {
   min-width: 0;
 }
+
+.overview {
+  display: grid;
+  gap: 24px;
+  max-width: 56rem;
+}
+.overview .page-heading {
+  margin-bottom: 0;
+}
+.overview-build {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.overview-build dd {
+  margin: 0;
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.overview-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.overview-tally {
+  display: grid;
+  gap: 4px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.overview-tally dt {
+  color: var(--muted);
+  font-size: 14px;
+}
+.overview-tally dd {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 2rem;
+  line-height: 1.1;
+}
+.overview-tally--alert {
+  border-color: var(--danger);
+}
+.overview-tally--alert dd {
+  color: var(--danger);
+}
+.overview-card {
+  display: grid;
+  gap: 12px;
+  padding: 20px clamp(16px, 4vw, 24px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+.overview-card--alert {
+  border-color: var(--danger);
+}
+.overview-card h2,
+.overview-card p {
+  margin: 0;
+}
+.overview-note {
+  color: var(--muted);
+}
+.attention-list,
+.health-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+.attention-list {
+  gap: 12px;
+}
+.attention-requests {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.health-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.health-row:first-child {
+  border-top: 0;
+}
+.health-name {
+  flex: 1 1 10rem;
+  font-weight: 550;
+}
+.health-checked {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 13px;
+}
+.badge--healthy {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.badge--down,
+.badge--degraded {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+.badge--down {
+  border-width: 2px;
+}
+@media (forced-colors: active) {
+  .overview-tally--alert,
+  .overview-card--alert {
+    border-width: 3px;
+  }
+}

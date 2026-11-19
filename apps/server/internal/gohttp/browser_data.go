@@ -85,6 +85,8 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.webAcquisition(w, r, *session, found.id, result)
 	case routeBrowserSelection:
 		a.webSelectResult(w, r, *session, found.id, result)
+	case routeBrowserAdminOverview:
+		a.webAdminOverview(w, r, *session, result)
 	}
 }
 

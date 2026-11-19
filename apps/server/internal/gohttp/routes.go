@@ -48,6 +48,7 @@ const (
 	routeBrowserRequestCreate
 	routeBrowserAcquisition
 	routeBrowserSelection
+	routeBrowserAdminOverview
 	routeAuthBootstrap
 	routeAuthLogin
 	routeAuthLogout
@@ -242,6 +243,8 @@ func classifyPreview(method, rest string) route {
 		return served(method, route{kind: routeBrowserAcquisition, name: "browser_acquisition", id: segments[1]}, http.MethodGet)
 	case len(segments) == 3 && segments[0] == "requests" && segments[2] == "selection" && segmentOK(segments[1]):
 		return served(method, route{kind: routeBrowserSelection, name: "browser_selection", id: segments[1]}, http.MethodPost)
+	case rest == "admin/overview":
+		return served(method, route{kind: routeBrowserAdminOverview, name: "browser_admin_overview"}, http.MethodGet)
 	case rest == "auth/bootstrap":
 		return served(method, route{kind: routeAuthBootstrap, name: "auth_bootstrap"}, http.MethodGet)
 	case rest == "auth/login":

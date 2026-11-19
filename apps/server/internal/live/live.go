@@ -40,6 +40,7 @@ var requiredColumns = map[string][]string{
 	"consumer_reading_states":    {"id", "user_id", "book_id", "status", "updated_at"},
 	"requests":                   {"id", "book_id", "user_id", "status", "attention_needed", "issue_description", "created_at", "updated_at", "completed_at", "next_retry_at"},
 	"downloads":                  {"id", "request_id", "status", "progress"},
+	"system_healths":             {"id", "service", "status", "last_check_at"},
 }
 
 type Options struct {

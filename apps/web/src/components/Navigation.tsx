@@ -30,6 +30,13 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
                 Account
               </Link>
             </li>
+            {session?.admin ? (
+              <li>
+                <Link to="/admin" className="nav-link">
+                  Admin
+                </Link>
+              </li>
+            ) : null}
           </>
         )}
         {session && handoffs ? (

@@ -16,6 +16,15 @@ export type Fixture = {
   personas: Record<string, { cookie: string; user_id: number; session_id: number | null }>;
   discover: DiscoverCases;
   requests: RequestCases;
+  adminOverview: AdminOverviewCases;
+};
+
+export type AdminOverviewCases = {
+  secret: string;
+  counts: { users: number; books: number; active_requests: number; attention_requests: number };
+  services: { service: string; status: string | null; checked_at: string | null }[];
+  rails_page: { tiles: string[][]; health: { label: string; status: string; checked: string }[]; attention: string[] };
+  rails_member_status: number;
 };
 
 export type RailsRequestCard = { title: string; id: number; labels: string[]; requested_by: string | null };
@@ -62,6 +71,7 @@ export function loadFixture(): Fixture {
     personas: secrets.personas,
     discover: cases.discover,
     requests: cases.requests,
+    adminOverview: cases.admin_overview,
   };
 }
 
