@@ -217,6 +217,50 @@ describe("the Go Discover page", () => {
     expect(searches(server).map(queryOf)).toEqual(["dune", "dune", null, null]);
   });
 
+  test("a check that ends in a failure shows only the failure, with the form back", async () => {
+    let calls = 0;
+    const server = discoverServer((query) => {
+      calls += 1;
+      return calls === 1 ? { body: answer(query, [], { search: "provider_paused", retry_after: 5 }) } : error(502, "search_failed");
+    });
+    renderDiscover(server, "/preview/discover?q=dune");
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Check again" }));
+    expect(await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 2, name: "Open Library is paused for now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    expect(screen.getByRole("searchbox", { name: "Title or author" })).toBeTruthy();
+  });
+
+  test("a failed search is not sent again by leaving and coming back, only by Try again", async () => {
+    const server = discoverServer(() => error(502, "search_failed"));
+    const { router } = renderDiscover(server, "/preview/discover?q=dune");
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    act(() => {
+      void router.navigate({ to: "/library" });
+    });
+    await screen.findByRole("heading", { level: 1, name: "Library" });
+    act(() => router.history.back());
+    await screen.findByRole("heading", { level: 2, name: "Open Library's answer could not be used" });
+    await act(async () => Bun.sleep(50));
+    expect(searches(server).map(queryOf)).toEqual(["dune"]);
+  });
+
+  test("moving between two addresses for the same search puts the field back to that search", async () => {
+    const server = discoverServer();
+    const { router } = renderDiscover(server, "/preview/discover?q=+dune+");
+    await screen.findByText("2 results from Open Library for “dune”.");
+    act(() => {
+      void router.navigate({ to: "/discover", search: { q: "dune" } });
+    });
+    const user = userEvent.setup();
+    const input = field() as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, "emma");
+    act(() => router.history.back());
+    await waitFor(() => expect((field() as HTMLInputElement).value).toBe("dune"));
+  });
+
   test("a server with search switched off offers no check, since only a restart changes it", async () => {
     const server = discoverServer((query) => ({ body: answer(query, [], { search: "server_off" }) }));
     renderDiscover(server);

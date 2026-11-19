@@ -70,6 +70,7 @@ export function useDiscover(query: string | null) {
     queryFn: ({ signal }) => api.discover(query, signal),
     staleTime: ({ state }) => (state.data?.search === "available" ? (query === null ? 30_000 : 5 * 60_000) : 0),
     retry: false,
+    retryOnMount: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });

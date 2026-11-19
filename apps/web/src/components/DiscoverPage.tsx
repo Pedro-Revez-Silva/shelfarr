@@ -43,7 +43,7 @@ function Discover() {
   const query = checked.kind === "ready" ? checked.query : null;
   usePageTitle(query ? `Discover: ${query}` : "Discover");
   const answer = useDiscover(query);
-  const state = answer.data?.search ?? null;
+  const state = answer.isError ? null : (answer.data?.search ?? null);
   const searchable = state === null || state === "available";
 
   const submit = (text: string) => {
@@ -62,7 +62,7 @@ function Discover() {
       </header>
 
       {searchable ? (
-        <SearchForm initial={checked.kind === "ready" ? checked.query : (q ?? "")} problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null} onSearch={submit} />
+        <SearchForm source={q ?? ""} initial={checked.kind === "ready" ? checked.query : (q ?? "")} problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null} onSearch={submit} />
       ) : null}
 
       <SearchStatus query={query} answer={answer.data} pending={query !== null && answer.isFetching} failed={answer.isError} />
@@ -75,12 +75,12 @@ function Discover() {
   );
 }
 
-function SearchForm({ initial, problem, onSearch }: { initial: string; problem: "too_long" | "invalid" | null; onSearch: (query: string) => void }) {
+function SearchForm({ source, initial, problem, onSearch }: { source: string; initial: string; problem: "too_long" | "invalid" | null; onSearch: (query: string) => void }) {
   const [text, setText] = useState(initial);
-  const [shown, setShown] = useState(initial);
+  const [shown, setShown] = useState(source);
   const [blank, setBlank] = useState(false);
-  if (shown !== initial) {
-    setShown(initial);
+  if (shown !== source) {
+    setShown(source);
     setText(initial);
     setBlank(false);
   }
