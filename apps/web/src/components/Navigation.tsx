@@ -21,6 +21,11 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
               </Link>
             </li>
             <li>
+              <Link to="/requests" className="nav-link">
+                Requests
+              </Link>
+            </li>
+            <li>
               <Link to="/account" className="nav-link">
                 Account
               </Link>

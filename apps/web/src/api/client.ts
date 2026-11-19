@@ -14,6 +14,7 @@ import {
   type Session,
 } from "../contract";
 import { discoverSchema, type DiscoverAnswer } from "../contract";
+import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
@@ -171,6 +172,20 @@ export class ApiClient {
     const params = new URLSearchParams();
     if (query !== null) params.set("q", query);
     return this.request({ path: `/discover${suffix(params)}`, schema: discoverSchema, signal, account: (value) => value.account });
+  }
+
+  requests(filters: RequestFilters, signal?: AbortSignal): Promise<RequestList> {
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.attention) params.set("attention", filters.attention);
+    if (filters.q) params.set("q", filters.q);
+    if (filters.page) params.set("page", filters.page);
+    return this.request({ path: `/requests${suffix(params)}`, schema: requestListSchema, signal, account: (value) => value.account });
+  }
+
+  async requestDetail(id: string, signal?: AbortSignal): Promise<RequestDetail> {
+    const envelope = await this.request({ path: `/requests/${encodeURIComponent(id)}`, schema: requestEnvelopeSchema, signal, account: (value) => value.account });
+    return envelope.request;
   }
 
   async account(signal?: AbortSignal): Promise<Profile> {

@@ -128,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader", "account", "discover"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({
@@ -241,6 +241,69 @@ export const libraryFiltersSchema = z.object({
   sort: z.enum(librarySorts).optional().catch(undefined),
 });
 export type LibraryFilters = z.infer<typeof libraryFiltersSchema>;
+
+export const requestStatuses = ["pending", "searching", "not_found", "downloading", "processing", "completed", "failed", "awaiting_purchase", "unknown"] as const;
+export type RequestStatus = (typeof requestStatuses)[number];
+export const requestFilterStatuses = ["active", "pending", "searching", "not_found", "downloading", "processing", "completed", "failed", "awaiting_purchase"] as const;
+export type RequestFilterStatus = (typeof requestFilterStatuses)[number];
+export const requestBookTypes = ["ebook", "audiobook", "comicbook", "unknown"] as const;
+export const downloadStatuses = ["queued", "downloading", "paused", "completed", "failed", "unknown"] as const;
+export type DownloadStatus = (typeof downloadStatuses)[number];
+
+const percent = z.number().int().min(0).max(100);
+
+export const requestLibrarySchema = z.discriminatedUnion("state", [z.object({ state: z.literal("available"), publication_id: identifier }), z.object({ state: z.literal("unavailable") })]);
+
+export const requestSummarySchema = z.object({
+  id: identifier,
+  status: z.enum(requestStatuses),
+  attention_needed: z.boolean(),
+  title: z.string(),
+  author: z.string().nullable(),
+  book_type: z.enum(requestBookTypes),
+  cover: z.object({ url: httpsUrl.nullable(), style: z.enum(coverStyles) }),
+  download_percent: percent.nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+  completed_at: timestamp.nullable(),
+  next_retry_at: timestamp.nullable(),
+  library: requestLibrarySchema.nullable(),
+  requested_by: z.object({ name: z.string(), self: z.boolean() }).optional(),
+});
+export type RequestSummary = z.infer<typeof requestSummarySchema>;
+
+export const requestDetailSchema = requestSummarySchema.extend({
+  attention_reason: z.string().nullable(),
+  downloads: z.array(z.object({ status: z.enum(downloadStatuses), progress: percent.nullable() })),
+});
+export type RequestDetail = z.infer<typeof requestDetailSchema>;
+
+export const requestListSchema = z
+  .object({
+    account: identifier,
+    scope: z.enum(["own", "all"]),
+    filter: z.object({ status: z.enum(requestFilterStatuses).nullable(), attention: z.boolean(), q: z.string().nullable() }),
+    counts: z.object({ attention: z.number().int().nonnegative(), active: z.number().int().nonnegative() }),
+    page: z.number().int().positive(),
+    per_page: z.number().int().positive(),
+    total: z.number().int().nonnegative(),
+    total_pages: z.number().int().positive(),
+    items: z.array(requestSummarySchema),
+  })
+  .refine((list) => list.scope === "all" || list.items.every((item) => item.requested_by === undefined), "A member's list must not name requesters");
+export type RequestList = z.infer<typeof requestListSchema>;
+
+export const requestEnvelopeSchema = z.object({ account: identifier, request: requestDetailSchema });
+
+export const MAX_REQUEST_QUERY = 200;
+
+export const requestFiltersSchema = z.object({
+  status: z.enum(requestFilterStatuses).optional().catch(undefined),
+  attention: z.literal("true").optional().catch(undefined),
+  q: z.string().optional().catch(undefined),
+  page: z.string().regex(/^[1-9]\d{0,6}$/).optional().catch(undefined),
+});
+export type RequestFilters = z.infer<typeof requestFiltersSchema>;
 
 const assetIdentifier = z.string().min(1).max(128);
 

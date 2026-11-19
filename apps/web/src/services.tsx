@@ -3,7 +3,7 @@ import { createContext, useContext, useSyncExternalStore, type ReactNode } from 
 import { AccountGuard, type GuardState } from "./api/account-guard";
 import { ApiClient, type MutationLifecycle } from "./api/client";
 import { isApiError } from "./api/errors";
-import type { Boot, LibraryFilters } from "./contract";
+import type { Boot, LibraryFilters, RequestFilters } from "./contract";
 
 export type Mode = "rails" | "go";
 
@@ -31,6 +31,8 @@ export function createQueryKeys(account: string) {
     continueAll: [...root, "continue"] as const,
     publication: (id: string) => [...root, "publication", id] as const,
     discover: (query: string | null) => [...root, "discover", query] as const,
+    requests: (filters: RequestFilters) => [...root, "requests", filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
+    request: (id: string) => [...root, "request", id] as const,
   };
 }
 

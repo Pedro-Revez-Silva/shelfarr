@@ -9,6 +9,7 @@ const READER = ["test/reader.test.ts"];
 const PAGES = ["test/pages.test.ts"];
 const GO_ACCOUNT = ["test/go-account.test.tsx"];
 const GO_DISCOVER = ["test/go-discover.test.tsx"];
+const GO_REQUESTS = ["test/go-requests.test.tsx"];
 
 const mutants: Mutant[] = [
   { name: "sign-in: a second submit while one is pending is sent", file: "src/go/SignInPage.tsx", old: "if (submitting.current) return;", replacement: "", tests: GO_AUTH },
@@ -87,6 +88,17 @@ const mutants: Mutant[] = [
   { name: "discover: the field keeps a draft from another address", file: "src/components/DiscoverPage.tsx", old: "<SearchForm source={q ?? \"\"} initial=", replacement: "<SearchForm source={checked.kind === \"ready\" ? checked.query : (q ?? \"\")} initial=", tests: GO_DISCOVER },
   { name: "discover: a cached failure is sent again by navigation", file: "src/queries.ts", old: '    enabled: ({ state }) => state.status !== "error",\n', replacement: "", tests: GO_DISCOVER },
   { name: "discover: the classic preview serves the Go discover page", file: "src/components/DiscoverPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_DISCOVER },
+  { name: "requests: a member's list may name requesters", file: "src/contract.ts", old: '\n  .refine((list) => list.scope === "all" || list.items.every((item) => item.requested_by === undefined), "A member\'s list must not name requesters");', replacement: ";", tests: GO_REQUESTS },
+  { name: "requests: a copy the Library cannot open is linked", file: "src/components/RequestsPage.tsx", old: 'const available = request.library?.state === "available" ? request.library.publication_id : null;', replacement: 'const available = request.library ? "10" : null;', tests: GO_REQUESTS },
+  { name: "requests: the current tab is not marked", file: "src/components/RequestsPage.tsx", old: 'aria-current={filter.key === key ? "page" : undefined}', replacement: "aria-current={undefined}", tests: GO_REQUESTS },
+  { name: "requests: a search drops the current tab", file: "src/components/RequestsPage.tsx", old: "  if (filters.status) next.status = filters.status;\n", replacement: "", tests: GO_REQUESTS },
+  { name: "requests: a search keeps the old page", file: "src/components/RequestsPage.tsx", old: "if (changes.page && changes.page > 1) next.page = String(changes.page);", replacement: "if (filters.page || changes.page) next.page = String(changes.page ?? filters.page);", tests: GO_REQUESTS },
+  { name: "requests: answers for different filters share one cache entry", file: "src/services.tsx", old: '[...root, "requests", filters.status ?? null, ', replacement: '[...root, "requests", ', tests: GO_REQUESTS },
+  { name: "requests: Back forgets the list's filters", file: "src/components/RequestPage.tsx", old: "if (router.history.canGoBack()) {", replacement: "if (router.history.canGoBack() && router.history.length < 0) {", tests: GO_REQUESTS },
+  { name: "requests: an over-long search is sent", file: "src/components/RequestsPage.tsx", old: 'return [...trimmed].slice(0, MAX_REQUEST_QUERY).join("");', replacement: "return trimmed;", tests: GO_REQUESTS },
+  { name: "requests: a missing request is shown as a server failure", file: "src/components/RequestPage.tsx", old: 'const missing = failureKind(request.error) === "not_found";', replacement: 'const missing = failureKind(request.error) === "network";', tests: GO_REQUESTS },
+  { name: "requests: the classic preview serves the Go requests page", file: "src/components/RequestsPage.tsx", old: 'if (mode !== "go") {', replacement: 'if (mode !== "go" && mode.length === 0) {', tests: GO_REQUESTS },
+  { name: "requests: the Go navigation has no Requests link", file: "src/components/Navigation.tsx", old: '<Link to="/requests" className="nav-link">', replacement: '<Link to="/library" className="nav-link">', tests: GO_AUTH },
 ];
 
 const root = process.argv[2];

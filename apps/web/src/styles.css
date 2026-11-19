@@ -1535,3 +1535,226 @@ thead th {
   align-items: center;
   min-height: 44px;
 }
+
+.requests {
+  display: grid;
+  gap: 20px;
+}
+.requests .page-heading,
+.requests .result-count {
+  margin-bottom: 0;
+}
+.request-filters ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.filter-link:hover {
+  color: var(--ink);
+}
+.filter-link[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+.filter-link--alert {
+  border-color: var(--danger);
+}
+.filter-count {
+  min-width: 1.6em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--ink);
+  font-size: 12px;
+  text-align: center;
+}
+.filter-link--alert .filter-count {
+  background: var(--danger);
+  color: var(--paper);
+}
+.request-search .search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.request-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+}
+.request-card {
+  display: grid;
+  grid-template-columns: clamp(56px, 16vw, 80px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.request-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  justify-items: start;
+}
+.request-copy h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.3;
+}
+.request-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.request-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 550;
+}
+.badge--status {
+  border-color: var(--muted);
+}
+.badge--completed {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.badge--attention,
+.badge--failed {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: transparent;
+}
+.request-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(100%, 20rem);
+  color: var(--muted);
+  font-size: 13px;
+}
+.request-progress progress,
+.request-stage progress {
+  flex: 1;
+  width: 100%;
+  accent-color: var(--accent);
+}
+.request-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.request-open {
+  min-height: 44px;
+}
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.pagination-links {
+  display: flex;
+  gap: 8px;
+}
+.request-details .details-main {
+  display: grid;
+  gap: 16px;
+  justify-items: start;
+}
+.request-details .details-author {
+  margin-bottom: 0;
+}
+.attention {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+}
+.attention h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: var(--danger);
+}
+.request-stage {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 28rem);
+}
+.request-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: 12px 24px;
+  width: 100%;
+  margin: 0;
+}
+.request-facts dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+.request-facts dd {
+  margin: 0;
+  font-weight: 550;
+}
+.request-downloads {
+  margin-top: 32px;
+}
+.request-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+.request-downloads ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.request-downloads li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+@media (forced-colors: active) {
+  .filter-link[aria-current="page"] {
+    border-width: 3px;
+  }
+}
