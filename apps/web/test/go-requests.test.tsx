@@ -303,6 +303,39 @@ describe("the Requests page", () => {
     expect(services.queryClient.getQueryCache().getAll().length).toBe(0);
   });
 
+  test("a session check that fails drops every cached request answer, so no earlier view comes back on another tab or by Back", async () => {
+    let failing = false;
+    const server = requestsServer((recorded) => ({ body: list([request({ title: params(recorded)["status"] === "completed" ? "Cached Completed" : "Someone Else's", requested_by: { name: "Bob", self: false } })], { scope: "all" }) })).on(
+      "GET",
+      /\/api\/v1\/session$/,
+      () => (failing ? error(503, "database_busy") : { body: session({ admin: { url: "/admin" } }) }),
+    );
+    const { services } = renderRequests(server);
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 3 })).toBeTruthy();
+    await userEvent.click(screen.getByRole("link", { name: "Completed" }));
+    expect(await screen.findByRole("heading", { name: "Cached Completed", level: 3 })).toBeTruthy();
+    failing = true;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(screen.queryByText("Cached Completed")).toBeNull(), { timeout: 4000 });
+    expect(services.queryClient.getQueriesData({ queryKey: services.keys.requestsAll }).filter(([, data]) => data !== undefined)).toEqual([]);
+    await userEvent.click(screen.getByRole("link", { name: "All" }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(screen.queryByText("Someone Else's")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).not.toBe("This account's access changed");
+  });
+
+  test("the classic preview keeps its page when the role changes, as before", async () => {
+    let admin = true;
+    const server = requestsServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }));
+    const { services } = renderApp({ server, url: "/sub/preview/library" });
+    expect(await screen.findByRole("link", { name: "The Quiet Library" })).toBeTruthy();
+    admin = false;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText("This account's access changed")).toBeNull();
+    expect(screen.getByRole("link", { name: "The Quiet Library" })).toBeTruthy();
+  });
+
   test("a list or request answer whose reach differs from the verified role locks the page and is never shown", async () => {
     const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
     const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({

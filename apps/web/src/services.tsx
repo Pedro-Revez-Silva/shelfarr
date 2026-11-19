@@ -36,6 +36,8 @@ export function createQueryKeys(account: string) {
     discover: (query: string | null) => [...root, "discover", query] as const,
     requests: (filters: RequestFilters) => [...root, "requests", filters.status ?? null, filters.attention ?? null, filters.q ?? "", filters.page ?? "1"] as const,
     request: (id: string) => [...root, "request", id] as const,
+    requestsAll: [...root, "requests"] as const,
+    requestAll: [...root, "request"] as const,
   };
 }
 
@@ -82,7 +84,12 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
+  const forgetRequests = () => {
+    void queryClient.resetQueries({ queryKey: keys.requestsAll });
+    void queryClient.resetQueries({ queryKey: keys.requestAll });
+  };
   const keepsRole = (session: Session): boolean => {
+    if (boot.runtime !== "go") return true;
     const previous = queryClient.getQueryData<Session>(keys.session);
     if (!previous || Boolean(previous.admin) === Boolean(session.admin)) return true;
     guard.lock("access_changed");
@@ -99,7 +106,10 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     } catch (error) {
       const lost = sessionLost(error);
       if (lost && generation === guard.generation) guard.lock(lost);
-      else guard.finishCheck(generation, false);
+      else {
+        if (generation === guard.generation) forgetRequests();
+        guard.finishCheck(generation, false);
+      }
     } finally {
       clearTimeout(timer);
     }
