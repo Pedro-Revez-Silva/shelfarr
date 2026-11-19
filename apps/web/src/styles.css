@@ -1468,6 +1468,7 @@ thead th {
   margin: 0;
 }
 .lede a,
+.settings-back a,
 .discover-source {
   color: var(--accent);
   text-decoration-thickness: 1px;

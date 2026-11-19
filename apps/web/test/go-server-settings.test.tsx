@@ -104,6 +104,7 @@ describe("the server settings page", () => {
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
     expect(within(nav).getByRole("link", { name: "Account" }).getAttribute("aria-current")).toBeNull();
+    expect(screen.getByRole("link", { name: "Server overview" }).getAttribute("aria-current")).toBeNull();
     expect(within(document.querySelector(".settings .lede") as HTMLElement).getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/preview/account");
     const { enabled, limit } = controls();
     expect(enabled.checked).toBe(true);
@@ -199,6 +200,53 @@ describe("the server settings page", () => {
     expect(saves(server).length).toBe(1);
     await act(async () => release());
     expect((await screen.findByRole("status")).textContent).toBe("Metadata settings saved.");
+  });
+
+  test("unsaved edits survive a session check that hides the form, and are saved afterwards", async () => {
+    let hold: Promise<void> | null = null;
+    const server = settingsServer();
+    server.on("GET", SESSION, async () => {
+      if (hold) await hold;
+      return { body: session({ admin: { url: "/admin" } }) };
+    });
+    const { services } = await opened(server);
+    await userEvent.click(controls().enabled);
+    await userEvent.clear(controls().limit);
+    await userEvent.type(controls().limit, "7");
+    let release!: () => void;
+    hold = new Promise<void>((resolve) => (release = resolve));
+    await act(async () => {
+      services.revalidate();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    await act(async () => release());
+    await screen.findByRole("checkbox", { name: "Use Open Library" });
+    expect(controls().enabled.checked).toBe(false);
+    expect(controls().limit.value).toBe("7");
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect((await screen.findByRole("status")).textContent).toBe("Metadata settings saved.");
+    expect(saves(server)[0]!.body).toEqual({ revision: "0123456789abcdef0123456789abcdef", open_library: { enabled: false, search_limit: 7 } });
+  });
+
+  test("an edit keeps the revision it was made against, so values refreshed meanwhile are never overwritten silently", async () => {
+    let revision = "0123456789abcdef0123456789abcdef";
+    const server = settingsServer({
+      read: () => ({ body: settings({ revision }, revision.startsWith("0") ? {} : { search_limit: 5 }) }),
+      save: (request) => ((request.body as { revision: string }).revision === revision ? { body: saved(request) } : { status: 409, body: { ...settings({ revision }, { search_limit: 5 }), error: "settings_conflict" } }),
+    });
+    const { services } = await opened(server);
+    await userEvent.click(controls().enabled);
+    revision = "22222222222222222222222222222222";
+    await act(async () => {
+      await services.queryClient.refetchQueries({ queryKey: services.keys.metadataSettings });
+    });
+    await waitFor(() => expect(controls().limit.value).toBe("5"));
+    expect(controls().enabled.checked).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect((await screen.findByRole("status")).textContent).toContain("These settings were changed somewhere else while you were editing.");
+    expect(saves(server)[0]!.body).toEqual({ revision: "0123456789abcdef0123456789abcdef", open_library: { enabled: false } });
+    expect(controls().enabled.checked).toBe(true);
   });
 
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {

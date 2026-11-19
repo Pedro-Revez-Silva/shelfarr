@@ -33,6 +33,7 @@ function ServerSettings() {
   const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
   const admin = session.data?.admin !== undefined;
   const current = trust === "trusted" && settings.dataUpdatedAt > cachedAtEntry ? settings.data : undefined;
+  const editor = useMetadataEditor();
 
   return (
     <section className="settings" aria-labelledby="settings-heading">
@@ -44,7 +45,9 @@ function ServerSettings() {
         </p>
         {admin ? (
           <p className="settings-back">
-            <Link to="/admin">Server overview</Link>
+            <Link to="/admin" activeOptions={{ exact: true }}>
+              Server overview
+            </Link>
           </p>
         ) : null}
       </header>
@@ -59,7 +62,7 @@ function ServerSettings() {
       ) : settings.isError ? (
         <ErrorPanel error={settings.error} onRetry={() => void settings.refetch()} />
       ) : current ? (
-        <MetadataForm settings={current} />
+        <MetadataForm settings={current} editor={editor} />
       ) : (
         <Loading label="Loading the server settings…" />
       )}
@@ -76,6 +79,21 @@ function useOutcome() {
   };
   return { outcome, say, clear: () => setOutcome(null) };
 }
+
+type Draft = { enabled: boolean | null; limit: string | null; base: string | null };
+
+const NO_DRAFT: Draft = { enabled: null, limit: null, base: null };
+
+function useMetadataEditor() {
+  const [draft, setDraft] = useState<Draft>(NO_DRAFT);
+  const [problems, setProblems] = useState<Problems>({});
+  const edits = useRef(0);
+  const saving = useRef(false);
+  const mutation = useSaveMetadataSettings();
+  return { draft, setDraft, problems, setProblems, edits, saving, mutation, ...useOutcome() };
+}
+
+type MetadataEditor = ReturnType<typeof useMetadataEditor>;
 
 function limitProblem(text: string, min: number, max: number): string | null {
   const trimmed = text.trim();
@@ -101,30 +119,24 @@ function failureText(error: unknown): string {
   }
 }
 
-function MetadataForm({ settings }: { settings: MetadataSettings }) {
+function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor: MetadataEditor }) {
   const ids = { heading: useId(), enabled: useId(), enabledHint: useId(), limit: useId(), limitHint: useId(), limitError: useId(), reach: useId() };
   const form = useRef<HTMLFormElement>(null);
-  const saving = useRef(false);
-  const edits = useRef(0);
-  const mutation = useSaveMetadataSettings();
   const { queryClient, keys } = useServices();
-  const [enabledDraft, setEnabledDraft] = useState<boolean | null>(null);
-  const [limitDraft, setLimitDraft] = useState<string | null>(null);
-  const [problems, setProblems] = useState<Problems>({});
-  const { outcome, say, clear } = useOutcome();
+  const { draft, setDraft, problems, setProblems, edits, saving, mutation, outcome, say, clear } = editor;
   const saved = settings.open_library;
   const range = settings.search_limit_range;
-  const enabled = enabledDraft ?? saved.enabled ?? false;
-  const limitText = limitDraft ?? (saved.search_limit === null ? "" : String(saved.search_limit));
+  const enabled = draft.enabled ?? saved.enabled ?? false;
+  const limitText = draft.limit ?? (saved.search_limit === null ? "" : String(saved.search_limit));
 
-  function edited() {
+  function edit(change: Partial<Draft>) {
     edits.current += 1;
     clear();
+    setDraft((current) => ({ ...current, ...change, base: current.base ?? settings.revision }));
   }
 
   function reset() {
-    setEnabledDraft(null);
-    setLimitDraft(null);
+    setDraft(NO_DRAFT);
     setProblems({});
   }
 
@@ -141,24 +153,25 @@ function MetadataForm({ settings }: { settings: MetadataSettings }) {
     if (saving.current) return;
     clear();
     const change: MetadataChange = {};
-    if (enabledDraft !== null && enabledDraft !== saved.enabled) change.enabled = enabledDraft;
-    if (limitDraft !== null && limitDraft.trim() !== (saved.search_limit === null ? "" : String(saved.search_limit))) {
-      const problem = limitProblem(limitDraft, range.min, range.max);
+    if (draft.enabled !== null && draft.enabled !== saved.enabled) change.enabled = draft.enabled;
+    if (draft.limit !== null && draft.limit.trim() !== (saved.search_limit === null ? "" : String(saved.search_limit))) {
+      const problem = limitProblem(draft.limit, range.min, range.max);
       if (problem) {
         refuse({ search_limit: problem }, "Nothing was saved. Check the marked field.");
         return;
       }
-      change.search_limit = Number(limitDraft.trim());
+      change.search_limit = Number(draft.limit.trim());
     }
     setProblems({});
     if (change.enabled === undefined && change.search_limit === undefined) {
+      reset();
       say("success", "There are no changes to save.");
       return;
     }
     saving.current = true;
     const revision = edits.current;
     mutation.mutate(
-      { revision: settings.revision, change },
+      { revision: draft.base ?? settings.revision, change },
       {
         onSettled: () => {
           saving.current = false;
@@ -201,10 +214,7 @@ function MetadataForm({ settings }: { settings: MetadataSettings }) {
             type="checkbox"
             checked={enabled}
             aria-describedby={ids.enabledHint}
-            onChange={(event) => {
-              edited();
-              setEnabledDraft(event.target.checked);
-            }}
+            onChange={(event) => edit({ enabled: event.target.checked })}
           />
           <label htmlFor={ids.enabled}>Use Open Library</label>
           <p id={ids.enabledHint} className="field-hint">
@@ -231,8 +241,7 @@ function MetadataForm({ settings }: { settings: MetadataSettings }) {
             aria-invalid={limitInvalid}
             aria-describedby={[ids.limitHint, limitInvalid ? ids.limitError : ""].filter(Boolean).join(" ")}
             onChange={(event) => {
-              edited();
-              setLimitDraft(event.target.value);
+              edit({ limit: event.target.value });
               if (limitInvalid) setProblems(({ search_limit: _cleared, ...rest }) => rest);
             }}
           />
