@@ -1360,11 +1360,12 @@ when it was requested and completed, the next search time for a not-found reques
 filters included; opened in a new tab it goes to the unfiltered list. A missing or foreign request says "This request
 is not available". The account guard, session checks and
 locking work as on every other page. Both screens wait for the session before asking for requests. A role change
-locks the page, as an account change does: when a session check (on focus, visibility or after an uncertain answer, on
-every Go page) finds that the account became or stopped being an admin, or when a request answer's reach differs from
+locks the page, as an account change does: when any session answer (the first load, a refresh, or a check on focus,
+visibility or after an uncertain answer, on every Go page) finds that the account became or stopped being an admin, or when a request answer's reach differs from
 the verified role (an admin's list or a detail naming its requester for a member, or the reverse), the guard clears every
 cached answer and the page shows "This account's access changed" with "Continue as the current account", which loads the screens again for the
-role the account has now. Nothing from the earlier role is shown or kept.
+role the account has now. Nothing from the earlier role is shown or kept. A request that answers `404` has the session
+checked again, so a lost admin role is noticed there too.
 
 ### Contract before and after
 
