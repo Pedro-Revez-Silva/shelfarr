@@ -7,6 +7,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
+import { ApiError } from "./api/errors";
 import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices, type RequestScope } from "./services";
 
@@ -89,24 +90,38 @@ export function useRequestScope(): RequestScope | null {
   return session.data.admin ? "all" : "own";
 }
 
+function withinScope<T>(scope: RequestScope, broad: boolean, answer: T, revalidate: () => void): T {
+  if (broad === (scope === "all")) return answer;
+  revalidate();
+  throw new ApiError("conflict", "The account's access changed while the answer was on its way");
+}
+
 export function useRequests(filters: RequestFilters) {
-  const { api, keys } = useServices();
-  const scope = useRequestScope();
+  const { api, keys, revalidate } = useServices();
+  const known = useRequestScope();
+  const scope = known ?? "own";
   return useQuery({
-    queryKey: keys.requests(scope ?? "own", filters),
-    queryFn: ({ signal }) => api.requests(filters, signal),
-    enabled: scope !== null,
+    queryKey: keys.requests(scope, filters),
+    queryFn: async ({ signal }) => {
+      const list = await api.requests(filters, signal);
+      return withinScope(scope, list.scope === "all", list, revalidate);
+    },
+    enabled: known !== null,
     refetchInterval: ({ state }) => (state.data?.items.some(stillChanging) ? REQUEST_REFRESH_MS : false),
   });
 }
 
 export function useRequest(id: string) {
-  const { api, keys } = useServices();
-  const scope = useRequestScope();
+  const { api, keys, revalidate } = useServices();
+  const known = useRequestScope();
+  const scope = known ?? "own";
   return useQuery({
-    queryKey: keys.request(scope ?? "own", id),
-    queryFn: ({ signal }) => api.requestDetail(id, signal),
-    enabled: scope !== null,
+    queryKey: keys.request(scope, id),
+    queryFn: async ({ signal }) => {
+      const detail = await api.requestDetail(id, signal);
+      return withinScope(scope, detail.requested_by !== undefined, detail, revalidate);
+    },
+    enabled: known !== null,
     refetchInterval: ({ state }) => (state.data && stillChanging(state.data) ? REQUEST_REFRESH_MS : false),
   });
 }

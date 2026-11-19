@@ -129,7 +129,9 @@ describe("the Requests page", () => {
   });
 
   test("an admin sees every request with who asked, except their own", async () => {
-    const server = requestsServer(() => ({ body: list([request({ requested_by: { name: "Bob", self: false } }), completed && { ...completed, requested_by: { name: "Ada Reader", self: true } }], { scope: "all" }) }));
+    const server = requestsServer(() => ({ body: list([request({ requested_by: { name: "Bob", self: false } }), { ...completed, requested_by: { name: "Ada Reader", self: true } }], { scope: "all" }) })).on("GET", /\/api\/v1\/session$/, () => ({
+      body: session({ admin: { url: "/admin" } }),
+    }));
     renderRequests(server);
     expect(await screen.findByRole("heading", { name: "All Requests", level: 1 })).toBeTruthy();
     const cards = screen.getAllByRole("article");
@@ -173,12 +175,12 @@ describe("the Requests page", () => {
 
   test("pages are links that keep the filters, and an unknown filter in the address is ignored", async () => {
     const server = requestsServer((recorded) => {
-      const at = Math.max(1, Number(params(recorded)["page"] ?? "1"));
+      const at = Math.max(1, Number.parseInt(params(recorded)["page"] ?? "1", 10) || 1);
       return { body: list([request({ id: String(at + 100), title: `Page ${at}` })], { page: at, total: 60, total_pages: 3 }) };
     });
-    const { history } = renderRequests(server, "/preview/requests?status=bogus&attention=yes&q=a&page=0");
+    const { history } = renderRequests(server, "/preview/requests?status=bogus&attention=yes&q=a&page=%2B0_0_1x");
     expect(await screen.findByRole("heading", { name: "Page 1", level: 3 })).toBeTruthy();
-    expect(params(lists(server)[0]!)).toEqual({ q: "a", page: "0" });
+    expect(params(lists(server)[0]!)).toEqual({ q: "a", page: "+0_0_1x" });
     const pages = screen.getByRole("navigation", { name: "Request pages" });
     expect(within(pages).queryByRole("link", { name: "Previous page" })).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("60 requests · Page 1 of 3");
@@ -267,6 +269,37 @@ describe("the Requests page", () => {
     ]);
   });
 
+  test("a late answer with an admin's reach is never shown to a session verified as a member, and the session is checked again", async () => {
+    const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
+    const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({ body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) } }));
+    const { view } = renderRequests(server);
+    expect(await screen.findByRole("heading", { name: "Changed somewhere else" })).toBeTruthy();
+    expect(screen.queryByText("Someone Else's")).toBeNull();
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
+    view.unmount();
+    renderRequests(server, "/preview/requests/3");
+    expect(await screen.findByRole("heading", { name: "Changed somewhere else" })).toBeTruthy();
+    expect(screen.queryByText("Someone Else's")).toBeNull();
+    expect(screen.queryByText("Bob")).toBeNull();
+  });
+
+  test("a list holding a request that waits for its next search asks again by itself", async () => {
+    const server = requestsServer(() => ({ body: list([request({ status: "not_found", download_percent: null, next_retry_at: "2026-11-20T08:00:00.000Z" })]) }));
+    renderRequests(server);
+    expect(await screen.findByRole("heading", { name: "Harbor Lights", level: 3 })).toBeTruthy();
+    expect(lists(server).length).toBe(1);
+    await waitFor(() => expect(lists(server).length).toBe(2), { timeout: 17_000 });
+  }, 25_000);
+
+  test("the search box takes more than a hundred characters outside the basic plane and sends them", async () => {
+    const server = requestsServer();
+    const { history } = renderRequests(server);
+    const box = await screen.findByRole("searchbox", { name: "Search requests by title or author" });
+    await userEvent.type(box, `${"😀".repeat(150)}{Enter}`);
+    await waitFor(() => expect(params(lists(server).at(-1)!)["q"]).toBe("😀".repeat(150)));
+    expect(location(history)).toBe(`/preview/requests?q=${encodeURIComponent("😀".repeat(150))}`);
+  });
+
   test("an answer for another account locks the page and shows none of its requests", async () => {
     const server = requestsServer(() => ({ body: list([request()], { account: "99" }) }));
     renderRequests(server);
@@ -316,7 +349,9 @@ describe("one request", () => {
   });
 
   test("names the attention reason, or Rails' fallback when none is safe to show, and links an openable copy", async () => {
-    const server = requestsServer().on("GET", /\/api\/v1\/requests\/5$/, () => ({
+    const server = requestsServer()
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: session({ admin: { url: "/admin" } }) }))
+      .on("GET", /\/api\/v1\/requests\/5$/, () => ({
       body: { account: ACCOUNT, request: detail({ id: "5", status: "completed", attention_needed: true, download_percent: null, downloads: [], library: { state: "available", publication_id: "10" }, requested_by: { name: "Bob", self: false } }) },
     }));
     renderRequests(server, "/preview/requests/5");

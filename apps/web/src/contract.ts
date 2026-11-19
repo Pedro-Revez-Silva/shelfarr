@@ -301,7 +301,7 @@ export const requestFiltersSchema = z.object({
   status: z.enum(requestFilterStatuses).optional().catch(undefined),
   attention: z.literal("true").optional().catch(undefined),
   q: z.string().optional().catch(undefined),
-  page: z.string().regex(/^\d{1,7}$/).optional().catch(undefined),
+  page: z.string().max(64).optional().catch(undefined),
 });
 export type RequestFilters = z.infer<typeof requestFiltersSchema>;
 
