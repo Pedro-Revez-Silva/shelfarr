@@ -89,9 +89,9 @@ func TestAnAdminSeesTheRailsCountsAndTheSixSavedHealthResultsWithoutMessages(t *
 	}
 }
 
-func TestStoredHealthValuesTheRailsEnumCannotNameAreReportedAsUnknown(t *testing.T) {
+func TestAStatusTheRailsEnumCannotNameIsUnknownAndAnUnreadableCheckTimeKeepsTheStatus(t *testing.T) {
 	h := newBrowserHarness(t, nil)
-	livetest.Exec(t, h.path, `INSERT INTO system_healths (service, status, last_check_at) VALUES ('indexer', 'down', '2026-11-15 11:00:00'), ('download_client', 0, 'yesterday'), ('download_paths', -1, NULL), ('output_paths', 3, '2026-11-15 11:00:00')`)
+	livetest.Exec(t, h.path, `INSERT INTO system_healths (service, status, last_check_at) VALUES ('indexer', 'down', '2026-11-15 11:00:00'), ('download_client', 2, 'yesterday'), ('download_paths', -1, NULL), ('output_paths', 3, '2026-11-15 11:00:00')`)
 	client := h.client()
 	client.signIn("alice", alicePassword)
 	services := overviewOf(t, client.get(overviewPath))["services"].([]any)
@@ -101,7 +101,7 @@ func TestStoredHealthValuesTheRailsEnumCannotNameAreReportedAsUnknown(t *testing
 		checked, _ := entry["checked_at"].(string)
 		got = append(got, entry["service"].(string)+"="+entry["status"].(string)+"@"+checked)
 	}
-	if want := []string{"indexer=unknown@2026-11-15T11:00:00.000Z", "download_client=unknown@", "download_paths=unknown@", "output_paths=not_configured@2026-11-15T11:00:00.000Z"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"indexer=unknown@2026-11-15T11:00:00.000Z", "download_client=down@", "download_paths=unknown@", "output_paths=not_configured@2026-11-15T11:00:00.000Z"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v", got)
 	}
 }

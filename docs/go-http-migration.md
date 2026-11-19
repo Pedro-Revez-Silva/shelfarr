@@ -1421,7 +1421,8 @@ queries above, and Rails' own page runs the same `COUNT` and `OFFSET`).
 Status: **experimental, default-off, read-only.** Behind the same switches as the browser screens, an allowlisted
 admin gets Admin after Account in the Go navigation. It opens a Server overview with the build Go already reports, the
 four counts of Rails' admin dashboard and the last saved result of each of the six services Rails' health check
-records. It runs no check, contacts no provider or release feed, reads no setting and offers no action. Account stays
+records. It runs no check, contacts no provider or release feed, reads no setting beyond the session age every preview
+route checks, and offers no action. Account stays
 the personal page; the overview is about the server. The Rails `/admin` page, its health check, update check, settings
 and every other admin screen, the Rails preview and its Admin handoff (`admin.url`) are unchanged.
 
@@ -1453,9 +1454,11 @@ results are therefore never sent for an account that is not an admin in the snap
              {"service":"hardcover","status":"unknown","checked_at":"…"}]}
 ```
 
-`Cache-Control: private, no-store` on every answer, including `401`, `404` and `405`. The route writes nothing and
-holds one read-only transaction for four `COUNT(*)` statements and, per service, one `LIMIT 1` row: nine bounded
-scalar reads in one snapshot.
+`Cache-Control: private, no-store` on every JSON answer, including `401`, `404` and `405`. The overview itself writes
+nothing; like every preview route, the shared session guard removes a session row that has outlived
+`session_max_age_days` or belongs to a deleted account before it answers `401 signed_out`. One read-only transaction
+holds the authority re-check (the session joined to its account, `session_max_age_days` and the role) and the data:
+four `COUNT(*)` statements and one `LIMIT 1` row per service, ten bounded reads.
 
 ### Meanings, matched to Rails
 
@@ -1471,8 +1474,11 @@ scalar reads in one snapshot.
   the newest id wins, as `index_by` keeps the last. A legacy `prowlarr` row, which `SystemHealth.for_service` would read
   as `indexer`, is not shown, as the dashboard does not show it. Rows for any other service are not read.
 * `status` is the Rails enum name (`healthy`, `degraded`, `down`, `not_configured`); `null` when the service has no row
-  (Rails' "Not checked"); `unknown` when the stored value is not one of the enum's integers or `last_check_at` cannot be
-  read. `checked_at` is `last_check_at` in UTC with milliseconds, `null` when Rails recorded no check time.
+  (Rails' "Not checked"); `unknown` when the stored value is not one of the enum's integers. `checked_at` is
+  `last_check_at` in UTC with milliseconds, `null` when Rails recorded no check time or the stored value cannot be read
+  (Rails' datetime type reads such a value as `nil` and shows "Not checked yet"); the status is kept either way, so a
+  saved Down stays Down. Go reads Rails' own `YYYY-MM-DD HH:MM:SS[.ffffff]` form; an ISO 8601 value with a `T` written
+  by hand, which Rails would also read, is shown as not checked.
 * `message` and `last_success_at` are never read: a stored message can hold a provider address, credentials or an error
   text. No setting, path, provider URL, update result or schema detail is read or returned.
 
@@ -1492,7 +1498,9 @@ waits for the session, asks for the overview only when the session says admin, c
 signed-in account and arrives under the admin role, and treats a `404` as a reason to check the session again. A role
 removed while the page is open is noticed by the next session check (focus, visibility, `pageshow`, a refresh, or the
 `404`) and locks the page with "This account's access changed", clearing every cached answer; an inconclusive check
-drops the cached overview with the cached requests. Nothing is stored in the browser.
+drops the cached overview with the cached requests. Leaving the page drops the overview from memory, so returning to
+it (Back, a link) shows nothing until the server has answered again for the current role. Nothing is stored in the
+browser.
 
 ### Deliberate differences from Rails
 
@@ -1503,8 +1511,7 @@ drops the cached overview with the cached requests. Nothing is stored in the bro
 * "Requests in progress" instead of "Pending requests"; "Never checked" instead of "Not checked" for a missing row.
 * Times are relative in the browser's time zone and English ("3 days ago"); Rails uses `time_ago_in_words` on the
   server.
-* An unknown stored status or unreadable check time is shown as "Unknown status" where Rails' page would fail or show
-  nothing.
+* An unknown stored status is shown as "Unknown status" where Rails' page would fail.
 
 ### Contract before and after
 
@@ -1526,16 +1533,19 @@ previous binary and asset build; nothing is stored, and Admin disappears from th
 
 * Go unit tests (`internal/gohttp`): an admin's exact counts with a soft-deleted account, a `NULL` attention flag and
   every request status; the six services with a down, degraded, healthy, not configured, missing and unknown result, a
-  legacy `prowlarr` row and an unrelated row ignored, and no message, address or credential in the answer; stored text,
-  negative and unreadable values as `unknown`; anonymous `401`, member `404`, wrong or missing account header `401`,
+  legacy `prowlarr` row and an unrelated row ignored, and no message, address or credential in the answer; stored text
+  and negative statuses as `unknown`, and an unreadable check time keeping a saved Down; anonymous `401`, member `404`, wrong or missing account header `401`,
   every other method `405` with `no-store`, the preview off or the admin unlisted `404`; a role removed, an account
   deleted and a session removed between the guard and the snapshot answering `404`, `401` and `401`; no row changed;
   the shell and its `HEAD`.
 * Web unit tests: the contract refuses a missing, reordered, extra or unknown service and a negative count; the
   navigation, build, counts, Needs attention (plural and singular), health rows and times; Review requests and Back; a
   member's direct load asking nothing; a role removed by a session check or noticed through a `404` locking the page and
-  clearing the cache; an answer for another account; a server failure with Try again; the classic preview keeping its
-  handoff.
+  clearing the cache; Back to the overview after a demotion never showing the earlier counts; a session check that
+  cannot confirm the account dropping the cached overview; a refused overview while checks fail saying it is for
+  administrators; an answer for another account; a server failure with Try again; the classic preview keeping its
+  handoff. Behavioural mutants of these rules (thirteen Go, fifteen web) are each caught by an assertion, except removing
+  the early member check, which the role check inside the snapshot makes redundant.
 * `apps/web/e2e/admin.test.ts` over `tools/migration/browser` fixtures: the Rails fixture records saved results with
   the real `SystemHealth` methods (a down indexer whose message holds an address and key, a degraded client, a 40-day
   old healthy result, an unconfigured service without and with a check time, no row for download paths and a legacy

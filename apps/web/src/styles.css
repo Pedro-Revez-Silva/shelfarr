@@ -1838,7 +1838,7 @@ thead th {
   gap: 4px 8px;
   margin: 0;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .overview-build dd {
   margin: 0;
@@ -1861,7 +1861,7 @@ thead th {
 }
 .overview-tally dt {
   color: var(--muted);
-  font-size: 14px;
+  font-size: 0.875rem;
 }
 .overview-tally dd {
   margin: 0;
@@ -1928,7 +1928,10 @@ thead th {
 .health-checked {
   flex-basis: 100%;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 0.8125rem;
+}
+.badge--health {
+  font-size: 0.75rem;
 }
 .badge--healthy {
   border-color: var(--accent);

@@ -141,6 +141,23 @@ describe("the server overview", () => {
     expect(await screen.findByRole("heading", { name: "Needs attention", level: 2 })).toBeTruthy();
   });
 
+  test("Back to the overview after a demotion never shows the counts it showed before, and locks once the server refuses", async () => {
+    let admin = true;
+    const server = adminServer({ admin: () => admin, answer: () => (admin ? { body: overview() } : error(404, "not_found")) });
+    const { history } = renderAdmin(server);
+    await userEvent.click(await screen.findByRole("link", { name: "Review requests" }));
+    await waitFor(() => expect(history.location.pathname).toBe("/preview/requests"));
+    admin = false;
+    const shown: boolean[] = [];
+    const observer = new MutationObserver(() => shown.push(document.body.textContent?.includes("1,234") ?? false));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    act(() => history.back());
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 }, { timeout: 8000 })).toBeTruthy();
+    observer.disconnect();
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown.some(Boolean)).toBe(false);
+  }, 20_000);
+
   test("a member sees no Admin link, and opening the page directly asks for no server data", async () => {
     const server = adminServer({ admin: () => false });
     renderAdmin(server);

@@ -142,6 +142,7 @@ export function useServerOverview() {
         throw error;
       }),
     enabled: admin,
+    gcTime: 0,
   });
 }
 

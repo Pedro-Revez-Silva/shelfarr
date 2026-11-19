@@ -82,14 +82,9 @@ func projectHealth(row live.HealthRow) serviceHealth {
 	if !known {
 		status = unknownHealthStatus
 	}
-	if row.CheckedAt.Valid {
-		moment, err := store.ParseTimestamp(row.CheckedAt.String)
-		if err != nil {
-			status = unknownHealthStatus
-		} else {
-			checked := store.FormatISO8601Millis(moment)
-			projected.CheckedAt = &checked
-		}
+	if moment, err := store.ParseTimestamp(row.CheckedAt.String); row.CheckedAt.Valid && err == nil {
+		checked := store.FormatISO8601Millis(moment)
+		projected.CheckedAt = &checked
 	}
 	projected.Status = &status
 	return projected
