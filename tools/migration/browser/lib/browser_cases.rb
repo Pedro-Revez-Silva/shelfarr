@@ -7,10 +7,13 @@ require "json"
 require "securerandom"
 require_relative "../../http/lib/http_cases"
 require_relative "reader_media"
+require_relative "metadata_settings"
 
 module Migration
   module Browser
     class Cases < Migration::Http::Cases
+      include MetadataSettings
+
       PREVIEW = "/preview/api/v1"
       NOON = Time.utc(2026, 11, 15, 12, 0, 0, 123_456)
       MARKUP_DESCRIPTIONS = [
@@ -62,6 +65,7 @@ module Migration
         seed_account_people
         seed_system_health
         @admin_overview = capture_admin_overview
+        @metadata_settings = capture_metadata_settings
         checkpoint_and_copy
         run_browser_scenarios
         write_browser_outputs
@@ -589,7 +593,8 @@ module Migration
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
                      "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
-                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "requests" => capture_requests, "admin_overview" => @admin_overview, "steps" => @steps }
+                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "requests" => capture_requests, "admin_overview" => @admin_overview,
+                     "metadata_settings" => @metadata_settings, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }

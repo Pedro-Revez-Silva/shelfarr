@@ -83,6 +83,11 @@ for pair in current:current-schema upgrade:stable-upgrade; do
   (cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/verify_go_accounts.rb --bundle "$work/bundle-${pair%%:*}" --cases "$work/browser-${pair%%:*}" --database "$work/go-out/account-${pair##*:}.sqlite3" --state "$work/go-out/account-${pair##*:}.json" --out "$work/rails-accounts-${pair%%:*}")
 done
 
+step "ruby: the real Rails application reads the metadata settings Go saved, shows them and saves over them"
+for pair in current:current-schema upgrade:stable-upgrade; do
+  (cd "$root" && clean_env timeout 900 bundle exec ruby tools/migration/browser/verify_go_settings.rb --bundle "$work/bundle-${pair%%:*}" --cases "$work/browser-${pair%%:*}" --database "$work/go-out/metadata-${pair##*:}.sqlite3" --state "$work/go-out/metadata-${pair##*:}.json" --out "$work/rails-settings-${pair%%:*}")
+done
+
 step "go: mutants of the browser authentication invariants must each be rejected by an assertion"
 env "${exported[@]}" go test -tags e2e -count=1 -timeout 60m -run TestMutantsAreDetected ./e2e/browser/
 
