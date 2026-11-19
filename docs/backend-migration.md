@@ -71,6 +71,7 @@ apps/server/                Go module (not built, shipped or referenced by the R
   internal/admission/       admission of one Open Library ebook request (M1, see Request admission)
   internal/gutenberg/       Project Gutenberg OPDS adapter: bounded fetch, strict parse, same-origin links (M1)
   internal/acquisition/     claim, search and publication of one pending ebook request (M1, see Gutenberg search)
+  internal/bookfile/        confined library root, anonymous staging, no-replace publication, EPUB container check (M1)
   internal/netguard/        loopback-only HTTP client and bounded reads (M1)
   internal/fault/           failpoints, compiled only with -tags faultinject (M1)
   e2e/                      executable tests, corrupted-bundle controls and mutants (build tag e2e)
@@ -432,6 +433,7 @@ shelfarr-workflows trigger|cancel|resume --workdir DIR --workflow inventory|down
 shelfarr-workflows status --workdir DIR
 shelfarr-workflows request --workdir DIR --account ID < request.json
 shelfarr-workflows search --workdir DIR --request ID [--request-timeout 15s] [--deadline 5m]
+shelfarr-workflows download --workdir DIR --request ID --result ID [--request-timeout 15s] [--deadline 10m]
 ```
 
 There is no database-path flag and no default path. `prepare` opens an M0 fixture bundle with the M0 verifier,
@@ -446,8 +448,8 @@ text (including library identifiers, which are reported as ordinals), URLs, path
 
 Exit codes: `0` completed, `1` a recoverable failure was reported, `2` usage, `3` the domain already has an owner,
 `4` this process was superseded (fenced), `5` the directory is not a prepared disposable copy, `6` `prepare` refused,
-`7` `request` rejected the submission (see Request admission) or `search` refused the request without claiming it
-(see Gutenberg search).
+`7` `request` rejected the submission (see Request admission), `search` refused the request without claiming it
+(see Gutenberg search) or `download` refused the selection before any effect (see Gutenberg EPUB download).
 
 ### Ownership and persisted authority
 
@@ -717,8 +719,7 @@ dispatches a released request and recovers an abandoned claim. Reverting this sl
 the rows to Rails; there is no Go state to clean up. A copy where Go published results and Rails then runs is the
 supported rollback; Rails and this command must not run on the same database at once, which the disposable copy
 guarantees today. The adapter (`internal/gutenberg`: origin rules, bounded client, strict parser, same-origin
-download authorisation) is the boundary a future download worker reuses to fetch the stored URL; nothing here
-transfers media.
+download authorisation) is the boundary `download` reuses to fetch the stored URL; `search` itself transfers no media.
 
 **Deliberate differences.** Go does not run `ReleaseScorer`: new rows have no `confidence_score` or `score_breakdown`
 (Rails shows no score and `confidence_level` is unknown), and a kept row is not rescored (its score and detected
@@ -752,6 +753,146 @@ that Rails searches the handed-back request once; reads the Go candidates as val
 renders their result row and selects one (`Request#select_result!`, a queued `Download`, one `DownloadJob` enqueued
 and not performed); and recovers the killed Go claim through `RequestQueueJob` only after the lease, then finishes
 that search. Nineteen mutants of these rules must each fail an assertion.
+
+### Gutenberg EPUB download (one selected candidate)
+
+`shelfarr-workflows download --workdir DIR --request ID --result ID` selects one Project Gutenberg candidate that
+`search` stored, downloads its EPUB from the same loopback catalogue and publishes it as the request's completed
+library ebook. It is the first Go write of a library file, `downloads`, `books.file_path` and a completed request. It
+runs only on a prepared disposable copy, explicitly, once; there is no scheduler, route, screen, retry or automatic choice.
+
+**Contract before and after.** Before: Rails alone turns a selection into a book, through `Request#select_result!`
+(manual selection), `DownloadJob` (direct HTTP download) and `DirectDownloadFileService` (staging, Book reservation,
+publication, `finalize_database!`). After: on a disposable copy, this command produces the same end state for one
+shape, in one transaction, and Rails keeps reading, listing, delivering and recovering it as its own. Nothing Rails or
+a client calls changes: no route, schema, job, setting or stored format is added.
+
+**What it accepts.** Everything `search` requires (schema revision and columns, account, ebook, Gutenberg enabled on a
+loopback origin, no other ebook source, no auto-selection, no outbound notification channel), and, checked in one
+transaction before any network or file effect:
+
+* the request is searching with no live claim (results published, awaiting selection) and has no download other than
+  failed ones without direct-download recovery state; its book has a blank `file_path` and no acquisition reservation;
+* the result belongs to that request, is a pending, non-blocklisted `gutenberg:<digits>` row with no custom provider,
+  and its stored `download_url` is exactly what the configured origin authorises (a `/`-rooted path, no `..`, query or
+  fragment) and names an EPUB by Rails' own extension rule (`1342.epub3.images` is EPUB; `kf8`, `kindle`, `mobi`, `pdf`
+  and `azw3` are not);
+* `ebook_output_path` is a stored string setting naming a directory **strictly inside the disposable directory**, given
+  in canonical form (absolute, clean, no symbolic link), owned by the caller and not writable by group or others, reached
+  by `openat2` with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV` (so neither a link
+  nor a mount point leads out of it);
+* no library platform scan is configured (Audiobookshelf URL and key, BookOrbit or Grimmory URL, user and password, a
+  conservative superset of Rails' `LibraryPlatformClient.configured?`) and no `library_import_file_mode` or
+  `library_import_folder_mode` is set, because Go triggers no scan and applies no import permissions.
+
+A refusal writes nothing and contacts nothing: answer `rejected` with `request_not_selectable`, `result_not_found`,
+`result_not_selectable`, `result_off_origin`, `result_not_epub`, `book_acquired`, `downloads_active`,
+`library_root_not_disposable`, `library_scan_configured`, `import_permissions_configured` or any `search` refusal, exit 7.
+A second `download` while one runs on the same disposable copy is `refused` `acquisition_busy`, exit 3 (a kernel `flock`
+on `locks/acquisition.lock`, released on any exit, SIGKILL included). Asking again for the result that completed the
+request answers `already_completed` with its download id (exit 0, no network); any other result of a completed request
+is `request_not_selectable`.
+
+**Download.** `GET` of the stored link on the configured origin only, through the loopback-only client (no proxy, no
+redirect), with the Rails user agent, a header timeout (`--request-timeout`, at most 1 minute) and an overall deadline
+(`--deadline`, default 10 minutes, at most 30, Rails' own limit). `200` only; `404`, a redirect or another client error
+is `provider-refused`, `408`/`425`/`429`/`5xx` `provider-busy`. A text, HTML, JSON or XML content type is
+`download-not-a-book` (Rails' header rule). The body is streamed through a 250 MiB bound applied while reading (the
+largest EPUB the consumer listing serves; Rails allows 512 MiB) into an anonymous `O_TMPFILE` inside the library root
+while its SHA-256 is computed; an announced or actual size over the bound is `provider-too-large`, a connection that
+ends before its `Content-Length` is `download-truncated`. The file is then fsynced and checked as an EPUB container with
+the existing strict ZIP directory reader (no extraction, no inflation, no rendering): a well-formed directory with no
+ZIP64, encryption, links or unsafe names, `mimetype` first at offset 0, stored, exactly `application/epub+zip` with a
+matching CRC, and a `META-INF/container.xml` file. Anything else is `download-invalid`. Until it is linked the file has no
+name, so an interruption, a refusal or a kill leaves nothing on disk.
+
+**Publication protocol.** Validated bytes are persisted before metadata, and every file this workflow creates is
+recorded before it gets a name:
+
+1. one transaction records an intent (`wf_meta` key `acquisition.publication`: request, book, root, relative path and
+   the staged file's device and inode);
+2. the folders `shelfarr-gutenberg/book-<book id>/` are created or opened through the confined root descriptor, and the
+   anonymous file is linked as `gutenberg-<Gutenberg id>.epub` with `linkat`, which never replaces an existing name
+   (`library-file-exists`, the existing file preserved; a link or unsafe folder is `library-path-unsafe`), then the
+   folder is fsynced;
+3. one `BEGIN IMMEDIATE` transaction re-reads everything step 0 read and requires it unchanged (request status,
+   generation, claim and `updated_at`, the result's status and row, the book's `updated_at`, path and reservation, the
+   account, settings, origin and root), requires the library root to still be the same directory (device and inode
+   reopened by path) and the linked name to still be the staged inode, deletes the intent and writes the rows below.
+
+SIGINT and SIGTERM stop the command only before step 1; from there it finishes or rolls back the publication within
+10 seconds. Anything changed is `superseded` (exit 4): the linked file is removed if, and only if, its device and inode are still
+the ones recorded, its now-empty book folder with it, and the intent is deleted. A database error or failpoint inside
+the completion transaction does the same after checking that no book references the path, and exits 1.
+
+**Rows written (the whole list, in that one transaction).** The end state of Rails' manual selection plus
+`DownloadJob#handle_direct_http_download`, compared row by row with real Rails below:
+
+* `search_results`: every other result of the request `rejected` without moving `updated_at` (Rails' `update_all`), the
+  chosen one `selected`;
+* `downloads`: one row, `completed`, `download_type` `direct`, `download_path` the library file, `name` the result's
+  title, its `size_bytes` (empty for Gutenberg), `search_result_id`, column defaults elsewhere and no direct-download
+  recovery column (the state Rails leaves after `cleanup_after_run!`);
+* `books`: `file_path` the library file, `reference_target_roots` cleared;
+* `requests`: `completed`, `completed_at`, attention, issue, `next_retry_at` and claim cleared;
+* `request_events`: `download_queued` (source `request`, details `search_result_id`, `title`, `trigger` `manual_select`),
+  `dispatch_started` (`DownloadJob`, `request_status` `downloading`) and `completed` (`DownloadJob`, "Direct download
+  completed"), each tied to the download;
+* `activity_logs`: `request.completed` for the request's account; `notifications`: the in-app `request_completed`
+  "Book Ready" notification.
+
+Nothing else changes: no queue row, no scan, no outbound notification, no other request's rows (the suite compares a
+digest of every other table).
+
+**When the user sees what.** Go skips Rails' visible in-flight states (`downloading` request, `queued`, `downloading`
+and `dispatching` download, Book reservation). Until the completion transaction commits, the request reads exactly as
+`search` left it, awaiting selection; at the commit it reads completed with its book acquired, the file already
+durable at its final name. Nothing in between is visible to Rails or a client.
+
+**Interrupted states and rollback.** The intent is the only Go state, and only between steps 1 and 3:
+
+| Interrupted | On disk | In the database | Next `download` on the copy | Rails on the copy (rollback) |
+| --- | --- | --- | --- | --- |
+| During the download or check, or SIGINT/SIGTERM then (`cancelled`) | nothing (anonymous file freed) | nothing | downloads again | sees the request awaiting selection; selects and downloads it itself |
+| After the intent, before the link | nothing | intent | deletes the intent (`recovered`, `removed` false), downloads again | same; ignores `wf_` tables |
+| After the link, before or inside the commit (SIGKILL included) | the linked file, unreferenced | intent | removes exactly that inode and its empty folder (`recovered`, `removed` true), downloads again | same; the unreferenced Go file stays until a Go run recovers it (Rails publishes under its own template path, so it never collides) |
+| After the commit | the library file | the completed rows | `already_completed` | reads, lists and delivers it; `DirectDownloadRecoveryJob` leaves it untouched |
+
+A file at the recorded name that is not the recorded inode is never removed: recovery forgets the intent and the next
+publication stops with `library-file-exists`. A library root that cannot be reopened blocks recovery
+(`recovery-blocked`, exit 1) instead of guessing. Reverting this slice removes the command; completed rows are ordinary
+Rails rows and the files are ordinary library files.
+
+**Deliberate differences.** The library path is a narrow owned layout under the configured root,
+`shelfarr-gutenberg/book-<book id>/gutenberg-<Gutenberg id>.epub`, and `books.file_path` names that file, where Rails
+builds `PathTemplateService` folders and stores the folder (`<root>/<author>/<title>`); both are valid Rails book paths
+and both list and deliver the same EPUB. A failed download writes nothing and leaves the request awaiting selection,
+where Rails marks the download failed, records `dispatch_failed`, blocklists or picks another candidate, or flags the
+request; Go ports no failure handling, retry or next-candidate selection. Go requires the result to be pending, not
+blocklisted and an EPUB, where Rails also re-selects rejected or blocklisted results and downloads MOBI or PDF. Go requires
+a loopback catalogue, which Rails' `OutboundUrlGuard` refuses for Gutenberg (the Rails oracle below allows loopback for
+this proof only). Go refuses a configured library scan or import permissions instead of running them, and checks the
+EPUB container where Rails checks only the `PK` signature. Replacing an existing library file, audiobooks, other
+providers, `size_bytes` from the response and concurrent Rails and Go owners are not supported.
+
+**Verification.** `go test ./internal/bookfile/ ./internal/gutenberg/` checks the EPUB container rule, the confined root
+(outside, the workdir itself, links, trailing slash, open modes, a replaced root), no-replace publication, identity-only
+removal, a linked folder, and every download answer class with the bound and a local write failure. The e2e suite
+(`e2e/workflows/acquire_test.go`) admits and searches through the real binary on both bundles, then downloads a minimal
+readable synthetic EPUB from the loopback catalogue: exact bytes and SHA-256, every written row, untouched tables and
+library, no provider data in the log; the built `shelfarr-http` lists the book with the asset id of the final file's
+stat and delivers the exact bytes; a repeat is `already_completed` and another result is refused, both without network.
+It also covers 28 refusals with no catalogue contact, 14 download failures (statuses, redirect, content types, garbage,
+truncation, a ZIP that is not an EPUB, both size bounds, the deadline and SIGTERM) that write nothing, SIGKILL at four
+boundaries and an external SIGKILL while publishing with recovery and completion afterwards, a foreign file left at the
+name, six concurrent attempts (one completes, the others are `acquisition_busy`), six changes while parked before the
+commit (all `superseded`, the file removed) and a failure inside the completion transaction, an existing file and a
+linked folder. `verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
+copy interrupted after the link, in real Rails with its own library root, serves the same EPUB through WebMock, runs
+`select_result!` and the enqueued `DownloadJob`, and requires the same rows in every table except the library path;
+then it installs the Go result, requires valid completed models, Rails' consumer API to list the same asset id and
+deliver the same bytes, and `DirectDownloadRecoveryJob` to change nothing. Nine mutants of these rules must each fail
+an assertion.
 
 ## Gaps (recorded in every report)
 
