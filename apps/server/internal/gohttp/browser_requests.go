@@ -44,7 +44,7 @@ var attentionReasons = map[string]bool{
 
 var retriesExhausted = regexp.MustCompile(`^Maximum retry attempts \([0-9]{1,4}\) exceeded\. Manual intervention required\.$`)
 
-var credentialParameter = regexp.MustCompile(`(?i)token|key|secret|sig|auth|pass|credential|session|^x-amz-|^x-goog-`)
+var credentialParameter = regexp.MustCompile(`(?i)token|key|secret|sig|auth|pass|credential|session|jwt|bearer|policy|^x-amz-|^x-goog-`)
 
 var rubyInteger = regexp.MustCompile(`^[ \t\n\v\f\r]*([+-]?)([0-9]+(?:_[0-9]+)*)`)
 
@@ -360,8 +360,10 @@ func publicCover(value sql.NullString) *string {
 	if err != nil {
 		return nil
 	}
-	for name := range parsed.Query() {
-		if credentialParameter.MatchString(name) {
+	for _, field := range strings.FieldsFunc(parsed.RawQuery, func(character rune) bool { return character == '&' || character == ';' }) {
+		name, _, _ := strings.Cut(field, "=")
+		decoded, err := url.QueryUnescape(name)
+		if err != nil || credentialParameter.MatchString(decoded) {
 			return nil
 		}
 	}

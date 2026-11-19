@@ -241,10 +241,13 @@ func TestOlderAndUnknownRequestValuesAreShownHonestly(t *testing.T) {
 	h := newBrowserHarness(t, nil)
 	livetest.Exec(t, h.path, `INSERT INTO books (id, title, book_type, file_path) VALUES (1, 'Future', 7, '/elsewhere/Future.epub'), (2, 'Odd cover', 1, NULL)`)
 	livetest.Exec(t, h.path, `UPDATE books SET cover_url = 'https://covers.example.test/a b.jpg' WHERE id = 2`)
-	livetest.Exec(t, h.path, `INSERT INTO books (id, title, book_type, cover_url) VALUES (3, 'Signed cover', 1, 'https://covers.example.test/p.jpg?X-Amz-Signature=abc'), (4, 'Token cover', 1, 'https://covers.example.test/p.jpg?id=9&access_token=synthetic'), (5, 'Plain query cover', 1, 'https://books.example.test/content?id=9&zoom=1')`)
+	livetest.Exec(t, h.path, `INSERT INTO books (id, title, book_type, cover_url) VALUES (3, 'Signed cover', 1, 'https://covers.example.test/p.jpg?X-Amz-Signature=abc'), (4, 'Token cover', 1, 'https://covers.example.test/p.jpg?id=9&access_token=synthetic'), (5, 'Plain query cover', 1, 'https://books.example.test/content?id=9&zoom=1'), (6, 'Semicolon cover', 1, 'https://covers.example.test/p.jpg?access_token=synthetic;variant=full'), (7, 'JWT cover', 1, 'https://covers.example.test/p.jpg?jwt=synthetic'), (8, 'Escaped cover', 1, 'https://covers.example.test/p.jpg?%61ccess%5Ftoken=synthetic')`)
 	h.request(seededRequest{id: 3, book: 3, user: 2, status: 0, attention: 0, created: "2026-10-01 07:00:00"})
 	h.request(seededRequest{id: 4, book: 4, user: 2, status: 0, attention: 0, created: "2026-10-01 06:00:00"})
 	h.request(seededRequest{id: 5, book: 5, user: 2, status: 0, attention: 0, created: "2026-10-01 05:00:00"})
+	h.request(seededRequest{id: 6, book: 6, user: 2, status: 0, attention: 0, created: "2026-10-01 04:00:00"})
+	h.request(seededRequest{id: 7, book: 7, user: 2, status: 0, attention: 0, created: "2026-10-01 03:00:00"})
+	h.request(seededRequest{id: 8, book: 8, user: 2, status: 0, attention: 0, created: "2026-10-01 02:00:00"})
 	h.request(seededRequest{id: 1, book: 1, user: 2, status: 9, attention: nil, created: "2026-11-01 08:00:00", completed: "2026-11-02 08:00:00"})
 	h.request(seededRequest{id: 2, book: 2, user: 2, status: 3, attention: 0, created: "2026-11-01 07:00:00"})
 	h.download(2, 7, 50)
@@ -264,7 +267,7 @@ func TestOlderAndUnknownRequestValuesAreShownHonestly(t *testing.T) {
 	for _, item := range items[2:] {
 		covers = append(covers, item.(map[string]any)["cover"].(map[string]any)["url"])
 	}
-	if !reflect.DeepEqual(covers, []any{nil, nil, "https://books.example.test/content?id=9&zoom=1"}) {
+	if !reflect.DeepEqual(covers, []any{nil, nil, "https://books.example.test/content?id=9&zoom=1", nil, nil, nil}) {
 		t.Fatalf("covers with credentials %v", covers)
 	}
 	detail := requestsBody(t, client.get("/preview/api/v1/requests/2"))["request"].(map[string]any)
