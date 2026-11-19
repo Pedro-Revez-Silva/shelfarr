@@ -33,6 +33,7 @@ class AdmissionVerifier
   TIMESTAMP_COLUMNS = %w[created_at updated_at].freeze
   TIMESTAMP = /\A\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{6}\z/
   REPRESENTATION_TIMES = %w[created_at updated_at].freeze
+  DOCUMENTED_DIFFERENCES = %w[acquired-older-copy own-request-behind-another foreign-request-on-older-copy].freeze
 
   def initialize(paths:, bundle:, evidence:)
     @paths = paths
@@ -76,8 +77,9 @@ class AdmissionVerifier
   def require_evidence
     created = @cases.count { |entry| entry["outcome"] == "created" }
     oracle = @cases.count { |entry| entry["oracle"] }
-    differing = @cases.count { |entry| entry["rails_outcome"] }
-    expect(created.positive? && oracle.positive? && differing.positive?, "the evidence has #{created} created, #{oracle} oracle and #{differing} differing cases")
+    differing = @cases.select { |entry| entry["rails_outcome"] }.map { |entry| entry["name"] }.sort
+    expect(created.positive? && oracle.positive?, "the evidence has #{created} created and #{oracle} oracle cases")
+    expect(differing == DOCUMENTED_DIFFERENCES.sort, "the evidence proves the differences #{differing}, documented #{DOCUMENTED_DIFFERENCES}")
   end
 
   def verify_documented_differences
@@ -274,10 +276,14 @@ class AdmissionVerifier
     end
   end
 
-  def enqueued_search_ids
+  def serialized_search_jobs
     ActiveJob::Base.queue_adapter.enqueued_jobs
-      .select { |job| job[:job] == SearchJob || job["job_class"] == "SearchJob" }
-      .map { |job| job[:args]&.first || job["arguments"]&.first }
+      .map { |job| job.select { |key, _value| key.is_a?(String) } }
+      .select { |job| job["job_class"] == "SearchJob" }
+  end
+
+  def enqueued_search_ids
+    serialized_search_jobs.map { |job| job.fetch("arguments").first }
   end
 
   def search_sources
@@ -299,22 +305,22 @@ class AdmissionVerifier
 
     ActiveJob::Base.queue_adapter.enqueued_jobs.clear
     RequestQueueJob.perform_now
-    jobs = ActiveJob::Base.queue_adapter.enqueued_jobs.select { |job| job[:job] == SearchJob }
-    dispatched = jobs.map { |job| job[:args] }
+    jobs = serialized_search_jobs
+    dispatched = jobs.map { |job| job.fetch("arguments") }
     reconciled = Request.processable.limit(RequestQueueJob::MAX_PROCESS_BATCH_SIZE).pluck(:id)
     expect(dispatched == reconciled.map { |id| [ id ] } && (pending - reconciled).empty?, "RequestQueueJob dispatched #{dispatched}, pending #{reconciled}")
     created.each { |id| expect(dispatched.count([ id ]) == 1, "request #{id} dispatched #{dispatched.count([ id ])} times") }
-    job = jobs.find { |candidate| candidate[:args] == [ created.first ] }
+    job = jobs.find { |candidate| candidate["arguments"] == [ created.first ] }
     expect(job, "no SearchJob was captured for the first Go request")
-    @report["captured_job"] = job && { "job_class" => job[:job].name, "arguments" => job[:args], "queue" => job[:queue] }
+    @report["captured_job"] = job&.slice("job_class", "arguments", "queue_name")
 
     created.each do |id|
-      payload = jobs.find { |candidate| candidate[:args] == [ id ] }
+      payload = jobs.find { |candidate| candidate["arguments"] == [ id ] }
       next expect(false, "request #{id} has no captured SearchJob") unless payload
 
-      payload[:job].perform_now(*payload[:args])
+      ActiveJob::Base.execute(payload)
       claimed = Request.find(id)
-      payload[:job].perform_now(*payload[:args])
+      ActiveJob::Base.execute(payload)
       again = Request.find(id)
       expect(!claimed.pending? && claimed.search_generation == 1, "request #{id}: its captured SearchJob did not claim it once (#{claimed.status}, generation #{claimed.search_generation})")
       expect(again.search_generation == 1 && again.updated_at == claimed.updated_at && again.status == claimed.status, "request #{id}: running its captured SearchJob again acted on a claimed request")

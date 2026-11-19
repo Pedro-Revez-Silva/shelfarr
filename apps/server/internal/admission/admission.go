@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -44,7 +43,6 @@ const (
 	graphicContentKind = 1
 	openStatuses       = "0, 1, 3, 4, 7"
 	knownStatuses      = "0, 1, 2, 3, 4, 5, 6, 7"
-	maxMatchingBooks   = 100
 	retryableStatuses  = "2, 6"
 	failedStatus       = 6
 	createdVia         = "api"
@@ -112,22 +110,20 @@ func admit(ctx context.Context, tx *sql.Tx, accountID int64, submission Submissi
 	if err := requireActiveAccount(ctx, tx, accountID); err != nil {
 		return Result{}, err
 	}
-	books, err := matchingBooks(ctx, tx, submission.OpenLibraryWorkID)
+	publication, err := newestAcquired(ctx, tx, submission.OpenLibraryWorkID)
 	if err != nil {
 		return Result{}, err
 	}
-	var book *storedBook
-	if len(books) > 0 {
-		book = &books[0]
-		for _, candidate := range books {
-			if acquired(candidate.filePath) {
-				return Result{Outcome: AlreadyInLibrary, PublicationID: candidate.id}, nil
-			}
-		}
-		decided, found, err := openRequest(ctx, tx, books, accountID)
-		if err != nil || found {
-			return decided, err
-		}
+	if publication != 0 {
+		return Result{Outcome: AlreadyInLibrary, PublicationID: publication}, nil
+	}
+	decided, found, err := openRequest(ctx, tx, submission.OpenLibraryWorkID, accountID)
+	if err != nil || found {
+		return decided, err
+	}
+	book, err := newestBook(ctx, tx, submission.OpenLibraryWorkID)
+	if err != nil {
+		return Result{}, err
 	}
 	warnings, err := duplicateWarnings(ctx, tx, submission.OpenLibraryWorkID, book)
 	if err != nil {
@@ -221,33 +217,41 @@ func requireActiveAccount(ctx context.Context, tx *sql.Tx, accountID int64) erro
 	return nil
 }
 
-func matchingBooks(ctx context.Context, tx *sql.Tx, workID string) ([]storedBook, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, title, author, cover_url, year, file_path, content_kind, metadata_source,
-		acquisition_reservation_token, acquisition_reservation_owner_type, acquisition_reservation_owner_id
-		FROM books WHERE open_library_work_id = ? AND book_type = ? ORDER BY id DESC LIMIT ?`, workID, ebookType, maxMatchingBooks+1)
+const workBooks = `SELECT id FROM books WHERE open_library_work_id = ? AND book_type = 1`
+
+func newestAcquired(ctx context.Context, tx *sql.Tx, workID string) (int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, file_path FROM books WHERE open_library_work_id = ? AND book_type = ? AND file_path IS NOT NULL ORDER BY id DESC`, workID, ebookType)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer rows.Close()
-	var books []storedBook
 	for rows.Next() {
-		var book storedBook
-		if err := rows.Scan(&book.id, &book.title, &book.author, &book.coverURL, &book.year, &book.filePath, &book.contentKind, &book.metadataSource,
-			&book.reservationToken, &book.reservationOwnerType, &book.reservationOwnerID); err != nil {
-			return nil, ErrStoredValue
+		var id int64
+		var path sql.NullString
+		if err := rows.Scan(&id, &path); err != nil || !utf8.ValidString(path.String) {
+			return 0, ErrStoredValue
 		}
-		if !modelled(book) {
-			return nil, ErrStoredValue
+		if acquired(path) {
+			return id, nil
 		}
-		books = append(books, book)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	return 0, rows.Err()
+}
+
+func newestBook(ctx context.Context, tx *sql.Tx, workID string) (*storedBook, error) {
+	var book storedBook
+	err := tx.QueryRowContext(ctx, `SELECT id, title, author, cover_url, year, file_path, content_kind, metadata_source,
+		acquisition_reservation_token, acquisition_reservation_owner_type, acquisition_reservation_owner_id
+		FROM books WHERE open_library_work_id = ? AND book_type = ? ORDER BY id DESC LIMIT 1`, workID, ebookType).
+		Scan(&book.id, &book.title, &book.author, &book.coverURL, &book.year, &book.filePath, &book.contentKind, &book.metadataSource,
+			&book.reservationToken, &book.reservationOwnerType, &book.reservationOwnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	if len(books) > maxMatchingBooks {
+	if err != nil || !modelled(book) {
 		return nil, ErrStoredValue
 	}
-	return books, nil
+	return &book, nil
 }
 
 func modelled(book storedBook) bool {
@@ -263,21 +267,17 @@ func acquired(path sql.NullString) bool {
 	return path.Valid && !rubyBlank(path.String)
 }
 
-func openRequest(ctx context.Context, tx *sql.Tx, books []storedBook, accountID int64) (Result, bool, error) {
-	ids := make([]string, len(books))
-	for index, book := range books {
-		ids[index] = strconv.FormatInt(book.id, 10)
-	}
-	scope := `FROM requests WHERE book_id IN (` + strings.Join(ids, ", ") + `)`
+func openRequest(ctx context.Context, tx *sql.Tx, workID string, accountID int64) (Result, bool, error) {
+	scope := `FROM requests WHERE book_id IN (` + workBooks + `)`
 	var unknown int64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) `+scope+` AND (typeof(status) <> 'integer' OR status NOT IN (`+knownStatuses+`))`).Scan(&unknown); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) `+scope+` AND (typeof(status) <> 'integer' OR status NOT IN (`+knownStatuses+`))`, workID).Scan(&unknown); err != nil {
 		return Result{}, false, err
 	}
 	if unknown > 0 {
 		return Result{}, false, ErrStoredValue
 	}
 	var requestID int64
-	err := tx.QueryRowContext(ctx, `SELECT id `+scope+` AND status IN (`+openStatuses+`) AND user_id = ? ORDER BY id LIMIT 1`, accountID).Scan(&requestID)
+	err := tx.QueryRowContext(ctx, `SELECT id `+scope+` AND status IN (`+openStatuses+`) AND user_id = ? ORDER BY id LIMIT 1`, workID, accountID).Scan(&requestID)
 	if err == nil {
 		return Result{Outcome: Existing, RequestID: requestID}, true, nil
 	}
@@ -285,7 +285,7 @@ func openRequest(ctx context.Context, tx *sql.Tx, books []storedBook, accountID 
 		return Result{}, false, err
 	}
 	var one int
-	err = tx.QueryRowContext(ctx, `SELECT 1 `+scope+` AND status IN (`+openStatuses+`) LIMIT 1`).Scan(&one)
+	err = tx.QueryRowContext(ctx, `SELECT 1 `+scope+` AND status IN (`+openStatuses+`) LIMIT 1`, workID).Scan(&one)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return Result{}, false, nil

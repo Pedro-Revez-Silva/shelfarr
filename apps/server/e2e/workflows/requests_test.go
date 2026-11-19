@@ -135,6 +135,8 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{key: "unacquired-newer", work: "OL1015W", title: "Seeded Unacquired Newer", bookType: 1},
 		{key: "shared", work: "OL1016W", title: "Seeded Shared", bookType: 1},
 		{key: "odd-status", work: "OL1017W", title: "Seeded Odd Status", bookType: 1},
+		{key: "foreign-older", work: "OL1018W", title: "Seeded Foreign Older", bookType: 1},
+		{key: "foreign-newer", work: "OL1018W", title: "Seeded Foreign Newer", bookType: 1},
 	}
 	for index, book := range books {
 		id := int64(1001 + index)
@@ -175,6 +177,7 @@ func seedAdmissionLibrary(t *testing.T, db *sql.DB, defaultLanguage string) seed
 		{507, "shared", "bob", 0},
 		{508, "shared", "alice", 0},
 		{509, "odd-status", "alice", 99},
+		{510, "foreign-older", "bob", 0},
 	}
 	for _, request := range requests {
 		exec1(t, db, `INSERT INTO requests (id, book_id, user_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -216,6 +219,7 @@ func admissionScenarios() []admissionExpectation {
 		{name: "acquired-older-copy", account: "alice", body: admissionBody("OL1007W", ""), railsOutcome: "created", outcome: "already_in_library", publication: "older-copy"},
 		{name: "newest-of-two-books", account: "alice", body: admissionBody("OL1015W", ""), oracle: true, outcome: "created", requestOnBook: "unacquired-newer", warnings: none},
 		{name: "own-request-behind-another", account: "alice", body: admissionBody("OL1016W", ""), railsOutcome: "already_requested", outcome: "existing", request: "508"},
+		{name: "foreign-request-on-older-copy", account: "alice", body: admissionBody("OL1018W", ""), railsOutcome: "created", outcome: "already_requested"},
 		{name: "unknown-request-status", account: "bob", body: admissionBody("OL1017W", ""), outcome: "unsupported_stored_value"},
 		{name: "blank-path-not-acquired", account: "alice", body: admissionBody("OL1009W", ""), oracle: true, outcome: "created", requestOnBook: "blank-path", warnings: none},
 		{name: "graphic-kind-kept", account: "alice", body: admissionBody("OL1010W", ""), oracle: true, outcome: "created", requestOnBook: "graphic", warnings: none,
@@ -560,6 +564,29 @@ func TestRequestAdmissionRechecksTheAccountInsideTheTransaction(t *testing.T) {
 	}
 	if counts := admissionCounts(t, db, "OL5002W"); counts != [3]int64{0, 0, 0} {
 		t.Fatalf("books, requests, activity = %v", counts)
+	}
+}
+
+func TestRequestAdmissionConsidersEveryCopyOfTheWork(t *testing.T) {
+	w := prepare(t, currentBundle)
+	db := w.open()
+	library := seedAdmissionLibrary(t, db, "")
+	alice := itoa(library.users["alice"])
+	for index := 0; index < 150; index++ {
+		exec1(t, db, `INSERT INTO books (id, open_library_work_id, book_type, title, created_at, updated_at) VALUES (?, 'OL6001W', 1, 'Many Copies', ?, ?)`, 2000+index, seededStamp, seededStamp)
+	}
+	exec1(t, db, `INSERT INTO requests (book_id, user_id, status, created_at, updated_at) VALUES (2000, ?, 0, ?, ?)`, library.users["alice"], seededStamp, seededStamp)
+	own := scalar[int64](t, db, `SELECT id FROM requests WHERE book_id = 2000`)
+	exec1(t, db, `INSERT INTO requests (book_id, user_id, status, created_at, updated_at) VALUES (2149, ?, 0, ?, ?)`, library.users["bob"], seededStamp, seededStamp)
+	answer := w.admit(plainBinary, faults{}, alice, admissionBody("OL6001W", ""))
+	if answer.outcome != "existing" || answer.fields.text("request_id") != itoa(own) {
+		t.Fatalf("the caller's request on the oldest of 150 copies answered %v", answer.fields)
+	}
+	exec1(t, db, `UPDATE books SET file_path = '/library/seeded/many.epub' WHERE id = 2001`)
+	exec1(t, db, `UPDATE books SET file_path = '  ' WHERE id = 2100`)
+	answer = w.admit(plainBinary, faults{}, alice, admissionBody("OL6001W", ""))
+	if answer.outcome != "already_in_library" || answer.fields.text("publication_id") != "2001" {
+		t.Fatalf("an acquired copy among 150 answered %v", answer.fields)
 	}
 }
 
