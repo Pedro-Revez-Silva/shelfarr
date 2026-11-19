@@ -1277,7 +1277,8 @@ nothing; like every preview route, the shared session guard removes a session ro
   `status` is no filter. An unknown status, a repeated `status`, `attention`, `q` or `page`, or a malformed query is
   `422 invalid_query` (Rails filters an unknown status to an empty list).
 * `q` is stripped of Ruby's `strip` characters, cut to 200 characters and matched, case-insensitively after Unicode NFC
-  and Ruby's full lower-casing (without Greek final-sigma context, as Ruby's `downcase`), as a substring of the book's title or author with `%`, `_` and `\` taken literally: Rails'
+  and Ruby's full lower-casing (without Greek final-sigma context, as Ruby's `downcase`; letters added to Unicode after
+  the version of the Ruby that runs Rails, such as U+1C89, may fold in Go and not in Rails), as a substring of the book's title or author with `%`, `_` and `\` taken literally: Rails'
   `shelfarr_request_search_lower` function, registered under another name in Go. Invalid UTF-8 is `422`.
 * `page` is read as Ruby's `to_i` (`"abc"` is 1, `"+0_0_7x"` is 7, a negative is 1), clamped to 1–1,000,000 and then to
   the last page; an empty result is page 1 of 1.
@@ -1289,8 +1290,9 @@ nothing; like every preview route, the shared session guard removes a session ro
   book and requester, one grouped download query for the page's downloading requests, and, for a detail, at most the 10
   newest downloads. Library checks run only for acquired books on the page, at most 25: the library roots are resolved
   once, reading places and statuses are read in one batch for the page, and each book gets the Go details projection.
-  A library root the runtime refuses or cannot read makes every acquired copy on the page `unavailable` instead of
-  failing the list.
+  A library root setting the runtime refuses (outside every `-library-root`, relative or otherwise unsupported) makes
+  every acquired copy on the page `unavailable` instead of failing the list; a configured root directory that merely
+  cannot be entered is skipped, as the Library skips it, and copies under the other roots keep their state.
 
 ### Projection
 
@@ -1311,8 +1313,9 @@ nothing; like every preview route, the shared session guard removes a session ro
   which may hold a client error, address or credential, is never returned; the screen then says Rails' own fallback,
   "This request needs your attention."
 * The cover is the book's `cover_url` only when it is a plain `https` address with a host and no user information (Rails'
-  `Consumer::SafeLink`) and none of its query parameter names looks like a credential (token, key, secret, signature,
-  auth, pass, credential, session, `X-Amz-*`, `X-Goog-*`); otherwise the generated cover. Times are UTC ISO 8601 with milliseconds.
+  `Consumer::SafeLink`) and none of its query parameter names, split on `&` and `;` and percent-decoded, looks like a
+  credential (token, key, secret, signature, auth, pass, credential, session, jwt, bearer, policy, `X-Amz-*`,
+  `X-Goog-*`); a name that cannot be decoded also drops it. Otherwise the generated cover. Times are UTC ISO 8601 with milliseconds.
 * A stored timestamp the runtime cannot read is `501 unsupported_stored_value`, as elsewhere.
 
 ### Deliberate differences from Rails
@@ -1345,8 +1348,8 @@ title linking to the request, author, format, status and attention badges, a lab
 while downloading, who asked (admins, other people's requests), when it was requested and completed, and "Open in
 Library" for an openable copy. Previous and Next keep the tab and search. Rails' empty states are kept ("No requests yet",
 "No requests need attention", "No matching requests"), with Discover offered for an empty list. The address holds
-`status`, `attention`, `q` and `page`, so a direct load, reload, Back and Forward return to the same list, and an unknown
-value in the address is ignored. Each filter has its own cache entry, so a late answer for an earlier filter never
+`status`, `attention`, `q` and `page`, so a direct load, reload, Back and Forward return to the same list; an unknown
+tab value in the address is ignored and `page` is passed to the server as written, which reads it as Rails does. Each filter has its own cache entry, so a late answer for an earlier filter never
 replaces the current one.
 
 A request (`/preview/requests/:id`) shows the format, title, author, badges, Rails' "Attention Required" box, a
@@ -1357,7 +1360,9 @@ filters included; opened in a new tab it goes to the unfiltered list. A missing 
 is not available". The account guard, session checks and
 locking work as on every other page. Request answers are cached per account and per role, and both screens wait for
 the session: when a session check finds that an admin is no longer one, every admin answer is dropped and the list
-or request is asked for again as a member.
+or request is asked for again as a member. An answer whose reach differs from the verified role (an admin's list or a
+detail naming its requester for a member, or the reverse) is never shown or cached: the session is checked again and
+the page asks again for the role it then has.
 
 ### Contract before and after
 
