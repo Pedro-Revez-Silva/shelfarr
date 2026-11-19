@@ -756,6 +756,9 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 				t.Fatalf("exit %d: %s", killed.code, killed.output)
 			}
 			requireSame(t, before.tables, digests(t, setup.db))
+			if state := setup.intent(t); len(state) != 0 {
+				t.Errorf("the interrupted attempt wrote worker state: %v", state)
+			}
 			var orphan uint64
 			if _, err := os.Lstat(setup.bookPath()); (err == nil) != point.linked {
 				t.Fatalf("library file present %v", err == nil)

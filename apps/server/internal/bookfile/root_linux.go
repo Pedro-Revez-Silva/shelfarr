@@ -210,7 +210,7 @@ func (r *Root) Publish(staged *Staged, placement Placement, digest []byte) (Publ
 }
 
 func identical(folder int, name string, size int64, digest []byte) (Published, error) {
-	fd, err := unix.Openat(folder, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	fd, err := unix.Openat2(folder, name, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_NONBLOCK | unix.O_CLOEXEC, Resolve: confined})
 	if err != nil {
 		return Published{}, ErrExists
 	}
@@ -227,6 +227,9 @@ func identical(folder int, name string, size int64, digest []byte) (Published, e
 	if _, err := io.Copy(hash, io.LimitReader(file, size+1)); err != nil || !bytes.Equal(hash.Sum(nil), digest) {
 		return Published{}, ErrExists
 	}
+	if err := file.Sync(); err != nil {
+		return Published{}, err
+	}
 	return Published{Identity: Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}}, unix.Fsync(folder)
 }
 
@@ -239,13 +242,21 @@ func (r *Root) Identify(placement Placement) (Identity, bool, error) {
 		return Identity{}, false, err
 	}
 	defer unix.Close(folder)
-	var status unix.Stat_t
-	err = unix.Fstatat(folder, placement.Name, &status, unix.AT_SYMLINK_NOFOLLOW)
+	return entry(folder, placement.Name)
+}
+
+func entry(folder int, name string) (Identity, bool, error) {
+	fd, err := unix.Openat2(folder, name, &unix.OpenHow{Flags: unix.O_PATH | unix.O_CLOEXEC, Resolve: confined})
 	if errors.Is(err, unix.ENOENT) {
 		return Identity{}, false, nil
 	}
 	if err != nil {
-		return Identity{}, false, err
+		return Identity{}, true, ErrUnsafe
+	}
+	defer unix.Close(fd)
+	var status unix.Stat_t
+	if err := unix.Fstat(fd, &status); err != nil {
+		return Identity{}, true, err
 	}
 	if status.Mode&unix.S_IFMT != unix.S_IFREG {
 		return Identity{}, true, ErrUnsafe
@@ -259,11 +270,13 @@ func (r *Root) Remove(placement Placement, linked Identity) error {
 		return err
 	}
 	defer unix.Close(folder)
-	var status unix.Stat_t
-	if err := unix.Fstatat(folder, placement.Name, &status, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	found, present, err := entry(folder, placement.Name)
+	switch {
+	case err != nil:
 		return err
-	}
-	if status.Mode&unix.S_IFMT != unix.S_IFREG || (Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}) != linked {
+	case !present:
+		return unix.ENOENT
+	case found != linked:
 		return ErrExists
 	}
 	if err := unix.Unlinkat(folder, placement.Name, 0); err != nil {

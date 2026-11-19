@@ -216,4 +216,15 @@ func TestALinkedOrOpenFolderIsNeverUsed(t *testing.T) {
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Errorf("wrote outside the library: %v", entries)
 	}
+	outsideBook := filepath.Join(outside, "book.epub")
+	os.WriteFile(outsideBook, []byte("book"), 0o644)
+	placement := Placement{Folders: []string{"real", "book-1"}, Name: "b.epub"}
+	os.MkdirAll(filepath.Join(library, "real", "book-1"), 0o755)
+	os.Symlink(outsideBook, filepath.Join(library, placement.Relative()))
+	if published, err := root.Publish(staged, placement, digest); published != (Published{}) || !errors.Is(err, ErrExists) {
+		t.Errorf("a linked name with the same bytes is adopted: %+v %v", published, err)
+	}
+	if _, present, err := root.Identify(placement); !present || !errors.Is(err, ErrUnsafe) {
+		t.Errorf("a linked name is identified: %v %v", present, err)
+	}
 }

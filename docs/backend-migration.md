@@ -812,9 +812,10 @@ name, so an interruption, a refusal or a kill leaves nothing on disk.
 
 1. the folders `shelfarr-gutenberg/book-<book id>/` are created or opened, each parent fsynced, and the anonymous file
    is linked as `gutenberg-<Gutenberg id>.epub` with `linkat`, which never replaces an existing name; then the folder
-   is fsynced. When the name is already taken, the existing entry is adopted only if it opens without following links
-   as a regular file of the caller with one link, the same size and the same SHA-256 as the bytes just validated (the
-   rule Rails' `publish_file_and_finalize!` applies when its destination exists); anything else is
+   is fsynced. When the name is already taken, the existing entry is adopted only if it opens through the same confined
+   `openat2` (no link, no mount crossing, including a file bind mount) as a regular file with the same size and SHA-256
+   as the bytes just validated, the comparison Rails' `publish_file_and_finalize!` makes when its destination exists,
+   narrowed here to a single-link file of the caller; the adopted file is then fsynced. Anything else is
    `library-file-exists` and is left untouched. A link or unsafe folder is `library-path-unsafe`;
 2. one `BEGIN IMMEDIATE` transaction re-reads everything the eligibility check read and requires it unchanged (request
    status, generation, claim and `updated_at`, the result's status and row, the book's `updated_at`, path and
@@ -828,7 +829,7 @@ from the disposable directory with the confined `openat2` above and requires it 
 `superseded` after it, and nothing is created through the old directory.
 
 SIGINT and SIGTERM stop the command until the bytes are validated; from step 1 it finishes or rolls back the
-publication within 10 seconds. Anything changed is `superseded` (exit 4). On that, or on a failure after the link (a
+publication (its database work bounded by 10 seconds; a filesystem call in progress is not interrupted). Anything changed is `superseded` (exit 4). On that, or on a failure after the link (a
 folder fsync, a failpoint, a database error inside the completion transaction, after checking that no book references
 the path, exit 1), the command removes the file only if it linked it in this run and the name still holds that inode,
 which it keeps open, so the inode cannot have been reused; an adopted file is never removed. When the root or folder
@@ -900,7 +901,8 @@ library, no provider data in the log; the built `shelfarr-http` lists the book w
 stat and delivers the exact bytes; a repeat is `already_completed` and another result is refused, both without network.
 It also covers 29 refusals with no catalogue contact, 14 download failures (statuses, redirect, content types, garbage,
 truncation, a ZIP that is not an EPUB, both size bounds, the deadline and SIGTERM) that write nothing, SIGKILL at three
-boundaries and an external SIGKILL while publishing, each followed by a rerun that adopts the killed attempt's file,
+boundaries (no worker state written) and an external SIGKILL while publishing, each followed by a rerun that completes,
+adopting the killed attempt's file after a kill once it was linked,
 a killed attempt's file kept through a failed rerun and adopted by the next, a foreign file left at the name, the same
 EPUB already at the name (adopted), six concurrent attempts (one completes, the others are `acquisition_busy`), six
 changes while parked before the commit and a root moved while parked inside the completion transaction (all
@@ -908,10 +910,11 @@ changes while parked before the commit and a root moved while parked inside the 
 out of the disposable directory and replaced before publication (`library-root-changed`, nothing created in either),
 failures after the link and inside the completion transaction, an existing different file and a linked folder.
 `verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
-copy interrupted after the link, in real Rails with its own library root, serves the same EPUB through WebMock, runs
+database of the copy interrupted after the link (whose orphan stays in the Go library), in real Rails with its own
+library root, serves the same EPUB through WebMock, runs
 `select_result!` and the enqueued `DownloadJob`, and requires the same rows in every table except the library path;
 then it installs the Go result, requires valid completed models, Rails' consumer API to list the same asset id and
-deliver the same bytes, and `DirectDownloadRecoveryJob` to change nothing. Nine mutants of these rules must each fail
+deliver the same bytes, and `DirectDownloadRecoveryJob` to change nothing. Ten mutants of these rules must each fail
 an assertion.
 
 ## Gaps (recorded in every report)
