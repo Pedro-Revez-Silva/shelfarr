@@ -322,7 +322,35 @@ describe("the Requests page", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(screen.queryByText("Someone Else's")).toBeNull();
     expect(screen.getByRole("heading", { level: 1 }).textContent).not.toBe("This account's access changed");
-  });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy(), { timeout: 8000 });
+    const settled = { lists: lists(server).length, checks: server.called("GET", /\/api\/v1\/session$/).length };
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    expect(lists(server).length).toBe(settled.lists);
+    expect(server.called("GET", /\/api\/v1\/session$/).length).toBe(settled.checks);
+    failing = false;
+    await act(async () => services.revalidate());
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 3 }, { timeout: 4000 })).toBeTruthy();
+  }, 30_000);
+
+  test("a request no longer found while session checks keep failing settles on not available without asking again and again", async () => {
+    let gone = false;
+    const server = requestsServer()
+      .on("GET", /\/api\/v1\/session$/, () => (gone ? error(503, "database_busy") : { body: session({ admin: { url: "/admin" } }) }))
+      .on("GET", /\/api\/v1\/requests\/3$/, () => (gone ? error(404, "not_found") : { body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) } }));
+    const { services } = renderRequests(server, "/preview/requests/3");
+    expect(await screen.findByRole("heading", { name: "Someone Else's", level: 1 })).toBeTruthy();
+    gone = true;
+    await act(async () => {
+      await services.queryClient.refetchQueries({ queryKey: services.keys.request("3") }).catch(() => undefined);
+    });
+    expect(await screen.findByRole("heading", { name: "This request is not available", level: 1 }, { timeout: 4000 })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const settled = server.called("GET", /\/api\/v1\/requests\/3$/).length;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(server.called("GET", /\/api\/v1\/requests\/3$/).length).toBe(settled);
+    expect(settled).toBeLessThanOrEqual(4);
+    expect(services.queryClient.getQueriesData({ queryKey: services.keys.requestAll }).filter(([, data]) => data !== undefined)).toEqual([]);
+  }, 20_000);
 
   test("the classic preview keeps its page when the role changes, as before", async () => {
     let admin = true;

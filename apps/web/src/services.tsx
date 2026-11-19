@@ -84,9 +84,18 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
+  const requestQueries = [keys.requestsAll, keys.requestAll];
+  let recovering = false;
   const forgetRequests = () => {
-    void queryClient.resetQueries({ queryKey: keys.requestsAll });
-    void queryClient.resetQueries({ queryKey: keys.requestAll });
+    recovering = true;
+    for (const queryKey of requestQueries) {
+      if (queryClient.getQueriesData({ queryKey }).some(([, data]) => data !== undefined)) void queryClient.resetQueries({ queryKey });
+    }
+  };
+  const retryFailedRequests = () => {
+    if (!recovering) return;
+    recovering = false;
+    for (const queryKey of requestQueries) void queryClient.invalidateQueries({ queryKey, predicate: (query) => query.state.status === "error" });
   };
   const keepsRole = (session: Session): boolean => {
     if (boot.runtime !== "go") return true;
@@ -101,7 +110,10 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     try {
       const session = await api.session(controller.signal, true);
       if (generation === guard.generation) keepsRole(session);
-      if (generation === guard.generation && guard.isActive()) queryClient.setQueryData(keys.session, session);
+      if (generation === guard.generation && guard.isActive()) {
+        queryClient.setQueryData(keys.session, session);
+        retryFailedRequests();
+      }
       guard.finishCheck(generation, true);
     } catch (error) {
       const lost = sessionLost(error);
