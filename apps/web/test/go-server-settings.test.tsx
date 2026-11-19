@@ -68,7 +68,7 @@ function renderSettings(server: FakeServer, url = "/preview/admin/settings") {
 }
 
 function controls() {
-  return { enabled: screen.getByRole("checkbox", { name: "Use Open Library" }) as HTMLInputElement, limit: screen.getByRole("spinbutton", { name: "Results per search" }) as HTMLInputElement };
+  return { enabled: screen.getByRole("checkbox", { name: "Use Open Library" }) as HTMLInputElement, limit: screen.getByRole("textbox", { name: "Results per search" }) as HTMLInputElement };
 }
 
 function saves(server: FakeServer) {
@@ -109,8 +109,7 @@ describe("the server settings page", () => {
     const { enabled, limit } = controls();
     expect(enabled.checked).toBe(true);
     expect(limit.value).toBe("50");
-    expect(limit.getAttribute("min")).toBe("1");
-    expect(limit.getAttribute("max")).toBe("1000");
+    expect([limit.type, limit.inputMode]).toEqual(["text", "numeric"]);
     expect(document.getElementById(enabled.getAttribute("aria-describedby")!)!.textContent).toBe("Searches openlibrary.org for book details. Default: on.");
     expect(document.getElementById(limit.getAttribute("aria-describedby")!)!.textContent).toBe("1 to 1000. Default: 20. Discover in this preview shows at most 20.");
     expect(document.querySelector(".settings-reach")!.textContent).toBe("Discover now: Discover searches Open Library and shows up to 20 results.");

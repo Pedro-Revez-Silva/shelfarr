@@ -231,12 +231,12 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
           <input
             id={ids.limit}
             name="search_limit"
-            type="number"
+            className="count-input"
+            type="text"
             inputMode="numeric"
+            autoComplete="off"
+            spellCheck={false}
             enterKeyHint="done"
-            min={range.min}
-            max={range.max}
-            step={1}
             value={limitText}
             aria-invalid={limitInvalid}
             aria-describedby={[ids.limitHint, limitInvalid ? ids.limitError : ""].filter(Boolean).join(" ")}

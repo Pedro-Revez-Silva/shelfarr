@@ -1987,7 +1987,7 @@ thead th {
   grid-column: 2;
   margin: 0;
 }
-.account-form input[type="number"] {
+.account-form input.count-input {
   width: min(100%, 12rem);
   min-height: 56px;
   padding: 0 16px;
@@ -1997,7 +1997,7 @@ thead th {
   font: inherit;
   font-size: max(1rem, 1em);
 }
-.account-form input[type="number"][aria-invalid="true"] {
+.account-form input.count-input[aria-invalid="true"] {
   border-color: var(--danger);
   border-width: 2px;
 }
