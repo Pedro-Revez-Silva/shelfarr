@@ -176,26 +176,48 @@ func (s *acquisitionService) run(ctx context.Context) {
 func (s *acquisitionService) nextSearch(ctx context.Context) (int64, bool, error) {
 	now := s.now()
 	stale := wfstore.FormatTimestamp(now.Add(-acquisition.StaleSearchLease))
+	for offset := 0; ; offset += pendingScan {
+		ids, err := s.claimable(ctx, stale, offset)
+		if err != nil {
+			return 0, false, err
+		}
+		if id, found := s.firstUnparked(ids, now); found {
+			return id, true, nil
+		}
+		if len(ids) < pendingScan {
+			return 0, false, nil
+		}
+	}
+}
+
+func (s *acquisitionService) claimable(ctx context.Context, stale string, offset int) ([]int64, error) {
 	rows, err := s.store.DB().QueryContext(ctx, `SELECT r.id FROM requests r JOIN books b ON b.id = r.book_id
 		WHERE b.book_type = 1 AND (r.status = 0 OR (r.status = 1 AND r.search_claimed_at IS NOT NULL AND r.search_claimed_at <= ?))
-		ORDER BY r.created_at, r.id LIMIT ?`, stale, pendingScan)
+		ORDER BY r.created_at, r.id LIMIT ? OFFSET ?`, stale, pendingScan, offset)
 	if err != nil {
-		return 0, false, wfstore.Wrap(err)
+		return nil, wfstore.Wrap(err)
 	}
 	defer rows.Close()
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return 0, false, wfstore.Wrap(err)
+			return nil, wfstore.Wrap(err)
 		}
-		if parked, found := s.parked[id]; found && now.Before(parked.until) {
-			continue
-		}
-		return id, true, nil
+		ids = append(ids, id)
 	}
-	return 0, false, wfstore.Wrap(rows.Err())
+	return ids, wfstore.Wrap(rows.Err())
+}
+
+func (s *acquisitionService) firstUnparked(ids []int64, now time.Time) (int64, bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	for _, id := range ids {
+		if parked, found := s.parked[id]; !found || !now.Before(parked.until) {
+			return id, true
+		}
+	}
+	return 0, false
 }
 
 func (s *acquisitionService) search(ctx context.Context, requestID int64) {

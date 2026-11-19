@@ -1,12 +1,17 @@
 package gohttp
 
 import (
+	"context"
+	"database/sql"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/openlibrary"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/wfstore"
 )
 
 func TestRequestRoutesStayAsTheyWereWithoutAnAcquisitionVolume(t *testing.T) {
@@ -201,5 +206,70 @@ func TestOnlyLoopbackBrowserOriginsQualify(t *testing.T) {
 		if got := loopbackOrigin(origin); got != want {
 			t.Errorf("%q: %v", origin, got)
 		}
+	}
+}
+
+func minimalVolume(t *testing.T) *wfstore.Store {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "volume")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite", "file:"+filepath.Join(dir, wfstore.DatabaseName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`CREATE TABLE wf_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+		INSERT INTO wf_meta VALUES ('disposable_token', 'synthetic');
+		CREATE TABLE books (id INTEGER PRIMARY KEY, book_type INTEGER NOT NULL);
+		CREATE TABLE requests (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, status INTEGER NOT NULL, search_claimed_at TEXT, created_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{wfstore.MarkerName: `{"format":1,"token":"synthetic"}`, wfstore.KeysName: `{}`} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opened, err := wfstore.Open(context.Background(), dir, wfstore.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { opened.Close() })
+	return opened
+}
+
+func TestTheWorkerFindsAClaimableRequestBehindAPageOfParkedOnes(t *testing.T) {
+	store := minimalVolume(t)
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	service := &acquisitionService{store: store, now: func() time.Time { return now }, parked: map[int64]parkedSearch{}, jobs: map[int64]*selectionJob{}}
+	insert := func(query string, arguments ...any) {
+		if _, err := store.DB().Exec(query, arguments...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(`INSERT INTO books (id, book_type) VALUES (1, 1), (2, 0)`)
+	insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (1, 2, 0, '2026-11-01 00:00:00.000000')`)
+	insert(`INSERT INTO requests (id, book_id, status, search_claimed_at, created_at) VALUES (2, 1, 1, '2026-11-19 09:50:00.000000', '2026-11-01 00:00:01.000000')`)
+	for id := int64(10); id < 10+2*pendingScan+5; id++ {
+		insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (?, 1, 0, ?)`, id, wfstore.FormatTimestamp(now.Add(-time.Hour+time.Duration(id)*time.Second)))
+		service.park(id, searchRetryScheduled, "provider-busy", time.Minute)
+	}
+	last := int64(10 + 2*pendingScan + 5)
+	insert(`INSERT INTO requests (id, book_id, status, created_at) VALUES (?, 1, 0, ?)`, last, wfstore.FormatTimestamp(now))
+	if id, found, err := service.nextSearch(context.Background()); err != nil || !found || id != last {
+		t.Fatalf("next search %d %v %v, want %d", id, found, err, last)
+	}
+	service.park(last, searchRetryScheduled, "provider-busy", time.Minute)
+	if id, found, err := service.nextSearch(context.Background()); err != nil || found {
+		t.Fatalf("an audiobook, a live claim or a parked request was offered: %d %v %v", id, found, err)
+	}
+	now = now.Add(2 * time.Minute)
+	if id, found, _ := service.nextSearch(context.Background()); !found || id != 10 {
+		t.Fatalf("after the waits, the oldest pending request is %d %v", id, found)
+	}
+	now = now.Add(30 * time.Minute)
+	if id, found, _ := service.nextSearch(context.Background()); !found || id != 2 {
+		t.Fatalf("after the lease, the oldest claimable request is %d %v", id, found)
 	}
 }
