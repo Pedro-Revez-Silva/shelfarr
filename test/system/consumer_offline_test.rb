@@ -149,7 +149,7 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_no_text "Pages kept for a journey."
   end
 
-  test "a downloaded ebook restored by Back for the same confirmed account shows the same reader again" do
+  test "a downloaded ebook restored by Back for the same confirmed account reopens in a fresh reader at its place" do
     visit at(consumer_publication_path(@ebook))
     assert_selector ".consumer-ebook iframe", wait: 20
     reveal_reading_controls
@@ -161,13 +161,17 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     ConsumerReachability.offline = true
     visit at(consumer_publication_path(@ebook))
     within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
-    page.execute_script("window.__sameDocument = true")
+    find("[data-consumer-reader-target=viewport]").send_keys(:arrow_right)
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all, wait: 10
+    assert_selector "[data-consumer-reader-target=notice]", text: "Saved on this device. It will sync when you're back online.", wait: 12
+    page.execute_script("window.__restoredDocument = true")
     page.execute_script("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
     assert_no_selector ".consumer-ebook iframe", visible: true
     page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
-    within_frame(find(".consumer-ebook iframe", wait: 15)) { assert_text "Pages kept for a journey." }
+    assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all, wait: 20
+    assert_nil page.evaluate_script("window.__restoredDocument ?? null")
     assert_selector ".consumer-ebook iframe", count: 1
-    assert page.evaluate_script("window.__sameDocument === true")
+    within_frame(find(".consumer-ebook iframe")) { assert_text "Pages kept for a journey." }
   end
 
   test "another account never sees these downloads, and the sign-in page forgets the offline account" do
