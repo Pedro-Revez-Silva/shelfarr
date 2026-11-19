@@ -20,6 +20,7 @@ const (
 	maxContainerBytes  = 64 << 10
 	maxPackageBytes    = 1 << 20
 	maxNavigationBytes = 1 << 20
+	maxSectionBytes    = 16 << 20
 	ncxMediaType       = "application/x-dtbncx+xml"
 )
 
@@ -38,8 +39,13 @@ type openedPackage struct {
 	hasSpine    bool
 	items       map[string]manifestItem
 	itemOrder   []string
-	spine       []string
+	spine       []spineItem
 	spineTOC    string
+}
+
+type spineItem struct {
+	idref  string
+	linear bool
 }
 
 func CheckReadableEPUB(ctx context.Context, file io.ReaderAt, size int64) error {
@@ -69,41 +75,74 @@ func CheckReadableEPUB(ctx context.Context, file io.ReaderAt, size int64) error 
 		return ErrUnreadableEPUB
 	}
 	opened, err := scanPackage(document)
-	if err != nil || !opened.hasPackage || !opened.hasMetadata || !opened.hasManifest || !opened.hasSpine || len(opened.spine) == 0 {
+	if err != nil || !opened.hasPackage || !opened.hasMetadata || !opened.hasManifest || !opened.hasSpine {
 		return ErrUnreadableEPUB
 	}
 	base := path.Dir(packagePath)
-	if !present(byName, base, opened.items[opened.spine[0]].href) {
+	first, found := opened.firstLinear()
+	if !found {
 		return ErrUnreadableEPUB
 	}
-	if navigation := opened.navigationHref(); navigation != "" {
-		name, ok := resolve(base, navigation)
-		if !ok {
-			return ErrUnreadableEPUB
-		}
-		data, err := readEntry(file, byName[name], maxNavigationBytes)
-		if err != nil || wellFormed(data) != nil {
-			return ErrUnreadableEPUB
-		}
+	name, ok := resolve(base, opened.items[first].href)
+	if !ok {
+		return ErrUnreadableEPUB
+	}
+	section, err := readEntry(file, byName[name], maxSectionBytes)
+	if err != nil || wellFormed(section) != nil {
+		return ErrUnreadableEPUB
+	}
+	navigation, isNCX := opened.navigation()
+	if navigation == "" {
+		return nil
+	}
+	name, ok = resolve(base, navigation)
+	if !ok {
+		return ErrUnreadableEPUB
+	}
+	data, err := readEntry(file, byName[name], maxNavigationBytes)
+	if err != nil || wellFormed(data) != nil || isNCX && !completeNCX(data) {
+		return ErrUnreadableEPUB
 	}
 	return nil
 }
 
-func (p openedPackage) navigationHref() string {
+func (p openedPackage) firstLinear() (string, bool) {
+	for _, item := range p.spine {
+		if item.linear {
+			return item.idref, true
+		}
+	}
+	return "", false
+}
+
+func completeNCX(data []byte) bool {
+	points, linked := 0, 0
+	err := tokens(data, func(element xml.StartElement, open []string) {
+		switch {
+		case element.Name.Local == "navPoint":
+			points++
+		case element.Name.Local == "content" && len(open) > 0 && open[len(open)-1] == "navPoint" && attribute(element, "src") != "":
+			linked++
+		}
+	})
+	return err == nil && points == linked
+}
+
+func (p openedPackage) navigation() (string, bool) {
 	for _, id := range p.itemOrder {
 		if slices.Contains(p.items[id].properties, "nav") {
-			return p.items[id].href
+			return p.items[id].href, false
 		}
 	}
 	for _, id := range p.itemOrder {
 		if p.items[id].mediaType == ncxMediaType {
-			return p.items[id].href
+			return p.items[id].href, true
 		}
 	}
 	if p.spineTOC != "" {
-		return p.items[p.spineTOC].href
+		return p.items[p.spineTOC].href, true
 	}
-	return ""
+	return "", false
 }
 
 func present(byName map[string]zipdirectory.Entry, base, href string) bool {
@@ -149,9 +188,16 @@ func tokens(data []byte, visit func(xml.StartElement, []string)) error {
 		case xml.EndElement:
 			open = open[:len(open)-1]
 		case xml.Directive:
-			return ErrUnreadableEPUB
+			if !plainDoctype(element) {
+				return ErrUnreadableEPUB
+			}
 		}
 	}
+}
+
+func plainDoctype(directive xml.Directive) bool {
+	text := strings.TrimSpace(string(directive))
+	return len(text) >= 7 && strings.EqualFold(text[:7], "DOCTYPE") && !strings.ContainsAny(text, "[<>")
 }
 
 func wellFormed(data []byte) error {
@@ -199,7 +245,7 @@ func scanPackage(data []byte) (openedPackage, error) {
 			}
 			opened.items[id] = manifestItem{href: attribute(element, "href"), mediaType: attribute(element, "media-type"), properties: strings.Fields(attribute(element, "properties"))}
 		case "itemref":
-			opened.spine = append(opened.spine, attribute(element, "idref"))
+			opened.spine = append(opened.spine, spineItem{idref: attribute(element, "idref"), linear: attribute(element, "linear") != "no"})
 		}
 	})
 	return opened, err

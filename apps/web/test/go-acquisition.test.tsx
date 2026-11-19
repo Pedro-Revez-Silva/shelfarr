@@ -326,6 +326,19 @@ describe("choosing a copy on a request", () => {
     expect(await screen.findByText(/This server's settings do not allow searching for this request here/, {}, { timeout: 20000 })).toBeTruthy();
   }, 30000);
 
+  test("a request whose retries ran out is not asked about again by itself", async () => {
+    const state = {
+      detail: requestDetail({ status: "not_found", attention_needed: true, attention_reason: "Maximum retry attempts (1) exceeded. Manual intervention required.", next_retry_at: null }),
+      acquisition: acquisition({ request: { id: "41", status: "not_found" }, candidates: [] }),
+    };
+    const server = requestServer(true, state, () => error(404, "not_found"));
+    render_(server, "/preview/requests/41");
+    await screen.findByRole("heading", { level: 1, name: "Pride and Prejudice" });
+    await waitFor(() => expect(server.called("GET", /\/acquisition$/).length).toBe(1));
+    await act(async () => Bun.sleep(16_000));
+    expect(server.called("GET", /\/acquisition$/).length).toBe(1);
+  }, 30000);
+
   for (const admin of [true, false]) {
     test(`a request outside the acquisition flow reads as before for ${admin ? "an admin" : "a member"} and asks for nothing new`, async () => {
       const { acquisition: _omitted, ...plain } = requestDetail();

@@ -229,7 +229,7 @@ const FAILURE_TEXT: Record<string, string> = {
 };
 
 function ChooseCopy({ request }: { request: RequestDetail }) {
-  const acquisition = useAcquisition(request.id, true);
+  const acquisition = useAcquisition(request.id, true, request.next_retry_at !== null);
   const finished = useSelectionFinished(request.id);
   const state = acquisition.data?.selection?.state;
   const previous = useRef(state);

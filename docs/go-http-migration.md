@@ -1434,8 +1434,9 @@ checked before the lock file is created or the database opened:
 | `acquisition-volume` | `DIR` is absolute and clean; `-database` is exactly `DIR/workflows.sqlite3` and `-lock-file` exactly `DIR/locks/http.lock`; `DIR` is a private directory, not a link, and `DIR/locks` is a private directory reached from it with `openat2` and
 `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV` (no link and no mount point, bind mounts
 included) that is private to its owner; the lock files `DIR/locks/http.lock` (held for the process's life) and
-`DIR/locks/acquisition.lock` (checked at start, held for each download, by the command too) are opened beneath `DIR` the
-same way and must be regular files; `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
+`DIR/locks/acquisition.lock` (checked at start, held for each download, by the download command too, which already
+needs `openat2` for the library) are opened beneath `DIR` the same way and must be regular files (the command's
+long-running domain owners keep their existing lock open); `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
 | `acquisition-network` | with `-open-library-search`, `-acquisition-open-library-address` names a loopback IP literal and a port from 1 to 65535 in plain decimal. Every Open Library connection is then dialled to that address, with no proxy (proxy variables are ignored) and the usual TLS name check against `openlibrary.org`, so Discover reaches only the test server |
 | `acquisition-settings` | the copy's settings pass the Gutenberg search and download checks before any request exists: schema revision and columns, Gutenberg on with a loopback IP origin, no other ebook source, no auto-selection or outbound notification channel, no library scan or import permissions, and `ebook_output_path` a canonical private directory strictly inside `DIR` that is also under a `-library-root` |
 
@@ -1520,10 +1521,12 @@ are never returned. Codes are fixed strings.
   anything (`failed` `library_root_not_disposable` otherwise); the completion transaction also requires the plan, root
   included, unchanged. Before publication the website flow also requires what the bundled reader engine
   (`vendor/javascript/consumer_reader_engine.js`) needs to open the EPUB, step for step: the package named by the
-  container's first `rootfile` element (container read with a 64 KiB bound); in that package (1 MiB bound, strict XML,
-  no document type declaration or entity) a `package` element and `metadata`, `manifest` and `spine` elements; the first
-  spine item's manifest file present in the archive; and, when the manifest declares a navigation document (`nav`
-  property) or an NCX (media type or the spine's `toc`), that file present and well-formed XML (1 MiB bound) (`failed` `download-unreadable` otherwise, nothing
+  container's first `rootfile` element (container read with a 64 KiB bound); in that package (1 MiB bound) a `package`
+  element and `metadata`, `manifest` and `spine` elements; the first linear spine item (the one a new reader shows)
+  present and well-formed XML (16 MiB bound); and, when the manifest declares a navigation document (`nav` property) or
+  an NCX (media type or the spine's `toc`), that file present and well-formed XML (1 MiB bound), every NCX `navPoint`
+  with a `content` link. XML is read strictly with no entities; a document type is accepted only without an internal
+  subset (nothing is fetched for it) (`failed` `download-unreadable` otherwise, nothing
   linked). The command's own check is unchanged. The
   result is `completed` or `failed` with the download's code; nothing is retried by itself.
 
@@ -1543,7 +1546,10 @@ reports and never claims success it has not seen.
 **Deliberate limits.** Rails must not run on a prepared copy while this mode does: the copy and the `http.lock` keep other
 Go processes out, but Rails does not read them, as for every command on a disposable copy. Like the commands, the runtime
 assumes nothing else renames entries inside the private disposable directory while it runs (see the download command's
-assumption in backend-migration.md).
+assumption in backend-migration.md). The EPUB readability check follows the reader engine's open sequence as listed
+above; it does not render, so a file that passes it and still cannot be displayed (a chapter the engine rejects for
+another reason) is listed and the reader says it cannot open it. Waits for refused searches are kept per request in
+memory while they last, so a volume with very many refused requests holds one small note for each.
 
 ### Browser screens
 

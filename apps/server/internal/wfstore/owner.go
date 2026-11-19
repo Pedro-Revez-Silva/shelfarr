@@ -60,6 +60,14 @@ func (s *Store) Acquire(ctx context.Context, domain string) (*Owner, error) {
 }
 
 func (s *Store) Hold(name string) (*os.File, error) {
+	lock, err := os.OpenFile(filepath.Join(s.Dir, LocksDir, name+".lock"), os.O_RDWR|os.O_CREATE|noFollow, 0o600)
+	if err != nil {
+		return nil, Fail(CodeDatabase, err)
+	}
+	return holdOpened(lock)
+}
+
+func (s *Store) HoldBeneath(name string) (*os.File, error) {
 	return LockBeneath(s.Dir, name)
 }
 
@@ -76,6 +84,10 @@ func LockBeneath(dir, name string) (*os.File, error) {
 	if err != nil {
 		return nil, Fail(CodeDatabase, err)
 	}
+	return holdOpened(lock)
+}
+
+func holdOpened(lock *os.File) (*os.File, error) {
 	if err := lockExclusive(lock); err != nil {
 		lock.Close()
 		if errors.Is(err, errLockHeld) {

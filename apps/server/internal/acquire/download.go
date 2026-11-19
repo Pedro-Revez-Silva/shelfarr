@@ -72,7 +72,7 @@ type DownloadReport struct {
 }
 
 func Download(ctx context.Context, store *wfstore.Store, requestID, resultID int64, options DownloadOptions) (DownloadReport, error) {
-	lock, err := store.Hold(AcquisitionLock)
+	lock, err := store.HoldBeneath(AcquisitionLock)
 	if errors.Is(err, wfstore.ErrAlreadyOwned) {
 		return DownloadReport{}, ErrBusy
 	}

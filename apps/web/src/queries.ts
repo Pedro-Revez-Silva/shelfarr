@@ -149,7 +149,7 @@ export function selectionRunning(answer: Acquisition | undefined): boolean {
   return answer?.selection?.state === "queued" || answer?.selection?.state === "downloading";
 }
 
-export function useAcquisition(id: string, enabled: boolean) {
+export function useAcquisition(id: string, enabled: boolean, retryScheduled: boolean) {
   const { api, keys, revalidate } = useServices();
   return useQuery({
     queryKey: keys.acquisition(id),
@@ -161,7 +161,7 @@ export function useAcquisition(id: string, enabled: boolean) {
     enabled,
     retry: false,
     refetchInterval: ({ state }) =>
-      selectionRunning(state.data) ? SELECTION_REFRESH_MS : state.data && (MOVING_STATUSES.has(state.data.request.status) || state.data.request.status === "not_found") ? REQUEST_REFRESH_MS : false,
+      selectionRunning(state.data) ? SELECTION_REFRESH_MS : state.data && (MOVING_STATUSES.has(state.data.request.status) || (state.data.request.status === "not_found" && retryScheduled)) ? REQUEST_REFRESH_MS : false,
   });
 }
 
