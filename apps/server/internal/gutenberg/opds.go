@@ -13,11 +13,13 @@ const (
 	maxElements = 20_000
 	maxDepth    = 32
 	maxEntries  = 100
+	atomSpace   = "http://www.w3.org/2005/Atom"
 )
 
 var errMalformed = errors.New("malformed catalogue document")
 
 type element struct {
+	space    string
 	name     string
 	attrs    map[string]string
 	children []*element
@@ -33,6 +35,7 @@ func parseDocument(body []byte) (*element, error) {
 	if !utf8.Valid(body) {
 		return nil, errMalformed
 	}
+	body = bytes.TrimPrefix(body, []byte("\xef\xbb\xbf"))
 	decoder := xml.NewDecoder(bytes.NewReader(body))
 	decoder.Strict = true
 	var root *element
@@ -52,7 +55,7 @@ func parseDocument(body []byte) (*element, error) {
 			if count > maxElements || len(stack) >= maxDepth {
 				return nil, errMalformed
 			}
-			node := &element{name: token.Name.Local, attrs: map[string]string{}}
+			node := &element{space: token.Name.Space, name: token.Name.Local, attrs: map[string]string{}}
 			for _, attribute := range token.Attr {
 				if _, seen := node.attrs[attribute.Name.Local]; !seen {
 					node.attrs[attribute.Name.Local] = attribute.Value
@@ -73,7 +76,7 @@ func parseDocument(body []byte) (*element, error) {
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) == 0 {
-				if len(bytes.TrimSpace(token)) > 0 {
+				if len(bytes.Trim(token, " \t\r\n")) > 0 {
 					return nil, errMalformed
 				}
 				continue
@@ -142,7 +145,7 @@ func (e *element) descendants(name string) []*element {
 }
 
 func entries(root *element) ([]*element, error) {
-	if root.name != "feed" {
+	if root.space != atomSpace || root.name != "feed" {
 		return nil, errMalformed
 	}
 	found := root.descendants("entry")

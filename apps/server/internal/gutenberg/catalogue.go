@@ -93,6 +93,7 @@ type format struct {
 type detail struct {
 	candidate *Candidate
 	withheld  bool
+	nextPage  bool
 }
 
 func parseDetail(body []byte, fallbackID, requestedLanguage string, origin Origin) (detail, error) {
@@ -104,6 +105,12 @@ func parseDetail(body []byte, fallbackID, requestedLanguage string, origin Origi
 	if err != nil {
 		return detail{}, err
 	}
+	parsed, err := chooseDetail(found, fallbackID, requestedLanguage, origin)
+	parsed.nextPage = hasNextPage(root)
+	return parsed, err
+}
+
+func chooseDetail(found []*element, fallbackID, requestedLanguage string, origin Origin) (detail, error) {
 	var bestEntry *element
 	var best format
 	var bestLanguage string

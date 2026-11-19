@@ -648,7 +648,8 @@ use (`provider_not_loopback`), and the HTTP client additionally refuses to dial 
 provider for ebooks, eBooks.com), because Go searches one provider and must not decide a multi-source search from it.
 Z-Library counts as configured on its default mirror list when no URL is stored, as in Rails; eBooks.com counts as
 configured whenever it is enabled with any two-letter country, a conservative superset of Rails' check against the
-real country list.
+real country list. Integer settings are read with Ruby's `Integer` syntax (surrounding white space, a sign, leading
+zeros, single underscores between digits); anything else, or a value beyond 64 bits, is refused.
 `auto_select_enabled` must be off (Go never selects) and the webhook, Discord and Telegram notification channels off
 (Go cannot enqueue them). A refusal writes nothing and leaves the request pending for Rails: answer `rejected` with
 `unsupported_schema`, `unsupported_stored_value`, `request_not_found`, `request_not_pending`, `not_an_ebook`,
@@ -675,9 +676,10 @@ else `default_language`). The detail path is built from the numeric id, never ta
 `next` pages are never followed. Every response is read through a 1 MiB limit with a per-request timeout
 (`--request-timeout`, at most 1 minute) inside an overall `--deadline` (at most 20 minutes, below the lease), no
 proxy, no redirects, the Rails user agent, and parsed by a strict XML decoder that loads no DTD or external entity,
-with at most 100 entries, 20,000 elements and depth 32; the root must be an Atom `feed` and no text may stand outside
-it, so an HTML maintenance page or a truncated or trailing answer is malformed, never empty. When no title gives a
-result and a search page it used linked a `next` page or listed more books than the limit, the answer was not fully
+with at most 100 entries, 20,000 elements and depth 32; after an optional UTF-8 byte order mark, the root must be a
+`feed` in the Atom namespace and only XML white space may stand outside it, so an HTML maintenance page, another
+format or a truncated or trailing answer is malformed, never empty. When no title gives a result and a search page or
+book page it used linked a `next` page, or a search page listed more books than the limit, the answer was not fully
 read and is reported as `provider-pagination`, not as no results. After every response the claim is renewed with Rails'
 heartbeat compare-and-swap on `(status, search_generation)`; a lost claim stops the search before the next request.
 A candidate is stored only when Rails' choice for that book is an EPUB whose link is on the configured origin (a
@@ -722,7 +724,8 @@ language stay as they were). Go refuses malformed XML where Nokogiri recovers wh
 fragment). Go withholds MOBI, PDF and off-origin EPUB links and hands such a request back instead of storing them.
 Go refuses instead of searching when another source, auto-selection or an outbound notification channel is configured.
 Go stores the configured catalogue's own book page as `info_url` (identical to Rails' value for the public catalogue,
-which Rails hard-codes) so no stored link leaves the configured origin. Go reports an incompletely read answer with no
+which Rails hard-codes) so no link this command writes leaves the configured origin; a kept row written earlier keeps
+its links unchanged. Go reports an incompletely read answer with no
 valid result as `provider-pagination` where Rails schedules a retry.
 Go builds the detail path from the id and requires a loopback origin in this harness.
 
@@ -732,8 +735,9 @@ bounds, every transport answer class, the limit, title variants and the heartbea
 The e2e suite (`e2e/workflows/search_test.go`) runs the built binary against a loopback catalogue serving synthetic
 OPDS shaped like Gutenberg's, on both bundles, with Go-admitted requests: exact rows, catalogue requests and
 untouched rows of every other request and table for candidates (with manual, blocklisted, stale, active-download and
-store-offer rows seeded), no results, retries exhausted and title variants; fifteen failure answers (including a balanced HTML page, text
-after the feed, an HTML detail after a valid one and an unread page with only another language); every refusal with
+store-offer rows seeded), no results, retries exhausted and title variants; seventeen failure answers (including a balanced HTML page, text
+after the feed, a feed in another namespace, an HTML detail after a valid one and unread search and book pages with
+only another language), a feed with a byte order mark; every refusal with
 no catalogue contact (Z-Library on its default mirrors among them); six concurrent runs on one request (one claim);
 SIGKILL after the claim and inside the publication with takeover after the lease; heartbeats that move the lease; a
 newer claim, a claim finished elsewhere and a changed effective language while parked before publication, another
@@ -744,7 +748,7 @@ documented score and info link columns; requires every scenario of its bundle; r
 that Rails searches the handed-back request once; reads the Go candidates as valid direct downloadable results,
 renders their result row and selects one (`Request#select_result!`, a queued `Download`, one `DownloadJob` enqueued
 and not performed); and recovers the killed Go claim through `RequestQueueJob` only after the lease, then finishes
-that search. Fifteen mutants of these rules must each fail an assertion.
+that search. Seventeen mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 

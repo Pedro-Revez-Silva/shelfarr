@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	storedInteger = regexp.MustCompile(`\A[+-]?[0-9]{1,9}\z`)
+	storedInteger = regexp.MustCompile(`\A[\t\n\v\f\r ]*([+-]?)0*([0-9]+(?:_[0-9]+)*)[\t\n\v\f\r ]*\z`)
 	countryCode   = regexp.MustCompile(`\A[A-Za-z]{2}\z`)
 	rubyFalse     = map[string]bool{"0": true, "f": true, "F": true, "false": true, "FALSE": true, "off": true, "OFF": true}
 )
@@ -100,10 +100,15 @@ func (s settings) integer(key string, fallback int64) (int64, error) {
 	if !entry.stored || !entry.value.Valid {
 		return fallback, nil
 	}
-	if (entry.valueType != "integer" && entry.valueType != "string") || !storedInteger.MatchString(entry.value.String) {
+	match := storedInteger.FindStringSubmatch(entry.value.String)
+	if (entry.valueType != "integer" && entry.valueType != "string") || match == nil {
 		return 0, ErrStoredValue
 	}
-	return strconv.ParseInt(entry.value.String, 10, 64)
+	value, err := strconv.ParseInt(match[1]+strings.ReplaceAll(match[2], "_", ""), 10, 64)
+	if err != nil {
+		return 0, ErrStoredValue
+	}
+	return value, nil
 }
 
 type Config struct {

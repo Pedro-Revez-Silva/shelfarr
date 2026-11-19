@@ -146,23 +146,33 @@ func TestDetailWithholdsWhatThisSliceDoesNotStore(t *testing.T) {
 
 func TestDocumentsAreParsedWithoutExternalResources(t *testing.T) {
 	for name, body := range map[string]string{
-		"external entity":  `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x SYSTEM "file:///etc/passwd">]><feed><entry><id>&x;</id></entry></feed>`,
-		"internal entity":  `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x "ebooks/1">]><feed><entry><id>&x;</id></entry></feed>`,
-		"truncated":        feedHead + listingEntry("1342"),
-		"two roots":        `<feed></feed><feed></feed>`,
-		"not utf-8":        "<feed><entry><id>urn:gutenberg:1\xff</id></entry></feed>",
-		"empty":            ``,
-		"html":             `<html><body><p>Service unavailable<br></body></html>`,
-		"balanced html":    `<html><body><p>Down for maintenance</p></body></html>`,
-		"text after feed":  feedHead + listingEntry("1342") + `</feed>Service unavailable`,
-		"text before feed": `maintenance` + feedHead + `</feed>`,
-		"too many":         feedHead + strings.Repeat(listingEntry("1"), maxEntries+1) + `</feed>`,
-		"too deep":         strings.Repeat("<a>", maxDepth+1) + strings.Repeat("</a>", maxDepth+1),
-		"huge identifier":  feedHead + listingEntry("1234567890123") + `</feed>`,
+		"external entity":   `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x SYSTEM "file:///etc/passwd">]><feed><entry><id>&x;</id></entry></feed>`,
+		"internal entity":   `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x "ebooks/1">]><feed><entry><id>&x;</id></entry></feed>`,
+		"truncated":         feedHead + listingEntry("1342"),
+		"two roots":         `<feed></feed><feed></feed>`,
+		"not utf-8":         "<feed><entry><id>urn:gutenberg:1\xff</id></entry></feed>",
+		"empty":             ``,
+		"html":              `<html><body><p>Service unavailable<br></body></html>`,
+		"balanced html":     `<html><body><p>Down for maintenance</p></body></html>`,
+		"text after feed":   feedHead + listingEntry("1342") + `</feed>Service unavailable`,
+		"text before feed":  `maintenance` + feedHead + `</feed>`,
+		"another namespace": `<rss:feed xmlns:rss="urn:example:status"><rss:error>Maintenance</rss:error></rss:feed>`,
+		"no namespace":      `<feed><entry><id>urn:gutenberg:1</id></entry></feed>`,
+		"space after feed":  feedHead + `</feed>` + "\u00a0",
+		"too many":          feedHead + strings.Repeat(listingEntry("1"), maxEntries+1) + `</feed>`,
+		"too deep":          strings.Repeat("<a>", maxDepth+1) + strings.Repeat("</a>", maxDepth+1),
+		"huge identifier":   feedHead + listingEntry("1234567890123") + `</feed>`,
 	} {
 		if _, _, err := parseListings([]byte(body)); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestAByteOrderMarkIsAllowed(t *testing.T) {
+	listings, _, err := parseListings([]byte("\ufeff" + feedHead + listingEntry("1342") + "</feed>\n"))
+	if err != nil || len(listings) != 1 || listings[0].id != "1342" {
+		t.Errorf("%v %v", listings, err)
 	}
 }
 
@@ -329,6 +339,13 @@ func TestUnreadListingsAreNotNoResults(t *testing.T) {
 	result, err := client.Search(context.Background(), Query{Titles: []string{"First", "Second"}, Language: "en", Limit: 2})
 	if err != nil || len(result.Candidates) != 1 || result.Candidates[0].ID != "9" {
 		t.Errorf("a later title with results wins over an unread earlier page: %+v %v", result, err)
+	}
+	paged, pagedClient := serve(t, map[string]func(http.ResponseWriter, *http.Request){
+		"/ebooks/search.opds/": reply(200, feedHead+listingEntry("1")+`</feed>`),
+		"/ebooks/1.opds":       reply(200, strings.Replace(french("1"), "<entry>", `<link rel="next" href="/ebooks/1.opds?start_index=2"/><entry>`, 1)),
+	})
+	if _, err := pagedClient.Search(context.Background(), Query{Titles: []string{"First"}, Language: "en", Limit: 2}); !errors.As(err, &provider) || provider.Code != CodePagination || len(paged.paths) != 2 {
+		t.Errorf("a book page with an unread next page and nothing valid: %v after %v", err, paged.paths)
 	}
 	complete, err := client.Search(context.Background(), Query{Titles: []string{"First"}, Language: "en", Limit: 3})
 	if err != nil || len(complete.Candidates) != 0 || complete.Withheld != 0 {

@@ -78,6 +78,12 @@ func TestSettingsReadLikeSettingsService(t *testing.T) {
 		"json number": stored("json", "7"),
 		"padded":      stored("integer", " 7"),
 		"plus":        stored("integer", "+15"),
+		"spaced":      stored("integer", " 15\n"),
+		"grouped":     stored("integer", "1_5"),
+		"zeros":       stored("integer", "00000000015"),
+		"doubled":     stored("integer", "1__5"),
+		"suffixed":    stored("integer", "15abc"),
+		"huge":        stored("integer", "99999999999999999999"),
 	}
 	truthy := map[string]bool{"on": true, "yes": true, "off": false, "zero": false, "blank": false, "null": false, "missing": false,
 		"text false": true, "json false": false, "json list": true}
@@ -95,12 +101,12 @@ func TestSettingsReadLikeSettingsService(t *testing.T) {
 	if !values.present("missing", "https://www.gutenberg.org") {
 		t.Error("a missing setting with a default is present")
 	}
-	for key, want := range map[string]int64{"number": 12, "negative": -3, "text number": 7, "missing": 10, "null": 10, "plus": 15} {
+	for key, want := range map[string]int64{"number": 12, "negative": -3, "text number": 7, "missing": 10, "null": 10, "plus": 15, "spaced": 15, "grouped": 15, "zeros": 15, "padded": 7} {
 		if got, err := values.integer(key, 10); err != nil || got != want {
 			t.Errorf("integer %s = %d %v", key, got, err)
 		}
 	}
-	for _, key := range []string{"words", "json number", "padded"} {
+	for _, key := range []string{"words", "json number", "doubled", "suffixed", "huge"} {
 		if _, err := values.integer(key, 10); !errors.Is(err, ErrStoredValue) {
 			t.Errorf("integer %s accepted", key)
 		}

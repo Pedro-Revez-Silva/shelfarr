@@ -517,6 +517,16 @@ func TestGutenbergSearchWithoutResultsSchedulesARetry(t *testing.T) {
 	})
 }
 
+func TestGutenbergSearchReadsAFeedWithAByteOrderMark(t *testing.T) {
+	setup := newSearchSetup(t, currentBundle)
+	request := setup.admit(t, "Pride and Prejudice", "Jane Austen")
+	setup.fake.answer(searchPath, prideQuery, 200, "\ufeff"+opds(t, "search-pride.xml"))
+	outcome := setup.search(t, plainBinary, faults{}, request)
+	if answer := last(t, outcome, "search"); outcome.code != 0 || answer.text("outcome") != "candidates" || answer.number("written") != 2 {
+		t.Fatalf("exit %d: %s", outcome.code, outcome.output)
+	}
+}
+
 func TestGutenbergSearchTriesEachTitleVariant(t *testing.T) {
 	setup := newSearchSetup(t, upgradeBundle)
 	setup.disableCustomProviders(t)
@@ -568,6 +578,9 @@ func TestGutenbergProviderFailuresAreNeverReadAsNoResults(t *testing.T) {
 		{name: "text after the feed", replies: []reply{{Path: searchPath, Status: 200, Body: opds(t, "search-empty.xml") + "Service Unavailable"}}, outcome: "failed", code: "provider-malformed"},
 		{name: "html detail after a candidate", replies: []reply{{Path: searchPath, Status: 200, Body: listing}, {Path: "/ebooks/42671.opds", Status: 200, Body: "<html><body><p>Down for maintenance</p></body></html>"}}, outcome: "failed", code: "provider-malformed"},
 		{name: "only another language before an unread page", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Replace(opds(t, "search-empty.xml"), "<opensearch:itemsPerPage>", `<link rel="next" href="/ebooks/search.opds/?start_index=26"/><entry><id>http://www.gutenberg.org/ebooks/42671.opds</id><link rel="subsection" href="/ebooks/42671.opds"/></entry><opensearch:itemsPerPage>`, 1)}}, outcome: "failed", code: "provider-pagination"},
+		{name: "a feed in another namespace", replies: []reply{{Path: searchPath, Status: 200, Body: `<rss:feed xmlns:rss="urn:example:status"><rss:error>Maintenance</rss:error></rss:feed>`}}, outcome: "failed", code: "provider-malformed"},
+		{name: "a paged book page with only another language", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Replace(opds(t, "search-empty.xml"), "<opensearch:itemsPerPage>", `<entry><id>http://www.gutenberg.org/ebooks/42671.opds</id><link rel="subsection" href="/ebooks/42671.opds"/></entry><opensearch:itemsPerPage>`, 1)},
+			{Path: "/ebooks/42671.opds", Status: 200, Body: strings.Replace(opds(t, "detail-42671.xml"), "<entry>", `<link rel="next" href="/ebooks/42671.opds?start_index=2"/><entry>`, 1)}}, outcome: "failed", code: "provider-pagination"},
 		{name: "forbidden", replies: []reply{{Path: searchPath, Status: 403, Body: "Forbidden"}}, outcome: "failed", code: "provider-refused"},
 		{name: "next page only", replies: []reply{{Path: searchPath, Status: 200, Body: strings.Replace(opds(t, "search-empty.xml"), "<opensearch:itemsPerPage>", `<link rel="next" href="/ebooks/search.opds/?start_index=26"/><opensearch:itemsPerPage>`, 1)}}, outcome: "failed", code: "provider-pagination"},
 	} {

@@ -118,6 +118,7 @@ func (c *Client) searchTitle(ctx context.Context, progress *Result, keywords, la
 		if err != nil {
 			return Result{}, false, fail(CodeMalformed)
 		}
+		unread = unread || parsed.nextPage
 		switch {
 		case parsed.withheld:
 			found.Withheld++
