@@ -9,7 +9,7 @@ import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type Requ
 import { createAppRouter } from "../src/router";
 import { createServices } from "../src/services";
 import { ACCOUNT, deferred, FakeServer, page, renderApp, session, summary, type RecordedRequest } from "./helpers";
-import { error } from "./go-helpers";
+import { error, libraryServer, renderGo, signedIn, signedOut } from "./go-helpers";
 
 function request(overrides: Partial<RequestSummary> = {}): RequestSummary {
   return {
@@ -230,6 +230,25 @@ describe("the Requests page", () => {
     renderRequests(server);
     expect(await screen.findByRole("heading", { name: /account changed/i })).toBeTruthy();
     expect(screen.queryByText("Harbor Lights")).toBeNull();
+  });
+
+  test("a signed-out direct load says it returns to the requests, then shows the same filtered list after sign-in", async () => {
+    let signed = false;
+    const server = libraryServer(() => (signed ? signedIn() : signedOut()))
+      .on("POST", /\/auth\/login$/, () => {
+        signed = true;
+        return { body: signedIn() };
+      })
+      .on("GET", /\/api\/v1\/requests(\?|$)/, () => ({ body: list([completed]) }));
+    renderGo({ server, view: "requests", url: "/preview/requests?status=completed" });
+    expect(await screen.findByText("Sign in to see your requests. You will come straight back to them.")).toBeTruthy();
+    expect(lists(server)).toEqual([]);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Username"), "ada");
+    await user.type(screen.getByLabelText("Password"), "Secret-Passw0rd");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("heading", { name: "Quiet Shelf", level: 3 })).toBeTruthy();
+    expect(lists(server).map(params)).toEqual([{ status: "completed" }]);
   });
 
   test("the classic preview does not offer the page", async () => {
