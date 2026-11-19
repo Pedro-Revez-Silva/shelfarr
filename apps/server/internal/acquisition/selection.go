@@ -27,7 +27,6 @@ const (
 	pendingResult        = 0
 	completedDownload    = 3
 	failedDownload       = 4
-	intentKey            = "acquisition.publication"
 	queuedMessage        = "Download queued from manual result selection"
 	dispatchMessage      = "Started dispatching download to a client"
 	completedMessage     = "Direct download completed"
@@ -290,61 +289,6 @@ func verifyColumns(ctx context.Context, tx *sql.Tx, required map[string][]string
 	return nil
 }
 
-type Intent struct {
-	RequestID int64    `json:"request_id"`
-	BookID    int64    `json:"book_id"`
-	Root      string   `json:"root"`
-	Folders   []string `json:"folders"`
-	Name      string   `json:"name"`
-	Device    uint64   `json:"device"`
-	Inode     uint64   `json:"inode"`
-	Size      int64    `json:"size"`
-	SHA256    string   `json:"sha256"`
-}
-
-func (i Intent) encode() (string, error) {
-	data, err := json.Marshal(i)
-	return string(data), err
-}
-
-func RecordIntent(ctx context.Context, store *wfstore.Store, intent Intent) error {
-	value, err := intent.encode()
-	if err != nil {
-		return err
-	}
-	return store.Transact(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO wf_meta (key, value) VALUES (?, ?)`, intentKey, value)
-		return err
-	})
-}
-
-func PendingIntent(ctx context.Context, store *wfstore.Store) (*Intent, error) {
-	var value string
-	err := store.DB().QueryRowContext(ctx, `SELECT value FROM wf_meta WHERE key = ?`, intentKey).Scan(&value)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, wfstore.Wrap(err)
-	}
-	var intent Intent
-	if err := json.Unmarshal([]byte(value), &intent); err != nil {
-		return nil, ErrStoredValue
-	}
-	return &intent, nil
-}
-
-func ForgetIntent(ctx context.Context, store *wfstore.Store, intent Intent) error {
-	value, err := intent.encode()
-	if err != nil {
-		return err
-	}
-	return store.Transact(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM wf_meta WHERE key = ? AND value = ?`, intentKey, value)
-		return err
-	})
-}
-
 func Referenced(ctx context.Context, store *wfstore.Store, bookPath string) (bool, error) {
 	var count int64
 	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM books WHERE file_path = ?`, bookPath).Scan(&count); err != nil {
@@ -353,25 +297,14 @@ func Referenced(ctx context.Context, store *wfstore.Store, bookPath string) (boo
 	return count > 0, nil
 }
 
-func Complete(ctx context.Context, store *wfstore.Store, selection Selection, intent Intent, verify func() error, now time.Time) (int64, error) {
-	value, err := intent.encode()
-	if err != nil {
-		return 0, err
-	}
+func Complete(ctx context.Context, store *wfstore.Store, selection Selection, verify func() error, now time.Time) (int64, error) {
 	var downloadID int64
-	err = store.Transact(ctx, func(tx *sql.Tx) error {
+	err := store.Transact(ctx, func(tx *sql.Tx) error {
 		current, err := planIn(ctx, tx, selection.RequestID, selection.ResultID)
 		if err != nil && SelectionRefusal(err) == nil {
 			return err
 		}
 		if err != nil || current.Completed != 0 || current.Selection != selection {
-			return ErrSuperseded
-		}
-		removed, err := tx.ExecContext(ctx, `DELETE FROM wf_meta WHERE key = ? AND value = ?`, intentKey, value)
-		if err != nil {
-			return err
-		}
-		if count, err := removed.RowsAffected(); err != nil || count != 1 {
 			return ErrSuperseded
 		}
 		downloadID, err = writeCompletion(ctx, tx, selection, wfstore.FormatTimestamp(now))

@@ -157,7 +157,7 @@ func (a *acquisitionSetup) folders() []string {
 func (a *acquisitionSetup) intent(t *testing.T) []string {
 	t.Helper()
 	var values []string
-	for _, line := range rows(t, a.db, `SELECT value FROM wf_meta WHERE key = 'acquisition.publication'`) {
+	for _, line := range rows(t, a.db, `SELECT key FROM wf_meta WHERE key NOT IN ('disposable_token', 'worker_schema')`) {
 		values = append(values, line[0])
 	}
 	return values
@@ -180,7 +180,7 @@ func (a *acquisitionSetup) requireUnchanged(t *testing.T, before frozen) {
 		t.Errorf("library changed from %v to %v", before.library, after)
 	}
 	if intents := a.intent(t); len(intents) != 0 {
-		t.Errorf("an intent is left: %v", intents)
+		t.Errorf("worker state was written: %v", intents)
 	}
 }
 
@@ -280,7 +280,7 @@ func (a *acquisitionSetup) requireCompleted(t *testing.T, run result, before fro
 		}
 	}
 	if intents := a.intent(t); len(intents) != 0 {
-		t.Errorf("an intent is left: %v", intents)
+		t.Errorf("worker state was written: %v", intents)
 	}
 	if verdict := scalar[string](t, a.db, `PRAGMA integrity_check`); verdict != "ok" {
 		t.Errorf("integrity_check: %s", verdict)
@@ -719,13 +719,31 @@ func TestGutenbergDownloadFailuresWriteNothing(t *testing.T) {
 	})
 }
 
+func (a *acquisitionSetup) inode(t *testing.T) uint64 {
+	t.Helper()
+	info, err := os.Lstat(a.bookPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, err := assetid.StatOf(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stat.Inode
+}
+
+func requireAdopted(t *testing.T, run result, adopted bool) {
+	t.Helper()
+	if got, _ := outcomeOf(t, run)["adopted"].(bool); got != adopted {
+		t.Errorf("adopted %v, want %v: %s", got, adopted, run.output)
+	}
+}
+
 func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 	for _, point := range []struct {
-		name    string
-		intent  bool
-		linked  bool
-		removed bool
-	}{{"download.fetched", false, false, false}, {"download.intent", true, false, false}, {"download.linked", true, true, true}, {"download.before-commit", true, true, true}} {
+		name   string
+		linked bool
+	}{{"download.fetched", false}, {"download.linked", true}, {"download.before-commit", true}} {
 		t.Run(point.name, func(t *testing.T) {
 			var evidence string
 			if point.name == "download.linked" {
@@ -738,11 +756,12 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 				t.Fatalf("exit %d: %s", killed.code, killed.output)
 			}
 			requireSame(t, before.tables, digests(t, setup.db))
-			if got := len(setup.intent(t)) == 1; got != point.intent {
-				t.Errorf("intent recorded %v", got)
-			}
+			var orphan uint64
 			if _, err := os.Lstat(setup.bookPath()); (err == nil) != point.linked {
-				t.Errorf("library file present %v", err == nil)
+				t.Fatalf("library file present %v", err == nil)
+			}
+			if point.linked {
+				orphan = setup.inode(t)
 			}
 			if state := stateOf(t, setup.db, setup.request); state.Status != 1 || state.Attention != 1 || state.Claimed {
 				t.Errorf("an interrupted download changed the visible request: %+v", state)
@@ -752,19 +771,11 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 			}
 			setup.fake.reset()
 			rerun := setup.download(t, plainBinary, faults{}, setup.result)
-			recovered := 0
-			for _, entry := range rerun.events {
-				if entry.name() == "recovered" {
-					recovered++
-					if removed, _ := entry["removed"].(bool); removed != point.removed {
-						t.Errorf("recovery removed %v", removed)
-					}
-				}
-			}
-			if recovered != map[bool]int{true: 1, false: 0}[point.intent] {
-				t.Errorf("%d recoveries: %s", recovered, rerun.output)
-			}
 			download := setup.requireCompleted(t, rerun, before)
+			requireAdopted(t, rerun, point.linked)
+			if point.linked && setup.inode(t) != orphan {
+				t.Errorf("the killed attempt's file was not the one published")
+			}
 			if evidence != "" {
 				snapshot(t, setup.db, filepath.Join(evidence, "after.sqlite3"))
 				bookFile := filepath.Join(evidence, "book.epub")
@@ -785,30 +796,38 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 		if code := running.kill(); code != -1 {
 			t.Fatalf("exit %d", code)
 		}
-		if _, err := os.Lstat(setup.bookPath()); err != nil {
-			t.Fatalf("the parked publication left no file: %v", err)
-		}
+		orphan := setup.inode(t)
 		requireSame(t, before.tables, digests(t, setup.db))
 		setup.fake.reset()
 		rerun := setup.download(t, plainBinary, faults{}, setup.result)
 		setup.requireCompleted(t, rerun, before)
-	})
-	t.Run("an existing empty book folder survives recovery", func(t *testing.T) {
-		setup := newAcquisition(t, currentBundle, "")
-		if err := os.MkdirAll(filepath.Dir(setup.bookPath()), 0o755); err != nil {
-			t.Fatal(err)
+		requireAdopted(t, rerun, true)
+		if setup.inode(t) != orphan {
+			t.Errorf("a second file was published")
 		}
+	})
+	t.Run("a killed attempt's file is kept until a later download adopts it", func(t *testing.T) {
+		setup := newAcquisition(t, currentBundle, "")
 		before := setup.freeze(t)
 		if killed := setup.download(t, faultBinary, newFaults(t, map[string]string{"download.linked": "kill"}), setup.result); killed.code != -1 {
 			t.Fatalf("exit %d", killed.code)
 		}
+		orphan := setup.inode(t)
+		left := setup.freeze(t)
 		setup.fake.set(reply{Path: bookLink, Status: 404, Body: "Not Found"})
+		failed := setup.download(t, plainBinary, faults{}, setup.result)
+		setup.requireNothingWritten(t, failed, left, 1, "failed", "provider-refused")
+		setup.serveBook(setup.epub)
+		setup.fake.reset()
 		rerun := setup.download(t, plainBinary, faults{}, setup.result)
-		setup.requireNothingWritten(t, rerun, before, 1, "failed", "provider-refused")
+		setup.requireCompleted(t, rerun, before)
+		requireAdopted(t, rerun, true)
+		if setup.inode(t) != orphan {
+			t.Errorf("a second file was published")
+		}
 	})
 	t.Run("a different file left at the destination is preserved", func(t *testing.T) {
 		setup := newAcquisition(t, currentBundle, "")
-		before := setup.freeze(t)
 		if killed := setup.download(t, faultBinary, newFaults(t, map[string]string{"download.linked": "kill"}), setup.result); killed.code != -1 {
 			t.Fatalf("exit %d", killed.code)
 		}
@@ -817,15 +836,12 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 		if err := os.WriteFile(setup.bookPath(), foreign, 0o644); err != nil {
 			t.Fatal(err)
 		}
+		before := setup.freeze(t)
 		rerun := setup.download(t, plainBinary, faults{}, setup.result)
-		answer := outcomeOf(t, rerun)
-		if rerun.code != 1 || answer.text("code") != "library-file-exists" || setup.intent(t) != nil {
-			t.Errorf("exit %d: %s", rerun.code, rerun.output)
-		}
+		setup.requireNothingWritten(t, rerun, before, 1, "failed", "library-file-exists")
 		if data, _ := os.ReadFile(setup.bookPath()); !bytes.Equal(data, foreign) {
 			t.Errorf("the foreign file changed")
 		}
-		requireSame(t, before.tables, digests(t, setup.db))
 	})
 }
 
@@ -939,20 +955,19 @@ func TestGutenbergDownloadDiscardsASupersededSelection(t *testing.T) {
 			if got, want := moved.entries(t), append(setup.folders(), "shelfarr-gutenberg/book-"+itoa(setup.book)+"/gutenberg-1342.epub"); !reflect.DeepEqual(got, want) {
 				t.Errorf("the moved root holds %v", got)
 			}
-			if intents := setup.intent(t); len(intents) != 1 {
-				t.Errorf("a file the command cannot reach lost its intent: %v", intents)
+			if err := os.Remove(setup.library); err != nil {
+				t.Fatalf("the replacement root was written to: %v", err)
+			}
+			if err := os.Rename(setup.library+".moved", setup.library); err != nil {
+				t.Fatal(err)
 			}
 			setup.fake.reset()
 			rerun := setup.download(t, plainBinary, faults{}, setup.result)
-			if rerun.code != 0 || !strings.Contains(rerun.output, `"event":"recovered"`) || !strings.Contains(rerun.output, `"removed":false`) {
-				t.Errorf("rerun exit %d: %s", rerun.code, rerun.output)
-			}
-			if got := moved.entries(t); len(got) != 3 {
-				t.Errorf("recovery reached into the moved root: %v", got)
-			}
+			setup.requireCompleted(t, rerun, frozen{tables: changed.tables})
+			requireAdopted(t, rerun, true)
 		})
 	}
-	t.Run("library root moved out of the disposable directory before publication", func(t *testing.T) {
+	t.Run("library root moved out of the disposable directory and replaced before publication", func(t *testing.T) {
 		setup := newAcquisition(t, currentBundle, "")
 		before := setup.freeze(t)
 		injected := newFaults(t, map[string]string{"download.fetched": "park"})
@@ -960,6 +975,9 @@ func TestGutenbergDownloadDiscardsASupersededSelection(t *testing.T) {
 		injected.reached(t, "download.fetched")
 		outside := filepath.Join(filepath.Dir(setup.w.dir), "outside-library")
 		if err := os.Rename(setup.library, outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(setup.library, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		injected.release(t, "download.fetched")
@@ -997,6 +1015,24 @@ func TestGutenbergDownloadNeverReplacesOrEscapesTheLibrary(t *testing.T) {
 		setup.requireNothingWritten(t, run, before, 1, "failed", "library-file-exists")
 		if data, _ := os.ReadFile(setup.bookPath()); !bytes.Equal(data, existing) {
 			t.Errorf("the existing file changed")
+		}
+	})
+	t.Run("the same EPUB already at the destination is adopted", func(t *testing.T) {
+		setup := newAcquisition(t, currentBundle, "")
+		if err := os.MkdirAll(filepath.Dir(setup.bookPath()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(setup.bookPath(), setup.epub, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		existing := setup.inode(t)
+		before := setup.freeze(t)
+		before.library = nil
+		run := setup.download(t, plainBinary, faults{}, setup.result)
+		setup.requireCompleted(t, run, before)
+		requireAdopted(t, run, true)
+		if setup.inode(t) != existing {
+			t.Errorf("the existing file was replaced")
 		}
 	})
 	t.Run("destination folder is a symbolic link out of the library", func(t *testing.T) {

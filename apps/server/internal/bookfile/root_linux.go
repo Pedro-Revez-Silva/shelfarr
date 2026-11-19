@@ -35,12 +35,6 @@ type Identity struct {
 	Inode  uint64
 }
 
-type Owned struct {
-	Identity Identity
-	Size     int64
-	SHA256   []byte
-}
-
 type Placement struct {
 	Folders []string
 	Name    string
@@ -193,20 +187,47 @@ func (r *Root) child(parent int, name string, create bool) (int, error) {
 	return next, nil
 }
 
-func (r *Root) Publish(staged *Staged, placement Placement) (bool, error) {
+type Published struct {
+	Identity Identity
+	Linked   bool
+}
+
+func (r *Root) Publish(staged *Staged, placement Placement, digest []byte) (Published, error) {
 	folder, err := r.folder(placement, true)
 	if err != nil {
-		return false, err
+		return Published{}, err
 	}
 	defer unix.Close(folder)
 	source := "/proc/self/fd/" + strconv.Itoa(int(staged.File.Fd()))
-	if err := unix.Linkat(unix.AT_FDCWD, source, folder, placement.Name, unix.AT_SYMLINK_FOLLOW); err != nil {
-		if errors.Is(err, unix.EEXIST) {
-			return false, ErrExists
-		}
-		return false, err
+	err = unix.Linkat(unix.AT_FDCWD, source, folder, placement.Name, unix.AT_SYMLINK_FOLLOW)
+	if errors.Is(err, unix.EEXIST) {
+		return identical(folder, placement.Name, staged.Size, digest)
 	}
-	return true, unix.Fsync(folder)
+	if err != nil {
+		return Published{}, err
+	}
+	return Published{Identity: staged.Identity, Linked: true}, unix.Fsync(folder)
+}
+
+func identical(folder int, name string, size int64, digest []byte) (Published, error) {
+	fd, err := unix.Openat(folder, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return Published{}, ErrExists
+	}
+	file := os.NewFile(uintptr(fd), "library-file")
+	defer file.Close()
+	var status unix.Stat_t
+	if err := unix.Fstat(fd, &status); err != nil {
+		return Published{}, ErrExists
+	}
+	if status.Mode&unix.S_IFMT != unix.S_IFREG || status.Nlink != 1 || status.Uid != uint32(os.Getuid()) || status.Size != size {
+		return Published{}, ErrExists
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, io.LimitReader(file, size+1)); err != nil || !bytes.Equal(hash.Sum(nil), digest) {
+		return Published{}, ErrExists
+	}
+	return Published{Identity: Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}}, unix.Fsync(folder)
 }
 
 func (r *Root) Identify(placement Placement) (Identity, bool, error) {
@@ -232,51 +253,21 @@ func (r *Root) Identify(placement Placement) (Identity, bool, error) {
 	return Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}, true, nil
 }
 
-func (r *Root) Remove(placement Placement, owned Owned) (bool, error) {
+func (r *Root) Remove(placement Placement, linked Identity) error {
 	folder, err := r.folder(placement, false)
-	if errors.Is(err, unix.ENOENT) {
-		return false, nil
-	}
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer unix.Close(folder)
-	mine, err := ownedBy(folder, placement.Name, owned)
-	if errors.Is(err, unix.ENOENT) {
-		return false, unix.Fsync(folder)
+	var status unix.Stat_t
+	if err := unix.Fstatat(folder, placement.Name, &status, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
 	}
-	if err != nil || !mine {
-		return false, err
+	if status.Mode&unix.S_IFMT != unix.S_IFREG || (Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}) != linked {
+		return ErrExists
 	}
 	if err := unix.Unlinkat(folder, placement.Name, 0); err != nil {
-		return false, err
+		return err
 	}
-	return true, unix.Fsync(folder)
-}
-
-func ownedBy(folder int, name string, owned Owned) (bool, error) {
-	fd, err := unix.Openat(folder, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	switch {
-	case errors.Is(err, unix.ENOENT):
-		return false, err
-	case errors.Is(err, unix.ELOOP), errors.Is(err, unix.ENXIO):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	file := os.NewFile(uintptr(fd), "library-file")
-	defer file.Close()
-	var status unix.Stat_t
-	if err := unix.Fstat(fd, &status); err != nil {
-		return false, err
-	}
-	identity := Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}
-	if status.Mode&unix.S_IFMT != unix.S_IFREG || identity != owned.Identity || status.Size != owned.Size {
-		return false, nil
-	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, io.LimitReader(file, owned.Size+1)); err != nil {
-		return false, err
-	}
-	return bytes.Equal(hash.Sum(nil), owned.SHA256), nil
+	return unix.Fsync(folder)
 }

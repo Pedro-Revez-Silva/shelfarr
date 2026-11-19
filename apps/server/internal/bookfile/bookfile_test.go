@@ -88,7 +88,7 @@ func TestOpenRootAcceptsOnlyAPrivateDirectoryInsideTheWorkdir(t *testing.T) {
 	}
 }
 
-func sealed(t *testing.T, root *Root, body string) (*Staged, Owned) {
+func sealed(t *testing.T, root *Root, body string) (*Staged, []byte) {
 	t.Helper()
 	staged, err := root.Stage()
 	if err != nil {
@@ -100,7 +100,7 @@ func sealed(t *testing.T, root *Root, body string) (*Staged, Owned) {
 		t.Fatalf("seal: %v %d", err, staged.Size)
 	}
 	digest := sha256.Sum256([]byte(body))
-	return staged, Owned{Identity: staged.Identity, Size: staged.Size, SHA256: digest[:]}
+	return staged, digest[:]
 }
 
 func TestEveryOperationRefusesAReplacedRoot(t *testing.T) {
@@ -109,9 +109,10 @@ func TestEveryOperationRefusesAReplacedRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staged, owned := sealed(t, root, "book")
+	staged, digest := sealed(t, root, "book")
 	placement := Placement{Folders: []string{"shelfarr-gutenberg", "book-1"}, Name: "gutenberg-1.epub"}
-	if linked, err := root.Publish(staged, placement); !linked || err != nil {
+	published, err := root.Publish(staged, placement, digest)
+	if !published.Linked || err != nil {
 		t.Fatal(err)
 	}
 	os.Rename(library, library+".old")
@@ -119,27 +120,27 @@ func TestEveryOperationRefusesAReplacedRoot(t *testing.T) {
 	if _, err := root.Stage(); !errors.Is(err, ErrRootChanged) {
 		t.Errorf("staging in a replaced root: %v", err)
 	}
-	if linked, err := root.Publish(staged, Placement{Folders: []string{"other"}, Name: "b.epub"}); linked || !errors.Is(err, ErrRootChanged) {
-		t.Errorf("publication in a replaced root: %v %v", linked, err)
+	if again, err := root.Publish(staged, Placement{Folders: []string{"other"}, Name: "b.epub"}, digest); again.Linked || !errors.Is(err, ErrRootChanged) {
+		t.Errorf("publication in a replaced root: %v %v", again, err)
 	}
 	if _, _, err := root.Identify(placement); !errors.Is(err, ErrRootChanged) {
 		t.Errorf("identification in a replaced root: %v", err)
 	}
-	if removed, err := root.Remove(placement, owned); removed || !errors.Is(err, ErrRootChanged) {
-		t.Errorf("removal in a replaced root: %v %v", removed, err)
+	if err := root.Remove(placement, published.Identity); !errors.Is(err, ErrRootChanged) {
+		t.Errorf("removal in a replaced root: %v", err)
 	}
 	if entries, _ := os.ReadDir(library); len(entries) != 0 {
 		t.Errorf("wrote into the replacement: %v", entries)
 	}
 }
 
-func TestPublishNeverReplacesAndRemovesOnlyItsOwnFile(t *testing.T) {
+func TestPublishNeverReplacesAndAdoptsOnlyTheSameBytes(t *testing.T) {
 	workdir, library := privateWorkdir(t)
 	root, err := OpenRoot(workdir, library)
 	if err != nil {
 		t.Fatal(err)
 	}
-	staged, owned := sealed(t, root, "book")
+	staged, digest := sealed(t, root, "book")
 	if entries, _ := os.ReadDir(library); len(entries) != 0 {
 		t.Fatalf("staging is visible: %v", entries)
 	}
@@ -147,7 +148,8 @@ func TestPublishNeverReplacesAndRemovesOnlyItsOwnFile(t *testing.T) {
 	if identity, present, err := root.Identify(placement); present || err != nil || identity != (Identity{}) {
 		t.Fatalf("identify before publication: %v %v", present, err)
 	}
-	if linked, err := root.Publish(staged, placement); !linked || err != nil {
+	published, err := root.Publish(staged, placement, digest)
+	if !published.Linked || published.Identity != staged.Identity || err != nil {
 		t.Fatal(err)
 	}
 	final := filepath.Join(library, placement.Relative())
@@ -157,33 +159,34 @@ func TestPublishNeverReplacesAndRemovesOnlyItsOwnFile(t *testing.T) {
 	if identity, present, err := root.Identify(placement); !present || err != nil || identity != staged.Identity {
 		t.Fatalf("identify after publication: %v %v %v", identity, present, err)
 	}
-	if linked, err := root.Publish(staged, placement); linked || !errors.Is(err, ErrExists) {
-		t.Errorf("a second publication: %v %v", linked, err)
+	again, againDigest := sealed(t, root, "book")
+	adopted, err := root.Publish(again, placement, againDigest)
+	if adopted.Linked || adopted.Identity != staged.Identity || err != nil {
+		t.Errorf("the same bytes at the name are not adopted: %+v %v", adopted, err)
 	}
-	for name, claim := range map[string]Owned{
-		"another size":   {Identity: owned.Identity, Size: owned.Size + 1, SHA256: owned.SHA256},
-		"another digest": {Identity: owned.Identity, Size: owned.Size, SHA256: make([]byte, 32)},
-		"another inode":  {Identity: Identity{Device: owned.Identity.Device, Inode: owned.Identity.Inode + 1}, Size: owned.Size, SHA256: owned.SHA256},
-	} {
-		if removed, err := root.Remove(placement, claim); removed || err != nil {
-			t.Errorf("%s: removed %v %v", name, removed, err)
-		}
+	other, otherDigest := sealed(t, root, "another book")
+	if refused, err := root.Publish(other, placement, otherDigest); refused != (Published{}) || !errors.Is(err, ErrExists) {
+		t.Errorf("different bytes at the name: %+v %v", refused, err)
 	}
-	os.Remove(final)
-	os.WriteFile(final, []byte("book"), 0o644)
-	if removed, err := root.Remove(placement, owned); removed || err != nil {
-		t.Errorf("removed a foreign file with the same bytes: %v %v", removed, err)
+	if refused, err := root.Publish(again, placement, otherDigest); refused != (Published{}) || !errors.Is(err, ErrExists) {
+		t.Errorf("the same size with another digest: %+v %v", refused, err)
 	}
-	os.Remove(final)
-	if removed, err := root.Remove(placement, owned); removed || err != nil {
-		t.Errorf("a missing name: %v %v", removed, err)
+	os.Link(final, filepath.Join(library, "second-name"))
+	if refused, err := root.Publish(again, placement, againDigest); refused != (Published{}) || !errors.Is(err, ErrExists) {
+		t.Errorf("a file with another name is adopted: %+v %v", refused, err)
 	}
-	other, otherOwned := sealed(t, root, "other book")
-	if linked, err := root.Publish(other, placement); !linked || err != nil {
-		t.Fatal(err)
+	os.Remove(filepath.Join(library, "second-name"))
+	if err := root.Remove(placement, other.Identity); !errors.Is(err, ErrExists) {
+		t.Errorf("removed a file this process did not link: %v", err)
 	}
-	if removed, err := root.Remove(placement, otherOwned); !removed || err != nil {
-		t.Errorf("own file: %v %v", removed, err)
+	if data, _ := os.ReadFile(final); string(data) != "book" {
+		t.Errorf("the file changed")
+	}
+	if err := root.Remove(placement, published.Identity); err != nil {
+		t.Errorf("own file: %v", err)
+	}
+	if _, err := os.Lstat(final); !os.IsNotExist(err) {
+		t.Errorf("own file remains: %v", err)
 	}
 	if info, err := os.Lstat(filepath.Dir(final)); err != nil || !info.IsDir() {
 		t.Errorf("removing the file removed its folder: %v", err)
@@ -200,14 +203,14 @@ func TestALinkedOrOpenFolderIsNeverUsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staged, owned := sealed(t, root, "book")
+	staged, digest := sealed(t, root, "book")
 	for _, folder := range []string{"shelfarr-gutenberg", "open"} {
 		placement := Placement{Folders: []string{folder, "book-1"}, Name: "b.epub"}
-		if linked, err := root.Publish(staged, placement); linked || !errors.Is(err, ErrUnsafe) {
-			t.Errorf("%s: publication %v %v", folder, linked, err)
+		if published, err := root.Publish(staged, placement, digest); published.Linked || !errors.Is(err, ErrUnsafe) {
+			t.Errorf("%s: publication %+v %v", folder, published, err)
 		}
-		if removed, err := root.Remove(placement, owned); removed || !errors.Is(err, ErrUnsafe) {
-			t.Errorf("%s: removal %v %v", folder, removed, err)
+		if err := root.Remove(placement, staged.Identity); !errors.Is(err, ErrUnsafe) {
+			t.Errorf("%s: removal %v", folder, err)
 		}
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {

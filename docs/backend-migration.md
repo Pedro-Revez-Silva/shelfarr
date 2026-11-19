@@ -786,9 +786,7 @@ transaction before any network or file effect:
   conservative superset of Rails' `LibraryPlatformClient.configured?`) and no `library_import_file_mode` or
   `library_import_folder_mode` is set, because Go triggers no scan and applies no import permissions.
 
-Every invocation first takes the lock below and recovers an interrupted earlier attempt (see Interrupted states),
-whatever its own arguments; apart from that and the lock file, a refusal writes nothing and contacts nothing: answer
-`rejected` with `request_not_selectable`, `result_not_found`,
+A refusal writes nothing (other than the lock file below) and contacts nothing: answer `rejected` with `request_not_selectable`, `result_not_found`,
 `result_not_selectable`, `result_off_origin`, `result_not_epub`, `book_acquired`, `downloads_active`,
 `library_root_not_disposable`, `library_scan_configured`, `import_permissions_configured` or any `search` refusal, exit 7.
 A second `download` while one runs on the same disposable copy is `refused` `acquisition_busy`, exit 3 (a kernel `flock`
@@ -810,33 +808,32 @@ matching CRC, and a non-empty `META-INF/container.xml` entry (its compressed con
 Anything else is `download-invalid`. Until it is linked the file has no
 name, so an interruption, a refusal or a kill leaves nothing on disk.
 
-**Publication protocol.** Validated bytes are persisted before metadata, and every file this workflow creates is
-recorded before it gets a name:
+**Publication protocol.** Validated bytes are persisted before metadata, with no Go state between runs:
 
-1. one transaction records an intent (`wf_meta` key `acquisition.publication`: request, book, root, relative path and
-   the staged file's device, inode, size and SHA-256);
-2. the folders `shelfarr-gutenberg/book-<book id>/` are created or opened, each parent fsynced, and the anonymous file
-   is linked as `gutenberg-<Gutenberg id>.epub` with `linkat`, which never replaces an existing name
-   (`library-file-exists`, the existing file preserved; a link or unsafe folder is `library-path-unsafe`), then the
-   folder is fsynced;
-3. one `BEGIN IMMEDIATE` transaction re-reads everything step 0 read and requires it unchanged (request status,
-   generation, claim and `updated_at`, the result's status and row, the book's `updated_at`, path and reservation, the
-   account, the eligibility settings, origin and library root path; settings only `search` uses, such as the default
-   language or retry delays, are re-checked for validity but not compared), deletes the intent, writes the rows below
-   and, last before `COMMIT`, requires the linked name to still be the staged inode.
+1. the folders `shelfarr-gutenberg/book-<book id>/` are created or opened, each parent fsynced, and the anonymous file
+   is linked as `gutenberg-<Gutenberg id>.epub` with `linkat`, which never replaces an existing name; then the folder
+   is fsynced. When the name is already taken, the existing entry is adopted only if it opens without following links
+   as a regular file of the caller with one link, the same size and the same SHA-256 as the bytes just validated (the
+   rule Rails' `publish_file_and_finalize!` applies when its destination exists); anything else is
+   `library-file-exists` and is left untouched. A link or unsafe folder is `library-path-unsafe`;
+2. one `BEGIN IMMEDIATE` transaction re-reads everything the eligibility check read and requires it unchanged (request
+   status, generation, claim and `updated_at`, the result's status and row, the book's `updated_at`, path and
+   reservation, the account, the eligibility settings, origin and library root path; settings only `search` uses, such
+   as the default language or retry delays, are re-checked for validity but not compared), writes the rows below and,
+   last before `COMMIT`, requires the name to still be the linked or adopted inode.
 
-Every filesystem step (staging, folder creation, link, identification, removal) reopens the library root by its path
+Each filesystem step (staging, folder creation and link, identification, removal) reopens the library root by its path
 from the disposable directory with the confined `openat2` above and requires it to be the directory first checked
-(device and inode), so a root moved or replaced at any point, even out of the disposable directory, is
-`library-root-changed` before publication or `superseded` after it, and nothing is created through the old directory.
+(device and inode), so a root moved or replaced before that step is `library-root-changed` before publication or
+`superseded` after it, and nothing is created through the old directory.
 
-SIGINT and SIGTERM stop the command only before step 1; from there it finishes or rolls back the publication within
-10 seconds. Anything changed is `superseded` (exit 4): the linked file is removed if, and only if, the name still opens
-(without following links) as a regular file with the recorded device, inode, size and SHA-256, the folder is fsynced,
-and only then is the intent deleted; when the root or folder cannot be reached safely, the intent stays for recovery.
-A failure after a successful link (a folder fsync, a failpoint, a database error inside the completion transaction)
-does the same after checking that no book references the path, and exits 1; a link that failed forgets the intent at
-once. Folders are never removed, so an empty `book-<id>` folder may remain; the next attempt reuses it.
+SIGINT and SIGTERM stop the command until the bytes are validated; from step 1 it finishes or rolls back the
+publication within 10 seconds. Anything changed is `superseded` (exit 4). On that, or on a failure after the link (a
+folder fsync, a failpoint, a database error inside the completion transaction, after checking that no book references
+the path, exit 1), the command removes the file only if it linked it in this run and the name still holds that inode,
+which it keeps open, so the inode cannot have been reused; an adopted file is never removed. When the root or folder
+can no longer be reached, the file stays. Folders are never removed, so an empty `book-<id>` folder may remain; the
+next attempt reuses it.
 
 **Rows written (the whole list, in that one transaction).** The end state of Rails' manual selection plus
 `DownloadJob#handle_direct_http_download`, compared row by row with real Rails below:
@@ -862,27 +859,24 @@ and `dispatching` download, Book reservation). Until the completion transaction 
 `search` left it, awaiting selection; at the commit it reads completed with its book acquired, the file already
 durable at its final name. Nothing in between is visible to Rails or a client.
 
-**Interrupted states and rollback.** The intent is the only Go state, and only between steps 1 and 3:
+**Interrupted states and rollback.** There is no Go state outside the transaction: an interruption leaves at most a
+complete, validated, unreferenced EPUB at its final name, which the next download of the same result adopts.
 
 | Interrupted | On disk | In the database | Next `download` on the copy | Rails on the copy (rollback) |
 | --- | --- | --- | --- | --- |
 | During the download or check, or SIGINT/SIGTERM then (`cancelled`) | nothing (anonymous file freed) | nothing | downloads again | sees the request awaiting selection; selects and downloads it itself |
-| After the intent, before the link | nothing | intent | deletes the intent (`recovered`, `removed` false), downloads again | same; ignores `wf_` tables |
-| After the link, before or inside the commit (SIGKILL included) | the linked file, unreferenced | intent | removes exactly that file after the ownership proof, keeping the folders (`recovered`, `removed` true), downloads again (the killed attempt's bytes are not reused) | same; the unreferenced Go file stays until a Go run recovers it (Rails publishes under its own template path, so it never collides) |
+| After the link, before or inside the commit (SIGKILL included), or a rollback that could not reach the file | the linked EPUB, unreferenced | nothing | downloads again and adopts the file at the name when the bytes are the same (`adopted` true); different bytes stop with `library-file-exists` | same; the unreferenced Go file stays (Rails publishes under its own template path, so it never collides) |
 | After the commit | the library file | the completed rows | `already_completed` | reads, lists and delivers it; `DirectDownloadRecoveryJob` leaves it untouched |
 
-A file at the recorded name that fails the ownership proof (another inode, size or content, or not a regular file) is
-never removed: recovery forgets the intent and the next publication stops with `library-file-exists`. A missing name is
-made durable (folder fsync) before the intent is forgotten. A root or folder that cannot be reached safely blocks
-recovery (`recovery-blocked`, exit 1) instead of guessing; a root moved away leaves its file there and the intent is
-forgotten once the configured path no longer holds the folder.
+Nothing is ever deleted on a later run, so no proof of ownership across runs is needed: a file this command did not
+link in the current run is either adopted unchanged or left in place. Reverting this slice removes the command;
+completed rows are ordinary Rails rows and the files are ordinary library files.
 
 **Assumption.** The disposable directory is private (mode 0700) and nothing else changes it while a command runs. The
 checks above are made from fresh descriptors immediately before each step, but a concurrent process of the same user
-could still rename entries between a check and the step that relies on it (for example between the ownership proof and
-`unlinkat`, which has no inode-conditional form); the protocol does not defend against that, as Rails'
-`DirectDownloadFileService` does not either. Reverting this slice removes the command; completed rows are ordinary
-Rails rows and the files are ordinary library files.
+could still rename entries between a check and the step that relies on it (for example between the identity check and
+`unlinkat` during a rollback, which has no inode-conditional form, or between reopening the root and the operation on
+it); the protocol does not defend against that, as Rails' `DirectDownloadFileService` does not either.
 
 **Deliberate differences.** The library path is a narrow owned layout under the configured root,
 `shelfarr-gutenberg/book-<book id>/gutenberg-<Gutenberg id>.epub`, and `books.file_path` names that file, where Rails
@@ -893,26 +887,27 @@ request; Go ports no failure handling, retry or next-candidate selection. Go req
 blocklisted and an EPUB, where Rails also re-selects rejected or blocklisted results and downloads MOBI or PDF. Go requires
 a loopback catalogue, which Rails' `OutboundUrlGuard` refuses for Gutenberg (the Rails oracle below allows loopback for
 this proof only). Go refuses a configured library scan or import permissions instead of running them, and checks the
-EPUB container where Rails checks only the `PK` signature. A killed attempt's linked bytes are discarded and fetched
-again rather than adopted. Replacing an existing library file, audiobooks, other
+EPUB container where Rails checks only the `PK` signature. After an interruption the EPUB is fetched again to
+prove the file left at the name before it is adopted. Replacing an existing library file, audiobooks, other
 providers, `size_bytes` from the response and concurrent Rails and Go owners are not supported.
 
 **Verification.** `go test ./internal/bookfile/ ./internal/gutenberg/` checks the EPUB container rule, the confined root
 (outside, the workdir itself, links, trailing slash, open modes), every operation refusing a replaced root, no-replace
-publication, removal only with the full ownership proof (another inode, size or digest, or the same bytes in another
-file, are kept), linked and open folders, and every download answer class with the bound and a local write failure. The e2e suite
+publication, adoption only of the same bytes in a single-link file, removal only of the inode linked in the same run, linked and open folders, and every download answer class with the bound and a local write failure. The e2e suite
 (`e2e/workflows/acquire_test.go`) admits and searches through the real binary on both bundles, then downloads a minimal
 readable synthetic EPUB from the loopback catalogue: exact bytes and SHA-256, every written row, untouched tables and
 library, no provider data in the log; the built `shelfarr-http` lists the book with the asset id of the final file's
 stat and delivers the exact bytes; a repeat is `already_completed` and another result is refused, both without network.
 It also covers 29 refusals with no catalogue contact, 14 download failures (statuses, redirect, content types, garbage,
-truncation, a ZIP that is not an EPUB, both size bounds, the deadline and SIGTERM) that write nothing, SIGKILL at four
-boundaries and an external SIGKILL while publishing with recovery and completion afterwards, a foreign file left at the
-name, an existing empty book folder kept through recovery, six concurrent attempts (one completes, the others are
-`acquisition_busy`), six changes while parked before the commit and a root moved while parked inside the completion
-transaction (all `superseded`; the file removed, or for a moved root left there with its intent until a rerun recovers
-and completes), a root moved out of the disposable directory before publication (`library-root-changed`, nothing
-created there), failures after the link and inside the completion transaction, an existing file and a linked folder. `verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
+truncation, a ZIP that is not an EPUB, both size bounds, the deadline and SIGTERM) that write nothing, SIGKILL at three
+boundaries and an external SIGKILL while publishing, each followed by a rerun that adopts the killed attempt's file,
+a killed attempt's file kept through a failed rerun and adopted by the next, a foreign file left at the name, the same
+EPUB already at the name (adopted), six concurrent attempts (one completes, the others are `acquisition_busy`), six
+changes while parked before the commit and a root moved while parked inside the completion transaction (all
+`superseded`; the file removed, or for a moved root left there and adopted once the root is restored), a root moved
+out of the disposable directory and replaced before publication (`library-root-changed`, nothing created in either),
+failures after the link and inside the completion transaction, an existing different file and a linked folder.
+`verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
 copy interrupted after the link, in real Rails with its own library root, serves the same EPUB through WebMock, runs
 `select_result!` and the enqueued `DownloadJob`, and requires the same rows in every table except the library path;
 then it installs the Go result, requires valid completed models, Rails' consumer API to list the same asset id and

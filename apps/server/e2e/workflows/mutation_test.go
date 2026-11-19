@@ -173,12 +173,12 @@ var mutants = []mutant{
 		scenario: "TestGutenbergDownloadRefusesBeforeAnyEffect"},
 	{name: "download: symbolic links and mounts are followed out of the library", file: "internal/bookfile/root_linux.go", edits: replace("confined     = unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS | unix.RESOLVE_NO_XDEV", "confined     = 0"),
 		scenario: "TestGutenbergDownloadNeverReplacesOrEscapesTheLibrary|TestGutenbergDownloadRefusesBeforeAnyEffect"},
-	{name: "download: a file the workflow does not own is removed", file: "internal/bookfile/root_linux.go", edits: []edit{
-		{" || identity != owned.Identity || status.Size != owned.Size {", " || identity != identity {", 1},
-		{"return bytes.Equal(hash.Sum(nil), owned.SHA256), nil", "return bytes.Equal(owned.SHA256, owned.SHA256), nil", 1},
-	}, scenario: "TestGutenbergDownloadSurvivesKillsAtEveryBoundary"},
-	{name: "download: recovery forgets an intent without removing its orphan", file: "cmd/shelfarr-workflows/download.go", edits: replace("\tif !referenced {", "\tif referenced && false {"),
-		scenario: "TestGutenbergDownloadSurvivesKillsAtEveryBoundary"},
+	{name: "download: a file the process did not link is removed", file: "internal/bookfile/root_linux.go", edits: replace(" || (Identity{Device: uint64(status.Dev), Inode: uint64(status.Ino)}) != linked {", " {"),
+		unit: "./internal/bookfile/"},
+	{name: "download: a different file at the destination is adopted", file: "internal/bookfile/root_linux.go", edits: []edit{
+		{" || status.Size != size {", " {", 1},
+		{" || !bytes.Equal(hash.Sum(nil), digest) {", " || bytes.Equal(digest, nil) {", 1},
+	}, scenario: "TestGutenbergDownloadSurvivesKillsAtEveryBoundary|TestGutenbergDownloadNeverReplacesOrEscapesTheLibrary"},
 	{name: "download: completion is not fenced by the selection that was read", file: "internal/acquisition/selection.go", edits: replace("if err != nil || current.Completed != 0 || current.Selection != selection {", "if err != nil || current.Completed != 0 {"),
 		scenario: "TestGutenbergDownloadDiscardsASupersededSelection"},
 	{name: "download: the library root is not rechecked before completion", file: "internal/bookfile/root_linux.go", edits: replace("\tif identity != r.identity {", "\tif identity != identity {"),
