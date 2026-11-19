@@ -89,7 +89,7 @@ function Requests() {
         <p className="eyebrow">Requests</p>
         <PageHeading id="requests-heading">{heading}</PageHeading>
         <p className="lede">
-          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. Making, cancelling or retrying requests is not part of this preview yet.
+          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. You can’t cancel or retry a request from this page.
         </p>
       </header>
 
