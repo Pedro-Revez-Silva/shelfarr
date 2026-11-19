@@ -1,7 +1,7 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { useId, useState, type FormEvent } from "react";
 import { MAX_REQUEST_QUERY, type RequestFilters, type RequestList, type RequestSummary } from "../contract";
-import { useRequests, useSession } from "../queries";
+import { scopeChanged, useRequests, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -73,8 +73,10 @@ function Requests() {
   const navigate = useNavigate();
   const session = useSession();
   const list = useRequests(filters);
-  const everyone = list.data ? list.data.scope === "all" : Boolean(session.data?.admin);
-  const heading = everyone ? "All Requests" : "My Requests";
+  const stale = list.isError || scopeChanged(list.failureReason);
+  const current = stale ? undefined : list.data;
+  const everyone = current ? current.scope === "all" : Boolean(session.data?.admin);
+  const heading = stale ? "Requests" : everyone ? "All Requests" : "My Requests";
   usePageTitle(q ? `Requests: ${q}` : heading);
   const key = currentFilter(filters);
 
@@ -88,14 +90,14 @@ function Requests() {
         <p className="eyebrow">Requests</p>
         <PageHeading id="requests-heading">{heading}</PageHeading>
         <p className="lede">
-          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. Making, cancelling or retrying requests is not part of this preview yet.
+          {stale ? "Requests on this server" : everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. Making, cancelling or retrying requests is not part of this preview yet.
         </p>
       </header>
 
       <nav className="request-filters" aria-label="Request filters">
         <ul>
           {FILTERS.map((filter) => {
-            const count = filter.count && list.data ? list.data.counts[filter.count] : 0;
+            const count = filter.count && current ? current.counts[filter.count] : 0;
             return (
               <li key={filter.key}>
                 <Link
@@ -117,11 +119,11 @@ function Requests() {
 
       <RequestSearch key={q ?? ""} query={q} onSearch={search} />
 
-      <ListStatus list={list.data} pending={list.isPending && !session.isError} failed={list.isError || (session.isError && !session.data)} />
+      <ListStatus list={current} pending={list.isPending && !session.isError} failed={list.isError || (session.isError && !session.data)} />
 
       {session.isError && !session.data ? <ErrorPanel error={session.error} onRetry={() => void session.refetch()} /> : list.isPending ? <Loading label="Loading requests…" /> : null}
       {list.isError ? <ErrorPanel error={list.error} onRetry={() => void list.refetch()} /> : null}
-      {list.data && !list.isError ? <Results list={list.data} filters={filters} filter={key} /> : null}
+      {current ? <Results list={current} filters={filters} filter={key} /> : null}
     </section>
   );
 }

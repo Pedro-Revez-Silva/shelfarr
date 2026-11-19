@@ -1,7 +1,7 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import { failureKind } from "../api/errors";
 import type { RequestDetail } from "../contract";
-import { useRequest, useSession } from "../queries";
+import { scopeChanged, useRequest, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -27,7 +27,8 @@ function RequestView() {
   const { requestId } = routeApi.useParams();
   const request = useRequest(requestId);
   const session = useSession();
-  usePageTitle(request.data?.title ?? (request.isError ? "Request not found" : "Loading request"));
+  const rechecking = scopeChanged(request.failureReason) && !request.isError;
+  usePageTitle(request.isError ? "Request not found" : rechecking ? "Loading request" : (request.data?.title ?? "Loading request"));
 
   if (session.isError && !session.data) {
     return (
@@ -38,7 +39,7 @@ function RequestView() {
     );
   }
 
-  if (request.isPending) {
+  if (request.isPending || rechecking) {
     return (
       <section className="request-details" aria-busy="true">
         <BackToRequests />

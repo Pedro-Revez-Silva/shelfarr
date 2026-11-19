@@ -7,9 +7,9 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer } from "./api/client";
-import { ApiError } from "./api/errors";
+import { ApiError, isApiError } from "./api/errors";
 import type { LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
-import { useServices, type RequestScope } from "./services";
+import { retryFailure, useServices, type RequestScope } from "./services";
 
 export function useSession() {
   const { api, keys } = useServices();
@@ -93,7 +93,17 @@ export function useRequestScope(): RequestScope | null {
 function withinScope<T>(scope: RequestScope, broad: boolean, answer: T, revalidate: () => void): T {
   if (broad === (scope === "all")) return answer;
   revalidate();
-  throw new ApiError("conflict", "The account's access changed while the answer was on its way");
+  throw new ApiError("conflict", "The account's access changed while the answer was on its way", null, SCOPE_CHANGED);
+}
+
+const SCOPE_CHANGED = "scope_changed";
+
+export function scopeChanged(error: unknown): boolean {
+  return isApiError(error) && error.code === SCOPE_CHANGED;
+}
+
+function retryRequests(count: number, error: unknown): boolean {
+  return scopeChanged(error) ? count < 1 : retryFailure(count, error);
 }
 
 export function useRequests(filters: RequestFilters) {
@@ -107,6 +117,7 @@ export function useRequests(filters: RequestFilters) {
       return withinScope(scope, list.scope === "all", list, revalidate);
     },
     enabled: known !== null,
+    retry: retryRequests,
     refetchInterval: ({ state }) => (state.data?.items.some(stillChanging) ? REQUEST_REFRESH_MS : false),
   });
 }
@@ -122,6 +133,7 @@ export function useRequest(id: string) {
       return withinScope(scope, detail.requested_by !== undefined, detail, revalidate);
     },
     enabled: known !== null,
+    retry: retryRequests,
     refetchInterval: ({ state }) => (state.data && stillChanging(state.data) ? REQUEST_REFRESH_MS : false),
   });
 }

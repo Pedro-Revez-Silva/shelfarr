@@ -40,6 +40,10 @@ export function createQueryKeys(account: string) {
 
 const VALIDATION_TIMEOUT_MS = 8000;
 
+export function retryFailure(count: number, error: unknown): boolean {
+  return isApiError(error) ? (error.kind === "network" || error.kind === "server" || error.kind === "busy") && count < 2 : count < 1;
+}
+
 function sessionLost(error: unknown): "signed_out" | "account_changed" | null {
   if (!isApiError(error)) return null;
   if (error.kind === "signed_out") return "signed_out";
@@ -65,7 +69,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
         staleTime: 30_000,
         gcTime: 10 * 60_000,
         refetchOnReconnect: true,
-        retry: (count, error) => (isApiError(error) ? (error.kind === "network" || error.kind === "server" || error.kind === "busy") && count < 2 : count < 1),
+        retry: retryFailure,
       },
       mutations: { retry: false, networkMode: "always" },
     },

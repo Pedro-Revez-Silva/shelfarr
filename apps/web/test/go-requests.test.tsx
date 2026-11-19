@@ -273,14 +273,38 @@ describe("the Requests page", () => {
     const foreign = request({ title: "Someone Else's", requested_by: { name: "Bob", self: false } });
     const server = requestsServer(() => ({ body: list([foreign], { scope: "all" }) })).on("GET", /\/api\/v1\/requests\/3$/, () => ({ body: { account: ACCOUNT, request: detail({ title: "Someone Else's", requested_by: { name: "Bob", self: false } }) } }));
     const { view } = renderRequests(server);
-    expect(await screen.findByRole("heading", { name: "Changed somewhere else" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Changed somewhere else" }, { timeout: 4000 })).toBeTruthy();
     expect(screen.queryByText("Someone Else's")).toBeNull();
     await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
     view.unmount();
     renderRequests(server, "/preview/requests/3");
-    expect(await screen.findByRole("heading", { name: "Changed somewhere else" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Changed somewhere else" }, { timeout: 4000 })).toBeTruthy();
     expect(screen.queryByText("Someone Else's")).toBeNull();
     expect(screen.queryByText("Bob")).toBeNull();
+  });
+
+  test("a narrower answer during a poll hides the old admin counts at once, and a re-check that keeps the role recovers by itself", async () => {
+    let calls = 0;
+    const server = requestsServer(() => {
+      calls += 1;
+      if (calls === 1) return { body: list([request({ requested_by: { name: "Bob", self: false } })], { scope: "all", counts: { attention: 12345, active: 23456 } }) };
+      if (calls === 2) return { body: list([request()], { counts: { attention: 0, active: 1 } }) };
+      return { body: list([request({ title: "Back Again", requested_by: { name: "Bob", self: false } })], { scope: "all", counts: { attention: 7, active: 8 } }) };
+    }).on("GET", /\/api\/v1\/session$/, () => ({ body: session({ admin: { url: "/admin" } }) }));
+    const { services } = renderRequests(server);
+    expect(await screen.findByRole("link", { name: "Need Attention 12345" })).toBeTruthy();
+    act(() => {
+      void services.queryClient.refetchQueries({ queryKey: services.keys.requests("all", {}) });
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/12345|23456/)).toBeNull();
+      expect(screen.queryByText("Requested by Bob")).toBeNull();
+      expect(screen.getByRole("heading", { name: "Requests", level: 1 })).toBeTruthy();
+    });
+    expect(calls).toBe(2);
+    expect(await screen.findByRole("heading", { name: "Back Again", level: 3 }, { timeout: 4000 })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Need Attention 7" })).toBeTruthy();
+    expect(calls).toBe(3);
   });
 
   test("a list holding a request that waits for its next search asks again by itself", async () => {
