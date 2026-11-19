@@ -14,12 +14,12 @@ const (
 	maxDepth    = 32
 	maxEntries  = 100
 	atomSpace   = "http://www.w3.org/2005/Atom"
+	termsSpace  = "http://purl.org/dc/terms/"
 )
 
 var errMalformed = errors.New("malformed catalogue document")
 
 type element struct {
-	space    string
 	name     string
 	attrs    map[string]string
 	children []*element
@@ -42,6 +42,7 @@ func parseDocument(body []byte) (*element, error) {
 	var stack []*element
 	count := 0
 	for {
+		start := decoder.InputOffset()
 		token, err := decoder.Token()
 		if errors.Is(err, io.EOF) {
 			break
@@ -55,9 +56,9 @@ func parseDocument(body []byte) (*element, error) {
 			if count > maxElements || len(stack) >= maxDepth {
 				return nil, errMalformed
 			}
-			node := &element{space: token.Name.Space, name: token.Name.Local, attrs: map[string]string{}}
+			node := &element{name: qualified(token.Name), attrs: map[string]string{}}
 			for _, attribute := range token.Attr {
-				if _, seen := node.attrs[attribute.Name.Local]; !seen {
+				if attribute.Name.Space == "" {
 					node.attrs[attribute.Name.Local] = attribute.Value
 				}
 			}
@@ -76,7 +77,7 @@ func parseDocument(body []byte) (*element, error) {
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if len(stack) == 0 {
-				if len(bytes.Trim(token, " \t\r\n")) > 0 {
+				if len(bytes.Trim(body[start:decoder.InputOffset()], " \t\r\n")) > 0 {
 					return nil, errMalformed
 				}
 				continue
@@ -89,6 +90,16 @@ func parseDocument(body []byte) (*element, error) {
 		return nil, errMalformed
 	}
 	return root, nil
+}
+
+func qualified(name xml.Name) string {
+	switch name.Space {
+	case atomSpace:
+		return name.Local
+	case termsSpace:
+		return "dcterms:" + name.Local
+	}
+	return "{" + name.Space + "}" + name.Local
 }
 
 func (e *element) content() string {
@@ -145,7 +156,7 @@ func (e *element) descendants(name string) []*element {
 }
 
 func entries(root *element) ([]*element, error) {
-	if root.space != atomSpace || root.name != "feed" {
+	if root.name != "feed" {
 		return nil, errMalformed
 	}
 	found := root.descendants("entry")

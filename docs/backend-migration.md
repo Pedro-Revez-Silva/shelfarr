@@ -648,8 +648,8 @@ use (`provider_not_loopback`), and the HTTP client additionally refuses to dial 
 provider for ebooks, eBooks.com), because Go searches one provider and must not decide a multi-source search from it.
 Z-Library counts as configured on its default mirror list when no URL is stored, as in Rails; eBooks.com counts as
 configured whenever it is enabled with any two-letter country, a conservative superset of Rails' check against the
-real country list. Integer settings are read with Ruby's `Integer` syntax (surrounding white space, a sign, leading
-zeros, single underscores between digits); anything else, or a value beyond 64 bits, is refused.
+real country list. Integer settings accept surrounding white space, a sign, leading zeros and single underscores
+between digits; any other spelling Rails would accept (such as a `0d` prefix), or a value beyond 64 bits, is refused.
 `auto_select_enabled` must be off (Go never selects) and the webhook, Discord and Telegram notification channels off
 (Go cannot enqueue them). A refusal writes nothing and leaves the request pending for Rails: answer `rejected` with
 `unsupported_schema`, `unsupported_stored_value`, `request_not_found`, `request_not_pending`, `not_an_ebook`,
@@ -677,7 +677,9 @@ else `default_language`). The detail path is built from the numeric id, never ta
 (`--request-timeout`, at most 1 minute) inside an overall `--deadline` (at most 20 minutes, below the lease), no
 proxy, no redirects, the Rails user agent, and parsed by a strict XML decoder that loads no DTD or external entity,
 with at most 100 entries, 20,000 elements and depth 32; after an optional UTF-8 byte order mark, the root must be a
-`feed` in the Atom namespace and only XML white space may stand outside it, so an HTML maintenance page, another
+`feed` in the Atom namespace and only literal XML white space may stand outside it (no character reference or CDATA),
+Atom elements are recognised only in the Atom namespace and the language only as Dublin Core `dcterms:language`, and
+only unqualified attributes are read, so an HTML maintenance page, another
 format or a truncated or trailing answer is malformed, never empty. When no title gives a result and a search page or
 book page it used linked a `next` page, or a search page listed more books than the limit, the answer was not fully
 read and is reported as `provider-pagination`, not as no results. After every response the claim is renewed with Rails'
@@ -726,7 +728,8 @@ Go refuses instead of searching when another source, auto-selection or an outbou
 Go stores the configured catalogue's own book page as `info_url` (identical to Rails' value for the public catalogue,
 which Rails hard-codes) so no link this command writes leaves the configured origin; a kept row written earlier keeps
 its links unchanged. Go reports an incompletely read answer with no
-valid result as `provider-pagination` where Rails schedules a retry.
+valid result as `provider-pagination` where Rails schedules a retry, and reads elements by namespace where Rails
+removes namespaces first.
 Go builds the detail path from the id and requires a loopback origin in this harness.
 
 **Verification.** `go test ./internal/gutenberg/ ./internal/acquisition/` checks the Rails selection rules (format
@@ -748,7 +751,7 @@ documented score and info link columns; requires every scenario of its bundle; r
 that Rails searches the handed-back request once; reads the Go candidates as valid direct downloadable results,
 renders their result row and selects one (`Request#select_result!`, a queued `Download`, one `DownloadJob` enqueued
 and not performed); and recovers the killed Go claim through `RequestQueueJob` only after the lease, then finishes
-that search. Seventeen mutants of these rules must each fail an assertion.
+that search. Eighteen mutants of these rules must each fail an assertion.
 
 ## Gaps (recorded in every report)
 

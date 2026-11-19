@@ -116,7 +116,7 @@ func chooseDetail(found []*element, fallbackID, requestedLanguage string, origin
 	var bestLanguage string
 	for _, entry := range found {
 		language := ""
-		if text, present := entry.childText("language"); present {
+		if text, present := entry.childText("dcterms:language"); present {
 			language = strings.ToLower(RubyStrip(text))
 			if RubyBlank(language) {
 				language = ""

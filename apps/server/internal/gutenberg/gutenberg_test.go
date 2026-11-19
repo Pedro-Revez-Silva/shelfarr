@@ -146,26 +146,50 @@ func TestDetailWithholdsWhatThisSliceDoesNotStore(t *testing.T) {
 
 func TestDocumentsAreParsedWithoutExternalResources(t *testing.T) {
 	for name, body := range map[string]string{
-		"external entity":   `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x SYSTEM "file:///etc/passwd">]><feed><entry><id>&x;</id></entry></feed>`,
-		"internal entity":   `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x "ebooks/1">]><feed><entry><id>&x;</id></entry></feed>`,
-		"truncated":         feedHead + listingEntry("1342"),
-		"two roots":         `<feed></feed><feed></feed>`,
-		"not utf-8":         "<feed><entry><id>urn:gutenberg:1\xff</id></entry></feed>",
-		"empty":             ``,
-		"html":              `<html><body><p>Service unavailable<br></body></html>`,
-		"balanced html":     `<html><body><p>Down for maintenance</p></body></html>`,
-		"text after feed":   feedHead + listingEntry("1342") + `</feed>Service unavailable`,
-		"text before feed":  `maintenance` + feedHead + `</feed>`,
-		"another namespace": `<rss:feed xmlns:rss="urn:example:status"><rss:error>Maintenance</rss:error></rss:feed>`,
-		"no namespace":      `<feed><entry><id>urn:gutenberg:1</id></entry></feed>`,
-		"space after feed":  feedHead + `</feed>` + "\u00a0",
-		"too many":          feedHead + strings.Repeat(listingEntry("1"), maxEntries+1) + `</feed>`,
-		"too deep":          strings.Repeat("<a>", maxDepth+1) + strings.Repeat("</a>", maxDepth+1),
-		"huge identifier":   feedHead + listingEntry("1234567890123") + `</feed>`,
+		"external entity":                `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x SYSTEM "file:///etc/passwd">]><feed><entry><id>&x;</id></entry></feed>`,
+		"internal entity":                `<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY x "ebooks/1">]><feed><entry><id>&x;</id></entry></feed>`,
+		"truncated":                      feedHead + listingEntry("1342"),
+		"two roots":                      `<feed></feed><feed></feed>`,
+		"not utf-8":                      "<feed><entry><id>urn:gutenberg:1\xff</id></entry></feed>",
+		"empty":                          ``,
+		"html":                           `<html><body><p>Service unavailable<br></body></html>`,
+		"balanced html":                  `<html><body><p>Down for maintenance</p></body></html>`,
+		"text after feed":                feedHead + listingEntry("1342") + `</feed>Service unavailable`,
+		"text before feed":               `maintenance` + feedHead + `</feed>`,
+		"another namespace":              `<rss:feed xmlns:rss="urn:example:status"><rss:error>Maintenance</rss:error></rss:feed>`,
+		"no namespace":                   `<feed><entry><id>urn:gutenberg:1</id></entry></feed>`,
+		"space after feed":               feedHead + `</feed>` + "\u00a0",
+		"escaped space after feed":       feedHead + `</feed>&#x20;`,
+		"cdata after feed":               "\ufeff" + feedHead + `</feed><![CDATA[ ]]>`,
+		"escaped space after a bom feed": "\ufeff" + feedHead + `</feed>&#x20;`,
+		"too many":                       feedHead + strings.Repeat(listingEntry("1"), maxEntries+1) + `</feed>`,
+		"too deep":                       strings.Repeat("<a>", maxDepth+1) + strings.Repeat("</a>", maxDepth+1),
+		"huge identifier":                feedHead + listingEntry("1234567890123") + `</feed>`,
 	} {
 		if _, _, err := parseListings([]byte(body)); !errors.Is(err, errMalformed) {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+func TestOnlyAtomLinksAnnounceAnotherPage(t *testing.T) {
+	origin := testOrigin(t)
+	french := detailEntry("1", "fr", acquisition("application/epub+zip", "EPUB", "/ebooks/1.epub"))
+	for links, want := range map[string]bool{
+		`<link rel="next" href="/ebooks/1.opds?start_index=2"/>`:                        true,
+		`<x:link xmlns:x="urn:example:other" rel="next" href="/next"/>`:                 false,
+		`<link xmlns:x="urn:example:other" x:rel="next" href="/next"/>`:                 false,
+		`<link xmlns:x="urn:example:other" x:rel="alternate" rel="next" href="/next"/>`: true,
+		`<link xmlns:x="urn:example:other" rel="alternate" x:rel="next" href="/next"/>`: false,
+	} {
+		parsed, err := parseDetail([]byte(feedHead+links+french+`</feed>`), "1", "en", origin)
+		if err != nil || parsed.candidate != nil || parsed.nextPage != want {
+			t.Errorf("%s: next page %v, want %v (%v)", links, parsed.nextPage, want, err)
+		}
+	}
+	foreignLanguage := strings.Replace(french, "<dcterms:language>fr</dcterms:language>", `<x:language xmlns:x="urn:example:other">fr</x:language>`, 1)
+	if parsed, err := parseDetail([]byte(feedHead+foreignLanguage+`</feed>`), "1", "en", origin); err != nil || parsed.candidate == nil || parsed.candidate.Language != "" {
+		t.Errorf("a language outside Dublin Core terms is not the entry's language: %+v %v", parsed, err)
 	}
 }
 
