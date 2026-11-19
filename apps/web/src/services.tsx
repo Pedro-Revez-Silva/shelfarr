@@ -41,6 +41,8 @@ export function createQueryKeys(account: string) {
     acquisition: (id: string) => [...root, "acquisition", id] as const,
     acquisitionAll: [...root, "acquisition"] as const,
     serverOverview: [...root, "admin", "overview"] as const,
+    metadataSettings: [...root, "admin", "settings", "metadata"] as const,
+    discoverAll: [...root, "discover"] as const,
   };
 }
 
@@ -87,7 +89,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const deps = { boot, guard, csrfToken, requestVerification, ...(fetcher ? { fetcher } : {}), ...(mutations ? { mutations } : {}) };
   const api = new ApiClient(deps);
   const keys = createQueryKeys(boot.account);
-  const requestQueries = [keys.requestsAll, keys.requestAll, keys.acquisitionAll, keys.serverOverview];
+  const requestQueries = [keys.requestsAll, keys.requestAll, keys.acquisitionAll, keys.serverOverview, keys.metadataSettings];
   let recovering = false;
   const forgetRequests = () => {
     recovering = true;

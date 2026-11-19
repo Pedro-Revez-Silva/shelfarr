@@ -309,8 +309,12 @@ type SettingRow struct {
 }
 
 func (d *DB) Setting(ctx context.Context, key string) (SettingRow, error) {
+	return settingIn(ctx, d.read, key)
+}
+
+func settingIn(ctx context.Context, q rowQuerier, key string) (SettingRow, error) {
 	var row SettingRow
-	err := d.read.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = ?`, key).Scan(&row.Value, &row.Type)
+	err := q.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = ?`, key).Scan(&row.Value, &row.Type)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SettingRow{}, nil
 	}
@@ -357,6 +361,10 @@ func (d *DB) BooleanSetting(ctx context.Context, key string, fallback bool) (boo
 	if err != nil {
 		return false, err
 	}
+	return booleanSettingValue(row, fallback)
+}
+
+func booleanSettingValue(row SettingRow, fallback bool) (bool, error) {
 	if !row.Found || !row.Value.Valid || row.Value.String == "" {
 		return fallback, nil
 	}

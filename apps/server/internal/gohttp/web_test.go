@@ -33,7 +33,7 @@ func webHarness(t *testing.T, adjust func(*Config)) (*browserHarness, webassetst
 	return h, listed
 }
 
-var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/preview/requests": "requests", "/preview/requests?status=active&page=2": "requests", "/preview/requests/7": "request", "/preview/admin": "admin", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
+var shellPaths = map[string]string{"/preview/library": "library", "/preview/library/7": "details", "/preview/account": "account", "/preview/discover": "discover", "/preview/discover?q=dune": "discover", "/preview/requests": "requests", "/preview/requests?status=active&page=2": "requests", "/preview/requests/7": "request", "/preview/admin": "admin", "/preview/admin/settings": "server_settings", "/consumer/connect": "connect", "/consumer/connect?user_code=ABCD-EFGH": "connect"}
 
 func TestTheShellRoutesServeOneStaticDocumentPerViewWithAStrictPolicy(t *testing.T) {
 	h, listed := webHarness(t, nil)

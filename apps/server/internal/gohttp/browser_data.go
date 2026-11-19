@@ -40,7 +40,7 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		return
 	}
 	mutation := found.kind == routeBrowserStatus || found.kind == routeBrowserDecide || found.kind == routeBrowserProfile || found.kind == routeBrowserPassword || found.kind == routeBrowserProgress && r.Method == http.MethodPut ||
-		found.kind == routeBrowserRequestCreate || found.kind == routeBrowserSelection
+		found.kind == routeBrowserRequestCreate || found.kind == routeBrowserSelection || found.kind == routeBrowserMetadataSettings && r.Method == http.MethodPut
 	if mutation && !a.mutationAllowed(w, r, *session, result) {
 		return
 	}
@@ -87,6 +87,8 @@ func (a *App) browserData(w http.ResponseWriter, r *http.Request, found route, r
 		a.webSelectResult(w, r, *session, found.id, result)
 	case routeBrowserAdminOverview:
 		a.webAdminOverview(w, r, *session, result)
+	case routeBrowserMetadataSettings:
+		a.webMetadataSettings(w, r, *session, result)
 	}
 }
 

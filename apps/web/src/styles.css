@@ -1952,3 +1952,57 @@ thead th {
     border-width: 3px;
   }
 }
+
+.settings {
+  display: grid;
+  gap: 24px;
+  max-width: 40rem;
+}
+.settings .page-heading {
+  margin-bottom: 0;
+}
+.settings-back,
+.overview-links {
+  margin: 12px 0 0;
+}
+.check-field {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+.check-field input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.check-field label {
+  font-weight: 550;
+  padding-block: 12px;
+}
+.check-field .field-hint {
+  grid-column: 2;
+  margin: 0;
+}
+.account-form input[type="number"] {
+  width: min(100%, 12rem);
+  min-height: 56px;
+  padding: 0 16px;
+  background: var(--paper);
+  border: 1px solid var(--muted);
+  border-radius: 12px;
+  font: inherit;
+  font-size: max(1rem, 1em);
+}
+.account-form input[type="number"][aria-invalid="true"] {
+  border-color: var(--danger);
+  border-width: 2px;
+}
+.settings-reach {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--sunken);
+}

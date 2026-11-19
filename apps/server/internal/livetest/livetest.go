@@ -10,7 +10,9 @@ import (
 
 const schema = `
 CREATE TABLE schema_migrations (version varchar NOT NULL PRIMARY KEY);
-CREATE TABLE settings (id integer PRIMARY KEY, key varchar NOT NULL, value text, value_type varchar NOT NULL DEFAULT 'string');
+CREATE TABLE settings (id integer PRIMARY KEY, key varchar NOT NULL, value text, value_type varchar NOT NULL DEFAULT 'string', category varchar DEFAULT 'general', description text,
+  created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00');
+CREATE UNIQUE INDEX index_settings_on_key ON settings (key);
 CREATE TABLE users (id integer PRIMARY KEY AUTOINCREMENT, username varchar NOT NULL, name varchar NOT NULL DEFAULT '', role integer NOT NULL DEFAULT 0, deleted_at datetime, password_digest varchar NOT NULL DEFAULT '', failed_login_count integer NOT NULL DEFAULT 0, last_failed_login_at datetime, last_failed_login_ip varchar, locked_until datetime, otp_required boolean NOT NULL DEFAULT 0, otp_secret varchar, oidc_provider varchar, oidc_uid varchar, backup_codes text, created_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00', updated_at datetime NOT NULL DEFAULT '2026-01-01 00:00:00');
 CREATE TABLE sessions (id integer PRIMARY KEY AUTOINCREMENT NOT NULL, created_at datetime NOT NULL, ip_address varchar, updated_at datetime NOT NULL, user_agent varchar, user_id integer NOT NULL);
 CREATE TABLE hardcover_connections (id integer PRIMARY KEY, user_id integer NOT NULL, status varchar NOT NULL DEFAULT 'active');

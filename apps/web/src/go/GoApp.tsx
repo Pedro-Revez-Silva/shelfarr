@@ -98,6 +98,7 @@ function introFor(view: GoBoot["view"]): string {
   if (view === "discover") return "Sign in to find books. You will come straight back to your search.";
   if (view === "requests" || view === "request") return "Sign in to see your requests. You will come straight back to them.";
   if (view === "admin") return "Sign in to see the server overview. You will come straight back to it.";
+  if (view === "server_settings") return "Sign in to change the server settings. You will come straight back to them.";
   return "Sign in to browse your library.";
 }
 

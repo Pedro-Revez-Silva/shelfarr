@@ -35,25 +35,37 @@ func rubyStrip(value string) string {
 }
 
 func (d *DB) OpenLibrarySettings(ctx context.Context, now time.Time) (OpenLibrarySettings, error) {
-	enabled, err := d.BooleanSetting(ctx, "open_library_enabled", true)
+	return openLibrarySettingsIn(ctx, d.read, now)
+}
+
+func openLibrarySettingsIn(ctx context.Context, q rowQuerier, now time.Time) (OpenLibrarySettings, error) {
+	enabledRow, err := settingIn(ctx, q, OpenLibraryEnabledKey)
+	if err != nil {
+		return OpenLibrarySettings{}, err
+	}
+	enabled, err := booleanSettingValue(enabledRow, DefaultOpenLibraryEnabled)
 	if err != nil {
 		return OpenLibrarySettings{}, err
 	}
 	if !enabled {
 		return OpenLibrarySettings{State: OpenLibraryDisabled}, nil
 	}
-	source, present, err := d.StringSetting(ctx, "metadata_source")
+	source, present, err := stringSettingIn(ctx, q, "metadata_source")
 	if err != nil {
 		return OpenLibrarySettings{}, err
 	}
 	if present && otherMetadataProviders[rubyStrip(source)] {
 		return OpenLibrarySettings{State: OpenLibraryNotSelected}, nil
 	}
-	limit, err := d.openLibraryLimit(ctx)
+	limitRow, err := settingIn(ctx, q, OpenLibrarySearchLimitKey)
 	if err != nil {
 		return OpenLibrarySettings{}, err
 	}
-	paused, until, err := d.openLibraryPaused(ctx, now)
+	limit, err := openLibraryLimit(limitRow)
+	if err != nil {
+		return OpenLibrarySettings{}, err
+	}
+	paused, until, err := openLibraryPaused(ctx, q, now)
 	if err != nil {
 		return OpenLibrarySettings{}, err
 	}
@@ -65,33 +77,41 @@ func (d *DB) OpenLibrarySettings(ctx context.Context, now time.Time) (OpenLibrar
 
 var railsDecimal = regexp.MustCompile(`^([+-]?)(?:0[dD])?([0-9]+(?:_[0-9]+)*)$`)
 
-func (d *DB) openLibraryLimit(ctx context.Context) (int, error) {
-	row, err := d.Setting(ctx, "open_library_search_limit")
-	if err != nil {
-		return 0, err
+type railsInteger struct {
+	negative bool
+	digits   string
+}
+
+func parseRailsInteger(row SettingRow) (railsInteger, error) {
+	parts := railsDecimal.FindStringSubmatch(strings.Trim(row.Value.String, " \t\n\v\f\r"))
+	if row.Type != "integer" || parts == nil {
+		return railsInteger{}, store.ErrUnsupported
 	}
+	return railsInteger{negative: parts[1] == "-", digits: strings.TrimLeft(strings.ReplaceAll(parts[2], "_", ""), "0")}, nil
+}
+
+func openLibraryLimit(row SettingRow) (int, error) {
 	if !row.Found || !row.Value.Valid {
 		return openlibrary.MaxResults, nil
 	}
-	parts := railsDecimal.FindStringSubmatch(strings.Trim(row.Value.String, " \t\n\v\f\r"))
-	if row.Type != "integer" || parts == nil {
-		return 0, store.ErrUnsupported
+	parsed, err := parseRailsInteger(row)
+	if err != nil {
+		return 0, err
 	}
-	digits := strings.TrimLeft(strings.ReplaceAll(parts[2], "_", ""), "0")
-	if parts[1] == "-" {
+	if parsed.negative {
 		return 0, nil
 	}
-	if len(digits) > 2 {
+	if len(parsed.digits) > 2 {
 		return openlibrary.MaxResults, nil
 	}
-	value, _ := strconv.Atoi("0" + digits)
+	value, _ := strconv.Atoi("0" + parsed.digits)
 	return min(value, openlibrary.MaxResults), nil
 }
 
-func (d *DB) openLibraryPaused(ctx context.Context, now time.Time) (bool, time.Time, error) {
+func openLibraryPaused(ctx context.Context, q rowQuerier, now time.Time) (bool, time.Time, error) {
 	var status string
 	var until sql.NullString
-	err := d.read.QueryRowContext(ctx, `SELECT status, CAST(rate_limited_until AS TEXT) FROM metadata_provider_statuses WHERE provider = 'openlibrary'`).Scan(&status, &until)
+	err := q.QueryRowContext(ctx, `SELECT status, CAST(rate_limited_until AS TEXT) FROM metadata_provider_statuses WHERE provider = 'openlibrary'`).Scan(&status, &until)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, time.Time{}, nil
 	}

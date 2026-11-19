@@ -65,10 +65,17 @@ function Overview() {
         <PageHeading id="overview-heading">Server overview</PageHeading>
         <p className="lede">Users, books, requests and saved health results for everyone on this server.</p>
         {session.data && admin ? (
-          <dl className="overview-build">
-            <dt>Build</dt>
-            <dd>{session.data.server.version}</dd>
-          </dl>
+          <>
+            <dl className="overview-build">
+              <dt>Build</dt>
+              <dd>{session.data.server.version}</dd>
+            </dl>
+            <p className="overview-links">
+              <Link to="/admin/settings" className="button">
+                Server settings
+              </Link>
+            </p>
+          </>
         ) : null}
       </header>
       {session.isError && !session.data ? (

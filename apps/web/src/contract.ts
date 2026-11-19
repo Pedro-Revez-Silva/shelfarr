@@ -128,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin", "server_settings"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({
@@ -417,3 +417,36 @@ export const serverOverviewSchema = z
   })
   .refine((overview) => overview.services.length === healthServices.length && overview.services.every((entry, index) => entry.service === healthServices[index]), "Every health service must be listed once, in order");
 export type ServerOverview = z.infer<typeof serverOverviewSchema>;
+
+export const metadataReachStates = [...discoverStates, "settings_unreadable"] as const;
+export type MetadataReach = (typeof metadataReachStates)[number];
+
+const savedLimit = z.number().int().min(-Number.MAX_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER);
+
+const metadataSettingsShape = {
+  account: identifier,
+  revision: z.string().regex(/^[0-9a-f]{32}$/),
+  open_library: z.object({ enabled: z.boolean().nullable(), search_limit: savedLimit.nullable() }),
+  defaults: z.object({ enabled: z.boolean(), search_limit: z.number().int().positive() }),
+  search_limit_range: z.object({ min: z.number().int().positive(), max: z.number().int().positive() }),
+  discover: z.object({
+    search: z.enum(metadataReachStates),
+    result_limit: z.number().int().nonnegative().nullable(),
+    max_results: z.number().int().positive(),
+    retry_after: z.number().int().optional(),
+  }),
+};
+
+export const metadataSettingsSchema = z.object(metadataSettingsShape);
+export type MetadataSettings = z.infer<typeof metadataSettingsSchema>;
+
+export const metadataConflictSchema = z.object({ ...metadataSettingsShape, error: z.literal("settings_conflict") });
+
+export const metadataRejectionSchema = z.object({
+  account: identifier,
+  error: z.literal("invalid_settings"),
+  errors: z.partialRecord(z.enum(["enabled", "search_limit"]), z.array(z.string())),
+});
+export type MetadataRejection = z.infer<typeof metadataRejectionSchema>;
+
+export type MetadataChange = { enabled?: boolean; search_limit?: number };

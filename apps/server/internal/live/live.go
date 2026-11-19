@@ -28,7 +28,7 @@ var (
 
 var requiredColumns = map[string][]string{
 	"schema_migrations":          {"version"},
-	"settings":                   {"key", "value", "value_type"},
+	"settings":                   {"key", "value", "value_type", "category", "description", "created_at", "updated_at"},
 	"users":                      {"id", "username", "name", "role", "deleted_at", "password_digest", "failed_login_count", "last_failed_login_at", "last_failed_login_ip", "locked_until", "otp_required", "otp_secret", "oidc_provider", "oidc_uid", "updated_at"},
 	"hardcover_connections":      {"user_id", "status"},
 	"sessions":                   {"id", "user_id", "user_agent", "ip_address", "created_at", "updated_at"},

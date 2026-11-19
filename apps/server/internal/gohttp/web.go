@@ -18,6 +18,7 @@ const (
 	webDiscoverPath  = "/preview/discover"
 	webRequestsPath  = "/preview/requests"
 	webAdminPath     = "/preview/admin"
+	webSettingsPath  = "/preview/admin/settings"
 	webAssetsPrefix  = "/preview/assets/"
 	webConnectPath   = "/consumer/connect"
 	webBootVersion   = 1
@@ -38,6 +39,7 @@ const (
 	viewRequests webView = "requests"
 	viewRequest  webView = "request"
 	viewAdmin    webView = "admin"
+	viewSettings webView = "server_settings"
 )
 
 var webTitles = map[webView]string{
@@ -50,6 +52,7 @@ var webTitles = map[webView]string{
 	viewRequests: "Requests · Shelfarr",
 	viewRequest:  "Request · Shelfarr",
 	viewAdmin:    "Server overview · Shelfarr",
+	viewSettings: "Server settings · Shelfarr",
 }
 
 type webUI struct {
@@ -151,6 +154,8 @@ func classifyWeb(method, path string) (route, bool) {
 		found = route{kind: routeWebShell, name: "web_request", id: string(viewRequest)}
 	case path == webAdminPath:
 		found = route{kind: routeWebShell, name: "web_admin", id: string(viewAdmin)}
+	case path == webSettingsPath:
+		found = route{kind: routeWebShell, name: "web_server_settings", id: string(viewSettings)}
 	case path == webConnectPath:
 		found = route{kind: routeWebShell, name: "web_connect", id: string(viewConnect)}
 	case strings.HasPrefix(path, webAssetsPrefix) && !strings.Contains(strings.TrimPrefix(path, webAssetsPrefix), "/"):

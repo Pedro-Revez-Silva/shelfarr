@@ -39,25 +39,9 @@ func (a *App) webAdminOverview(w http.ResponseWriter, r *http.Request, session b
 		problem(w, result, http.StatusNotFound, "not_found")
 		return
 	}
-	overview, err := a.db.ServerOverview(r.Context(), func(ctx context.Context, tx *sql.Tx) error {
-		if err := a.authorityIn(ctx, tx, authority{sessionID: session.row.ID, userID: session.user.ID}); err != nil {
-			return err
-		}
-		admin, err := live.UserIsAdminIn(ctx, tx, session.user.ID)
-		if err == nil && !admin {
-			err = errNotAdmin
-		}
-		return err
-	})
-	switch {
-	case errors.Is(err, acquire.ErrRevoked):
-		problem(w, result, http.StatusUnauthorized, "signed_out")
-		return
-	case errors.Is(err, errNotAdmin):
-		problem(w, result, http.StatusNotFound, "not_found")
-		return
-	case err != nil:
-		mapFailure(w, result, err)
+	overview, err := a.db.ServerOverview(r.Context(), a.adminIn(session))
+	if err != nil {
+		adminFailure(w, result, err)
 		return
 	}
 	body := overviewBody{
@@ -71,6 +55,30 @@ func (a *App) webAdminOverview(w http.ResponseWriter, r *http.Request, session b
 	}
 	result.set(http.StatusOK, "")
 	writeJSON(w, http.StatusOK, body)
+}
+
+func (a *App) adminIn(session browserSession) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		if err := a.authorityIn(ctx, tx, authority{sessionID: session.row.ID, userID: session.user.ID}); err != nil {
+			return err
+		}
+		admin, err := live.UserIsAdminIn(ctx, tx, session.user.ID)
+		if err == nil && !admin {
+			err = errNotAdmin
+		}
+		return err
+	}
+}
+
+func adminFailure(w http.ResponseWriter, result *outcome, err error) {
+	switch {
+	case errors.Is(err, acquire.ErrRevoked):
+		problem(w, result, http.StatusUnauthorized, "signed_out")
+	case errors.Is(err, errNotAdmin):
+		problem(w, result, http.StatusNotFound, "not_found")
+	default:
+		mapFailure(w, result, err)
+	}
 }
 
 func projectHealth(row live.HealthRow) serviceHealth {

@@ -198,6 +198,21 @@ func TestOpenRefusesADatabaseWithoutWhatTheServerOverviewReads(t *testing.T) {
 	}
 }
 
+func TestOpenRefusesADatabaseWithoutTheSettingsColumnsAMetadataSaveWrites(t *testing.T) {
+	for _, change := range []string{
+		`ALTER TABLE settings DROP COLUMN category`,
+		`ALTER TABLE settings DROP COLUMN description`,
+		`ALTER TABLE settings DROP COLUMN created_at`,
+		`ALTER TABLE settings DROP COLUMN updated_at`,
+	} {
+		path := livetest.Create(t)
+		livetest.Exec(t, path, change)
+		if _, err := Open(context.Background(), path, Options{}); !errors.Is(err, ErrSchemaUnsupported) {
+			t.Errorf("%s: %v", change, err)
+		}
+	}
+}
+
 func TestOpenRefusesADatabaseWithoutWhatRequestsRead(t *testing.T) {
 	for _, change := range []string{
 		`ALTER TABLE requests DROP COLUMN attention_needed`,

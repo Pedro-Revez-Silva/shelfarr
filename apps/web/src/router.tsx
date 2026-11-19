@@ -7,6 +7,7 @@ import { DiscoverPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
+import { ServerSettingsPage } from "./components/ServerSettingsPage";
 import { Shell } from "./components/Shell";
 import { EmptyState } from "./components/States";
 
@@ -85,7 +86,13 @@ const adminRoute = createRoute({
   component: AdminPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute, requestsRoute, requestRoute, adminRoute]);
+const serverSettingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/admin/settings",
+  component: ServerSettingsPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

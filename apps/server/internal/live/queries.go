@@ -36,9 +36,13 @@ type User struct {
 }
 
 func (d *DB) StringSetting(ctx context.Context, key string) (string, bool, error) {
+	return stringSettingIn(ctx, d.read, key)
+}
+
+func stringSettingIn(ctx context.Context, q rowQuerier, key string) (string, bool, error) {
 	var value sql.NullString
 	var valueType string
-	err := d.read.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = ?`, key).Scan(&value, &valueType)
+	err := q.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = ?`, key).Scan(&value, &valueType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

@@ -17,6 +17,7 @@ import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
 import { acquisitionSchema, requestCreationSchema, selectionEnvelopeSchema, type Acquisition, type RequestCreation, type Selection } from "../contract";
 import { serverOverviewSchema, type ServerOverview } from "../contract";
+import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema, type MetadataChange, type MetadataRejection, type MetadataSettings } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
@@ -60,6 +61,10 @@ type RequestOptions<T> = {
 };
 
 export type ProgressAnswer = { kind: "saved"; progress: StoredProgress } | { kind: "conflict"; progress: StoredProgress | null };
+
+export type MetadataAnswer = { kind: "saved"; settings: MetadataSettings } | { kind: "conflict"; settings: MetadataSettings } | { kind: "rejected"; errors: MetadataRejection["errors"] };
+
+type MetadataBody = (MetadataSettings & { error?: "settings_conflict" }) | MetadataRejection;
 
 export type AccountAnswer = { kind: "saved"; profile: Profile } | { kind: "rejected"; errors: Record<string, string[]> };
 
@@ -215,6 +220,26 @@ export class ApiClient {
 
   serverOverview(signal?: AbortSignal): Promise<ServerOverview> {
     return this.request({ path: "/admin/overview", schema: serverOverviewSchema, signal, account: (value) => value.account });
+  }
+
+  metadataSettings(signal?: AbortSignal): Promise<MetadataSettings> {
+    return this.request({ path: "/admin/settings/metadata", schema: metadataSettingsSchema, signal, account: (value) => value.account });
+  }
+
+  async saveMetadataSettings(revision: string, change: MetadataChange, signal?: AbortSignal): Promise<MetadataAnswer> {
+    const answer = await this.request<MetadataBody>({
+      path: "/admin/settings/metadata",
+      schema: metadataSettingsSchema,
+      conflict: metadataConflictSchema,
+      rejection: metadataRejectionSchema,
+      method: "PUT",
+      body: { revision, open_library: change },
+      signal,
+      account: (value) => value.account,
+    });
+    if (answer.error === "invalid_settings") return { kind: "rejected", errors: answer.errors };
+    const { error, ...settings } = answer;
+    return error === "settings_conflict" ? { kind: "conflict", settings } : { kind: "saved", settings };
   }
 
   async account(signal?: AbortSignal): Promise<Profile> {

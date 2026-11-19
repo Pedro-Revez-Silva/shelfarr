@@ -6,9 +6,9 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import type { AccountAnswer } from "./api/client";
+import type { AccountAnswer, MetadataAnswer } from "./api/client";
 import { ApiError, failureKind, isApiError } from "./api/errors";
-import type { Acquisition, LibraryFilters, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import type { Acquisition, LibraryFilters, MetadataChange, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useServices } from "./services";
 
 export function useSession() {
@@ -144,6 +144,39 @@ export function useServerOverview() {
     enabled: admin,
     gcTime: 0,
     refetchOnMount: "always",
+  });
+}
+
+export function useMetadataSettings() {
+  const { api, keys, revalidate } = useServices();
+  const admin = useSession().data?.admin !== undefined;
+  return useQuery({
+    queryKey: keys.metadataSettings,
+    queryFn: ({ signal }) =>
+      api.metadataSettings(signal).catch((error: unknown) => {
+        if (failureKind(error) === "not_found") revalidate();
+        throw error;
+      }),
+    enabled: admin,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSaveMetadataSettings() {
+  const { api, keys, guard, revalidate } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ revision, change }: { revision: string; change: MetadataChange }) => api.saveMetadataSettings(revision, change),
+    onSuccess: (answer: MetadataAnswer) => {
+      if (!guard.isActive() || answer.kind === "rejected") return;
+      client.setQueryData(keys.metadataSettings, answer.settings);
+      if (answer.kind === "saved") void client.invalidateQueries({ queryKey: keys.discoverAll });
+    },
+    onError: (error: unknown) => {
+      if (failureKind(error) === "not_found") revalidate();
+    },
   });
 }
 
