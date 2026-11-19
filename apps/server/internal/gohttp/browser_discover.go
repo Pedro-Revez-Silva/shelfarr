@@ -22,7 +22,7 @@ import (
 const (
 	discoverServerOff   = "server_off"
 	maxDiscoverRequests = 8
-	maxCopyProbes       = 30
+	maxFallbackProbes   = 30
 )
 
 var discoverCopyTypes = []struct {
@@ -181,15 +181,22 @@ func unlinkable(err error) bool {
 
 func (a *App) openableCopies(ctx context.Context, userID int64, roots []string, copies []live.WorkCopy) (map[string]map[int]int64, error) {
 	held := map[string]map[int]int64{}
-	probes := 0
+	tried := map[string]map[int]bool{}
+	fallbacks := 0
 	for _, found := range copies {
 		if _, chosen := held[found.WorkID][found.Book.BookType]; chosen {
 			continue
 		}
-		if probes >= maxCopyProbes {
-			break
+		if tried[found.WorkID][found.Book.BookType] {
+			if fallbacks >= maxFallbackProbes {
+				continue
+			}
+			fallbacks++
 		}
-		probes++
+		if tried[found.WorkID] == nil {
+			tried[found.WorkID] = map[int]bool{}
+		}
+		tried[found.WorkID][found.Book.BookType] = true
 		opens, err := a.detailOpens(ctx, userID, roots, found.Book)
 		if err != nil {
 			return nil, err

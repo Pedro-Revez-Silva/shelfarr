@@ -73,7 +73,7 @@ func (d *DB) openLibraryLimit(ctx context.Context) (int, error) {
 	if !row.Found || !row.Value.Valid {
 		return openlibrary.MaxResults, nil
 	}
-	parts := railsDecimal.FindStringSubmatch(strings.TrimSpace(row.Value.String))
+	parts := railsDecimal.FindStringSubmatch(strings.Trim(row.Value.String, " \t\n\v\f\r"))
 	if row.Type != "integer" || parts == nil {
 		return 0, store.ErrUnsupported
 	}

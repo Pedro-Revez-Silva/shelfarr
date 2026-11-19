@@ -224,6 +224,7 @@ func TestDiscoverRefusesSettingsItCannotReadInsteadOfGuessing(t *testing.T) {
 		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '20 results', 'integer')`,
 		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '1__0', 'integer')`,
 		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0x10', 'integer')`,
+		`INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', char(160) || '1_0' || char(160), 'integer')`,
 		`INSERT INTO settings (key, value, value_type) VALUES ('metadata_source', '["openlibrary"]', 'json')`,
 		`INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'rate_limited', 'soon')`,
 	} {
@@ -483,5 +484,45 @@ func TestRefusedAndBusyDiscoverAnswersAreNotCached(t *testing.T) {
 	}
 	if recorder := client.discover("q=dune"); recorder.Code != http.StatusServiceUnavailable || errorCode(t, recorder) != "server_busy" || recorder.Header().Get("Cache-Control") != "private, no-store" {
 		t.Fatalf("busy %d %v", recorder.Code, recorder.Header())
+	}
+}
+
+func TestEveryWorkAndFormatInTheAnswerHasItsNewestCopyChecked(t *testing.T) {
+	h, fake := newDiscoverHarness(t, true)
+	docs := []string{}
+	for work := 1; work <= 20; work++ {
+		id := "OL" + strconv.Itoa(work) + "W"
+		docs = append(docs, `{"key":"/works/`+id+`","title":"Work `+strconv.Itoa(work)+`"}`)
+		for _, kind := range []struct {
+			bookType  int
+			extension string
+		}{{1, "epub"}, {0, "mp3"}, {2, "cbz"}} {
+			content := "a file"
+			if kind.extension == "cbz" {
+				content = comicArchive("p1.png")
+			}
+			livetest.Exec(t, h.path, `INSERT INTO books (id, title, file_path, book_type, open_library_work_id) VALUES (?, 'Copy', ?, ?, ?)`,
+				work*10+kind.bookType, h.file(id+"."+kind.extension, content), kind.bookType, id)
+		}
+	}
+	fake.respond = jsonAnswer(http.StatusOK, `{"docs":[`+strings.Join(docs, ",")+`]}`)
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	got := discoverBody(t, client.discover("q=many"))
+	items := got["items"].([]any)
+	if len(items) != 20 {
+		t.Fatalf("items %d", len(items))
+	}
+	for index, raw := range items {
+		item := raw.(map[string]any)
+		work := index + 1
+		want := []any{
+			map[string]any{"book_type": "ebook", "publication_id": strconv.Itoa(work*10 + 1)},
+			map[string]any{"book_type": "audiobook", "publication_id": strconv.Itoa(work * 10)},
+			map[string]any{"book_type": "comicbook", "publication_id": strconv.Itoa(work*10 + 2)},
+		}
+		if !reflect.DeepEqual(item["library"], want) {
+			t.Fatalf("work %d links %v", work, item["library"])
+		}
 	}
 }
