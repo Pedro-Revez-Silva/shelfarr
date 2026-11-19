@@ -1065,8 +1065,8 @@ nothing is retried. The process
 sends at most one search a second to Open Library across every account and at most two at once (Open Library's
 published limit for clients that do not identify themselves with a contact address); a search above that budget is
 refused with `429 search_rate_limited` and `Retry-After`. A `429` from Open Library pauses every search for its
-`Retry-After` (60 s when absent or not a number of seconds, at least 1 s, at most 15 minutes, a larger number meaning
-15 minutes) in this process only. A browser that leaves or replaces a search cancels the outbound request. Discover
+`Retry-After` (60 s when absent or not a number of seconds; a number is held to at least 1 s and at most 15 minutes) in
+this process only. A browser that leaves or replaces a search cancels the outbound request. Discover
 requests have their own pool of 8 (`503 server_busy` beyond it), so a slow Open Library cannot take the Library's
 `-max-metadata-requests` capacity.
 
@@ -1078,7 +1078,7 @@ The same settings Rails' `MetadataService` reads, read-only and on every request
 | --- | --- |
 | `open_library_enabled` false | `"search": "provider_disabled"`, nothing sent |
 | `metadata_source` set to `hardcover`, `google_books` or `comic_vine` (surrounding whitespace ignored, as Rails strips it) | `"search": "provider_not_selected"`, nothing sent; `auto`, `openlibrary` and any other value keep Open Library |
-| `open_library_search_limit` | the `limit` sent, at most 20 (Rails sends any value); 0 or a negative value returns no results without contacting Open Library (Rails sends it); a whole number of any length is read, as Rails' `to_i` reads the canonical integer it stores |
+| `open_library_search_limit` | the `limit` sent, at most 20 (Rails sends any value); 0 or a negative value returns no results without contacting Open Library or reading the Library (Rails sends it). Every form Rails' settings form accepts and `to_i` reads is read: surrounding white space, a sign, a `0d` prefix, `_` between digits and any number of digits |
 | `metadata_provider_statuses` row for `openlibrary` with `rate_limited_until` in the future, or `status = auth_failed` | `"search": "provider_paused"` with `retry_after` seconds when known, nothing sent (Rails skips the provider then) |
 
 A setting stored with a type Rails would not write (`open_library_enabled` that is not `boolean`, a limit that is not
@@ -1109,7 +1109,10 @@ searches only Open Library and says so.
 over-long, repeated or malformed `q` is `422 invalid_query` and nothing is sent. Failures: Open Library unreachable or
 too slow `503 search_unavailable`; an error status, redirect, non-JSON, oversized or malformed answer `502
 search_failed`; rate limits `429 search_rate_limited` with `Retry-After`. The guard order and the
-`Cache-Control: private, no-store` of every preview route apply. The access log keeps the route name only; one extra
+`Cache-Control: private, no-store` of every preview route apply, including the `405` and `503 server_busy` answers of
+this route. The route itself writes nothing; like every preview route, and like Rails' `resume_session`, the shared
+session guard removes a session row that has outlived `session_max_age_days` or belongs to a deleted account before it
+answers `401 signed_out`. The access log keeps the route name only; one extra
 line `open_library` records the outcome, the result count and the duration, never the query, a title or Open Library's
 answer.
 
@@ -1124,11 +1127,14 @@ number, never taken from the answer, and the browser accepts only `https://cover
 without one it draws the generated cover. Covers are loaded lazily by the browser from Open Library with no referrer,
 as the Rails screens load them, within the existing `img-src 'self' https:` policy.
 
-`library` lists, in the order ebook, audiobook, comic, one copy per format that the Go Library can open now: acquired
-(non-blank `file_path`, a type the Go Library serves), with `open_library_work_id` exactly the work's id, and with at least
-one file the Library lists under the configured roots. The newest such copy by id wins; a newer copy whose files are
-missing, or whose layout the Go Library cannot read, is skipped for an older usable one. At most 200 candidate copies
-across one answer are examined, newest first. The library roots are checked before Open Library is contacted. A row holding the
+`library` lists, in the order ebook, audiobook, comic, one copy per format that the Go details page would open now:
+acquired (non-blank `file_path`, a type the Go Library serves), with `open_library_work_id` exactly the work's id, and
+projected for this account exactly as `GET /preview/api/v1/library/:id` projects it (the same file listing, stored-value
+checks and plain-text description), with at least one file available. The newest such copy wins; a newer copy whose files
+are missing, or that the details page would refuse, is skipped for an older one. For each work and format only the 3
+newest copies are considered, and one answer examines at most 30 copies, first copies of every work and format before
+any older fallback, so one work with many copies cannot hide another's. The library roots are checked before Open
+Library is contacted. A row holding the
 same work under another source (for example `hardcover_id` as well) still matches through its Open Library column; ids
 stored in another form, other case or with a `/works/` prefix do not, exactly as in Rails' `Book.preload_by_work_ids`.
 No title or author guess is ever used. These are the same shared Library books every allowlisted account already sees
@@ -1164,8 +1170,8 @@ through a search. A query repeated in the address is rewritten to the last one, 
 Library's address is. Rate limits, an unreachable or unusable Open
 Library, a refused query and an older server (`404`) each have a message and a Try again button where it can help;
 nothing is retried by itself. Each query has its own cache entry for the account (five minutes, no refetch on focus),
-so Back reuses the answer; a newer search or leaving the page cancels the older request and a late answer cannot
-appear. The account guard, session checks and locking work as on every other page.
+so Back reuses the answer; a failed search is sent again only by Try again, never by coming back to it; a newer search
+or leaving the page cancels the older request and a late answer cannot appear. The account guard, session checks and locking work as on every other page.
 
 ### Contract before and after
 
@@ -1192,8 +1198,10 @@ and an asset build from the same commit.
   `429` pause and the per-second and concurrency budget; the route's guards, every settings case with provider health
   unchanged, refused stored values and limits, refused queries, exact library links (newest openable, a newer
   copy with a missing file skipped, pending, blank, case, prefix, odd type), named failures without leaks in answers or
-  logs, a disconnect cancelling the upstream request, a stalled search leaving the Library's capacity free, and a search
-  the server dropped on a connection never being sent twice.
+  logs, a disconnect cancelling the upstream request, a stalled search leaving the Library's capacity free, a search
+  the server dropped on a connection never being sent twice, a newest copy the details page refuses skipped for an older
+  one while forty copies of one work leave another work's link intact, Rails' integer forms of the limit, and uncached
+  refusals.
 * `tools/migration/web/verify-web`: the Rails fixture gives reader books Open Library work ids (one also with a
   Hardcover id), adds a newer pending request for one and a pending-only book requested by another account, and records
   what the real Rails `OpenLibraryClient.search` and `Book.preload_by_work_ids`/`find_in_lookup` make of a recorded
@@ -1205,7 +1213,7 @@ and an asset build from the same commit.
   failure state without retry or redirect, the per-second limit and Open Library's pause, cancellation on leaving and
   on a newer search, the settings and Rails backoff, an over-long query, another tab switching account, keyboard order,
   and axe with no overflow or small targets in light and dark, desktop, phone and 320 px, at 100% and 200% text. Unit
-  tests and six mutants cover the screen.
+  tests and eleven mutants cover the screen.
 
 Not proven: real Open Library traffic, Safari, Firefox and screen readers.
 
