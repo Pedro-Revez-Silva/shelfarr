@@ -157,8 +157,8 @@ func TestPublishNeverReplacesAndRemovesOnlyItsOwnFile(t *testing.T) {
 	if removed, err := root.Remove(placement, other.Identity); !removed || err != nil {
 		t.Errorf("own file: %v %v", removed, err)
 	}
-	if _, err := os.Lstat(filepath.Dir(final)); !os.IsNotExist(err) {
-		t.Errorf("the emptied book folder remains: %v", err)
+	if info, err := os.Lstat(filepath.Dir(final)); err != nil || !info.IsDir() {
+		t.Errorf("removing the file removed its folder: %v", err)
 	}
 }
 
@@ -179,5 +179,8 @@ func TestPublishRefusesALinkedFolder(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(outside); len(entries) != 0 {
 		t.Errorf("wrote outside the library: %v", entries)
+	}
+	if removed, err := root.Remove(Placement{Folders: []string{"shelfarr-gutenberg", "book-1"}, Name: "b.epub"}, staged.Identity); removed || err != nil {
+		t.Errorf("removal through a link: %v %v", removed, err)
 	}
 }

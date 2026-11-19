@@ -372,14 +372,14 @@ func Complete(ctx context.Context, store *wfstore.Store, selection Selection, in
 		if count, err := removed.RowsAffected(); err != nil || count != 1 {
 			return ErrSuperseded
 		}
-		if err := verify(); err != nil {
-			return err
-		}
 		downloadID, err = writeCompletion(ctx, tx, selection, wfstore.FormatTimestamp(now))
 		if err != nil {
 			return err
 		}
-		return fault.Hit(ctx, "download.before-commit")
+		if err := fault.Hit(ctx, "download.before-commit"); err != nil {
+			return err
+		}
+		return verify()
 	})
 	return downloadID, err
 }

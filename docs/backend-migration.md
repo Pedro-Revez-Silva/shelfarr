@@ -803,7 +803,8 @@ while its SHA-256 is computed; an announced or actual size over the bound is `pr
 ends before its `Content-Length` is `download-truncated`. The file is then fsynced and checked as an EPUB container with
 the existing strict ZIP directory reader (no extraction, no inflation, no rendering): a well-formed directory with no
 ZIP64, encryption, links or unsafe names, `mimetype` first at offset 0, stored, exactly `application/epub+zip` with a
-matching CRC, and a `META-INF/container.xml` file. Anything else is `download-invalid`. Until it is linked the file has no
+matching CRC, and a non-empty `META-INF/container.xml` entry (its compressed content is not inflated or parsed).
+Anything else is `download-invalid`. Until it is linked the file has no
 name, so an interruption, a refusal or a kill leaves nothing on disk.
 
 **Publication protocol.** Validated bytes are persisted before metadata, and every file this workflow creates is
@@ -817,13 +818,16 @@ recorded before it gets a name:
    folder is fsynced;
 3. one `BEGIN IMMEDIATE` transaction re-reads everything step 0 read and requires it unchanged (request status,
    generation, claim and `updated_at`, the result's status and row, the book's `updated_at`, path and reservation, the
-   account, settings, origin and root), requires the library root to still be the same directory (device and inode
-   reopened by path) and the linked name to still be the staged inode, deletes the intent and writes the rows below.
+   account, settings, origin and root), deletes the intent, writes the rows below and, last before `COMMIT`, requires
+   the library root to still be the same directory (device and inode reopened by path) and the linked name to still be
+   the staged inode.
 
 SIGINT and SIGTERM stop the command only before step 1; from there it finishes or rolls back the publication within
 10 seconds. Anything changed is `superseded` (exit 4): the linked file is removed if, and only if, its device and inode are still
-the ones recorded, its now-empty book folder with it, and the intent is deleted. A database error or failpoint inside
-the completion transaction does the same after checking that no book references the path, and exits 1.
+the ones recorded, and the intent is deleted only once that removal succeeded (otherwise it stays for recovery). A
+failure of the link step itself (including a folder fsync after a successful link), a failpoint after the link, or a
+database error inside the completion transaction does the same after checking that no book references the path, and
+exits 1. Folders are never removed, so an empty `book-<id>` folder may remain; it is reused by the next attempt.
 
 **Rows written (the whole list, in that one transaction).** The end state of Rails' manual selection plus
 `DownloadJob#handle_direct_http_download`, compared row by row with real Rails below:
@@ -855,7 +859,7 @@ durable at its final name. Nothing in between is visible to Rails or a client.
 | --- | --- | --- | --- | --- |
 | During the download or check, or SIGINT/SIGTERM then (`cancelled`) | nothing (anonymous file freed) | nothing | downloads again | sees the request awaiting selection; selects and downloads it itself |
 | After the intent, before the link | nothing | intent | deletes the intent (`recovered`, `removed` false), downloads again | same; ignores `wf_` tables |
-| After the link, before or inside the commit (SIGKILL included) | the linked file, unreferenced | intent | removes exactly that inode and its empty folder (`recovered`, `removed` true), downloads again | same; the unreferenced Go file stays until a Go run recovers it (Rails publishes under its own template path, so it never collides) |
+| After the link, before or inside the commit (SIGKILL included) | the linked file, unreferenced | intent | removes exactly that inode, keeping the folders (`recovered`, `removed` true), downloads again | same; the unreferenced Go file stays until a Go run recovers it (Rails publishes under its own template path, so it never collides) |
 | After the commit | the library file | the completed rows | `already_completed` | reads, lists and delivers it; `DirectDownloadRecoveryJob` leaves it untouched |
 
 A file at the recorded name that is not the recorded inode is never removed: recovery forgets the intent and the next
@@ -885,9 +889,10 @@ stat and delivers the exact bytes; a repeat is `already_completed` and another r
 It also covers 28 refusals with no catalogue contact, 14 download failures (statuses, redirect, content types, garbage,
 truncation, a ZIP that is not an EPUB, both size bounds, the deadline and SIGTERM) that write nothing, SIGKILL at four
 boundaries and an external SIGKILL while publishing with recovery and completion afterwards, a foreign file left at the
-name, six concurrent attempts (one completes, the others are `acquisition_busy`), six changes while parked before the
-commit (all `superseded`, the file removed) and a failure inside the completion transaction, an existing file and a
-linked folder. `verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
+name, an existing empty book folder kept through recovery, six concurrent attempts (one completes, the others are
+`acquisition_busy`), six changes while parked before the commit and a root moved while parked inside the completion
+transaction (all `superseded`, the file removed), failures after the link and inside the completion transaction, an
+existing file and a linked folder. `verify_gutenberg_download.rb` (run by `verify-workflows`) installs the same pre-download copies, and the
 copy interrupted after the link, in real Rails with its own library root, serves the same EPUB through WebMock, runs
 `select_result!` and the enqueued `DownloadJob`, and requires the same rows in every table except the library path;
 then it installs the Go result, requires valid completed models, Rails' consumer API to list the same asset id and

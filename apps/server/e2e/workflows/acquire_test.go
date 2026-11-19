@@ -150,6 +150,10 @@ func (a *acquisitionSetup) entries(t *testing.T) []string {
 	return found
 }
 
+func (a *acquisitionSetup) folders() []string {
+	return []string{"shelfarr-gutenberg/", "shelfarr-gutenberg/book-" + itoa(a.book) + "/"}
+}
+
 func (a *acquisitionSetup) intent(t *testing.T) []string {
 	t.Helper()
 	var values []string
@@ -791,6 +795,19 @@ func TestGutenbergDownloadSurvivesKillsAtEveryBoundary(t *testing.T) {
 		rerun := setup.download(t, plainBinary, faults{}, setup.result)
 		setup.requireCompleted(t, rerun, before)
 	})
+	t.Run("an existing empty book folder survives recovery", func(t *testing.T) {
+		setup := newAcquisition(t, currentBundle, "")
+		if err := os.MkdirAll(filepath.Dir(setup.bookPath()), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before := setup.freeze(t)
+		if killed := setup.download(t, faultBinary, newFaults(t, map[string]string{"download.linked": "kill"}), setup.result); killed.code != -1 {
+			t.Fatalf("exit %d", killed.code)
+		}
+		setup.fake.set(reply{Path: bookLink, Status: 404, Body: "Not Found"})
+		rerun := setup.download(t, plainBinary, faults{}, setup.result)
+		setup.requireNothingWritten(t, rerun, before, 1, "failed", "provider-refused")
+	})
 	t.Run("a different file left at the destination is preserved", func(t *testing.T) {
 		setup := newAcquisition(t, currentBundle, "")
 		before := setup.freeze(t)
@@ -893,39 +910,50 @@ func TestGutenbergDownloadDiscardsASupersededSelection(t *testing.T) {
 			}
 		}},
 	}
+	cases = append(cases, struct {
+		name   string
+		change func(t *testing.T, a *acquisitionSetup)
+	}{"library root moved inside the completion transaction", cases[len(cases)-1].change})
 	for _, entry := range cases {
 		t.Run(entry.name, func(t *testing.T) {
 			setup := newAcquisition(t, currentBundle, "")
-			injected := newFaults(t, map[string]string{"download.linked": "park"})
+			point := "download.linked"
+			if strings.HasSuffix(entry.name, "inside the completion transaction") {
+				point = "download.before-commit"
+			}
+			injected := newFaults(t, map[string]string{point: "park"})
 			running := setup.start(t, faultBinary, injected, setup.result)
-			injected.reached(t, "download.linked")
+			injected.reached(t, point)
 			entry.change(t, setup)
 			changed := setup.freeze(t)
-			injected.release(t, "download.linked")
+			injected.release(t, point)
 			code := running.wait()
 			answer := outcomeOf(t, result{events: running.snapshot(), output: running.output()})
 			if code != 4 || answer.text("outcome") != "superseded" {
 				t.Errorf("exit %d: %s", code, running.output())
 			}
-			library := []string{"shelfarr-gutenberg/"}
-			if entry.name == "library root moved" {
+			library := setup.folders()
+			if strings.HasPrefix(entry.name, "library root moved") {
 				library = nil
+				moved := &acquisitionSetup{library: setup.library + ".moved"}
+				if got := moved.entries(t); !reflect.DeepEqual(got, setup.folders()) {
+					t.Errorf("the moved root keeps %v", got)
+				}
 			}
 			setup.requireUnchanged(t, frozen{tables: changed.tables, library: library})
-			if entries, _ := os.ReadDir(setup.library + ".moved"); len(entries) > 1 {
-				t.Errorf("the moved root keeps %d entries", len(entries))
-			}
 		})
 	}
-	t.Run("failure inside the completion transaction", func(t *testing.T) {
-		setup := newAcquisition(t, currentBundle, "")
-		before := setup.freeze(t)
-		run := setup.download(t, faultBinary, newFaults(t, map[string]string{"download.before-commit": "error"}), setup.result)
-		if answer := outcomeOf(t, run); run.code != 1 || answer.name() != "error" {
-			t.Errorf("exit %d: %s", run.code, run.output)
-		}
-		setup.requireUnchanged(t, frozen{tables: before.tables, library: []string{"shelfarr-gutenberg/"}})
-	})
+	for _, point := range []string{"download.linked", "download.before-commit"} {
+		t.Run("failure at "+point, func(t *testing.T) {
+			setup := newAcquisition(t, currentBundle, "")
+			before := setup.freeze(t)
+			run := setup.download(t, faultBinary, newFaults(t, map[string]string{point: "error"}), setup.result)
+			if answer := outcomeOf(t, run); run.code != 1 || answer.name() != "error" {
+				t.Errorf("exit %d: %s", run.code, run.output)
+			}
+			setup.requireUnchanged(t, frozen{tables: before.tables, library: setup.folders()})
+		})
+	}
 }
 
 func TestGutenbergDownloadNeverReplacesOrEscapesTheLibrary(t *testing.T) {

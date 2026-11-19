@@ -167,8 +167,13 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 	if err := fault.Hit(ctx, "download.intent"); err != nil {
 		return downloadError(err, out)
 	}
+	discard := func() {
+		if _, err := root.Remove(placement, staged.Identity); err == nil {
+			acquisition.ForgetIntent(ctx, store, intent)
+		}
+	}
 	if err := root.Publish(staged, placement); err != nil {
-		acquisition.ForgetIntent(ctx, store, intent)
+		discard()
 		if errors.Is(err, bookfile.ErrExists) {
 			return failDownload(fields, codeFileExists, out)
 		}
@@ -179,6 +184,7 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 		return failDownload(fields, codeStaging, out)
 	}
 	if err := fault.Hit(ctx, "download.linked"); err != nil {
+		discard()
 		return downloadError(err, out)
 	}
 	verify := func() error {
@@ -196,9 +202,7 @@ func publish(ctx context.Context, store *wfstore.Store, root *bookfile.Root, sta
 		if referenced, checkErr := acquisition.Referenced(ctx, store, selection.BookPath()); checkErr != nil || referenced {
 			return downloadError(err, out)
 		}
-		if _, removeErr := root.Remove(placement, staged.Identity); removeErr == nil {
-			acquisition.ForgetIntent(ctx, store, intent)
-		}
+		discard()
 		if errors.Is(err, acquisition.ErrSuperseded) {
 			fields["outcome"] = "superseded"
 			out.emit("download", fields)

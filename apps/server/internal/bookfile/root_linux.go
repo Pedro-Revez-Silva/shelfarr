@@ -228,7 +228,7 @@ func (r *Root) Identify(placement Placement) (Identity, bool, error) {
 
 func (r *Root) Remove(placement Placement, owned Identity) (bool, error) {
 	folder, err := r.folder(placement, false)
-	if errors.Is(err, unix.ENOENT) {
+	if errors.Is(err, unix.ENOENT) || errors.Is(err, ErrUnsafe) {
 		return false, nil
 	}
 	if err != nil {
@@ -252,21 +252,5 @@ func (r *Root) Remove(placement Placement, owned Identity) (bool, error) {
 	if err := unix.Fsync(folder); err != nil {
 		return true, err
 	}
-	r.removeEmptyFolder(placement)
 	return true, nil
-}
-
-func (r *Root) removeEmptyFolder(placement Placement) {
-	if len(placement.Folders) == 0 {
-		return
-	}
-	parent := Placement{Folders: placement.Folders[:len(placement.Folders)-1]}
-	folder, err := r.folder(parent, false)
-	if err != nil {
-		return
-	}
-	defer unix.Close(folder)
-	if unix.Unlinkat(folder, placement.Folders[len(placement.Folders)-1], unix.AT_REMOVEDIR) == nil {
-		unix.Fsync(folder)
-	}
 }
