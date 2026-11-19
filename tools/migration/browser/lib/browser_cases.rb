@@ -56,6 +56,7 @@ module Migration
         seed_reader_library
         seed_people
         seed_discover_library
+        seed_requests
         configure_preview
         seed_sessions
         seed_account_people
@@ -135,6 +136,79 @@ module Migration
               "cover_id" => result.cover_id, "cover_url" => result.cover_url, "edition_count" => result.edition_count }
           end,
           "rails_library" => library, "books" => @discover_books
+        }
+      end
+
+      REQUEST_FILTERS = [ {}, { "attention" => "true" }, { "status" => "active" }, { "status" => "awaiting_purchase" }, { "status" => "completed" }, { "status" => "not_found" },
+                          { "status" => "failed" }, { "status" => "pending" }, { "q" => "request" }, { "q" => "R\u00c9QUEST" }, { "q" => "harbor", "status" => "active" }, { "page" => "2" } ].freeze
+      FREE_TEXT_ISSUE = "Failed to connect to download client: http://admin:hunter2@10.1.2.3:8080/api"
+      LISTED_ISSUE = "Search results found. Please review and select a result to download."
+
+      def seed_requests
+        member, admin, alice, outsider = @people.values_at("browser_member", "browser_admin", "alice", "browser_outsider").map { |person| person.fetch(:user) }
+        made = {}
+        add = lambda do |key, user, book, status, hours_ago, **columns|
+          request = Request.create!(book: book, user: user, status: status)
+          request.update_columns({ created_at: NOON - hours_ago.hours, updated_at: NOON - hours_ago.hours }.merge(columns))
+          made[key] = request
+        end
+        pending_book = ->(title, type = :ebook, **extra) { Book.create!({ title: title, book_type: type, file_path: nil }.merge(extra)) }
+        add.call("downloading", member, pending_book.call("Request Harbor Download", :ebook, author: "D. Loader", cover_url: "https://covers.example.test/harbor.jpg"), :downloading, 1)
+        add.call("searching_attention", member, pending_book.call("Request Réquest Lanterns", :audiobook, author: "S. Seeker"), :searching, 2, attention_needed: true, issue_description: LISTED_ISSUE)
+        add.call("not_found_attention", member, pending_book.call("Request Missing Atlas"), :not_found, 3, attention_needed: true, issue_description: FREE_TEXT_ISSUE, next_retry_at: NOON + 30.days, retry_count: 2)
+        add.call("processing", member, pending_book.call("Request Processing Notes", :comicbook), :processing, 4)
+        add.call("completed", member, @reader_books.fetch("audio"), :completed, 5, completed_at: NOON - 4.hours)
+        add.call("completed_missing", member, Book.find_by!(title: "Gone Missing"), :completed, 6, completed_at: NOON - 5.hours)
+        add.call("cancelled", member, pending_book.call("Request Cancelled Idea"), :failed, 7)
+        add.call("store", member, pending_book.call("Request Store Offer"), :awaiting_purchase, 8)
+        add.call("admin_own", admin, pending_book.call("Request Admin Own"), :pending, 9)
+        add.call("other_owner", alice, pending_book.call("Request Other Owner Secret"), :downloading, 10)
+        add.call("outsider", outsider, pending_book.call("Request Outsider Shelf"), :not_found, 11)
+        22.times { |index| add.call("filler_#{index}", @people.fetch("bob").fetch(:user), pending_book.call(format("Queue Filler %02d", index)), :pending, 12 + index) }
+        Download.create!(request: made["downloading"], status: :downloading, progress: 37, name: "Harbor.Download.RELEASE-GROUP", download_path: "/downloads/private/harbor", external_id: "client-hash-1")
+        Download.create!(request: made["downloading"], status: :failed, progress: 90, name: "Harbor.Older.RELEASE-GROUP", external_id: "client-hash-0")
+        Download.create!(request: made["other_owner"], status: :downloading, progress: 64, name: "Other.Owner.RELEASE")
+        Download.create!(request: made["completed"], status: :completed, progress: 100, name: "Spoken.Sampler.RELEASE")
+        @requests = made
+      end
+
+      def rails_request_page(cookie, query)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.host! "www.example.com"
+        path = query.empty? ? "/requests" : "/requests?#{URI.encode_www_form(query)}"
+        travel_to(NOON, with_usec: true) { session.get path, headers: { "Cookie" => "session_id=#{cookie}", "Accept" => "text/html" } }
+        raise "Rails answered #{session.response.status} for #{path}" unless session.response.status == 200
+
+        page = Nokogiri::HTML(session.response.body)
+        cards = page.css("[data-request-card-header]").map do |header|
+          card = header.ancestors("div.bg-gray-900").first
+          { "title" => header.at_css("h3").text.strip, "id" => card.at_css("a[href^='/requests/']")["href"].split("/").last.to_i,
+            "labels" => header.css("span.inline-flex").map { |span| span.text.squish },
+            "requested_by" => card.css("span").map(&:text).map(&:squish).find { |text| text.start_with?("Requested by ") } }
+        end
+        filters = page.css("nav[aria-label='Request filters'] a").map { |link| { "label" => link.text.squish, "current" => link["aria-current"] == "page" } }
+        { "query" => query, "cards" => cards, "filters" => filters, "pagination" => page.css("div.mt-6 p").map { |paragraph| paragraph.text.squish }.first }
+      end
+
+      def rails_request_status(cookie, id)
+        session = ActionDispatch::Integration::Session.new(Rails.application)
+        session.host! "www.example.com"
+        travel_to(NOON, with_usec: true) { session.get "/requests/#{id}", headers: { "Cookie" => "session_id=#{cookie}", "Accept" => "text/html" } }
+        session.response.status
+      end
+
+      def capture_requests
+        cookies = %w[browser_member browser_admin].to_h do |name|
+          row = Session.create!(user: @people.fetch(name).fetch(:user), created_at: NOON - 1.minute, updated_at: NOON - 1.minute, ip_address: "127.0.0.1")
+          [ name, session_cookie(row, expires: NOON + 30.days) ]
+        end
+        member_requests = Request.for_user(@people.fetch("browser_member").fetch(:user)).includes(:book).order(updated_at: :desc, id: :desc).to_a
+        {
+          "ids" => @requests.transform_values(&:id),
+          "issues" => { "listed" => LISTED_ISSUE, "free_text" => FREE_TEXT_ISSUE },
+          "rails_pages" => cookies.to_h { |name, cookie| [ name, REQUEST_FILTERS.map { |query| rails_request_page(cookie, query) } ] },
+          "rails_show_status" => cookies.to_h { |name, cookie| [ name, @requests.transform_values { |request| rails_request_status(cookie, request.id) } ] },
+          "rails_native_view" => travel_to(NOON, with_usec: true) { Consumer::RequestView.many(member_requests) }
         }
       end
 
@@ -468,7 +542,7 @@ module Migration
         document = { "format" => 1, "bundle_media_root" => @bundle_media, "extra_media_root" => @paths.media, "database" => "db/pre-scenario.sqlite3", "server_version" => Consumer::ServerInfo.server_version,
                      "schema_revision" => @manifest.dig("schema", "revision"), "origin" => @manifest.fetch("origin"), "preview_user_ids" => @allowed, "rails_final" => @rails_final,
                      "reading_rows_after" => reading_rows, "users" => @people.transform_values { |person| person[:user].id },
-                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "steps" => @steps }
+                     "reader_books" => @reader_books.transform_values(&:id), "account" => @account, "discover" => capture_discover, "requests" => capture_requests, "steps" => @steps }
         File.write(File.join(@paths.out, "cases.json"), JSON.pretty_generate(document), perm: 0o600)
         ActiveRecord::Base.connection_handler.clear_all_connections!
         Dir.glob("#{@paths.primary_db}*").each { |file| FileUtils.rm_f(file) }
