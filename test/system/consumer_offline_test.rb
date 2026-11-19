@@ -138,12 +138,18 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     end
 
     ConsumerReachability.offline = true
+    confirm_offline_account_for(seconds: 8)
     visit at(consumer_publication_path(@ebook))
     within_frame(find(".consumer-ebook iframe", wait: 20)) { assert_text "Pages kept for a journey." }
-    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
-    assert_no_selector ".consumer-ebook iframe", visible: true
-    expire_offline_account
-    page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
+    sleep 0.1 until page.evaluate_script("Date.now()") >= offline_account_deadline
+    restored = page.evaluate_script(<<~JS)
+      (() => {
+        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }))
+        return { frames: document.querySelectorAll(".consumer-ebook iframe").length, title: document.title }
+      })()
+    JS
+    assert_equal 0, restored["frames"]
+    assert_not_includes restored["title"], @ebook.title
     assert_text "Sign in again", wait: 15
     assert_no_selector ".consumer-ebook iframe", visible: :all
     assert_no_text "Pages kept for a journey."
@@ -165,14 +171,12 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
     assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all, wait: 10
     page.execute_script("window.__sameDocument = true")
     page.execute_script("window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }))")
-    assert_no_selector ".consumer-ebook iframe", visible: true
-    assert page.evaluate_script("document.querySelector('[data-controller~=consumer-offline-shell]').inert")
     page.execute_script("window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")
-    within_frame(find(".consumer-ebook iframe", wait: 15)) { assert_text "Pages kept for a journey." }
+    sleep 1
+    within_frame(find(".consumer-ebook iframe")) { assert_text "Pages kept for a journey." }
     assert_selector ".consumer-ebook iframe", count: 1
     assert_selector "[data-consumer-reader-target=location]", text: %r{\A2 / \d+}, visible: :all
     assert page.evaluate_script("window.__sameDocument === true")
-    assert_not page.evaluate_script("document.querySelector('[data-controller~=consumer-offline-shell]').inert")
   end
 
   test "another account never sees these downloads, and the sign-in page forgets the offline account" do
@@ -530,18 +534,30 @@ class ConsumerOfflineTest < ApplicationSystemTestCase
   end
 
   # Synthetic reads of this test origin's offline storage.
-  def expire_offline_account
-    page.evaluate_async_script(<<~JS, "#{Capybara.current_session.server.base_url}#{BASE}")
-      const [deployment, done] = arguments
+  def confirm_offline_account_for(seconds:)
+    page.evaluate_async_script(<<~JS, "#{Capybara.current_session.server.base_url}#{BASE}", seconds)
+      const [deployment, seconds, done] = arguments
       const request = indexedDB.open("shelfarr-offline", 1)
       request.onsuccess = () => {
         const db = request.result
         const store = db.transaction("accounts", "readwrite").objectStore("accounts")
         const read = store.get(deployment)
         read.onsuccess = () => {
-          const write = store.put({ ...read.result, confirmedAt: Date.now() - (read.result.maxAgeDays + 1) * 86400000 })
+          const write = store.put({ ...read.result, confirmedAt: Date.now(), maxAgeDays: seconds / 86400 })
           write.onsuccess = () => { db.close(); done(true) }
         }
+      }
+    JS
+  end
+
+  def offline_account_deadline
+    page.evaluate_async_script(<<~JS, "#{Capybara.current_session.server.base_url}#{BASE}")
+      const [deployment, done] = arguments
+      const request = indexedDB.open("shelfarr-offline", 1)
+      request.onsuccess = () => {
+        const db = request.result
+        const read = db.transaction("accounts").objectStore("accounts").get(deployment)
+        read.onsuccess = () => { db.close(); done(read.result.confirmedAt + read.result.maxAgeDays * 86400000) }
       }
     JS
   end

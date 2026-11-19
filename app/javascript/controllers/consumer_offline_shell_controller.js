@@ -13,16 +13,16 @@ export default class extends Controller {
     this.offline = await import("consumer_offline")
     if (!this.active) return
     if (!this.offline.support().ok) return this.say("Downloads aren't available", this.offline.MESSAGES.unsupported)
+    this.shellTitle = document.title
     this.onlineHandler = () => this.reconnect()
-    this.pageHideHandler = event => { if (event.persisted) this.conceal(true) }
-    this.pageShowHandler = event => { if (event.persisted) this.restored() }
+    this.pageShowHandler = event => { if (event.persisted && this.account && Date.now() >= this.expiresAt) this.expire() }
     window.addEventListener("online", this.onlineHandler)
-    window.addEventListener("pagehide", this.pageHideHandler)
     window.addEventListener("pageshow", this.pageShowHandler)
     const active = await this.offline.activeAccount(this.baseValue).catch(() => null)
     if (!active) return this.signedOut("Sign in to use downloads", "Downloads open only for the account that saved them on this browser. Connect to the internet and sign in.")
     if (active.expired) return this.signedOut("Sign in again", "It has been a while since this browser confirmed your account. Connect to the internet and sign in to keep using your downloads.")
     this.account = active.account
+    this.remember(active)
     this.downloadScope = this.offline.scopeOf(this.offline.deploymentOf(this.baseValue), this.account)
     const id = this.publicationId()
     if (id) await this.openPublication(id)
@@ -35,23 +35,19 @@ export default class extends Controller {
     clearTimeout(this.retryTimer)
     clearTimeout(this.bannerTimer)
     window.removeEventListener("online", this.onlineHandler)
-    window.removeEventListener("pagehide", this.pageHideHandler)
     window.removeEventListener("pageshow", this.pageShowHandler)
   }
 
-  conceal(concealed) {
-    this.element.style.opacity = concealed ? "0" : ""
-    this.element.inert = concealed
+  remember(active) {
+    if (active?.account === this.account) this.expiresAt = active.confirmedAt + active.maxAgeDays * 86_400_000
   }
 
-  async restored() {
-    const active = this.account && await this.offline.activeAccount(this.baseValue).catch(() => null)
-    if (!this.active) return
-    if (!this.account || (active && !active.expired && active.account === this.account)) return this.conceal(false)
+  expire() {
     this.account = null
     clearTimeout(this.retryTimer)
     this.readerTarget.replaceChildren()
     this.libraryTarget.hidden = true
+    document.title = this.shellTitle
     window.location.reload()
   }
 
@@ -149,6 +145,7 @@ export default class extends Controller {
       return
     }
     await this.offline.confirmAccount({ base: this.baseValue, account: body.account, maxAgeDays: body.session_max_age_days }).catch(() => {})
+    this.remember(await this.offline.activeAccount(this.baseValue).catch(() => null))
     const token = document.querySelector("meta[name='csrf-token']")
     if (token && typeof body.csrf_token === "string") token.content = body.csrf_token
     this.banner("You're back online.", "Open your full library", `${this.baseValue}/read`)
