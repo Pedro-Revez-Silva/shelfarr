@@ -45,7 +45,7 @@ export default class extends Controller {
 
   lapsed() {
     const now = Date.now()
-    return now >= this.expiresAt || this.confirmedAt > now + 86_400_000
+    return now > this.expiresAt || this.confirmedAt > now + 86_400_000
   }
 
   expire() {
@@ -83,12 +83,10 @@ export default class extends Controller {
   async openPublication(id) {
     const record = await this.offline.getRecord(this.offline.recordKey(this.downloadScope, id)).catch(() => null)
     const usable = record?.publication && await this.offline.verify(record).catch(() => false)
+    if (!usable && record?.publication) await this.offline.markEvicted(record).catch(() => {})
     if (!this.account) return
-    if (!usable) {
-      if (record?.publication) await this.offline.markEvicted(record).catch(() => {})
-      return this.showLibrary("This book isn't available on this device. Downloads that are ready are listed below.")
-    }
-    this.mount(record.publication)
+    if (usable) this.mount(record.publication)
+    else this.showLibrary("This book isn't available on this device. Downloads that are ready are listed below.")
   }
 
   mount(publication) {
