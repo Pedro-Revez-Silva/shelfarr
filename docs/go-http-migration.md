@@ -1431,8 +1431,10 @@ checked before the lock file is created or the database opened:
 
 | Refusal | Condition |
 | --- | --- |
-| `acquisition-volume` | `DIR` is absolute and clean; `-database` is exactly `DIR/workflows.sqlite3` and `-lock-file` exactly `DIR/locks/http.lock`; `DIR` and `DIR/locks` are private directories, not links; `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
-| `acquisition-network` | with `-open-library-search`, `-acquisition-open-library-address` names a loopback IP literal and port. Every Open Library connection is then dialled to that address, with no proxy (proxy variables are ignored) and the usual TLS name check against `openlibrary.org`, so Discover reaches only the test server |
+| `acquisition-volume` | `DIR` is absolute and clean; `-database` is exactly `DIR/workflows.sqlite3` and `-lock-file` exactly `DIR/locks/http.lock`; `DIR` is a private directory, not a link, and `DIR/locks` is a private directory reached from it with `openat2` and
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV` (no link and no mount point, bind mounts
+included); `-allow-non-loopback` is off, `-browser-origin` is a loopback IP literal and the preview allowlist is not empty; then (after the lock) `DIR` passes the disposable-copy check (private mode, `WORKDIR.json` token equal to the database's `wf_meta` token) |
+| `acquisition-network` | with `-open-library-search`, `-acquisition-open-library-address` names a loopback IP literal and a port from 1 to 65535 in plain decimal. Every Open Library connection is then dialled to that address, with no proxy (proxy variables are ignored) and the usual TLS name check against `openlibrary.org`, so Discover reaches only the test server |
 | `acquisition-settings` | the copy's settings pass the Gutenberg search and download checks before any request exists: schema revision and columns, Gutenberg on with a loopback IP origin, no other ebook source, no auto-selection or outbound notification channel, no library scan or import permissions, and `ebook_output_path` a canonical private directory strictly inside `DIR` that is also under a `-library-root` |
 
 Without the flag nothing changes: `POST /preview/api/v1/requests` is `405 Allow: GET`, the two new routes are `404`, the
@@ -1483,17 +1485,20 @@ are never returned. Codes are fixed strings.
   session to still be current there (its row, its age under `session_max_age_days`, the account undeleted and allowlisted;
   `401 signed_out` otherwise) and then makes the same decision and writes the same `books`, `requests` and `activity_logs`
   rows as `shelfarr-workflows request`. One addition: where that decision would create a request while a not-found request
-  for the same work still has a search scheduled, the answer is `existing` (the caller's) or `already_requested` (another
-  account's) and nothing is written. It runs to completion even if the browser disconnects (bounded by
-  `-request-timeout`); a retry, a double press, a reload or a second account then gets `existing`, `already_requested` or
-  `already_in_library` while the request is open or waiting for its next search. Once a request has failed for good (retries
-  exhausted, cancelled), asking again makes a new one with Rails' warning, as Rails does. The pending row is the queue entry.
+  for the same work exists (a search scheduled or the retries used up), the answer is `existing` (the caller's) or
+  `already_requested` (another account's) and nothing is written. It runs to completion even if the browser disconnects
+  (bounded by `-request-timeout`); a retry, a double press, a reload or a second account then gets `existing`,
+  `already_requested` or `already_in_library`, never a second request. Rails instead admits a new request after a not-found
+  one (with its warning); on these volumes an admin retries a request whose retries ran out in Rails, after Go exits. A
+  request cancelled or failed for another reason can be asked for again, with Rails' warning. The pending row is the queue
+  entry.
 * **Scope.** The worker and the admin routes act only on requests this flow (or the native consumer API) admits: an ebook
   book with an Open Library work id, `created_via` `api` and `external_source` `consumer_app`. Other requests on the copy,
   for example a pending request Rails created, are left alone, and their request pages are unchanged.
 * **One serial worker** per process takes, oldest first, a pending request in scope, a searching one whose claim is older
-  than the 30-minute lease, or a not-found one whose `next_retry_at` has passed. The last is first moved back to pending
-  with Rails' `Request#requeue!` update (status pending, `search_generation + 1`, claim, attention, description and
+  than the 30-minute lease, or a not-found one whose `next_retry_at` has passed. The last is first checked against the same
+  search eligibility as a claim (account, ebook, provider settings; a refusal leaves the row and its retry time untouched
+  and is shown to admins) and then moved back to pending, in the same transaction, with Rails' `Request#requeue!` update (status pending, `search_generation + 1`, claim, attention, description and
   `next_retry_at` cleared), as `RequestQueueJob#requeue_retry_due_requests` does. It then claims with Rails' claim and runs
   the extracted `acquire.Search`, the same code as `shelfarr-workflows search`. It wakes on an admission or every 2 seconds
   and pages through every claimable row, so parked rows never hide later ones. A released search (unreachable, busy,
@@ -1503,11 +1508,17 @@ are never returned. Codes are fixed strings.
 * **The admin's choice** is checked with `PlanSelection`, queued in memory (one at a time across the process; the same
   choice again is the same job, any other is `acquisition_busy`), and run by the same worker with `acquire.Download`, the
   same code as `shelfarr-workflows download`, under the same `locks/acquisition.lock`. A second admin pressing the same
-  choice while it waits makes it run under that admin's session. The admin's authority (session row, age, allowlist,
+  choice while it waits gets the same job, which keeps the first admin's session; if that session loses its authority, the
+  choice fails and either admin can choose again. The admin's authority (session row, age, allowlist,
   undeleted, `role = 1`) is checked before the download starts and again inside the completion transaction; if it no
   longer holds, nothing is committed, the file this attempt linked is removed and the choice reads `failed`
-  `authority_changed`. The ebook library must still be under a `-library-root` when the download starts (`failed`
-  `library_root_not_disposable` otherwise), and the completion transaction requires the plan, root included, unchanged. The
+  `authority_changed`. When the download starts and again inside the completion transaction, every configured
+  output root (ebook, audiobook and comic) must be under a `-library-root`, the rule the Library applies before it serves
+  anything (`failed` `library_root_not_disposable` otherwise); the completion transaction also requires the plan, root
+  included, unchanged. Before publication the website flow also requires a readable book inside the EPUB: the container's
+  package (`application/oebps-package+xml` rootfile, read with a 64 KiB bound) and, in the package (1 MiB bound, strict XML
+  with no entities), a spine item whose manifest file is in the archive (`failed` `download-unreadable` otherwise, nothing
+  linked). The command's own check is unchanged. The
   result is `completed` or `failed` with the download's code; nothing is retried by itself.
 
 ### What is durable, and interrupted states
@@ -1524,9 +1535,9 @@ The in-memory state (offers, waits, the queued choice) is lost on restart by des
 reports and never claims success it has not seen.
 
 **Deliberate limits.** Rails must not run on a prepared copy while this mode does: the copy and the `http.lock` keep other
-Go processes out, but Rails does not read them, as for every command on a disposable copy. The EPUB check is the download
-command's container check (`mimetype` and a `META-INF/container.xml` entry, nothing inflated); a file that passes it but has
-no readable package is listed and the reader reports that it cannot open it.
+Go processes out, but Rails does not read them, as for every command on a disposable copy. Like the commands, the runtime
+assumes nothing else renames entries inside the private disposable directory while it runs (see the download command's
+assumption in backend-migration.md).
 
 ### Browser screens
 
@@ -1567,7 +1578,8 @@ the schema, every setting, and `shelfarr-workflows` (its `search` and `download`
   offer memory (per account, expiry, bounds), the search back-off and the one-choice-at-a-time queue.
 * `e2e/workflows/web_test.go` runs the built `shelfarr-http` (with the test clock) and the built web assets on prepared
   copies of both bundles, with two synthetic accounts, the fake Open Library behind a loopback proxy and the captured
-  Gutenberg OPDS replies: eleven startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
+  Gutenberg OPDS replies (a bind mount over `DIR/locks` was also reproduced by hand in an unprivileged user namespace:
+  refused, nothing created in the mounted directory, while the same run without the mount starts): eleven startup refusals with no row, lock file, catalogue or Open Library contact (a linked lock
   directory and a lock outside the volume among them); the flag off; the whole
   journey (CSRF, Origin, cross-site, other account's token and header, malformed and unoffered bodies with no row written;
   five disconnected and eight concurrent presses giving one request; another account told only `already_requested`; the
@@ -1576,8 +1588,9 @@ the schema, every setting, and `shelfarr-workflows` (its `search` and `download`
   the member; `already_in_library` afterwards; Open Library reached only at the pinned address; a request Rails made left
   untouched; no title, path or catalogue address in the log); an authority suite (a queued choice whose session expires
   while it waits, an admin demoted during the download with no completion and the linked file removed, asking again while
-  a retry is scheduled answering `existing` and `already_requested`, a library root moved outside the served roots refused,
-  and a due not-found request searched again after Rails' requeue); and a restart suite (a
+  a retry is scheduled answering `existing` and `already_requested`, an ebook or an audiobook root moved outside the served roots refused, an EPUB
+  without a readable package refused with nothing published, a due not-found request searched again after Rails' requeue,
+  and asking again after its retries ran out answering `existing`); and a restart suite (a
   SIGKILL during a stalled search reclaimed only after the lease, a busy catalogue backed off and never read as no results,
   `acquisition_busy` during a download, a SIGKILL during the download leaving no row and a later choice completing).
 * Web unit tests (`test/go-acquisition.test.tsx`) and a run in Chrome against the built binary and assets.

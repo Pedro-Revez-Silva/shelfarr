@@ -3,6 +3,7 @@
 package workflows
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
@@ -10,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"hash/crc32"
 	"io"
 	"net"
 	"net/http"
@@ -1206,6 +1208,33 @@ func TestWebAcquisitionChecksAuthorityRetriesAndTheLibraryRoot(t *testing.T) {
 		t.Errorf("a refused root received %d entries", len(entries))
 	}
 	putSetting(t, volume.db, "ebook_output_path", "string", volume.library)
+	media := scalar[string](t, volume.db, `SELECT value FROM settings WHERE key = 'audiobook_output_path'`)
+	putSetting(t, volume.db, "audiobook_output_path", "string", unlisted)
+	if got := choose(admin); got.status != 202 {
+		t.Fatalf("choice %d %s", got.status, got.body)
+	}
+	waitFor(t, "a drifted audiobook root to be refused", 15*time.Second, func() bool {
+		selection := selectionOf(volume.acquisitionState(t, admin, pride))
+		return selection["state"] == "failed" && strings.Contains(server.output(), `"code":"library_root_not_disposable"`) && strings.Count(server.output(), `"code":"library_root_not_disposable"`) >= 2
+	})
+	putSetting(t, volume.db, "audiobook_output_path", "string", media)
+
+	hollow := hollowEPUB(t)
+	volume.serveBook(hollow)
+	if got := choose(admin); got.status != 202 {
+		t.Fatalf("choice %d %s", got.status, got.body)
+	}
+	waitFor(t, "an EPUB without a readable book to be refused", 15*time.Second, func() bool {
+		selection := selectionOf(volume.acquisitionState(t, admin, pride))
+		return selection["state"] == "failed" && selection["code"] == "download-unreadable"
+	})
+	if status, issue := volume.requestState(t, pride); status != 1 || issue != selectionMessage {
+		t.Errorf("an unreadable EPUB changed the request: %d %q", status, issue)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(volume.library, "shelfarr-gutenberg", "book-"+itoa(bookID))); len(entries) != 0 {
+		t.Errorf("an unreadable EPUB was published: %d entries", len(entries))
+	}
+	volume.serveBook(volume.epub)
 	if got := choose(admin); got.status != 202 {
 		t.Fatalf("choice %d %s", got.status, got.body)
 	}
@@ -1216,6 +1245,7 @@ func TestWebAcquisitionChecksAuthorityRetriesAndTheLibraryRoot(t *testing.T) {
 
 	generation := scalar[int64](t, volume.db, `SELECT search_generation FROM requests WHERE id = ?`, undead)
 	searched := len(volume.fake.requests())
+	putSetting(t, volume.db, "max_retries", "integer", "1")
 	volume.advance(t, 25*time.Hour)
 	waitFor(t, "the due retry to be searched again", 20*time.Second, func() bool {
 		return scalar[int64](t, volume.db, `SELECT retry_count FROM requests WHERE id = ?`, undead) == 2
@@ -1226,4 +1256,36 @@ func TestWebAcquisitionChecksAuthorityRetriesAndTheLibraryRoot(t *testing.T) {
 	if again := volume.fake.requests()[searched:]; !reflect.DeepEqual(again, []string{searchPath + "?" + zombieQuery}) {
 		t.Errorf("the due retry asked the catalogue %v", again)
 	}
+	if status, issue := volume.requestState(t, undead); status != 2 || !strings.HasPrefix(issue, "Maximum retry attempts") {
+		t.Fatalf("retries were not exhausted: %d %q", status, issue)
+	}
+	member = server.browser().signIn("bob", memberPassword)
+	member.discover("pride")
+	if replay := member.request(zombieWork).json(t); replay["outcome"] != "existing" || idOf(t, replay["request"].(map[string]any)["id"]) != undead {
+		t.Errorf("asking again after the retries ran out answered %v", replay)
+	}
+	if count := scalar[int64](t, volume.db, `SELECT COUNT(*) FROM requests r JOIN books b ON b.id = r.book_id WHERE b.open_library_work_id = ?`, zombieWork); count != 1 {
+		t.Errorf("%d requests for a work whose retries ran out", count)
+	}
+}
+
+func hollowEPUB(t *testing.T) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	mimetype := []byte(epubType)
+	writer, err := archive.CreateRaw(&zip.FileHeader{Name: "mimetype", Method: zip.Store, CRC32: crc32.ChecksumIEEE(mimetype), CompressedSize64: uint64(len(mimetype)), UncompressedSize64: uint64(len(mimetype))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.Write(mimetype)
+	container, err := archive.Create("META-INF/container.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	container.Write([]byte("<container/>"))
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
 }

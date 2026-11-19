@@ -70,7 +70,7 @@ function Discover() {
       {state !== null && state !== "available" ? <Unavailable state={state} retryAfter={answer.data?.retry_after ?? null} checking={answer.isFetching} onCheck={() => void answer.refetch()} /> : null}
       {answer.isError ? <SearchFailure error={answer.error} query={query} onRetry={() => void answer.refetch()} /> : null}
       {query === null && answer.isPending ? <Loading label="Checking whether search is available…" /> : null}
-      {answer.data && answer.data.search === "available" && answer.data.query !== null && !answer.isError ? <Results answer={answer.data} onRefresh={() => void answer.refetch()} refreshing={answer.isFetching} /> : null}
+      {answer.data && answer.data.search === "available" && answer.data.query !== null && !answer.isError ? <Results answer={answer.data} onRefresh={() => answer.refetch()} refreshing={answer.isFetching} /> : null}
     </section>
   );
 }
@@ -254,7 +254,7 @@ function Failure({ title, children, onRetry }: { title: string; children: ReactN
   );
 }
 
-function Results({ answer, onRefresh, refreshing }: { answer: DiscoverAnswer; onRefresh: () => void; refreshing: boolean }) {
+function Results({ answer, onRefresh, refreshing }: { answer: DiscoverAnswer; onRefresh: Refresh; refreshing: boolean }) {
   const query = answer.query ?? "";
   return (
     <section className="discover-results" aria-labelledby="discover-results-heading">
@@ -290,7 +290,7 @@ function styleFor(id: string) {
   return coverStyles[sum] ?? "clay";
 }
 
-function Result({ item, requesting, onRefresh, refreshing }: { item: DiscoverItem; requesting: boolean; onRefresh: () => void; refreshing: boolean }) {
+function Result({ item, requesting, onRefresh, refreshing }: { item: DiscoverItem; requesting: boolean; onRefresh: Refresh; refreshing: boolean }) {
   const titleId = useId();
   const details = [item.first_publish_year !== null ? `First published ${item.first_publish_year}` : null, item.edition_count !== null ? `${item.edition_count} ${item.edition_count === 1 ? "edition" : "editions"}` : null].filter(Boolean).join(" · ");
   return (
@@ -324,9 +324,15 @@ function Result({ item, requesting, onRefresh, refreshing }: { item: DiscoverIte
   );
 }
 
-function RequestEbook({ item, onRefresh, refreshing }: { item: DiscoverItem; onRefresh: () => void; refreshing: boolean }) {
+type Refresh = () => Promise<{ status: "pending" | "error" | "success" }>;
+
+function RequestEbook({ item, onRefresh, refreshing }: { item: DiscoverItem; onRefresh: Refresh; refreshing: boolean }) {
   const request = useRequestEbook();
   const status = useRef<HTMLDivElement>(null);
+  const searchAgain = async () => {
+    const refreshed = await onRefresh();
+    if (refreshed.status === "success") request.reset();
+  };
   useEffect(() => {
     if (request.isSuccess) status.current?.focus();
   }, [request.isSuccess]);
@@ -344,7 +350,7 @@ function RequestEbook({ item, onRefresh, refreshing }: { item: DiscoverItem; onR
       <div role="status" className="discover-request-status" ref={status} tabIndex={-1}>
         {request.isPending ? <p>Sending the request for “{item.title}”…</p> : null}
         {request.isSuccess ? <RequestOutcome answer={request.data} title={item.title} /> : null}
-        {request.isError ? <RequestFailure error={request.error} onRefresh={onRefresh} refreshing={refreshing} /> : null}
+        {request.isError ? <RequestFailure error={request.error} onRefresh={() => void searchAgain()} refreshing={refreshing} /> : null}
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import (
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquire"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/acquisition"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/admission"
+	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/library"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/live"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/strictjson"
@@ -68,10 +69,40 @@ func (a *App) authorityIn(ctx context.Context, tx *sql.Tx, who authority) error 
 	return nil
 }
 
+type transactionSettings struct{ tx *sql.Tx }
+
+func (t transactionSettings) StringSetting(ctx context.Context, key string) (string, bool, error) {
+	var value sql.NullString
+	var valueType string
+	err := t.tx.QueryRowContext(ctx, `SELECT value, value_type FROM settings WHERE key = ?`, key).Scan(&value, &valueType)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	case valueType != "string":
+		return "", false, store.ErrUnsupported
+	}
+	return value.String, value.Valid, nil
+}
+
+func (a *App) servedRootsIn(ctx context.Context, tx *sql.Tx) error {
+	roots, err := library.OutputRoots(ctx, transactionSettings{tx: tx})
+	if err != nil {
+		return acquisition.ErrLibraryRoot
+	}
+	for _, root := range roots {
+		if !withinAny(root, a.explicitRoots) {
+			return acquisition.ErrLibraryRoot
+		}
+	}
+	return nil
+}
+
 func waitingRetry(ctx context.Context, tx *sql.Tx, workID string, accountID int64) (*admission.Result, error) {
 	var requestID, owner int64
 	err := tx.QueryRowContext(ctx, `SELECT r.id, r.user_id FROM requests r JOIN books b ON b.id = r.book_id
-		WHERE b.open_library_work_id = ? AND b.book_type = 1 AND r.status = 2 AND r.next_retry_at IS NOT NULL
+		WHERE b.open_library_work_id = ? AND b.book_type = 1 AND r.status = 2
 		ORDER BY r.user_id = ? DESC, r.id LIMIT 1`, workID, accountID).Scan(&requestID, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -323,7 +354,7 @@ func (a *App) webAcquisition(w http.ResponseWriter, r *http.Request, session bro
 	if job, found := a.acquisition.selection(requestID); found {
 		answer["selection"] = projectSelection(job)
 	}
-	if note, parked := a.acquisition.searchNote(requestID); parked && status == "pending" {
+	if note, parked := a.acquisition.searchNote(requestID); parked && (status == "pending" || status == "not_found") {
 		answer["search"] = searchBody{State: note.state, Code: note.code, RetryAt: store.FormatISO8601Millis(note.until)}
 	}
 	result.set(http.StatusOK, "")

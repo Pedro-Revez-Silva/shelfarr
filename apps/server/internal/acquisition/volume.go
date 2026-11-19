@@ -85,6 +85,14 @@ func RequeueDue(ctx context.Context, store *wfstore.Store, requestID int64, now 
 	var requeued bool
 	err := store.Transact(ctx, func(tx *sql.Tx) error {
 		stamp := wfstore.FormatTimestamp(now)
+		var due int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests WHERE id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?`,
+			requestID, notFoundStatus, stamp).Scan(&due); err != nil || due == 0 {
+			return err
+		}
+		if _, _, err := eligible(ctx, tx, requestID); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE requests SET status = ?, search_generation = search_generation + 1, search_claimed_at = NULL,
 			attention_needed = 0, issue_description = NULL, next_retry_at = NULL, updated_at = ?
 			WHERE id = ? AND status = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?`, pendingStatus, stamp, requestID, notFoundStatus, stamp)

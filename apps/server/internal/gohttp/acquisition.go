@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ const (
 	longestReleaseWait    = 15 * time.Minute
 	pendingScan           = 100
 	maxRememberedJobs     = 64
+	maxParkedSearches     = 10_000
 
 	selectionQueued      = "queued"
 	selectionDownloading = "downloading"
@@ -74,7 +76,7 @@ type acquisitionService struct {
 	active *selectionJob
 
 	authority func(ctx context.Context, tx *sql.Tx, job selectionJob) error
-	allowRoot func(root string) bool
+	allowRoot func(ctx context.Context, root string) bool
 }
 
 const requestScope = `b.book_type = 1 AND b.open_library_work_id IS NOT NULL AND r.created_via = 'api' AND r.external_source = 'consumer_app'`
@@ -91,12 +93,18 @@ func loopbackOrigin(origin string) bool {
 func loopbackAddress(address string) bool {
 	host, port, err := net.SplitHostPort(address)
 	ip := net.ParseIP(host)
-	return err == nil && port != "" && ip != nil && ip.IsLoopback()
+	number, numeric := strconv.Atoi(port)
+	return err == nil && numeric == nil && number > 0 && number <= 65535 && strconv.Itoa(number) == port && ip != nil && ip.IsLoopback()
 }
 
 func privateDirectory(path string) bool {
 	info, err := os.Lstat(path)
 	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 && info.Mode().Perm()&0o077 == 0
+}
+
+func confinedDirectory(dir, inside string) bool {
+	_, err := bookfile.OpenRoot(dir, inside)
+	return err == nil
 }
 
 func acquisitionPreflight(config Config) string {
@@ -105,7 +113,7 @@ func acquisitionPreflight(config Config) string {
 		config.DatabasePath != filepath.Join(dir, wfstore.DatabaseName) ||
 		config.LockPath != filepath.Join(dir, wfstore.LocksDir, acquisitionLockName) ||
 		config.AllowPublicBind || !loopbackOrigin(config.BrowserOrigin) || len(config.PreviewUserIDs) == 0 ||
-		!privateDirectory(dir) || !privateDirectory(filepath.Join(dir, wfstore.LocksDir)) {
+		!privateDirectory(dir) || !confinedDirectory(dir, filepath.Join(dir, wfstore.LocksDir)) {
 		return "acquisition-volume"
 	}
 	if config.OpenLibrarySearch && !loopbackAddress(config.OpenLibraryFixture) {
@@ -214,6 +222,7 @@ func (s *acquisitionService) claimable(ctx context.Context, stale, due string, o
 func (s *acquisitionService) firstUnparked(ids []int64, now time.Time) (int64, bool) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	s.prune()
 	for _, id := range ids {
 		if parked, found := s.parked[id]; !found || !now.Before(parked.until) {
 			return id, true
@@ -230,6 +239,11 @@ func (s *acquisitionService) inScope(ctx context.Context, requestID int64) (bool
 
 func (s *acquisitionService) search(ctx context.Context, requestID int64) {
 	if _, err := acquisition.RequeueDue(ctx, s.store, requestID, s.now()); err != nil {
+		if refusal := acquisition.Refusal(err); refusal != nil {
+			s.park(requestID, searchRefused, refusal.Error(), refusedSearchWait)
+			s.logger.Info("acquisition", slog.String("step", "requeue"), slog.Int64("request_id", requestID), slog.String("outcome", "refused"), slog.String("code", refusal.Error()))
+			return
+		}
 		s.park(requestID, searchWaiting, wfstore.CodeOf(err), failedSearchWait)
 		s.logger.Warn("acquisition", slog.String("step", "requeue"), slog.Int64("request_id", requestID), slog.String("code", wfstore.CodeOf(err)))
 		return
@@ -272,7 +286,7 @@ func (s *acquisitionService) park(requestID int64, state, code string, wait time
 func (s *acquisitionService) prune() {
 	forgotten := s.now().Add(-2 * longestReleaseWait)
 	for id, parked := range s.parked {
-		if parked.until.Before(forgotten) {
+		if parked.until.Before(forgotten) || len(s.parked) > maxParkedSearches {
 			delete(s.parked, id)
 		}
 	}
@@ -307,9 +321,6 @@ func (s *acquisitionService) enqueue(job selectionJob) (selectionJob, error) {
 	defer s.mutex.Unlock()
 	if s.active != nil {
 		if s.active.requestID == job.requestID && s.active.resultID == job.resultID {
-			if s.active.state == selectionQueued {
-				s.active.sessionID, s.active.userID = job.sessionID, job.userID
-			}
 			return *s.active, nil
 		}
 		return *s.active, errAcquisitionBusy
@@ -369,13 +380,15 @@ func (s *acquisitionService) finish(state, code string) {
 
 func (s *acquisitionService) download(ctx context.Context, job selectionJob) {
 	attributes := []any{slog.String("step", "download"), slog.Int64("request_id", job.requestID), slog.Int64("result_id", job.resultID)}
-	options := acquire.DownloadOptions{RequestTimeout: providerTimeout, Deadline: downloadDeadline, Clock: s.now, AllowRoot: s.allowRoot}
+	options := acquire.DownloadOptions{RequestTimeout: providerTimeout, Deadline: downloadDeadline, Clock: s.now, AllowRoot: s.allowRoot, Readable: true}
 	if s.authority != nil {
 		options.Authorize = func(ctx context.Context, tx *sql.Tx) error { return s.authority(ctx, tx, job) }
 		if err := s.store.Transact(ctx, func(tx *sql.Tx) error { return options.Authorize(ctx, tx) }); err != nil {
 			code := wfstore.CodeOf(err)
 			if errors.Is(err, acquire.ErrRevoked) {
 				code = acquire.ErrRevoked.Error()
+			} else if refusal := acquisition.SelectionRefusal(err); refusal != nil {
+				code = refusal.Error()
 			}
 			s.finish(selectionFailed, code)
 			s.logger.Info("acquisition", append(attributes, slog.String("outcome", selectionFailed), slog.String("code", code))...)

@@ -126,9 +126,15 @@ func newServer(handler http.Handler, config Config) *http.Server {
 
 func (a *App) attachAcquisition(service *acquisitionService) {
 	service.authority = func(ctx context.Context, tx *sql.Tx, job selectionJob) error {
-		return a.authorityIn(ctx, tx, authority{sessionID: job.sessionID, userID: job.userID, admin: true})
+		if err := a.authorityIn(ctx, tx, authority{sessionID: job.sessionID, userID: job.userID, admin: true}); err != nil {
+			return err
+		}
+		return a.servedRootsIn(ctx, tx)
 	}
-	service.allowRoot = func(root string) bool { return withinAny(root, a.explicitRoots) }
+	service.allowRoot = func(ctx context.Context, root string) bool {
+		roots, err := a.resolveRoots(ctx)
+		return err == nil && withinAny(root, roots)
+	}
 	a.acquisition = service
 }
 

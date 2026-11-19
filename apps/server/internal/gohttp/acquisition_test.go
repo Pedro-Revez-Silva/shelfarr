@@ -176,8 +176,8 @@ func TestOneChosenDownloadAtATimeAndARepeatIsTheSameChoice(t *testing.T) {
 	if again, err := service.enqueue(selectionJob{requestID: 1, resultID: 9}); err != nil || again.state != first.state || again.resultID != first.resultID {
 		t.Errorf("a repeated choice %+v %v", again, err)
 	}
-	if renewed, err := service.enqueue(selectionJob{requestID: 1, resultID: 9, sessionID: 5, userID: 6}); err != nil || renewed.sessionID != 5 || renewed.userID != 6 {
-		t.Errorf("a second admin's same choice did not carry their authority: %+v %v", renewed, err)
+	if repeated, err := service.enqueue(selectionJob{requestID: 1, resultID: 9, sessionID: 5, userID: 6}); err != nil || repeated.sessionID != first.sessionID || repeated.userID != first.userID {
+		t.Errorf("a second admin's same choice replaced the first admin's authority: %+v %v", repeated, err)
 	}
 	if _, err := service.enqueue(selectionJob{requestID: 1, resultID: 10}); err != errAcquisitionBusy {
 		t.Errorf("a different choice while one is queued: %v", err)
@@ -198,6 +198,18 @@ func TestOneChosenDownloadAtATimeAndARepeatIsTheSameChoice(t *testing.T) {
 	}
 	if retried, err := service.enqueue(selectionJob{requestID: 1, resultID: 10}); err != nil || retried.state != selectionQueued || retried.resultID != 10 {
 		t.Errorf("a new choice after a failure %+v %v", retried, err)
+	}
+}
+
+func TestOnlyALoopbackAddressWithAUsablePortNamesTheTestOpenLibrary(t *testing.T) {
+	for address, want := range map[string]bool{
+		"127.0.0.1:443": true, "[::1]:8443": true, "127.0.0.1:65535": true,
+		"127.0.0.1:65536": false, "127.0.0.1:0": false, "127.0.0.1:": false, "127.0.0.1:0443": false, "127.0.0.1:+443": false,
+		"localhost:443": false, "93.184.215.14:443": false, "127.0.0.1": false, "": false,
+	} {
+		if got := loopbackAddress(address); got != want {
+			t.Errorf("%q: %v", address, got)
+		}
 	}
 }
 

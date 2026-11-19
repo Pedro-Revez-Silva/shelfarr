@@ -217,6 +217,8 @@ const FAILURE_TEXT: Record<string, string> = {
   "provider-too-large": "The file was larger than this server accepts.",
   "download-not-a-book": "The catalogue sent something that is not an ebook.",
   "download-invalid": "The file was not a readable EPUB.",
+  "download-unreadable": "The file was an EPUB container without a readable book inside.",
+  library_root_not_disposable: "This server's library folders changed, so the book could not be added where the Library reads it.",
   "download-truncated": "The download stopped before the whole file arrived.",
   "download-deadline": "The download took too long.",
   "library-file-exists": "A different file is already in the library at this book's place.",
@@ -235,6 +237,13 @@ function ChooseCopy({ request }: { request: RequestDetail }) {
     if (previous.current !== state && (state === "completed" || state === "failed")) finished();
     previous.current = state;
   }, [state, finished]);
+  const seen = useRef(request.updated_at);
+  const { refetch } = acquisition;
+  useEffect(() => {
+    if (seen.current === request.updated_at) return;
+    seen.current = request.updated_at;
+    void refetch();
+  }, [request.updated_at, refetch]);
 
   if (acquisition.isPending) return null;
   if (acquisition.isError) {
@@ -247,7 +256,7 @@ function ChooseCopy({ request }: { request: RequestDetail }) {
     );
   }
   const answer = acquisition.data;
-  if (answer.search && request.status === "pending") {
+  if (answer.search && (request.status === "pending" || request.status === "not_found")) {
     return (
       <p className="notice" role="note">
         {SEARCH_NOTES[answer.search.state]} <Time iso={answer.search.retry_at} relative />.

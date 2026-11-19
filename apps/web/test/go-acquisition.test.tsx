@@ -151,6 +151,8 @@ describe("requesting from Discover", () => {
     const before = searched();
     await user.click(within(card("Pride and Prejudice")).getByRole("button", { name: "Search again" }));
     await waitFor(() => expect(searched()).toBe(before + 1));
+    await waitFor(() => expect(within(card("Pride and Prejudice")).getByRole("button", { name: "Request ebook of Pride and Prejudice" })).toBeTruthy());
+    expect(within(card("Pride and Prejudice")).getByRole("status").textContent).toBe("");
     expect(server.called("POST", /\/api\/v1\/requests$/).length).toBe(1);
   });
 
@@ -275,6 +277,22 @@ describe("choosing a copy on a request", () => {
     expect((await within(section).findByRole("alert")).textContent).toBe("Another download is running on this server. Try again when it has finished.");
     expect(server.called("POST", /\/selection$/).map((request) => request.body)).toEqual([{ result_id: "10" }]);
   });
+
+  test("an admin left on a request through a scheduled retry sees the copies the retry finds", async () => {
+    const state = {
+      detail: requestDetail({ status: "not_found", attention_needed: false, attention_reason: null, next_retry_at: "2026-11-20T08:00:00.000Z" }),
+      acquisition: acquisition({ request: { id: "41", status: "not_found" }, candidates: [] }),
+    };
+    const server = requestServer(true, state, () => error(404, "not_found"));
+    render_(server, "/preview/requests/41");
+    await screen.findByRole("heading", { level: 1, name: "Pride and Prejudice" });
+    await waitFor(() => expect(server.called("GET", /\/acquisition$/).length).toBe(1));
+    expect(screen.queryByRole("region", { name: "Choose a copy" })).toBeNull();
+    state.detail = requestDetail({ updated_at: "2026-11-20T08:00:05.000Z" });
+    state.acquisition = acquisition();
+    const section = await screen.findByRole("region", { name: "Choose a copy" }, { timeout: 20000 });
+    expect(within(section).getAllByRole("radio").length).toBe(2);
+  }, 30000);
 
   for (const admin of [true, false]) {
     test(`a request outside the acquisition flow reads as before for ${admin ? "an admin" : "a member"} and asks for nothing new`, async () => {

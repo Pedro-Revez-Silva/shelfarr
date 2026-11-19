@@ -22,6 +22,7 @@ const (
 	acquisitionLock     = "acquisition"
 
 	CodeDownloadInvalid = "download-invalid"
+	CodeUnreadable      = "download-unreadable"
 	CodeDownloadExpired = "download-deadline"
 	CodeFileExists      = "library-file-exists"
 	CodePathUnsafe      = "library-path-unsafe"
@@ -48,8 +49,9 @@ type DownloadOptions struct {
 	RequestTimeout time.Duration
 	Deadline       time.Duration
 	Clock          func() time.Time
-	AllowRoot      func(root string) bool
+	AllowRoot      func(ctx context.Context, root string) bool
 	Authorize      acquisition.Authorize
+	Readable       bool
 }
 
 func (o DownloadOptions) now() time.Time {
@@ -91,7 +93,7 @@ func Download(ctx context.Context, store *wfstore.Store, requestID, resultID int
 		return DownloadReport{Outcome: AlreadyCompleted, DownloadID: plan.Completed}, nil
 	}
 	selection := plan.Selection
-	if options.AllowRoot != nil && !options.AllowRoot(selection.Root) {
+	if options.AllowRoot != nil && !options.AllowRoot(ctx, selection.Root) {
 		return DownloadReport{}, acquisition.ErrLibraryRoot
 	}
 	root, err := bookfile.OpenRoot(store.Dir, selection.Root)
@@ -151,6 +153,14 @@ func fetch(ctx context.Context, selection acquisition.Selection, staged *bookfil
 			return nil, wfstore.CodeCancelled
 		}
 		return nil, CodeDownloadInvalid
+	}
+	if options.Readable {
+		if err := bookfile.CheckReadableEPUB(fetchCtx, staged.File, staged.Size); err != nil {
+			if ctx.Err() != nil {
+				return nil, wfstore.CodeCancelled
+			}
+			return nil, CodeUnreadable
+		}
 	}
 	if err := fault.Hit(ctx, "download.fetched"); err != nil {
 		return nil, wfstore.CodeOf(err)
