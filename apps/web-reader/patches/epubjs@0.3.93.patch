@@ -1,0 +1,63 @@
+diff --git a/lib/managers/continuous/index.js b/lib/managers/continuous/index.js
+index 491287623a3a45d6f8d63044cb5925eaa5df53f5..97aba59405f2916b4c9a3f6f8387103e6af522fd 100644
+--- a/lib/managers/continuous/index.js
++++ b/lib/managers/continuous/index.js
+@@ -365,11 +365,6 @@ class ContinuousViewManager extends _default2.default {
+   }
+ 
+   addEventListeners(stage) {
+-    window.addEventListener("unload", function (e) {
+-      this.ignore = true; // this.scrollTo(0,0);
+-
+-      this.destroy();
+-    }.bind(this));
+     this.addScrollListeners();
+ 
+     if (this.isPaginated && this.settings.snap) {
+diff --git a/lib/managers/default/index.js b/lib/managers/default/index.js
+index 4f56aafcb2b987af310b1a52411731a4e3e83650..3a404bad3a9b2e345b01885cb51ad0e671c8aa36 100644
+--- a/lib/managers/default/index.js
++++ b/lib/managers/default/index.js
+@@ -113,10 +113,6 @@ class DefaultViewManager {
+ 
+   addEventListeners() {
+     var scroller;
+-    window.addEventListener("unload", function (e) {
+-      this.destroy();
+-    }.bind(this));
+-
+     if (!this.settings.fullsize) {
+       scroller = this.container;
+     } else {
+diff --git a/src/managers/continuous/index.js b/src/managers/continuous/index.js
+index d61f8f76c215589ddc2c5e1fde4262db76585de8..895df03942603202e9196080bbc00bcc253cf4c6 100644
+--- a/src/managers/continuous/index.js
++++ b/src/managers/continuous/index.js
+@@ -398,12 +398,6 @@ class ContinuousViewManager extends DefaultViewManager {
+ 
+ 	addEventListeners(stage){
+ 
+-		window.addEventListener("unload", function(e){
+-			this.ignore = true;
+-			// this.scrollTo(0,0);
+-			this.destroy();
+-		}.bind(this));
+-
+ 		this.addScrollListeners();
+ 
+ 		if (this.isPaginated && this.settings.snap) {
+diff --git a/src/managers/default/index.js b/src/managers/default/index.js
+index 2812d878ad8eaa773abe5a55dbdfce7eec1f2a04..0634c29c094a784fc807c8aa13bd6558ba02e81f 100644
+--- a/src/managers/default/index.js
++++ b/src/managers/default/index.js
+@@ -117,10 +117,6 @@ class DefaultViewManager {
+ 	addEventListeners(){
+ 		var scroller;
+ 
+-		window.addEventListener("unload", function(e){
+-			this.destroy();
+-		}.bind(this));
+-
+ 		if(!this.settings.fullsize) {
+ 			scroller = this.container;
+ 		} else {

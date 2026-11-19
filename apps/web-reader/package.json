@@ -15,5 +15,8 @@
   "overrides": {
     "@xmldom/xmldom": "0.9.12"
   },
-  "packageManager": "bun@1.4.4"
+  "packageManager": "bun@1.4.4",
+  "patchedDependencies": {
+    "epubjs@0.3.93": "patches/epubjs@0.3.93.patch"
+  }
 }

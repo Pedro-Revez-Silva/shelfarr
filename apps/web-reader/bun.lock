@@ -11,6 +11,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "epubjs@0.3.93": "patches/epubjs@0.3.93.patch",
+  },
   "overrides": {
     "@xmldom/xmldom": "0.9.12",
   },
