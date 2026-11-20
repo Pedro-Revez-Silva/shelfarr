@@ -118,6 +118,26 @@ describe("the server overview", () => {
     expect(server.called("GET", OVERVIEW)[0]!.headers["x-shelfarr-account"]).toBe(ACCOUNT);
   });
 
+  test("Server settings opens from the overview as its own admin page with the saved metadata values", async () => {
+    const server = adminServer().on("GET", /\/api\/v1\/admin\/settings\/metadata$/, () => ({
+      body: {
+        account: ACCOUNT,
+        revision: "0123456789abcdef0123456789abcdef",
+        open_library: { enabled: false, search_limit: 12 },
+        defaults: { enabled: true, search_limit: 20 },
+        search_limit_range: { min: 1, max: 1000 },
+        discover: { search: "provider_disabled", result_limit: null, max_results: 20 },
+      },
+    }));
+    const { history } = renderAdmin(server);
+    await userEvent.click(await screen.findByRole("link", { name: "Server settings" }));
+    await waitFor(() => expect(history.location.pathname).toBe("/preview/admin/settings"));
+    expect(await screen.findByRole("heading", { name: "Server settings", level: 1 })).toBeTruthy();
+    expect(((await screen.findByRole("checkbox", { name: "Use Open Library" })) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("textbox", { name: "Results per search" }) as HTMLInputElement).value).toBe("12");
+    expect(server.requests.filter((request) => request.method !== "GET")).toEqual([]);
+  });
+
   test("nothing to attend to says so without a link, and a single request reads in the singular", async () => {
     const server = adminServer({ answer: () => ({ body: calm }) });
     const { view } = renderAdmin(server);
