@@ -39,12 +39,13 @@ bundle_digest() {
 }
 
 step "web: a private copy of the sources, so no build output lands in the repository"
-mkdir -p "$work/repo/apps/design/assets" "$work/repo/app/javascript" "$work/repo/vendor/javascript"
+mkdir -p "$work/repo/apps/design/assets" "$work/repo/app/javascript" "$work/repo/vendor/javascript" "$work/repo/apps/server/internal/gohttp"
 cp -R "$root/apps/web" "$work/repo/apps/web"
 cp -R "$root/apps/design/assets/fonts" "$work/repo/apps/design/assets/fonts"
 cp "$root/app/javascript/consumer_progress_sync.js" "$root/app/javascript/consumer_epub_places.js" "$root/app/javascript/consumer_page_reader.js" "$work/repo/app/javascript/"
 cp "$root/vendor/javascript/consumer_reader_engine.js" "$root/vendor/javascript/consumer_pdf_engine.js" "$work/repo/vendor/javascript/"
 cp -R "$root/vendor/javascript/pdfjs" "$work/repo/vendor/javascript/pdfjs"
+cp "$root/apps/server/internal/gohttp/offline_worker.js" "$work/repo/apps/server/internal/gohttp/"
 web="$work/repo/apps/web"
 
 step "web: install from the lockfile, typecheck, unit tests, audit and both production builds"

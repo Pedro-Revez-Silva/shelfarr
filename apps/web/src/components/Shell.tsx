@@ -7,6 +7,7 @@ import { LockedScreen } from "./LockedScreen";
 import { useServices } from "../services";
 import { useAccountRevalidation } from "../revalidation";
 import { SignOutButton } from "../go/SignOutButton";
+import { useOffline } from "../offline/context";
 
 export function Shell() {
   const guard = useGuardState();
@@ -24,6 +25,7 @@ function ActiveShell({ classicLibrary }: { classicLibrary: string | null }) {
   const { mode } = useServices();
   useAccountRevalidation();
   const go = mode === "go";
+  const offline = useOffline();
 
   return (
     <div className="shell">
@@ -54,7 +56,9 @@ function ActiveShell({ classicLibrary }: { classicLibrary: string | null }) {
       <main id="main" className="shell-main">
         {go ? (
           <p className="pilot-note" role="note">
-            This experimental server lets you browse your library, read EPUBs and listen to audiobooks while online, and set reading status. PDFs, comics, downloads and offline reading are not available here yet.
+            {offline
+              ? "This experimental server lets you browse your library, read EPUBs and listen to audiobooks while online, set reading status, and save EPUBs for offline reading in this browser. PDFs, comics and audiobooks can't be saved for offline use here yet."
+              : "This experimental server lets you browse your library, read EPUBs and listen to audiobooks while online, and set reading status. PDFs, comics, downloads and offline reading are not available here yet."}
           </p>
         ) : null}
         <Outlet />

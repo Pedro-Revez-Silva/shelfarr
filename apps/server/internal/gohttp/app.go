@@ -75,7 +75,7 @@ func NewApp(config Config, database *live.DB, explicitRoots []string, logger *sl
 		if err != nil {
 			return nil, err
 		}
-		if web, err = newWebUI(bundle); err != nil {
+		if web, err = newWebUI(bundle, config.WebOffline); err != nil {
 			return nil, err
 		}
 	}
@@ -236,7 +236,7 @@ func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeUp:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
-	case routeWebIndex, routeWebShell, routeWebAsset:
+	case routeWebIndex, routeWebShell, routeWebAsset, routeWebWorker:
 		a.serveWeb(w, r, found, result)
 		return
 	}

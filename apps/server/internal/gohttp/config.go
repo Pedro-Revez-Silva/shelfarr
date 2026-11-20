@@ -26,6 +26,7 @@ type Config struct {
 	Listen          string
 	AllowPublicBind bool
 	WebAssetsDir    string
+	WebOffline      bool
 
 	OpenLibrarySearch bool
 
@@ -108,6 +109,9 @@ func (c *Config) Validate() error {
 		return ErrConfig
 	}
 	if c.WebAssetsDir != "" && (!filepath.IsAbs(c.WebAssetsDir) || filepath.Clean(c.WebAssetsDir) != c.WebAssetsDir || c.WebAssetsDir == "/") {
+		return ErrConfig
+	}
+	if c.WebOffline && c.WebAssetsDir == "" {
 		return ErrConfig
 	}
 	if c.OpenLibraryFixture != "" && (c.AcquisitionWorkdir == "" || !c.OpenLibrarySearch) {

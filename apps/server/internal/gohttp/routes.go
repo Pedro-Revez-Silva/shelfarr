@@ -61,6 +61,7 @@ const (
 	routeWebIndex
 	routeWebShell
 	routeWebAsset
+	routeWebWorker
 )
 
 type route struct {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -370,5 +371,32 @@ func TestLoadRefusesAPageEngineThatIsUnsafeOrInconsistent(t *testing.T) {
 	webassetstest.WritePageEngine(t, withoutReader, engine)
 	if _, err := Load(withoutReader); err == nil {
 		t.Error("a page engine without the reader it extends must be refused")
+	}
+}
+
+func TestListedNamesTheMainManifestFilesInOrderWithTheirDigestsAndNeverThePageEngine(t *testing.T) {
+	directory := t.TempDir()
+	listed, engine := webassetstest.WriteWithPageEngine(t, directory)
+	bundle, err := Load(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []ListedFile
+	for name, entry := range listed.Files {
+		want = append(want, ListedFile{Name: name, SHA256: entry.SHA256})
+	}
+	slices.SortFunc(want, func(left, right ListedFile) int { return strings.Compare(left.Name, right.Name) })
+	got := bundle.Listed()
+	if !slices.Equal(got, want) {
+		t.Fatalf("listed %v, want %v", got, want)
+	}
+	for _, file := range got {
+		if file.Name == engine.Engine || file.Name == engine.Worker {
+			t.Errorf("%s belongs to the page engine", file.Name)
+		}
+	}
+	got[0].Name = "changed"
+	if bundle.Listed()[0].Name == "changed" {
+		t.Error("Listed must return a copy")
 	}
 }

@@ -12,6 +12,10 @@ import { isPageFormat } from "./pages";
 import { PagesReader } from "./PagesReader";
 import { ProgressSession } from "./progress";
 import { SaveStatus } from "./SaveStatus";
+import { useOffline } from "../offline/context";
+import { savedEpub } from "../offline/model";
+import { useRememberedPlace } from "../offline/remembered";
+import { SaveForOffline } from "../offline/SaveForOffline";
 
 const READER_PATH = /^\/library\/([1-9]\d{0,18})\/read$/;
 
@@ -102,11 +106,21 @@ async function goBack(event: MouseEvent<HTMLAnchorElement>, target: BackTarget, 
   else window.location.assign(target.href);
 }
 
-type FrameProps = { id: string; title: string; author: string | null; kind?: string; children: ReactNode; footer?: ReactNode; beforeLeave?: () => Promise<void> };
+type FrameProps = {
+  id: string;
+  title: string;
+  author: string | null;
+  kind?: string;
+  children: ReactNode;
+  footer?: ReactNode;
+  tools?: ReactNode;
+  back?: BackTarget;
+  beforeLeave?: () => Promise<void>;
+};
 
-function ReaderFrame({ id, title, author, kind, children, footer, beforeLeave }: FrameProps) {
+export function ReaderFrame({ id, title, author, kind, children, footer, tools, back, beforeLeave }: FrameProps) {
   const { boot } = useServices();
-  const [target] = useState(() => backTarget(document.referrer, id, boot.mount, window.location.origin));
+  const [target] = useState(() => back ?? backTarget(document.referrer, id, boot.mount, window.location.origin));
   return (
     <div className="reader">
       <header className="reader-header">
@@ -119,6 +133,7 @@ function ReaderFrame({ id, title, author, kind, children, footer, beforeLeave }:
           <h1 id="reader-heading">{title}</h1>
           {author ? <p className="reader-author">{author}</p> : null}
         </div>
+        {tools ? <div className="reader-tools">{tools}</div> : null}
       </header>
       <main id="main" className="reader-main" aria-labelledby="reader-heading">
         {children}
@@ -162,6 +177,8 @@ const REMOTE_UNAVAILABLE = "The other device's place is in a file this reader do
 
 function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPublication } & Engines) {
   const { api, guard } = useServices();
+  const offline = useOffline();
+  const savedCopy = useRememberedPlace(offline, guard.account, publication);
   const [session] = useState(
     () =>
       new ProgressSession({
@@ -169,6 +186,7 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
         guard,
         assets: new Set(publication.assets.map((asset) => asset.id)),
         saved: publication.progress,
+        confirmed: (progress) => savedCopy.remember(progress),
       }),
   );
   const showPlace = useRef<((progress: StoredProgress) => void) | null>(null);
@@ -233,12 +251,23 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
     ) : asset && isPageAsset(asset) ? (
       <PagesReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} pageEngine={pageEngine} record={record} registerPlace={registerPlace} />
     ) : asset?.format === "epub" ? (
-      <EpubReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} engine={engine} record={record} registerPlace={registerPlace} />
+      <EpubReader
+        key={asset.id}
+        asset={asset}
+        start={opening.start}
+        savedElsewhere={opening.savedElsewhere}
+        engine={engine}
+        record={record}
+        registerPlace={registerPlace}
+        offer={savedCopy.offer(asset.id)}
+      />
     ) : (
       <Unreadable publication={publication} />
     );
+  const epub = savedEpub(publication);
+  const tools = epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub.id} load={async () => publication} compact /> : null;
   return (
-    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} beforeLeave={beforeLeave}>
+    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} tools={tools} beforeLeave={beforeLeave}>
       {remoteNote ? (
         <p className="notice reader-notice" role="status">
           {remoteNote}

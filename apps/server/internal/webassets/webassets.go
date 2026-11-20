@@ -105,6 +105,12 @@ type Bundle struct {
 	readerEngine string
 	pageEngine   *PageEngine
 	files        map[string]file
+	listed       []ListedFile
+}
+
+type ListedFile struct {
+	Name   string
+	SHA256 string
 }
 
 func Load(directory string) (*Bundle, error) {
@@ -134,6 +140,10 @@ func Load(directory string) (*Bundle, error) {
 	if err := bundle.add(resolved, listedFiles, mediaTypes, totalLimit); err != nil {
 		return nil, err
 	}
+	for name, expected := range listedFiles {
+		bundle.listed = append(bundle.listed, ListedFile{Name: name, SHA256: expected.SHA256})
+	}
+	slices.SortFunc(bundle.listed, func(left, right ListedFile) int { return strings.Compare(left.Name, right.Name) })
 	if !strings.HasSuffix(bundle.script, ".js") || !strings.HasSuffix(bundle.style, ".css") {
 		return nil, ErrInvalid
 	}
@@ -260,6 +270,8 @@ func (b *Bundle) Style() string { return b.style }
 func (b *Bundle) ReaderEngine() string { return b.readerEngine }
 
 func (b *Bundle) PageEngine() *PageEngine { return b.pageEngine }
+
+func (b *Bundle) Listed() []ListedFile { return slices.Clone(b.listed) }
 
 func (b *Bundle) Has(name string) bool {
 	_, present := b.files[name]

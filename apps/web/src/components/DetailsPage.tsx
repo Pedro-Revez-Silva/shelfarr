@@ -9,6 +9,7 @@ import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { ReadingStatusForm } from "./ReadingStatusForm";
 import { ErrorPanel, Loading } from "./States";
+import { SaveForOffline } from "../offline/SaveForOffline";
 
 const routeApi = getRouteApi("/library/$publicationId");
 
@@ -75,10 +76,17 @@ function primaryLabel(publication: PublicationDetail): string {
   return listening ? "Start listening" : "Start reading";
 }
 
+function savableEpub(publication: PublicationDetail): string | null {
+  if (publication.availability !== "available" || publication.action !== "read") return null;
+  const epubs = publication.files.filter((file) => file.format === "epub");
+  return (epubs.find((file) => file.id === publication.progress?.asset_id) ?? epubs[0])?.id ?? null;
+}
+
 function Details({ publication }: { publication: PublicationDetail }) {
   const available = publication.availability === "available";
-  const { mode, boot } = useServices();
+  const { mode, boot, api } = useServices();
   const readerLink = mode === "go" ? goReaderLink(publication, boot.mount, boot.reader_formats) : publication.reader_url;
+  const epub = mode === "go" && readerLink ? savableEpub(publication) : null;
   return (
     <article className="details" aria-labelledby="publication-heading">
       <BackToLibrary />
@@ -115,6 +123,8 @@ function Details({ publication }: { publication: PublicationDetail }) {
               The files for this book are not available on the server right now, so it cannot be opened. Your saved place is kept.
             </p>
           )}
+
+          {epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub} load={(signal) => api.reader(publication.id, signal)} /> : null}
 
           <ReadingStatusForm publication={publication} />
         </div>

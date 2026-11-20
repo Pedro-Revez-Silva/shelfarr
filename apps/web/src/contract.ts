@@ -128,7 +128,7 @@ export const bootSchema = z.object({
   classic_library: sitePath,
 });
 
-export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin", "server_settings"] as const;
+export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin", "server_settings", "downloads"] as const;
 export type GoView = (typeof goViews)[number];
 
 export const pageEngineSchema = z.object({
@@ -137,6 +137,9 @@ export const pageEngineSchema = z.object({
   files: z.record(z.enum(["cMapUrl", "standardFontDataUrl", "wasmUrl"]), z.record(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*\.(?:bcmap|pfb|ttf|wasm)$/), sitePath)),
 });
 export type PageEngine = z.infer<typeof pageEngineSchema>;
+
+export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath });
+export type OfflineBoot = z.infer<typeof offlineBootSchema>;
 
 export const goBootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
@@ -147,6 +150,7 @@ export const goBootSchema = z.object({
   reader_engine: sitePath.optional(),
   reader_formats: z.array(z.string()).optional(),
   page_engine: pageEngineSchema.optional(),
+  offline: offlineBootSchema.optional(),
 });
 export type GoBoot = z.infer<typeof goBootSchema>;
 
@@ -161,7 +165,7 @@ export type Boot = {
 };
 
 export const bootstrapSchema = z.discriminatedUnion("authenticated", [
-  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative() }),
+  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative(), offline_expires_in: z.number().int().nonnegative().optional() }),
   z.object({
     authenticated: z.literal(false),
     csrf_token: z.string().min(1),

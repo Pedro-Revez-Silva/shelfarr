@@ -36,8 +36,12 @@ func Run(ctx context.Context, config Config, logger *slog.Logger, announce func(
 		return start("library-roots")
 	}
 	if config.WebAssetsDir != "" {
-		if _, err := webassets.Load(config.WebAssetsDir); err != nil {
+		bundle, err := webassets.Load(config.WebAssetsDir)
+		if err != nil {
 			return start("web-assets")
+		}
+		if config.WebOffline && bundle.ReaderEngine() == "" {
+			return start("web-offline")
 		}
 	}
 	if !media.ConfinedOpenSupported() {

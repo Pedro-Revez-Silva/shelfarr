@@ -8,7 +8,13 @@ import { ApiError, type FailureKind } from "../api/errors";
 const CSRF_HEADER = "X-CSRF-Token";
 const REFRESH_MARGIN_MS = 60_000;
 
-const loginResultSchema = z.object({ authenticated: z.literal(true), account: z.string().regex(/^[1-9]\d{0,18}$/), csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative() });
+const loginResultSchema = z.object({
+  authenticated: z.literal(true),
+  account: z.string().regex(/^[1-9]\d{0,18}$/),
+  csrf_token: z.string().min(1),
+  expires_in: z.number().int().nonnegative(),
+  offline_expires_in: z.number().int().nonnegative().optional(),
+});
 export type LoginResult = z.infer<typeof loginResultSchema>;
 
 const KIND_BY_CODE: Record<string, FailureKind> = {

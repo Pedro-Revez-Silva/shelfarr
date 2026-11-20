@@ -16,7 +16,11 @@ type Props = {
   engine: string;
   record: (place: ProgressPlace, at?: number) => void;
   registerPlace: (show: ((progress: StoredProgress) => void) | null) => void;
+  source?: (signal: AbortSignal) => Promise<ArrayBuffer>;
+  offer?: OfferedPlace | null;
 };
+
+export type OfferedPlace = { text: string; action: string; locator: Locator };
 
 function openingNotice(savedElsewhere: boolean): string | null {
   if (!savedElsewhere) return null;
@@ -38,7 +42,7 @@ function currentChapter(chapters: Chapter[], position: EpubPosition | null): str
   return chapters.find((chapter) => chapter.href.split("#")[0] === position.href)?.href ?? "";
 }
 
-export function EpubReader({ asset, start, savedElsewhere, engine, record, registerPlace }: Props) {
+export function EpubReader({ asset, start, savedElsewhere, engine, record, registerPlace, source, offer }: Props) {
   const { guard } = useServices();
   const viewport = useRef<HTMLDivElement>(null);
   const session = useRef<EpubSession | null>(null);
@@ -51,6 +55,9 @@ export function EpubReader({ asset, start, savedElsewhere, engine, record, regis
   const assetUrl = asset.url;
   const assetSize = asset.size_bytes;
   const [initial] = useState(() => start);
+  const [load] = useState(() => source);
+  const [taken, setTaken] = useState<OfferedPlace | null>(null);
+  const offered = offer && offer !== taken ? offer : null;
 
   useEffect(() => {
     const element = viewport.current;
@@ -60,7 +67,7 @@ export function EpubReader({ asset, start, savedElsewhere, engine, record, regis
     let cancelled = false;
     const open = async () => {
       if (assetSize > WEB_EBOOK_LIMIT) throw new ReaderFailure("This ebook is larger than the web reader's 32 MiB limit. Use a native Shelfarr app to read it.");
-      const [loaded, buffer] = await Promise.all([loadEngine(engine), fetchBook(assetUrl, guard, controller.signal)]);
+      const [loaded, buffer] = await Promise.all([loadEngine(engine), load ? load(controller.signal) : fetchBook(assetUrl, guard, controller.signal)]);
       if (cancelled) return;
       opened = new EpubSession(loaded, element, assetId, {
         position: setPosition,
@@ -85,7 +92,7 @@ export function EpubReader({ asset, start, savedElsewhere, engine, record, regis
       opened?.destroy();
       session.current = null;
     };
-  }, [assetId, assetUrl, assetSize, engine, guard, initial, record]);
+  }, [assetId, assetUrl, assetSize, engine, guard, initial, load, record]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => turnWithKey(event, session.current);
@@ -135,6 +142,21 @@ export function EpubReader({ asset, start, savedElsewhere, engine, record, regis
         <p className="notice reader-notice" role="note">
           {notice}
         </p>
+      ) : null}
+      {offered && ready ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>{offered.text}</p>
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              setTaken(offered);
+              session.current?.showRemote(offered.locator).catch(() => setFailure("Couldn't open the place saved on this device."));
+            }}
+          >
+            {offered.action}
+          </button>
+        </div>
       ) : null}
       {failure ? (
         <p className="form-error reader-error" role="alert">
