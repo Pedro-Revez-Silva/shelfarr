@@ -1,8 +1,8 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, failureKind } from "../api/errors";
 import type { MetadataChange, MetadataReach, MetadataSettings } from "../contract";
-import { useMetadataSettings, useSaveMetadataSettings, useSession } from "../queries";
+import { useMetadataSettings, useSession, type MetadataSource } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import type { FormOutcome } from "./accountFields";
@@ -26,26 +26,9 @@ export function ServerSettingsPage() {
 
 function ServerSettings() {
   usePageTitle("Server settings");
-  const { guard, queryClient, keys } = useServices();
-  const [freshAfter, setFreshAfter] = useState(() => queryClient.getQueryState(keys.metadataSettings)?.dataUpdatedAt ?? 0);
   const session = useSession();
-  const settings = useMetadataSettings();
-  const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
   const admin = session.data?.admin !== undefined;
-  const current = trust === "trusted" && settings.dataUpdatedAt > freshAfter ? settings.data : undefined;
-  const confirming = useRef(false);
-  const { refetch } = settings;
-
-  useEffect(() => {
-    if (trust !== "trusted") {
-      if (!confirming.current) setFreshAfter(Date.now());
-      confirming.current = true;
-      return;
-    }
-    if (!confirming.current) return;
-    confirming.current = false;
-    void refetch();
-  }, [trust, refetch]);
+  const source = useMetadataSettings(admin);
   const editor = useMetadataEditor();
 
   return (
@@ -68,14 +51,14 @@ function ServerSettings() {
         <ErrorPanel error={session.error} onRetry={() => void session.refetch()} />
       ) : !session.data ? (
         <Loading label="Loading the server settings…" />
-      ) : !admin || (settings.isError && failureKind(settings.error) === "not_found") ? (
+      ) : !admin || (source.error !== null && failureKind(source.error) === "not_found") ? (
         <EmptyState title="Only administrators can see this page">
           <p>Use the navigation to return to your library.</p>
         </EmptyState>
-      ) : settings.isError ? (
-        <ErrorPanel error={settings.error} onRetry={() => void settings.refetch()} />
-      ) : current ? (
-        <MetadataForm settings={current} editor={editor} />
+      ) : source.error !== null ? (
+        <ErrorPanel error={source.error} onRetry={source.reload} />
+      ) : source.settings ? (
+        <MetadataForm settings={source.settings} source={source} editor={editor} />
       ) : (
         <Loading label="Loading the server settings…" />
       )}
@@ -102,8 +85,7 @@ function useMetadataEditor() {
   const [problems, setProblems] = useState<Problems>({});
   const edits = useRef(0);
   const saving = useRef(false);
-  const mutation = useSaveMetadataSettings();
-  return { draft, setDraft, problems, setProblems, edits, saving, mutation, ...useOutcome() };
+  return { draft, setDraft, problems, setProblems, edits, saving, ...useOutcome() };
 }
 
 type MetadataEditor = ReturnType<typeof useMetadataEditor>;
@@ -133,11 +115,10 @@ function failureText(error: unknown): string {
   }
 }
 
-function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor: MetadataEditor }) {
+function MetadataForm({ settings, source, editor }: { settings: MetadataSettings; source: MetadataSource; editor: MetadataEditor }) {
   const ids = { heading: useId(), enabled: useId(), enabledHint: useId(), limit: useId(), limitHint: useId(), limitError: useId() };
   const form = useRef<HTMLFormElement>(null);
-  const { queryClient, keys, guard } = useServices();
-  const { draft, setDraft, problems, setProblems, edits, saving, mutation, outcome, say, clear } = editor;
+  const { draft, setDraft, problems, setProblems, edits, saving, outcome, say, clear } = editor;
   const saved = settings.open_library;
   const range = settings.search_limit_range;
   const enabled = draft.enabled ?? saved.enabled ?? false;
@@ -184,36 +165,29 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
     }
     saving.current = true;
     const revision = edits.current;
-    void queryClient.cancelQueries({ queryKey: keys.metadataSettings });
-    mutation.mutate(
-      { revision: draft.base ?? settings.revision, change },
-      {
-        onSettled: () => {
-          saving.current = false;
-        },
-        onSuccess: (answer) => {
-          const current = edits.current === revision;
-          if (answer.kind !== "rejected" && guard.isActive()) queryClient.setQueryData(keys.metadataSettings, answer.settings);
-          if (answer.kind === "saved") {
-            if (current) reset();
-            else setDraft((latest) => ({ ...latest, base: answer.settings.revision }));
-            say("success", current ? "Metadata settings saved." : "The earlier change was saved. Your newer change is not saved yet.");
-            return;
-          }
-          if (answer.kind === "conflict") {
-            reset();
-            say("error", "These settings were changed somewhere else while you were editing. Nothing was saved. The page now shows the saved values; make your change again.");
-            return;
-          }
-          refuse(
-            { ...(answer.errors.enabled ? { enabled: "Choose on or off." } : {}), ...(answer.errors.search_limit ? { search_limit: `Enter a whole number from ${range.min} to ${range.max}.` } : {}) },
-            "Nothing was saved. Check the marked field.",
-          );
-        },
-        onError: (error) => {
-          void queryClient.invalidateQueries({ queryKey: keys.metadataSettings });
-          say("error", failureText(error));
-        },
+    source.save(draft.base ?? settings.revision, change).then(
+      (answer) => {
+        saving.current = false;
+        const current = edits.current === revision;
+        if (answer.kind === "saved") {
+          if (current) reset();
+          else setDraft((latest) => ({ ...latest, base: answer.settings.revision }));
+          say("success", current ? "Metadata settings saved." : "The earlier change was saved. Your newer change is not saved yet.");
+          return;
+        }
+        if (answer.kind === "conflict") {
+          reset();
+          say("error", "These settings were changed somewhere else while you were editing. Nothing was saved. The page now shows the saved values; make your change again.");
+          return;
+        }
+        refuse(
+          { ...(answer.errors.enabled ? { enabled: "Choose on or off." } : {}), ...(answer.errors.search_limit ? { search_limit: `Enter a whole number from ${range.min} to ${range.max}.` } : {}) },
+          "Nothing was saved. Check the marked field.",
+        );
+      },
+      (error: unknown) => {
+        saving.current = false;
+        say("error", failureText(error));
       },
     );
   }
@@ -279,8 +253,8 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
         </div>
         <Reach settings={settings} />
         <div className="form-actions">
-          <button type="submit" className="button button--primary" disabled={mutation.isPending} aria-busy={mutation.isPending}>
-            {mutation.isPending ? "Saving…" : "Save metadata settings"}
+          <button type="submit" className="button button--primary" disabled={source.pending} aria-busy={source.pending}>
+            {source.pending ? "Saving…" : "Save metadata settings"}
           </button>
         </div>
         <div className="form-outcome" role="status">

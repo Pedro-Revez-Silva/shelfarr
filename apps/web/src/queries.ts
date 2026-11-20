@@ -7,8 +7,9 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 import type { AccountAnswer, MetadataAnswer } from "./api/client";
-import { ApiError, failureKind, isApiError } from "./api/errors";
-import type { Acquisition, LibraryFilters, MetadataChange, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import { ApiError, failureKind, isApiError, unconfirmed } from "./api/errors";
+import type { Acquisition, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useServices } from "./services";
 
 export function useSession() {
@@ -147,35 +148,107 @@ export function useServerOverview() {
   });
 }
 
-export function useMetadataSettings() {
-  const { api, keys, revalidate } = useServices();
-  const admin = useSession().data?.admin !== undefined;
-  return useQuery({
-    queryKey: keys.metadataSettings,
-    queryFn: ({ signal }) =>
-      api.metadataSettings(signal).catch((error: unknown) => {
-        if (failureKind(error) === "not_found") revalidate();
-        throw error;
-      }),
-    enabled: admin,
-    gcTime: 0,
-    refetchOnMount: "always",
-    refetchOnWindowFocus: false,
-  });
-}
+export type MetadataSource = {
+  settings: MetadataSettings | null;
+  error: unknown;
+  pending: boolean;
+  reload: () => void;
+  save: (revision: string, change: MetadataChange) => Promise<MetadataAnswer>;
+};
 
-export function useSaveMetadataSettings() {
-  const { api, keys, guard, revalidate } = useServices();
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ revision, change }: { revision: string; change: MetadataChange }) => api.saveMetadataSettings(revision, change),
-    onSuccess: (answer: MetadataAnswer) => {
-      if (guard.isActive() && answer.kind === "saved") void client.resetQueries({ queryKey: keys.discoverAll });
+export function useMetadataSettings(admin: boolean): MetadataSource {
+  const { api, guard, revalidate, queryClient, keys } = useServices();
+  const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
+  const [shown, setShown] = useState<{ settings: MetadataSettings | null; error: unknown }>({ settings: null, error: null });
+  const [pending, setPending] = useState(false);
+  const issued = useRef(0);
+  const accepted = useRef(0);
+  const saving = useRef(false);
+  const reloadAfterSave = useRef(false);
+  const hidden = useRef(true);
+  const refused = useRef(false);
+  const live = useRef(new AbortController());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    live.current = controller;
+    return () => controller.abort();
+  }, []);
+
+  const load = useCallback(() => {
+    if (saving.current) {
+      reloadAfterSave.current = true;
+      return;
+    }
+    const ticket = ++issued.current;
+    const signal = live.current.signal;
+    api.metadataSettings(signal).then(
+      (settings) => {
+        if (signal.aborted) return;
+        if (saving.current) reloadAfterSave.current = true;
+        else if (ticket > accepted.current) {
+          accepted.current = ticket;
+          refused.current = false;
+          setShown({ settings, error: null });
+        }
+      },
+      (error: unknown) => {
+        if (signal.aborted || ticket <= accepted.current) return;
+        accepted.current = ticket;
+        refused.current = failureKind(error) === "not_found";
+        setShown({ settings: null, error });
+        if (refused.current) revalidate();
+      },
+    );
+  }, [api, revalidate]);
+
+  useEffect(() => {
+    if (!admin) return;
+    if (trust !== "trusted") {
+      hidden.current = true;
+      accepted.current = ++issued.current;
+      setShown((current) => (current.settings ? { settings: null, error: null } : current));
+      return;
+    }
+    if (!hidden.current || refused.current) return;
+    hidden.current = false;
+    load();
+  }, [admin, trust, load]);
+
+  const save = useCallback(
+    async (revision: string, change: MetadataChange) => {
+      saving.current = true;
+      setPending(true);
+      const ticket = ++issued.current;
+      const signal = live.current.signal;
+      try {
+        const answer = await api.saveMetadataSettings(revision, change);
+        if (!signal.aborted && answer.kind !== "rejected" && ticket > accepted.current) {
+          accepted.current = ticket;
+          setShown({ settings: answer.settings, error: null });
+        }
+        if (answer.kind === "saved" && guard.isActive()) void queryClient.resetQueries({ queryKey: keys.discoverAll });
+        return answer;
+      } catch (error) {
+        if (unconfirmed(error) && guard.isActive()) void queryClient.resetQueries({ queryKey: keys.discoverAll });
+        if (failureKind(error) === "not_found") revalidate();
+        reloadAfterSave.current = true;
+        throw error;
+      } finally {
+        saving.current = false;
+        if (!signal.aborted) {
+          setPending(false);
+          if (reloadAfterSave.current) {
+            reloadAfterSave.current = false;
+            load();
+          }
+        }
+      }
     },
-    onError: (error: unknown) => {
-      if (failureKind(error) === "not_found") revalidate();
-    },
-  });
+    [api, guard, keys, load, queryClient, revalidate],
+  );
+
+  return { settings: trust === "trusted" ? shown.settings : null, error: shown.error, pending, reload: load, save };
 }
 
 export function useRequestEbook() {

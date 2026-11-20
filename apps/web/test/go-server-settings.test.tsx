@@ -237,9 +237,7 @@ describe("the server settings page", () => {
     const { services } = await opened(server);
     await userEvent.click(controls().enabled);
     revision = "22222222222222222222222222222222";
-    await act(async () => {
-      await services.queryClient.refetchQueries({ queryKey: services.keys.metadataSettings });
-    });
+    await act(async () => services.revalidate());
     await waitFor(() => expect(controls().limit.value).toBe("5"));
     expect(controls().enabled.checked).toBe(false);
     await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
@@ -355,6 +353,80 @@ describe("the server settings page", () => {
     );
   });
 
+  test("a first read overtaken by a session check is never shown; the read after the check is", async () => {
+    let limit = 20;
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => (releaseFirst = resolve));
+    let reads = 0;
+    const server = settingsServer();
+    server.on("GET", SETTINGS, async () => {
+      reads += 1;
+      const answer = { body: settings({}, { search_limit: limit }) };
+      if (reads === 1) await firstHeld;
+      return answer;
+    });
+    const { services } = renderSettings(server);
+    await waitFor(() => expect(reads).toBe(1));
+    limit = 7;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => releaseFirst());
+    await screen.findByRole("heading", { name: "Metadata", level: 2 });
+    expect(controls().limit.value).toBe("7");
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(controls().limit.value).toBe("7");
+  });
+
+  test("a session check during a pending save reads only after the save, so neither answer replaces a newer one", async () => {
+    let stored = { enabled: true, limit: 20 };
+    let releaseSave!: () => void;
+    const saveHeld = new Promise<void>((resolve) => (releaseSave = resolve));
+    const server = settingsServer({
+      read: () => ({ body: settings({}, { enabled: stored.enabled, search_limit: stored.limit }) }),
+      save: async (request) => {
+        stored = { ...stored, enabled: false };
+        const answer = saved(request);
+        await saveHeld;
+        return { body: answer };
+      },
+    });
+    const { services } = await opened(server);
+    const reads = server.called("GET", SETTINGS).length;
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    stored = { ...stored, limit: 5 };
+    await act(async () => services.revalidate());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(server.called("GET", SETTINGS).length).toBe(reads);
+    await act(async () => releaseSave());
+    expect(await screen.findByText("Metadata settings saved.")).toBeTruthy();
+    await waitFor(() => expect(controls().limit.value).toBe("5"));
+    expect(controls().enabled.checked).toBe(false);
+    expect(server.called("GET", SETTINGS).length).toBe(reads + 1);
+  });
+
+  test("a member's session checks never ask for the settings", async () => {
+    const server = settingsServer({ admin: () => false });
+    const { services } = renderSettings(server);
+    await screen.findByRole("heading", { name: "Only administrators can see this page", level: 2 });
+    const checks = server.called("GET", SESSION).length;
+    await act(async () => services.revalidate());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
+    expect(server.called("GET", SETTINGS).length).toBe(0);
+    expect(server.called("GET", SESSION).length).toBe(checks + 1);
+  });
+
+  test("a server without the settings route is asked once, checked once, and not asked again on the next check", async () => {
+    const server = settingsServer({ read: () => error(404, "not_found") });
+    const { services } = renderSettings(server);
+    expect(await screen.findByRole("heading", { name: "Only administrators can see this page", level: 2 })).toBeTruthy();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
+    await act(async () => services.revalidate());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 200)));
+    expect(server.called("GET", SETTINGS).length).toBe(1);
+    expect(server.called("GET", SESSION).length).toBeLessThanOrEqual(3);
+  });
+
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {
     const server = settingsServer({ save: () => ({ status: 409, body: { ...settings({ revision: "11111111111111111111111111111111" }, { search_limit: 5 }, { result_limit: 5 }), error: "settings_conflict" } }) });
     await opened(server);
@@ -446,12 +518,13 @@ describe("the server settings page", () => {
     expect(server.called("GET", SETTINGS).length).toBe(0);
   });
 
-  test("settings still cached when the page is entered are never shown, and a demoted admin is locked out", async () => {
+  test("settings seen before are never shown again on return after a demotion, and the page locks", async () => {
     let admin = true;
     const server = settingsServer({ admin: () => admin, read: () => (admin ? { body: settings({}, { search_limit: 777 }) } : error(404, "not_found")) });
-    const { services, history } = renderSettings(server, "/preview/library");
+    const { history } = await opened(server);
+    expect(controls().limit.value).toBe("777");
+    act(() => history.push("/preview/library"));
     await screen.findByRole("heading", { name: "Library", level: 1 });
-    services.queryClient.setQueryData(services.keys.metadataSettings, settings({}, { search_limit: 777 }));
     admin = false;
     const shown: boolean[] = [];
     const observer = new MutationObserver(() => shown.push(Boolean(document.querySelector('input[value="777"]'))));
