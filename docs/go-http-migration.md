@@ -1623,8 +1623,9 @@ as it is and kept: it is validated and rewritten only when the admin changes tha
 waiting out while Discover would otherwise search with a limit above 0; `retry_after` is the later end of the two when
 the pause has an end), `available`, or `settings_unreadable` when Discover would
 answer `501 unsupported_stored_value`: a stored form of the two keys below, a `metadata_source` that is not text or an
-unreadable `rate_limited_until`. `result_limit` is the `limit` Discover sends when it searches (available) or will send
-once a pause ends, the saved number held to `max_results` (Go's cap of 20) and 0 for a number below 1; `null` otherwise.
+unreadable `rate_limited_until`. A saved `auth_failed` status pauses without an end, so it has no `retry_after`.
+`result_limit` is the saved number held to `max_results` (Go's cap of 20), 0 for a number below 1, while Discover is
+available or paused, and `null` otherwise; at 0 Discover answers no results without contacting Open Library.
 Reading or saving never contacts Open Library, never runs a health check and never writes
 `metadata_provider_statuses`: Rails' admin save clears Open Library's saved status and backoff after an `open_library_*`
 change, but a save here leaves an Open Library rate limit in place, says so, and lets Discover resume when it ends.
@@ -1643,18 +1644,21 @@ change, but a save here leaves an Open Library rate limit in place, says so, and
   (Discover still uses it: 20 for a large positive one, 0 for a negative one). Saving a new value replaces such a row.
 * Reading never writes. A save compares each submitted field with the saved typed value and writes only one that
   differs, as Rails' `stored_setting_changed?` does for rows in Rails' own form; submitting the saved value or the
-  default writes nothing. A row shown as unreadable has no typed value, so a submitted value always replaces it (Rails
-  would compare its raw text). A field the
+  default writes nothing. A row shown as unreadable has no typed value here, so a submitted value always replaces it;
+  Rails would skip the write when either the raw text or its own loose reading matches (`12abc` against 12). A field the
   admin did not change is not sent, so a stored larger limit is never clamped by turning Open Library on or off.
 * A written row is the row Rails' `SettingsService.set` writes: `value` `true`/`false` or the decimal number,
   `value_type` `boolean`/`integer`, `category` `open_library`, Rails' description, `updated_at` (and `created_at` for a new
   row) in Rails' timestamp form. No other column or row is touched; the unique `key` index prevents a second row.
 * `revision` is a digest of the two rows as stored (present, `NULL`, type, text, `id` and `updated_at`). A Go save sets
   `updated_at` to the current time or, when the clock reads no later than the row's saved time, one microsecond after
-  it, so a change and its undo always give a new revision. A save whose revision no longer matches is a `409` with the current values, so a
-  second tab or the Rails screen saving first is never overwritten.
-  Saves are serialised by SQLite's write lock: of several saves from one revision exactly one writes. The browser never
-  retries a save.
+  it, so a change and its undo through Go always give a new revision. A save whose revision no longer matches is a
+  `409` with the current values, so a second tab or a Rails save made first is not overwritten. Limit: without a
+  version column (no schema change is made), a Rails save that restores the exact earlier value, type, row and
+  microsecond `updated_at` (its clock stepped back to that instant) is indistinguishable from no change, and an older
+  revision would be accepted again. Saves are serialised by SQLite's write lock: of several saves from one revision
+  that each change a value, exactly one writes; saves that change nothing write nothing. The browser never retries a
+  save.
 * Rails keeps no settings cache (`SettingsService.get` reads the row each time) and reads `OpenLibraryClient`'s values
   per search, and Go's Discover reads them per request, so both apps use a save at their next search.
 
@@ -1669,15 +1673,17 @@ nothing changed says "There are no changes to save." and sends nothing; a number
 and explained without a request; while saving the button reads "Saving…" and is busy; the result is announced in a
 status region: "Metadata settings saved.", the conflict ("These settings were changed somewhere else while you were
 editing. Nothing was saved. The page now shows the saved values; make your change again."), a refused field, or that
-the result is unknown, including a `200` whose body cannot be read (and the page asks the server again). The values
-are held by the page only, never in a shared cache: entering the page (a link, Back, Forward, reload) asks the server,
-leaving it drops them, and a session check (focus, visibility, `pageshow`) hides them and, once the account is
-confirmed, asks again. Each read and save is numbered when it starts and an answer is shown only if nothing started
-later has been shown since; a read that would start while a save is pending, or that answers during it, is replaced by
-one read after the save. So a read taken before a check, before a save committed or before another writer's change
-never replaces a newer answer. The page locks with "This account's access changed" when the role is gone, and a read
-or save refused with `404` checks the session once; it is not asked again while the server refuses it, and a member's
-page never asks. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
+the result is unknown, including a `200` whose body cannot be read (and the page asks the server again once the account
+is confirmed). The result stays announced below the card even when the read after it fails. The values are held by the
+page only, never in a shared cache: entering the page (a link, Back, Forward, reload) asks the server, leaving it drops
+them, and a session check (focus, visibility, `pageshow`) hides them and, once the account is confirmed, asks again.
+Only the answer to the read or save started last is shown: starting a save or a read, a session check and leaving the
+page each make every earlier answer void. No read starts while the account is unconfirmed or a save is pending; one
+read follows the save or the check instead. So an answer taken before a check, before a save committed or before
+another writer's change never replaces a newer one. The page locks with "This account's access changed" when the role
+is gone. A read or save refused with `404` shows "Only administrators can see this page" and checks the session once;
+the page is not asked again until it is entered again, and a member's page never asks. A failed read shows Try again
+and is retried after the next session check. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
 so a page refreshed meanwhile turns it into a conflict rather than an overwrite; an edit made while a save is pending
 is kept and saved next against the revision that save produced. A member sees "Only administrators can see this page".
 After a confirmed save, or a save whose result is unknown, Discover's cached answers are dropped, so it asks the server
@@ -1697,6 +1703,7 @@ again rather than showing an earlier list or refusal.
 GET /preview/admin/settings                     before 404 not_found   after 200 shell, boot view "server_settings"
 GET /preview/api/v1/admin/settings/metadata     before 404 not_found   after 200 (admin), 404 not_found (member), 401 signed_out|account_changed
 PUT /preview/api/v1/admin/settings/metadata     before 404 not_found   after 200 | 409 settings_conflict | 422 invalid_settings | 400 | 408 | 413 | 415 | 422 invalid_csrf | 404 | 401
+either method, shared answers                                          503 server_busy (request capacity), 503 database_busy | database_unavailable
 other methods on that path                      before 404 not_found   after 405, Allow: GET, PUT
 Go boot block "view"                            before …|admin         after adds server_settings
 ```
@@ -1728,8 +1735,9 @@ own save writes, Rails reads and saves over them, and the previous binary's Disc
   load; cached values never shown on entry after a demotion; edits kept through a session check and the values asked
   again after it; an edit's own revision kept so a refreshed page conflicts; an edit made during a save saved next; a
   late save answer after leaving and a demotion never shown; a first read overtaken by a session check never shown; a
-  check during a pending save reading only after it; a member's checks and a server without the route never repeating
-  the read; Discover asking again after a repair; the sign-in message.
+  check during a pending save reading only after it, and a failed save during a check reading only after the check; of
+  two retries only the later shown; an unknown result kept announced when the next read fails; a refused save checking
+  the session once; a member's checks and a server without the route never repeating the read; Discover asking again after a repair; the sign-in message.
 * `apps/server/e2e/browser/settings_test.go` with the real binary on both `tools/migration/browser` fixtures
   (current schema and stable upgrade), `-open-library-search` and the loopback Open Library stand-in as its only route
   out: the Rails capture records every definition, that Rails ignores `SHELFARR_SETTING_OPEN_LIBRARY_*` (also set for

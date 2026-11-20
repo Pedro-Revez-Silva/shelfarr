@@ -427,6 +427,92 @@ describe("the server settings page", () => {
     expect(server.called("GET", SESSION).length).toBeLessThanOrEqual(3);
   });
 
+  test("a save that fails while the session is being checked reads again only after the check", async () => {
+    let limit = 20;
+    let hold: Promise<void> | null = null;
+    let releaseSave!: () => void;
+    const saveHeld = new Promise<void>((resolve) => (releaseSave = resolve));
+    const server = settingsServer({
+      read: () => ({ body: settings({}, { search_limit: limit }) }),
+      save: async () => {
+        await saveHeld;
+        return error(503, "database_unavailable");
+      },
+    });
+    server.on("GET", SESSION, async () => {
+      if (hold) await hold;
+      return { body: session({ admin: { url: "/admin" } }) };
+    });
+    const { services } = await opened(server);
+    const reads = server.called("GET", SETTINGS).length;
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    let releaseCheck!: () => void;
+    hold = new Promise<void>((resolve) => (releaseCheck = resolve));
+    await act(async () => {
+      services.revalidate();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await act(async () => {
+      releaseSave();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(server.called("GET", SETTINGS).length).toBe(reads);
+    limit = 7;
+    await act(async () => releaseCheck());
+    await waitFor(() => expect(controls().limit.value).toBe("7"));
+    expect(server.called("GET", SETTINGS).length).toBe(reads + 1);
+    expect(screen.getByText("Shelfarr could not confirm whether the settings were saved. Reload the page to see what the server has, and save again if needed.")).toBeTruthy();
+  });
+
+  test("of two retries only the one started last is shown", async () => {
+    const releases: (() => void)[] = [];
+    let reads = 0;
+    const server = settingsServer();
+    server.on("GET", SETTINGS, async () => {
+      reads += 1;
+      if (reads === 1) return error(503, "database_unavailable");
+      const limit = reads === 2 ? 20 : 7;
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return { body: settings({}, { search_limit: limit }) };
+    });
+    renderSettings(server);
+    const retry = await screen.findByRole("button", { name: "Try again" }, { timeout: 8000 });
+    await userEvent.click(retry);
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(releases.length).toBe(2));
+    await act(async () => releases[1]!());
+    await screen.findByRole("heading", { name: "Metadata", level: 2 });
+    await act(async () => {
+      releases[0]!();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(controls().limit.value).toBe("7");
+  }, 15_000);
+
+  test("an unknown save result stays announced when the read after it fails", async () => {
+    const server = settingsServer({ save: () => ({ status: 200, body: { saved: true } }) });
+    await opened(server);
+    server.on("GET", SETTINGS, () => error(503, "database_unavailable"));
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect(await screen.findByRole("button", { name: "Try again" }, { timeout: 8000 })).toBeTruthy();
+    expect(screen.getByText("Shelfarr could not confirm whether the settings were saved. Reload the page to see what the server has, and save again if needed.")).toBeTruthy();
+  }, 15_000);
+
+  test("a save refused as not found checks the session once and does not read again", async () => {
+    const server = settingsServer({ save: () => error(404, "not_found") });
+    await opened(server);
+    const reads = server.called("GET", SETTINGS).length;
+    const checks = server.called("GET", SESSION).length;
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect(await screen.findByRole("heading", { name: "Only administrators can see this page", level: 2 })).toBeTruthy();
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    expect(server.called("GET", SETTINGS).length).toBe(reads);
+    expect(server.called("GET", SESSION).length).toBe(checks + 1);
+  });
+
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {
     const server = settingsServer({ save: () => ({ status: 409, body: { ...settings({ revision: "11111111111111111111111111111111" }, { search_limit: 5 }, { result_limit: 5 }), error: "settings_conflict" } }) });
     await opened(server);

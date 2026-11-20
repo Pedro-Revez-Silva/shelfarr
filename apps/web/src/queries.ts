@@ -162,93 +162,104 @@ export function useMetadataSettings(admin: boolean): MetadataSource {
   const [shown, setShown] = useState<{ settings: MetadataSettings | null; error: unknown }>({ settings: null, error: null });
   const [pending, setPending] = useState(false);
   const issued = useRef(0);
-  const accepted = useRef(0);
+  const latest = useRef(0);
+  const trusted = useRef(false);
+  const showing = useRef(false);
   const saving = useRef(false);
-  const reloadAfterSave = useRef(false);
-  const hidden = useRef(true);
+  const readAfterSave = useRef(false);
   const refused = useRef(false);
-  const live = useRef(new AbortController());
+  const alive = useRef(true);
+  trusted.current = trust === "trusted";
 
-  useEffect(() => {
-    const controller = new AbortController();
-    live.current = controller;
-    return () => controller.abort();
-  }, []);
+  const start = () => {
+    issued.current += 1;
+    latest.current = issued.current;
+    return issued.current;
+  };
 
-  const load = useCallback(() => {
+  const refuse = useCallback(
+    (error: unknown) => {
+      refused.current = true;
+      showing.current = false;
+      setShown({ settings: null, error });
+      revalidate();
+    },
+    [revalidate],
+  );
+
+  const read = useCallback(() => {
+    if (!trusted.current || refused.current) return;
     if (saving.current) {
-      reloadAfterSave.current = true;
+      readAfterSave.current = true;
       return;
     }
-    const ticket = ++issued.current;
-    const signal = live.current.signal;
-    api.metadataSettings(signal).then(
+    const ticket = start();
+    api.metadataSettings().then(
       (settings) => {
-        if (signal.aborted) return;
-        if (saving.current) reloadAfterSave.current = true;
-        else if (ticket > accepted.current) {
-          accepted.current = ticket;
-          refused.current = false;
-          setShown({ settings, error: null });
-        }
+        if (latest.current !== ticket) return;
+        showing.current = true;
+        setShown({ settings, error: null });
       },
       (error: unknown) => {
-        if (signal.aborted || ticket <= accepted.current) return;
-        accepted.current = ticket;
-        refused.current = failureKind(error) === "not_found";
-        setShown({ settings: null, error });
-        if (refused.current) revalidate();
+        if (latest.current !== ticket) return;
+        if (failureKind(error) === "not_found") refuse(error);
+        else setShown({ settings: null, error });
       },
     );
-  }, [api, revalidate]);
+  }, [api, refuse]);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      start();
+    };
+  }, []);
 
   useEffect(() => {
     if (!admin) return;
     if (trust !== "trusted") {
-      hidden.current = true;
-      accepted.current = ++issued.current;
+      start();
+      showing.current = false;
       setShown((current) => (current.settings ? { settings: null, error: null } : current));
       return;
     }
-    if (!hidden.current || refused.current) return;
-    hidden.current = false;
-    load();
-  }, [admin, trust, load]);
+    if (!showing.current) read();
+  }, [admin, trust, read]);
 
   const save = useCallback(
     async (revision: string, change: MetadataChange) => {
       saving.current = true;
       setPending(true);
-      const ticket = ++issued.current;
-      const signal = live.current.signal;
+      const ticket = start();
       try {
         const answer = await api.saveMetadataSettings(revision, change);
-        if (!signal.aborted && answer.kind !== "rejected" && ticket > accepted.current) {
-          accepted.current = ticket;
+        if (latest.current === ticket && answer.kind !== "rejected") {
+          showing.current = true;
           setShown({ settings: answer.settings, error: null });
         }
         if (answer.kind === "saved" && guard.isActive()) void queryClient.resetQueries({ queryKey: keys.discoverAll });
         return answer;
       } catch (error) {
         if (unconfirmed(error) && guard.isActive()) void queryClient.resetQueries({ queryKey: keys.discoverAll });
-        if (failureKind(error) === "not_found") revalidate();
-        reloadAfterSave.current = true;
+        if (failureKind(error) === "not_found") {
+          if (latest.current === ticket) refuse(error);
+        } else readAfterSave.current = true;
         throw error;
       } finally {
         saving.current = false;
-        if (!signal.aborted) {
-          setPending(false);
-          if (reloadAfterSave.current) {
-            reloadAfterSave.current = false;
-            load();
-          }
+        if (alive.current) setPending(false);
+        if (readAfterSave.current && alive.current) {
+          readAfterSave.current = false;
+          showing.current = false;
+          read();
         }
       }
     },
-    [api, guard, keys, load, queryClient, revalidate],
+    [api, guard, keys, queryClient, read, refuse],
   );
 
-  return { settings: trust === "trusted" ? shown.settings : null, error: shown.error, pending, reload: load, save };
+  return { settings: trust === "trusted" ? shown.settings : null, error: shown.error, pending, reload: read, save };
 }
 
 export function useRequestEbook() {

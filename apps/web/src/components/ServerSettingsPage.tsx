@@ -62,6 +62,13 @@ function ServerSettings() {
       ) : (
         <Loading label="Loading the server settings…" />
       )}
+      <div className="form-outcome" role="status">
+        {editor.outcome ? (
+          <p key={editor.outcome.serial} className={editor.outcome.tone === "error" ? "form-error" : "form-success"}>
+            {editor.outcome.text}
+          </p>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -118,7 +125,7 @@ function failureText(error: unknown): string {
 function MetadataForm({ settings, source, editor }: { settings: MetadataSettings; source: MetadataSource; editor: MetadataEditor }) {
   const ids = { heading: useId(), enabled: useId(), enabledHint: useId(), limit: useId(), limitHint: useId(), limitError: useId() };
   const form = useRef<HTMLFormElement>(null);
-  const { draft, setDraft, problems, setProblems, edits, saving, outcome, say, clear } = editor;
+  const { draft, setDraft, problems, setProblems, edits, saving, say, clear } = editor;
   const saved = settings.open_library;
   const range = settings.search_limit_range;
   const enabled = draft.enabled ?? saved.enabled ?? false;
@@ -256,13 +263,6 @@ function MetadataForm({ settings, source, editor }: { settings: MetadataSettings
           <button type="submit" className="button button--primary" disabled={source.pending} aria-busy={source.pending}>
             {source.pending ? "Saving…" : "Save metadata settings"}
           </button>
-        </div>
-        <div className="form-outcome" role="status">
-          {outcome ? (
-            <p key={outcome.serial} className={outcome.tone === "error" ? "form-error" : "form-success"}>
-              {outcome.text}
-            </p>
-          ) : null}
         </div>
       </form>
     </section>
