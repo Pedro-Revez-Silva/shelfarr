@@ -1604,9 +1604,10 @@ PUT  {"revision":"5f0c…","open_library":{"enabled":false}}                 (ei
 409  the same shape with "error":"settings_conflict" and the values saved now; nothing written
 422  {"account":"12","error":"invalid_settings","errors":{"search_limit":["must be a whole number from 1 to 1000"]}}
 400  {"error":"invalid_request"}: not an object, an unknown member, no revision, an empty or unknown open_library member
+415  {"error":"unsupported_media_type"}: a body sent as anything but application/json
 ```
 
-`Cache-Control: private, no-store` on every JSON answer. Bodies are at most 1 KiB (`413`). `enabled` must be a JSON
+`Cache-Control: private, no-store` on every JSON answer, including `405`. Bodies are at most 1 KiB (`413`). `enabled` must be a JSON
 boolean ("must be true or false"); `search_limit` a JSON integer from 1 to 1000 (a fraction, exponent, string, `null`
 or anything outside is refused). The range: Rails' own form accepts any integer and sends it to Open Library as `limit`;
 Open Library documents 1000 as the largest `limit` it serves, and 0 or a negative number makes every search empty, which
@@ -1615,10 +1616,11 @@ as it is and kept: it is validated and rewritten only when the admin changes tha
 
 `discover.search` is Discover's own state: `server_off` when the runtime was started without `-open-library-search`
 (whatever is saved), else `provider_disabled`, `provider_not_selected` (`metadata_source` names another provider),
-`provider_paused` (with `retry_after` seconds when the backoff has an end), `available`, or `settings_unreadable` when
-Discover would answer `501 unsupported_stored_value` for a stored form below. `result_limit` is the `limit` Discover
-sends, the saved number held to `max_results` (Go's cap of 20) and 0 for a number below 1; `null` when Discover does not
-search. Reading or saving never contacts Open Library, never runs a health check and never writes
+`provider_paused` (Rails' saved backoff in `metadata_provider_statuses`, or an Open Library `429` this process is still
+waiting out; `retry_after` seconds when the pause has an end), `available`, or `settings_unreadable` when Discover would
+answer `501 unsupported_stored_value`: a stored form of the two keys below, a `metadata_source` that is not text or an
+unreadable `rate_limited_until`. `result_limit` is the `limit` Discover sends when it searches (available) or will send
+once a pause ends, the saved number held to `max_results` (Go's cap of 20) and 0 for a number below 1; `null` otherwise. Reading or saving never contacts Open Library, never runs a health check and never writes
 `metadata_provider_statuses`: Rails' admin save clears Open Library's saved status and backoff after an `open_library_*`
 change, but a save here leaves an Open Library rate limit in place, says so, and lets Discover resume when it ends.
 
@@ -1630,17 +1632,19 @@ change, but a save here leaves an Open Library rate limit in place, says so, and
   Discover already reads (white space, sign, `0d`, `_` between digits). Neither key is `env_overridable` in Rails'
   `SettingsService::DEFINITIONS`, so `SHELFARR_SETTING_OPEN_LIBRARY_*` variables change nothing in Rails or here.
 * A form Rails reads loosely is shown as unreadable (`null`), with "The saved choice cannot be read" or "The saved
-  number cannot be read", instead of a guess: `open_library_enabled` stored as `string` or `integer` (Rails returns the
-  text or number, both truthy), a limit stored as `string`, or text `to_i` cuts short (`12abc`, `many`). A limit longer
-  than 15 digits is shown as unreadable too (Discover still caps it at 20). Saving a new value replaces such a row.
+  number cannot be read", instead of a guess: `open_library_enabled` stored as `string` or `integer`, even blank (Rails
+  returns the text or number, all truthy), a limit stored as `string`, or text `to_i` cuts short (`12abc`, `many`). A
+  limit above 2^53 − 1, which a browser cannot hold exactly, is shown as unreadable too (Discover still caps it at 20).
+  Saving a new value replaces such a row.
 * Reading never writes. A save compares each submitted field with the saved typed value and writes only one that
   differs (Rails' `stored_setting_changed?`); submitting the saved value or the default writes nothing. A field the
   admin did not change is not sent, so a stored larger limit is never clamped by turning Open Library on or off.
 * A written row is the row Rails' `SettingsService.set` writes: `value` `true`/`false` or the decimal number,
   `value_type` `boolean`/`integer`, `category` `open_library`, Rails' description, `updated_at` (and `created_at` for a new
   row) in Rails' timestamp form. No other column or row is touched; the unique `key` index prevents a second row.
-* `revision` is a digest of the two rows as stored (present, `NULL`, type and text). A save whose revision no longer
-  matches is a `409` with the current values, so a second tab or the Rails screen saving first is never overwritten.
+* `revision` is a digest of the two rows as stored (present, `NULL`, type, text, `id` and `updated_at`), so a change and
+  its undo still give a new revision. A save whose revision no longer matches is a `409` with the current values, so a
+  second tab or the Rails screen saving first is never overwritten.
   Saves are serialised by SQLite's write lock: of several saves from one revision exactly one writes. The browser never
   retries a save.
 * Rails keeps no settings cache (`SettingsService.get` reads the row each time) and reads `OpenLibraryClient`'s values
@@ -1650,18 +1654,23 @@ change, but a save here leaves an Open Library rate limit in place, says so, and
 
 Server settings shows the Admin eyebrow, the heading, "These apply to everyone on this server and to the classic
 Shelfarr app. Your own name and password are in Account.", a link back to the Server overview and one Metadata card: the
-"Use Open Library" checkbox ("Searches openlibrary.org for book details. Default: on."), "Results per search", a number
-field with "1 to 1000. Default: 20. Discover in this preview shows at most 20.", "Discover now:" with the saved state in
+"Use Open Library" checkbox ("Searches openlibrary.org for book details. Default: on."), "Results per search", a numeric
+text field (`inputmode="numeric"`, so scrolling over it never changes the number) with "1 to 1000. Default: 20. Discover in this preview shows at most 20.", "Discover now:" with the saved state in
 words, and "Save metadata settings". Labels are native and the hints are linked with `aria-describedby`. Saving with
 nothing changed says "There are no changes to save." and sends nothing; a number outside the range is marked, focused
 and explained without a request; while saving the button reads "Saving…" and is busy; the result is announced in a
 status region: "Metadata settings saved.", the conflict ("These settings were changed somewhere else while you were
 editing. Nothing was saved. The page now shows the saved values; make your change again."), a refused field, or that
-the result is unknown (and the page asks the server again). Like the overview, the page only shows values the server
-answered after it was entered and while the account is confirmed, drops them when it is left, never shows cached values
-after Back, and locks with "This account's access changed" when the role is gone; a save refused with `404` checks the
-session. A member sees "Only administrators can see this page" and nothing is requested. After a save, Discover asks
-the server again instead of showing its earlier answer.
+the result is unknown, including a `200` whose body cannot be read (and the page asks the server again). Like the
+overview, the page only shows values the server answered after it was entered and while the account is confirmed,
+drops them when it is left, never shows cached values after Back, and locks with "This account's access changed" when
+the role is gone; a save refused with `404` checks the session. Unlike the overview, it also asks again after every
+session check (focus, visibility, `pageshow`) and shows only that newer answer. Unsaved edits are kept through a
+session check, and each edit keeps the revision it was made against, so a page refreshed meanwhile turns it into a
+conflict rather than an overwrite; an edit made while a save is pending is kept and saved next against the revision
+that save produced. A save's answer reaches the page only while it is still open, and a read in flight when Save is
+pressed is cancelled. A member sees "Only administrators can see this page" and nothing is requested. After a save,
+Discover's cached answers are dropped, so it asks the server again rather than showing an earlier list or refusal.
 
 ### Deliberate differences from Rails
 
@@ -1694,21 +1703,24 @@ own save writes, Rails reads and saves over them, and the previous binary's Disc
   text and mistyped rows, off with an unreadable limit); the server switch, another metadata source and a backoff with
   `retry_after`, a save leaving `metadata_provider_statuses` untouched; a save writing only the changed key in Rails'
   form with every other setting unchanged, the reload, Discover making no search while off and one with `limit=7`
-  after; an unchanged value not written and an unreadable value replaced; a stale revision `409` writing nothing; six
-  concurrent saves from one revision, exactly one written; every refused value and body; anonymous, member, other
+  after; an unchanged value not written and an unreadable value replaced; a stale revision `409` writing nothing, also
+  after another writer's change and its undo; an Open Library `429` reported as a pause until it ends; six concurrent
+  saves from one revision, exactly one written; every refused value and body; anonymous, member, other
   account, missing or foreign Origin, missing or foreign token, unlisted admin, preview off, other methods; a role
   removed, an account deleted and a session removed before the read snapshot or the write transaction; a database
   without the settings columns refused.
 * Web unit tests: the contract; reaching the page from the overview, the labels, hints and Discover sentence; one save
   sending only the changed field with the account and token; Discover asked again after a save; nothing to save; range
-  errors marked and focused; the busy button and no second send; conflict, refused field and unknown result; a refused
-  save locking the page; unreadable values; every Discover state; a member's direct load; cached values never shown on
-  entry after a demotion; the sign-in message.
+  errors marked and focused; the busy button and no second send; conflict, refused field and unknown result (including
+  an unreadable `200`); a refused save locking the page; unreadable values; every Discover state; a member's direct
+  load; cached values never shown on entry after a demotion; edits kept through a session check and the values asked
+  again after it; an edit's own revision kept so a refreshed page conflicts; an edit made during a save saved next; a
+  late save answer after leaving and a demotion never shown; Discover asking again after a repair; the sign-in message.
 * `apps/server/e2e/browser/settings_test.go` with the real binary on both `tools/migration/browser` fixtures
   (current schema and stable upgrade), `-open-library-search` and the loopback Open Library stand-in as its only route
   out: the Rails capture records every definition, that Rails ignores `SHELFARR_SETTING_OPEN_LIBRARY_*` (also set for
   Go), what `SettingsService.get` returns for 21 stored forms (16 read alike, 5 refused by Go as listed above) and the
-  rows `SettingsService.set` writes on insert and over legacy rows; Go's rows equal them, other settings are unchanged,
+  rows `SettingsService.set` writes on insert and over legacy rows; Go's rows equal both, other settings are unchanged,
   a member, missing token, foreign origin and other account write nothing, a stale save is a conflict, Discover sends
   nothing while off and one `limit=7` search after, and a stored `50` survives an unrelated save.
   `tools/migration/browser/verify_go_settings.rb` then boots the real Rails application on each database Go wrote:
@@ -1716,7 +1728,9 @@ own save writes, Rails reads and saves over them, and the previous binary's Disc
   `MetadataService` asks for 7, the rows are valid and unique with readable timestamps, the other settings equal what
   Go left, Rails' own `/admin/settings` shows the switch off and 7, and Rails' own save over the Go rows works.
 * The browser screen was checked in the maintainer's own Chrome through Browse on a loopback server with synthetic
-  accounts; there is no headless browser test for this page.
+  accounts (signing in, the link from the overview, keyboard save with a refused 0, reload, Discover off with no
+  outbound request, 320 px at 200% text without overflow, the page locking after a demotion, a member's direct load);
+  there is no headless browser test for this page.
 
 ## Requesting one ebook on a prepared disposable volume (opt-in)
 

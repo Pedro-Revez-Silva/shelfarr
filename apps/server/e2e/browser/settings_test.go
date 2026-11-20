@@ -45,11 +45,9 @@ type metadataCapture struct {
 }
 
 type openLibraryJournal struct {
-	dir     string
 	proxy   string
 	ca      string
 	journal string
-	cmd     *exec.Cmd
 }
 
 var buildFake sync.Once
@@ -93,7 +91,7 @@ func startFakeOpenLibrary(t *testing.T, response string) *openLibraryJournal {
 	if err := json.Unmarshal([]byte(line), &ready); err != nil {
 		t.Fatalf("stand-in said %q", line)
 	}
-	return &openLibraryJournal{dir: dir, proxy: ready.Proxy, ca: ready.CA, journal: ready.Journal, cmd: command}
+	return &openLibraryJournal{proxy: ready.Proxy, ca: ready.CA, journal: ready.Journal}
 }
 
 func (j *openLibraryJournal) entries(t *testing.T) []map[string]any {
@@ -275,6 +273,18 @@ func TestMetadataSettingsWriteWhatRailsWritesAndDiscoverHonoursThem(t *testing.T
 		}
 		if got := metadataRows(t, copied.database); !reflect.DeepEqual(got, want) {
 			t.Fatalf("Go wrote %v, Rails writes %v", got, want)
+		}
+		exec1(t, copied.database, `DELETE FROM settings WHERE key IN ('open_library_enabled', 'open_library_search_limit')`)
+		exec1(t, copied.database, `INSERT INTO settings (key, value, value_type, category, description, created_at, updated_at) VALUES
+			('open_library_enabled', '0', 'string', 'legacy', 'old', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+			('open_library_search_limit', 'many', 'string', 'legacy', 'old', '2026-01-01 00:00:00', '2026-01-01 00:00:00')`)
+		legacy := settingsBody(t, admin.get(metadataPath, id), http.StatusOK)
+		if got := values(legacy); got[0] != nil || got[1] != nil {
+			t.Fatalf("legacy rows read as %v", got)
+		}
+		saved = settingsBody(t, admin.put(metadataPath, id, token, `{"revision":"`+legacy["revision"].(string)+`","open_library":{"enabled":false,"search_limit":15}}`), http.StatusOK)
+		if got := metadataRows(t, copied.database); !reflect.DeepEqual(got, captured.Updated) {
+			t.Fatalf("Go rewrote legacy rows as %v, Rails as %v", got, captured.Updated)
 		}
 		if after := allSettings(t, copied.database, unrelatedSettings); !reflect.DeepEqual(unrelated, after) {
 			t.Fatal("saving changed another setting")
