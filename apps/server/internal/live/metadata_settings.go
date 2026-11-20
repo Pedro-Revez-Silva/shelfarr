@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/fault"
 	"github.com/Pedro-Revez-Silva/shelfarr/apps/server/internal/store"
 )
 
@@ -21,7 +20,8 @@ const (
 	MinSavedSearchLimit           = 1
 	MaxSavedSearchLimit           = 1000
 	openLibraryCategory           = "open_library"
-	longestShownLimitDigits       = 15
+	longestShownLimitDigits       = 16
+	maxExactLimit                 = 1<<53 - 1
 )
 
 var (
@@ -48,6 +48,7 @@ type MetadataChange struct {
 type metadataRows struct {
 	enabled SettingRow
 	limit   SettingRow
+	stamps  string
 }
 
 func readMetadataRows(ctx context.Context, q rowQuerier) (metadataRows, error) {
@@ -59,7 +60,13 @@ func readMetadataRows(ctx context.Context, q rowQuerier) (metadataRows, error) {
 	if err != nil {
 		return metadataRows{}, err
 	}
-	return metadataRows{enabled: enabled, limit: limit}, nil
+	var stamps sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT group_concat(id || ':' || key || ':' || IFNULL(CAST(updated_at AS TEXT), '-'), ',') FROM (SELECT id, key, updated_at FROM settings WHERE key IN (?, ?) ORDER BY id)`,
+		OpenLibraryEnabledKey, OpenLibrarySearchLimitKey).Scan(&stamps)
+	if err != nil {
+		return metadataRows{}, Classify(err)
+	}
+	return metadataRows{enabled: enabled, limit: limit, stamps: stamps.String}, nil
 }
 
 func (rows metadataRows) revision() string {
@@ -67,10 +74,14 @@ func (rows metadataRows) revision() string {
 	for _, row := range []SettingRow{rows.enabled, rows.limit} {
 		digest.Write([]byte(strconv.FormatBool(row.Found) + strconv.FormatBool(row.Value.Valid) + strconv.Quote(row.Type) + strconv.Quote(row.Value.String)))
 	}
+	digest.Write([]byte(strconv.Quote(rows.stamps)))
 	return hex.EncodeToString(digest.Sum(nil)[:16])
 }
 
 func savedEnabled(row SettingRow) *bool {
+	if row.Found && row.Value.Valid && row.Type != "boolean" {
+		return nil
+	}
 	value, err := booleanSettingValue(row, DefaultOpenLibraryEnabled)
 	if err != nil {
 		return nil
@@ -88,6 +99,9 @@ func savedSearchLimit(row SettingRow) *int64 {
 		return nil
 	}
 	value, _ := strconv.ParseInt("0"+parsed.digits, 10, 64)
+	if value > maxExactLimit {
+		return nil
+	}
 	if parsed.negative {
 		value = -value
 	}
@@ -126,9 +140,6 @@ func (d *DB) SaveMetadataSettings(ctx context.Context, clock func() time.Time, r
 		return MetadataSettings{}, Classify(err)
 	}
 	defer tx.Rollback()
-	if err := fault.Hit(ctx, "metadata_settings.locked"); err != nil {
-		return MetadataSettings{}, err
-	}
 	if err := authorise(ctx, tx); err != nil {
 		return MetadataSettings{}, err
 	}
@@ -165,9 +176,6 @@ func (d *DB) SaveMetadataSettings(ctx context.Context, clock func() time.Time, r
 	saved := project(ctx, tx, rows, now)
 	if failedRead(saved.DiscoverErr) {
 		return MetadataSettings{}, saved.DiscoverErr
-	}
-	if err := fault.Hit(ctx, "metadata_settings.before-commit"); err != nil {
-		return MetadataSettings{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return MetadataSettings{}, Classify(err)

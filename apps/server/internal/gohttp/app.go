@@ -208,7 +208,7 @@ func (a *App) logRequest(r *http.Request, found route, recorder *statusWriter, r
 func (a *App) dispatch(w http.ResponseWriter, r *http.Request, found route, result *outcome) {
 	found = a.gateAcquisition(found)
 	switch found.name {
-	case "browser_discover", "browser_requests", "browser_request", "browser_request_create", "browser_acquisition", "browser_selection", "browser_admin_overview":
+	case "browser_discover", "browser_requests", "browser_request", "browser_request_create", "browser_acquisition", "browser_selection", "browser_admin_overview", "browser_metadata_settings":
 		w.Header().Set("Cache-Control", "private, no-store")
 	}
 	if found.web && a.web == nil {

@@ -170,12 +170,16 @@ func (a *App) discoverReach(settings live.MetadataSettings) discoverReach {
 		reach.Search = discoverSettingsUnusable
 	default:
 		reach.Search = string(settings.Discover.State)
-		if state := settings.Discover.State; state == live.OpenLibraryAvailable || state == live.OpenLibraryPaused {
+		pausedUntil := settings.Discover.PausedUntil
+		if upstream := a.openLibrary.PausedUntil(); settings.Discover.State == live.OpenLibraryAvailable && upstream.After(a.now()) {
+			reach.Search, pausedUntil = string(live.OpenLibraryPaused), upstream
+		}
+		if reach.Search == string(live.OpenLibraryAvailable) || reach.Search == string(live.OpenLibraryPaused) {
 			limit := settings.Discover.Limit
 			reach.ResultLimit = &limit
 		}
-		if !settings.Discover.PausedUntil.IsZero() {
-			seconds := int(math.Ceil(settings.Discover.PausedUntil.Sub(a.now()).Seconds()))
+		if !pausedUntil.IsZero() {
+			seconds := int(math.Ceil(pausedUntil.Sub(a.now()).Seconds()))
 			reach.RetryAfter = &seconds
 		}
 	}

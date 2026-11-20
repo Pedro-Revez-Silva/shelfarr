@@ -118,6 +118,8 @@ func TestStoredRailsFormsAreShownAsRailsReadsThemAndDiscoverKeepsItsOwnCap(t *te
 		{"blank boolean is the default", `('open_library_enabled', '', 'boolean'), ('open_library_search_limit', NULL, 'integer')`, true, 20.0, "available", 20.0},
 		{"negative limit", `('open_library_search_limit', '-3', 'integer')`, true, -3.0, "available", 0.0},
 		{"huge legacy limit", `('open_library_search_limit', '12345678901234567890', 'integer')`, true, nil, "available", 20.0},
+		{"sixteen digits Rails reads exactly", `('open_library_search_limit', '1_000_000_000_000_000', 'integer')`, true, 1e15, "available", 20.0},
+		{"blank switch saved as text", `('open_library_enabled', '', 'string')`, nil, 20.0, "available", 20.0},
 		{"enabled saved as text", `('open_library_enabled', 'false', 'string')`, nil, 20.0, "settings_unreadable", nil},
 		{"limit not a number", `('open_library_search_limit', '12abc', 'integer')`, true, nil, "settings_unreadable", nil},
 		{"limit saved as text", `('open_library_search_limit', '12', 'string')`, true, nil, "settings_unreadable", nil},
@@ -175,6 +177,27 @@ func TestDiscoverAvailabilityFollowsTheServerSwitchTheSourceAndTheBackoff(t *tes
 	}
 	if fake.count() != 0 {
 		t.Fatal("saving contacted Open Library")
+	}
+}
+
+func TestOpenLibrarysOwnRateLimitInThisProcessIsReportedAsAPause(t *testing.T) {
+	h, fake := newDiscoverHarness(t, true)
+	fake.respond = jsonAnswer(http.StatusTooManyRequests, `{}`, "Retry-After", "30")
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	if recorder := client.discover("q=dune"); recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("discover %d %s", recorder.Code, recorder.Body.String())
+	}
+	answer := answerOf(t, client.get(metadataSettingsPath), http.StatusOK)
+	if answer.Discover.Search != "provider_paused" || answer.Discover.RetryAfter == nil || *answer.Discover.RetryAfter != 30 || *answer.Discover.ResultLimit != 20 {
+		t.Fatalf("upstream pause %+v", answer.Discover)
+	}
+	h.clock.Advance(31 * time.Second)
+	if answer := answerOf(t, client.get(metadataSettingsPath), http.StatusOK); answer.Discover.Search != "available" || answer.Discover.RetryAfter != nil {
+		t.Fatalf("after the pause %+v", answer.Discover)
+	}
+	if fake.count() != 1 {
+		t.Fatalf("Open Library was asked %d times", fake.count())
 	}
 }
 
@@ -276,6 +299,30 @@ func TestAStaleRevisionIsAConflictThatShowsTheSavedValuesAndWritesNothing(t *tes
 		t.Fatalf("a stale save wrote: %v -> %v", before, after)
 	}
 	answerOf(t, second.saveSettings(secondToken, changeBody(conflict.Revision, `{"enabled":false}`)), http.StatusOK)
+}
+
+func TestARevisionReadBeforeAChangeAndItsUndoIsStillStale(t *testing.T) {
+	h, _ := newDiscoverHarness(t, true)
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type, updated_at) VALUES ('open_library_search_limit', '20', 'integer', '2026-09-01 07:00:00')`)
+	stale, other := h.client(), h.client()
+	staleToken := stale.signIn("alice", alicePassword)
+	otherToken := other.signIn("alice", alicePassword)
+	read := answerOf(t, stale.get(metadataSettingsPath), http.StatusOK)
+	h.clock.Advance(time.Second)
+	eight := answerOf(t, other.saveSettings(otherToken, changeBody(read.Revision, `{"search_limit":8}`)), http.StatusOK)
+	h.clock.Advance(time.Second)
+	undone := answerOf(t, other.saveSettings(otherToken, changeBody(eight.Revision, `{"search_limit":20}`)), http.StatusOK)
+	if undone.Revision == read.Revision {
+		t.Fatal("an undone change gave back the earlier revision")
+	}
+	before := livetest.Query(t, h.path, settingsTable)
+	conflict := answerOf(t, stale.saveSettings(staleToken, changeBody(read.Revision, `{"search_limit":7}`)), http.StatusConflict)
+	if *conflict.OpenLibrary.SearchLimit != 20 {
+		t.Fatalf("conflict %+v", conflict)
+	}
+	if after := livetest.Query(t, h.path, settingsTable); !reflect.DeepEqual(before, after) {
+		t.Fatalf("a stale save wrote: %v -> %v", before, after)
+	}
 }
 
 func TestConcurrentSavesFromOneRevisionLetExactlyOneWrite(t *testing.T) {
@@ -399,7 +446,7 @@ func TestOnlyACurrentAdminOfTheBoundAccountWithOriginAndTokenCanSave(t *testing.
 	}
 	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodDelete, http.MethodPatch} {
 		recorder := admin.send(method, metadataSettingsPath, "", map[string]string{"X-Shelfarr-Account": "1", "Origin": browserOrigin, "X-CSRF-Token": token})
-		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, PUT" {
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, PUT" || recorder.Header().Get("Cache-Control") != "private, no-store" {
 			t.Fatalf("%s: %d %v", method, recorder.Code, recorder.Header())
 		}
 	}

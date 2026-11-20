@@ -157,6 +157,12 @@ func (c *Client) admit() (func(), error) {
 	return func() { <-c.slots }, nil
 }
 
+func (c *Client) PausedUntil() time.Time {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	return c.pausedUntil
+}
+
 func (c *Client) pause(header string) time.Duration {
 	wait := defaultPause
 	if trimmed := strings.TrimSpace(header); delaySeconds.MatchString(trimmed) {
