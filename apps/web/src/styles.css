@@ -2085,6 +2085,9 @@ thead th {
   margin: 0 auto;
   padding: 32px var(--gutter) 48px;
 }
+.downloads-header h1 {
+  font-size: min(2.5rem, 12vw);
+}
 .downloads-header h1:focus {
   outline: none;
 }

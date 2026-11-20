@@ -54,9 +54,13 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
       return;
     }
     const confirmation = confirmationFrom(answer.account, answer.offline_expires_in, Date.now());
-    if (confirmation) await store.confirm(confirmation).catch(() => undefined);
-    else await store.forget().catch(() => undefined);
-    if (answer.account !== guard.account || !confirmation) {
+    if (!confirmation) {
+      await store.forget().catch(() => undefined);
+      guard.lock("signed_out");
+      return;
+    }
+    await store.confirm(confirmation).catch(() => undefined);
+    if (answer.account !== guard.account) {
       guard.lock("account_changed");
       return;
     }

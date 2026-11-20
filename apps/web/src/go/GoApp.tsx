@@ -36,12 +36,12 @@ type AuthState =
 
 type Load = { notice?: string; focus?: boolean };
 
-const RETIRED_SCOPE = { scope: "/preview/library/" };
+const RETIRED_WORKER = { scope: "/preview/library/", worker: "/preview/offline-worker.js" };
 const SAVED_VIEWS: readonly GoBoot["view"][] = ["reader", "downloads"];
 
 async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null): Promise<void> {
   if (!boot.offline) {
-    if (await hasWorker(RETIRED_SCOPE)) await retireWorker(RETIRED_SCOPE);
+    await retireWorker(RETIRED_WORKER);
     await store.forget();
     return;
   }

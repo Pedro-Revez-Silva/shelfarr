@@ -179,6 +179,10 @@ meaning; the Go link is derived in the client). PDFs and comics open there too w
 engine, and stay honestly unavailable otherwise. See
 [`go-http-migration.md`](go-http-migration.md#online-epub-reader-and-audiobook-player-opt-in). Under Rails nothing changes.
 
+With the Go runtime's `-web-offline` option an EPUB can also be saved in the browser and read from Downloads while the
+server is unreachable, through a worker scoped to `/preview/library/` and kept apart from the Rails `/read` worker and
+its storage; see [`go-http-migration.md`](go-http-migration.md#offline-epub-reading-opt-in).
+
 ## Not in this slice
 
 Full frontend parity, Go authentication or write ownership, moving `/read` or the PWA identity,

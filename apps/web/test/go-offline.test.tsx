@@ -121,6 +121,25 @@ describe("offline reading in the Go preview", () => {
     expect(store.record?.account).toBe("4");
   });
 
+  test("reconnecting to a server whose offline option is off ends offline access and forgets the account", async () => {
+    let answer: unknown = null;
+    const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+      if (answer === null) throw new TypeError("Failed to fetch");
+      return { body: answer };
+    });
+    const store = storeFor("5");
+    renderOffline(server, store);
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    answer = signedIn("5");
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(await screen.findByRole("heading", { name: "Offline access ended" })).toBeTruthy();
+    expect(store.record).toBeNull();
+    expect(screen.queryByText(/Saved Book/)).toBeNull();
+  });
+
   test("reconnecting signed out stops offline reading and forgets the account", async () => {
     let answer: unknown = null;
     const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {

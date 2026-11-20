@@ -49,9 +49,15 @@ export async function ensureWorker(offline: OfflineBoot): Promise<void> {
   await activated(worker);
 }
 
-export async function retireWorker(offline: Pick<OfflineBoot, "scope">): Promise<void> {
+function runs(registration: ServiceWorkerRegistration, worker: string): boolean {
+  const script = (registration.active ?? registration.waiting ?? registration.installing)?.scriptURL;
+  return script !== undefined && new URL(script).pathname === worker;
+}
+
+export async function retireWorker(offline: Pick<OfflineBoot, "scope" | "worker">): Promise<void> {
   if (!offlineSupported()) return;
   const registration = await navigator.serviceWorker.getRegistration(offline.scope).catch(() => undefined);
-  if (registration && sameScope(registration, offline.scope)) await registration.unregister().catch(() => false);
+  if (!registration || !sameScope(registration, offline.scope) || !runs(registration, offline.worker)) return;
+  await registration.unregister().catch(() => false);
   for (const name of await caches.keys()) if (name.startsWith(WORKER_CACHE_PREFIX)) await caches.delete(name);
 }
