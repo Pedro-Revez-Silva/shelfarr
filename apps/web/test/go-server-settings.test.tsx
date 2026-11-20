@@ -513,13 +513,35 @@ describe("the server settings page", () => {
     expect(server.called("GET", SESSION).length).toBe(checks + 1);
   });
 
+  test("a read left behind on leaving the page is cancelled, so its late refusal cannot sign out the page now open", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const server = settingsServer();
+    server.on("GET", SETTINGS, async () => {
+      await held;
+      return error(401, "signed_out");
+    });
+    const { services, history } = renderSettings(server);
+    await waitFor(() => expect(server.called("GET", SETTINGS).length).toBe(1));
+    act(() => history.push("/preview/library"));
+    await screen.findByRole("heading", { name: "Library", level: 1 });
+    await act(async () => services.revalidate());
+    await act(async () => {
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(services.guard.isActive()).toBe(true);
+    expect(screen.getByRole("heading", { name: "Library", level: 1 })).toBeTruthy();
+    expect(server.called("GET", SETTINGS)[0]!.signal?.aborted).toBe(true);
+  });
+
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {
     const server = settingsServer({ save: () => ({ status: 409, body: { ...settings({ revision: "11111111111111111111111111111111" }, { search_limit: 5 }, { result_limit: 5 }), error: "settings_conflict" } }) });
     await opened(server);
     await userEvent.click(controls().enabled);
     await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
     expect((await screen.findByRole("status")).textContent).toBe(
-      "These settings were changed somewhere else while you were editing. Nothing was saved. The page now shows the saved values; make your change again.",
+      "These settings were changed somewhere else while you were editing. Nothing was saved. Check the saved values and make your change again.",
     );
     expect(controls().enabled.checked).toBe(true);
     expect(controls().limit.value).toBe("5");

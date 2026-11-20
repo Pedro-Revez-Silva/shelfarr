@@ -169,9 +169,12 @@ export function useMetadataSettings(admin: boolean): MetadataSource {
   const readAfterSave = useRef(false);
   const refused = useRef(false);
   const alive = useRef(true);
+  const reading = useRef<AbortController | null>(null);
   trusted.current = trust === "trusted";
 
   const start = () => {
+    reading.current?.abort();
+    reading.current = null;
     issued.current += 1;
     latest.current = issued.current;
     return issued.current;
@@ -194,14 +197,16 @@ export function useMetadataSettings(admin: boolean): MetadataSource {
       return;
     }
     const ticket = start();
-    api.metadataSettings().then(
+    const controller = new AbortController();
+    reading.current = controller;
+    api.metadataSettings(controller.signal).then(
       (settings) => {
         if (latest.current !== ticket) return;
         showing.current = true;
         setShown({ settings, error: null });
       },
       (error: unknown) => {
-        if (latest.current !== ticket) return;
+        if (latest.current !== ticket || controller.signal.aborted) return;
         if (failureKind(error) === "not_found") refuse(error);
         else setShown({ settings: null, error });
       },

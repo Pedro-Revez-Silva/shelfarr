@@ -184,7 +184,7 @@ function MetadataForm({ settings, source, editor }: { settings: MetadataSettings
         }
         if (answer.kind === "conflict") {
           reset();
-          say("error", "These settings were changed somewhere else while you were editing. Nothing was saved. The page now shows the saved values; make your change again.");
+          say("error", "These settings were changed somewhere else while you were editing. Nothing was saved. Check the saved values and make your change again.");
           return;
         }
         refuse(

@@ -1617,7 +1617,8 @@ Open Library documents 1000 as the largest `limit` it serves, and 0 or a negativ
 the Use Open Library switch already does openly. A stored value outside the range (a legacy `5000`, `0`, `-3`) is shown
 as it is and kept: it is validated and rewritten only when the admin changes that field.
 
-`discover.search` is Discover's own state: `server_off` when the runtime was started without `-open-library-search`
+`discover.search` says what Discover will do with a search now (Discover's own answer uses the same names, except that
+an Open Library pause held only by this process shows there as `429 search_rate_limited`): `server_off` when the runtime was started without `-open-library-search`
 (whatever is saved), else `provider_disabled`, `provider_not_selected` (`metadata_source` names another provider),
 `provider_paused` (Rails' saved backoff in `metadata_provider_statuses`, or an Open Library `429` this process is still
 waiting out while Discover would otherwise search with a limit above 0; `retry_after` is the later end of the two when
@@ -1643,8 +1644,8 @@ change, but a save here leaves an Open Library rate limit in place, says so, and
   limit whose magnitude is above 2^53 − 1, outside the integers a browser holds exactly, is shown as unreadable too
   (Discover still uses it: 20 for a large positive one, 0 for a negative one). Saving a new value replaces such a row.
 * Reading never writes. A save compares each submitted field with the saved typed value and writes only one that
-  differs, as Rails' `stored_setting_changed?` does for rows in Rails' own form; submitting the saved value or the
-  default writes nothing. A row shown as unreadable has no typed value here, so a submitted value always replaces it;
+  differs, as Rails' `stored_setting_changed?` does for rows in Rails' own form; submitting the value currently in
+  effect (the saved one, or the default when nothing is saved) writes nothing. A row shown as unreadable has no typed value here, so a submitted value always replaces it;
   Rails would skip the write when either the raw text or its own loose reading matches (`12abc` against 12). A field the
   admin did not change is not sent, so a stored larger limit is never clamped by turning Open Library on or off.
 * A written row is the row Rails' `SettingsService.set` writes: `value` `true`/`false` or the decimal number,
@@ -1672,18 +1673,20 @@ words, and "Save metadata settings". Labels are native and the hints are linked 
 nothing changed says "There are no changes to save." and sends nothing; a number outside the range is marked, focused
 and explained without a request; while saving the button reads "Saving…" and is busy; the result is announced in a
 status region: "Metadata settings saved.", the conflict ("These settings were changed somewhere else while you were
-editing. Nothing was saved. The page now shows the saved values; make your change again."), a refused field, or that
+editing. Nothing was saved. Check the saved values and make your change again."), a refused field, or that
 the result is unknown, including a `200` whose body cannot be read (and the page asks the server again once the account
 is confirmed). The result stays announced below the card even when the read after it fails. The values are held by the
 page only, never in a shared cache: entering the page (a link, Back, Forward, reload) asks the server, leaving it drops
 them, and a session check (focus, visibility, `pageshow`) hides them and, once the account is confirmed, asks again.
-Only the answer to the read or save started last is shown: starting a save or a read, a session check and leaving the
-page each make every earlier answer void. No read starts while the account is unconfirmed or a save is pending; one
+Only the answer to the read or save started last updates the values shown: starting a save or a read, a session
+check and leaving the page each make every earlier answer void for the page, and cancel a read still in flight, so a
+late refusal of an abandoned read cannot sign out or lock the page open now. A save is never cancelled: its result is
+still announced and a confirmed save still drops Discover's cached answers. No read starts while the account is unconfirmed or a save is pending; one
 read follows the save or the check instead. So an answer taken before a check, before a save committed or before
 another writer's change never replaces a newer one. The page locks with "This account's access changed" when the role
-is gone. A read or save refused with `404` shows "Only administrators can see this page" and checks the session once;
-the page is not asked again until it is entered again, and a member's page never asks. A failed read shows Try again
-and is retried after the next session check. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
+is gone. The current read or save refused with `404` shows "Only administrators can see this page" and checks the session
+once; the page is not asked again until it is entered again, even if the next check confirms an admin, and a member's
+page never asks. A failed read shows Try again and is retried after the next successful session check. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
 so a page refreshed meanwhile turns it into a conflict rather than an overwrite; an edit made while a save is pending
 is kept and saved next against the revision that save produced. A member sees "Only administrators can see this page".
 After a confirmed save, or a save whose result is unknown, Discover's cached answers are dropped, so it asks the server
@@ -1703,7 +1706,8 @@ again rather than showing an earlier list or refusal.
 GET /preview/admin/settings                     before 404 not_found   after 200 shell, boot view "server_settings"
 GET /preview/api/v1/admin/settings/metadata     before 404 not_found   after 200 (admin), 404 not_found (member), 401 signed_out|account_changed
 PUT /preview/api/v1/admin/settings/metadata     before 404 not_found   after 200 | 409 settings_conflict | 422 invalid_settings | 400 | 408 | 413 | 415 | 422 invalid_csrf | 404 | 401
-either method, shared answers                                          503 server_busy (request capacity), 503 database_busy | database_unavailable
+either method, shared answers                                          503 server_busy (request capacity), 503 database_busy | database_unavailable | request_timeout,
+                                                                       501 browser_origin_not_configured (PUT on a runtime without -browser-origin)
 other methods on that path                      before 404 not_found   after 405, Allow: GET, PUT
 Go boot block "view"                            before …|admin         after adds server_settings
 ```
