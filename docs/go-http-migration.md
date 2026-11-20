@@ -1681,12 +1681,15 @@ them, and a session check (focus, visibility, `pageshow`) hides them and, once t
 Only the answer to the read or save started last updates the values shown: starting a save or a read, a session
 check and leaving the page each make every earlier answer void for the page, and cancel a read still in flight, so a
 late refusal of an abandoned read cannot sign out or lock the page open now. A save is never cancelled: its result is
-still announced and a confirmed save still drops Discover's cached answers. No read starts while the account is unconfirmed or a save is pending; one
+announced while the page is still open, and a confirmed save drops Discover's cached answers even after the page was
+left. No read starts while the account is unconfirmed or a save is pending; one
 read follows the save or the check instead. So an answer taken before a check, before a save committed or before
 another writer's change never replaces a newer one. The page locks with "This account's access changed" when the role
 is gone. The current read or save refused with `404` shows "Only administrators can see this page" and checks the session
 once; the page is not asked again until it is entered again, even if the next check confirms an admin, and a member's
-page never asks. A failed read shows Try again and is retried after the next successful session check. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
+page never asks. A failed read shows Try again and is retried after the next successful session check. A session check that cannot
+confirm the account (for example a `503`) also shows Try again instead of the values; it checks the session again and
+reads once the account is confirmed. Unsaved edits are kept through a session check, and each edit keeps the revision it was made against,
 so a page refreshed meanwhile turns it into a conflict rather than an overwrite; an edit made while a save is pending
 is kept and saved next against the revision that save produced. A member sees "Only administrators can see this page".
 After a confirmed save, or a save whose result is unknown, Discover's cached answers are dropped, so it asks the server

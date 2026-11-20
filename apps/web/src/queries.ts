@@ -226,7 +226,8 @@ export function useMetadataSettings(admin: boolean): MetadataSource {
     if (trust !== "trusted") {
       start();
       showing.current = false;
-      setShown((current) => (current.settings ? { settings: null, error: null } : current));
+      if (trust === "unverified" && !refused.current) setShown({ settings: null, error: new ApiError("network", "The account could not be confirmed; try again") });
+      else setShown((current) => (current.settings ? { settings: null, error: null } : current));
       return;
     }
     if (!showing.current) read();
@@ -264,7 +265,8 @@ export function useMetadataSettings(admin: boolean): MetadataSource {
     [api, guard, keys, queryClient, read, refuse],
   );
 
-  return { settings: trust === "trusted" ? shown.settings : null, error: shown.error, pending, reload: read, save };
+  const reload = useCallback(() => (trusted.current ? read() : revalidate()), [read, revalidate]);
+  return { settings: trust === "trusted" ? shown.settings : null, error: shown.error, pending, reload, save };
 }
 
 export function useRequestEbook() {

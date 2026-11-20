@@ -535,6 +535,31 @@ describe("the server settings page", () => {
     expect(server.called("GET", SETTINGS)[0]!.signal?.aborted).toBe(true);
   });
 
+  test("a session check that fails while the first read is pending offers Try again, which checks again and reads", async () => {
+    let busy = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let reads = 0;
+    const server = settingsServer();
+    server.on("GET", SESSION, () => (busy ? error(503, "server_busy") : { body: session({ admin: { url: "/admin" } }) }));
+    server.on("GET", SETTINGS, async () => {
+      reads += 1;
+      if (reads === 1) await held;
+      return { body: settings({}, { search_limit: 7 }) };
+    });
+    const { services } = renderSettings(server);
+    await waitFor(() => expect(reads).toBe(1));
+    busy = true;
+    await act(async () => services.revalidate());
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    await act(async () => release());
+    busy = false;
+    await userEvent.click(retry);
+    await screen.findByRole("heading", { name: "Metadata", level: 2 });
+    expect(controls().limit.value).toBe("7");
+    expect(reads).toBe(2);
+  });
+
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {
     const server = settingsServer({ save: () => ({ status: 409, body: { ...settings({ revision: "11111111111111111111111111111111" }, { search_limit: 5 }, { result_limit: 5 }), error: "settings_conflict" } }) });
     await opened(server);
