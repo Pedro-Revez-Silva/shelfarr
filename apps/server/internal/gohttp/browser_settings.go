@@ -169,11 +169,15 @@ func (a *App) discoverReach(settings live.MetadataSettings) discoverReach {
 	case settings.DiscoverErr != nil:
 		reach.Search = discoverSettingsUnusable
 	default:
-		reach.Search = string(settings.Discover.State)
-		pausedUntil := settings.Discover.PausedUntil
-		if upstream := a.openLibrary.PausedUntil(); settings.Discover.State == live.OpenLibraryAvailable && upstream.After(a.now()) {
-			reach.Search, pausedUntil = string(live.OpenLibraryPaused), upstream
+		state, pausedUntil := settings.Discover.State, settings.Discover.PausedUntil
+		pauseEnds := state == live.OpenLibraryAvailable || state == live.OpenLibraryPaused && !pausedUntil.IsZero()
+		if upstream := a.openLibrary.PausedUntil(); pauseEnds && settings.Discover.Limit > 0 && upstream.After(a.now()) {
+			state = live.OpenLibraryPaused
+			if upstream.After(pausedUntil) {
+				pausedUntil = upstream
+			}
 		}
+		reach.Search = string(state)
 		if reach.Search == string(live.OpenLibraryAvailable) || reach.Search == string(live.OpenLibraryPaused) {
 			limit := settings.Discover.Limit
 			reach.ResultLimit = &limit

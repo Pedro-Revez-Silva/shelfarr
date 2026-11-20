@@ -200,6 +200,7 @@ func TestOpenRefusesADatabaseWithoutWhatTheServerOverviewReads(t *testing.T) {
 
 func TestOpenRefusesADatabaseWithoutTheSettingsColumnsAMetadataSaveWrites(t *testing.T) {
 	for _, change := range []string{
+		`ALTER TABLE settings RENAME COLUMN id TO legacy_id`,
 		`ALTER TABLE settings DROP COLUMN category`,
 		`ALTER TABLE settings DROP COLUMN description`,
 		`ALTER TABLE settings DROP COLUMN created_at`,

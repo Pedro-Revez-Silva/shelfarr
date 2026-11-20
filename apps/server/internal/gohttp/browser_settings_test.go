@@ -199,6 +199,18 @@ func TestOpenLibrarysOwnRateLimitInThisProcessIsReportedAsAPause(t *testing.T) {
 	if fake.count() != 1 {
 		t.Fatalf("Open Library was asked %d times", fake.count())
 	}
+	if recorder := client.discover("q=dune"); recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("second 429 %d", recorder.Code)
+	}
+	livetest.Exec(t, h.path, `INSERT INTO metadata_provider_statuses (provider, status, rate_limited_until) VALUES ('openlibrary', 'rate_limited', '2026-11-15 12:00:36.123456')`)
+	if answer := answerOf(t, client.get(metadataSettingsPath), http.StatusOK); answer.Discover.Search != "provider_paused" || *answer.Discover.RetryAfter != 30 {
+		t.Fatalf("the later of both pauses %+v", answer.Discover)
+	}
+	livetest.Exec(t, h.path, `DELETE FROM metadata_provider_statuses`)
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type) VALUES ('open_library_search_limit', '0', 'integer')`)
+	if answer := answerOf(t, client.get(metadataSettingsPath), http.StatusOK); answer.Discover.Search != "available" || *answer.Discover.ResultLimit != 0 || answer.Discover.RetryAfter != nil {
+		t.Fatalf("a zero limit never reaches Open Library %+v", answer.Discover)
+	}
 }
 
 func TestSavingWritesOnlyTheChangedKeyInTheRailsFormAndDiscoverHonoursIt(t *testing.T) {
@@ -302,15 +314,24 @@ func TestAStaleRevisionIsAConflictThatShowsTheSavedValuesAndWritesNothing(t *tes
 }
 
 func TestARevisionReadBeforeAChangeAndItsUndoIsStillStale(t *testing.T) {
+	for _, clock := range []struct {
+		name   string
+		undoAt time.Duration
+	}{{"clock forward", 2 * time.Second}, {"clock stepped back to the original row's time", 0}} {
+		t.Run(clock.name, func(t *testing.T) { changeAndUndo(t, clock.undoAt) })
+	}
+}
+
+func changeAndUndo(t *testing.T, undoAt time.Duration) {
 	h, _ := newDiscoverHarness(t, true)
-	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type, updated_at) VALUES ('open_library_search_limit', '20', 'integer', '2026-09-01 07:00:00')`)
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type, updated_at) VALUES ('open_library_search_limit', '20', 'integer', '2026-11-15 12:00:00.123456')`)
 	stale, other := h.client(), h.client()
 	staleToken := stale.signIn("alice", alicePassword)
 	otherToken := other.signIn("alice", alicePassword)
 	read := answerOf(t, stale.get(metadataSettingsPath), http.StatusOK)
 	h.clock.Advance(time.Second)
 	eight := answerOf(t, other.saveSettings(otherToken, changeBody(read.Revision, `{"search_limit":8}`)), http.StatusOK)
-	h.clock.Advance(time.Second)
+	h.clock.Advance(undoAt - time.Second)
 	undone := answerOf(t, other.saveSettings(otherToken, changeBody(eight.Revision, `{"search_limit":20}`)), http.StatusOK)
 	if undone.Revision == read.Revision {
 		t.Fatal("an undone change gave back the earlier revision")

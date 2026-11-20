@@ -155,17 +155,16 @@ func (d *DB) SaveMetadataSettings(ctx context.Context, clock func() time.Time, r
 		}
 		return current, ErrSettingsChanged
 	}
-	stamp := TimestampText(now)
 	if wanted := change.Enabled; wanted != nil {
 		if saved := savedEnabled(rows.enabled); saved == nil || *saved != *wanted {
-			if err := writeSetting(ctx, tx, rows.enabled, OpenLibraryEnabledKey, "boolean", strconv.FormatBool(*wanted), stamp); err != nil {
+			if err := writeSetting(ctx, tx, rows.enabled, OpenLibraryEnabledKey, "boolean", strconv.FormatBool(*wanted), now); err != nil {
 				return MetadataSettings{}, err
 			}
 		}
 	}
 	if wanted := change.SearchLimit; wanted != nil {
 		if saved := savedSearchLimit(rows.limit); saved == nil || *saved != *wanted {
-			if err := writeSetting(ctx, tx, rows.limit, OpenLibrarySearchLimitKey, "integer", strconv.FormatInt(*wanted, 10), stamp); err != nil {
+			if err := writeSetting(ctx, tx, rows.limit, OpenLibrarySearchLimitKey, "integer", strconv.FormatInt(*wanted, 10), now); err != nil {
 				return MetadataSettings{}, err
 			}
 		}
@@ -183,8 +182,26 @@ func (d *DB) SaveMetadataSettings(ctx context.Context, clock func() time.Time, r
 	return saved, nil
 }
 
-func writeSetting(ctx context.Context, tx *sql.Tx, row SettingRow, key, valueType, value, stamp string) error {
+func laterThanSaved(ctx context.Context, tx *sql.Tx, key string, now time.Time) (time.Time, error) {
+	var saved sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(updated_at AS TEXT) FROM settings WHERE key = ?`, key).Scan(&saved); err != nil {
+		return time.Time{}, Classify(err)
+	}
+	previous, err := store.ParseTimestamp(saved.String)
+	if !saved.Valid || err != nil || now.Truncate(time.Microsecond).After(previous) {
+		return now, nil
+	}
+	return previous.Add(time.Microsecond), nil
+}
+
+func writeSetting(ctx context.Context, tx *sql.Tx, row SettingRow, key, valueType, value string, now time.Time) error {
 	var err error
+	if row.Found {
+		if now, err = laterThanSaved(ctx, tx, key, now); err != nil {
+			return err
+		}
+	}
+	stamp := TimestampText(now)
 	if row.Found {
 		_, err = tx.ExecContext(ctx, `UPDATE settings SET value = ?, value_type = ?, category = ?, description = ?, updated_at = ? WHERE key = ?`,
 			value, valueType, openLibraryCategory, settingDescriptions[key], stamp, key)
