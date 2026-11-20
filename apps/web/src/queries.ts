@@ -170,9 +170,7 @@ export function useSaveMetadataSettings() {
   return useMutation({
     mutationFn: ({ revision, change }: { revision: string; change: MetadataChange }) => api.saveMetadataSettings(revision, change),
     onSuccess: (answer: MetadataAnswer) => {
-      if (!guard.isActive() || answer.kind === "rejected") return;
-      client.setQueryData(keys.metadataSettings, answer.settings);
-      if (answer.kind === "saved") void client.invalidateQueries({ queryKey: keys.discoverAll });
+      if (guard.isActive() && answer.kind === "saved") void client.resetQueries({ queryKey: keys.discoverAll });
     },
     onError: (error: unknown) => {
       if (failureKind(error) === "not_found") revalidate();

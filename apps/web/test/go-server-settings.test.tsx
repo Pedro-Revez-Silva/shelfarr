@@ -248,6 +248,113 @@ describe("the server settings page", () => {
     expect(controls().enabled.checked).toBe(true);
   });
 
+  test("after a session check the page asks for the settings again instead of showing what it had", async () => {
+    let limit = 20;
+    const server = settingsServer({ read: () => ({ body: settings({}, { search_limit: limit }) }) });
+    const { services } = await opened(server);
+    expect(controls().limit.value).toBe("20");
+    const reads = server.called("GET", SETTINGS).length;
+    limit = 7;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(controls().limit.value).toBe("7"));
+    expect(server.called("GET", SETTINGS).length).toBe(reads + 1);
+  });
+
+  test("a save answered after the page was left and the role removed is never shown on return", async () => {
+    let admin = true;
+    let releaseSave!: () => void;
+    let releaseRead!: () => void;
+    const saveHeld = new Promise<void>((resolve) => (releaseSave = resolve));
+    const readHeld = new Promise<void>((resolve) => (releaseRead = resolve));
+    const server = settingsServer({
+      admin: () => admin,
+      read: () => ({ body: settings() }),
+      save: async (request) => {
+        await saveHeld;
+        return { body: saved(request) };
+      },
+    });
+    server.on("GET", SETTINGS, async () => {
+      if (admin) return { body: settings() };
+      await readHeld;
+      return error(404, "not_found");
+    });
+    const { history } = await opened(server);
+    await userEvent.clear(controls().limit);
+    await userEvent.type(controls().limit, "7");
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    act(() => history.push("/preview/library"));
+    await screen.findByRole("heading", { name: "Library", level: 1 });
+    admin = false;
+    act(() => history.back());
+    await screen.findByRole("heading", { name: "Server settings", level: 1 });
+    const shown: boolean[] = [];
+    const observer = new MutationObserver(() => shown.push(Boolean(document.querySelector("input[name=search_limit]"))));
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    await act(async () => {
+      releaseSave();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByRole("textbox", { name: "Results per search" })).toBeNull();
+    await act(async () => releaseRead());
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 }, { timeout: 8000 })).toBeTruthy();
+    observer.disconnect();
+    expect(shown.some(Boolean)).toBe(false);
+  }, 20_000);
+
+  test("an edit made while a save is pending is saved next against the revision that save produced", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const server = settingsServer({
+      save: async (request) => {
+        if (saves(server).length === 1) await held;
+        return { body: saved(request) };
+      },
+    });
+    await opened(server);
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    await screen.findByRole("button", { name: "Saving…" });
+    await userEvent.clear(controls().limit);
+    await userEvent.type(controls().limit, "7");
+    await act(async () => release());
+    expect((await screen.findByText("The earlier change was saved. Your newer change is not saved yet.")).textContent).toBeTruthy();
+    expect(controls().limit.value).toBe("7");
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect(await screen.findByText("Metadata settings saved.")).toBeTruthy();
+    expect(saves(server)[1]!.body).toEqual({ revision: "fedcba9876543210fedcba9876543210", open_library: { search_limit: 7 } });
+  });
+
+  test("Discover asks again after a repair instead of keeping its earlier refusal", async () => {
+    const server = settingsServer({ read: () => ({ body: settings({}, { search_limit: null }, { search: "settings_unreadable", result_limit: null }) }) });
+    let repaired = false;
+    server.on("GET", DISCOVER, () =>
+      repaired ? { body: { account: ACCOUNT, provider: { name: "Open Library", url: "https://openlibrary.org" }, search: "available", query: null, items: [] } } : error(501, "unsupported_stored_value"),
+    );
+    const { history } = renderSettings(server, "/preview/discover");
+    await waitFor(() => expect(server.called("GET", DISCOVER).length).toBe(1));
+    await screen.findByRole("alert");
+    act(() => history.push("/preview/admin/settings"));
+    await screen.findByRole("heading", { name: "Metadata", level: 2 });
+    repaired = true;
+    await userEvent.type(controls().limit, "12");
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    await screen.findByText("Metadata settings saved.");
+    act(() => history.push("/preview/discover"));
+    await waitFor(() => expect(server.called("GET", DISCOVER).length).toBe(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  test("a save the server confirmed with an unreadable answer is reported as unknown, not as unchanged", async () => {
+    const server = settingsServer({ save: () => ({ status: 200, body: { saved: true } }) });
+    await opened(server);
+    await userEvent.click(controls().enabled);
+    await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "Shelfarr could not confirm whether the settings were saved. Reload the page to see what the server has, and save again if needed.",
+    );
+  });
+
   test("a change saved elsewhere first is a conflict: nothing is overwritten and the saved values are shown", async () => {
     const server = settingsServer({ save: () => ({ status: 409, body: { ...settings({ revision: "11111111111111111111111111111111" }, { search_limit: 5 }, { result_limit: 5 }), error: "settings_conflict" } }) });
     await opened(server);
@@ -308,7 +415,7 @@ describe("the server settings page", () => {
       "⚠ The saved choice cannot be read. Tick or clear this box and save to replace it. Searches openlibrary.org for book details. Default: on.",
     );
     expect(document.getElementById(limit.getAttribute("aria-describedby")!)!.textContent).toContain("⚠ The saved number cannot be read. Enter a number and save to replace it.");
-    expect(document.querySelector(".settings-reach")!.textContent).toBe("Discover now: Discover cannot search until the saved values above can be read.");
+    expect(document.querySelector(".settings-reach")!.textContent).toBe("Discover now: Discover cannot search, because a saved setting it reads cannot be read.");
     await userEvent.type(limit, "12");
     await userEvent.click(screen.getByRole("button", { name: "Save metadata settings" }));
     await screen.findByText("Metadata settings saved.");

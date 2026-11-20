@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useId, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { ApiError, failureKind } from "../api/errors";
 import type { MetadataChange, MetadataReach, MetadataSettings } from "../contract";
 import { useMetadataSettings, useSaveMetadataSettings, useSession } from "../queries";
@@ -27,12 +27,25 @@ export function ServerSettingsPage() {
 function ServerSettings() {
   usePageTitle("Server settings");
   const { guard, queryClient, keys } = useServices();
-  const [cachedAtEntry] = useState(() => queryClient.getQueryState(keys.metadataSettings)?.dataUpdatedAt ?? 0);
+  const [freshAfter, setFreshAfter] = useState(() => queryClient.getQueryState(keys.metadataSettings)?.dataUpdatedAt ?? 0);
   const session = useSession();
   const settings = useMetadataSettings();
   const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
   const admin = session.data?.admin !== undefined;
-  const current = trust === "trusted" && settings.dataUpdatedAt > cachedAtEntry ? settings.data : undefined;
+  const current = trust === "trusted" && settings.dataUpdatedAt > freshAfter ? settings.data : undefined;
+  const confirming = useRef(false);
+  const { refetch } = settings;
+
+  useEffect(() => {
+    if (trust !== "trusted") {
+      if (!confirming.current) setFreshAfter(Date.now());
+      confirming.current = true;
+      return;
+    }
+    if (!confirming.current) return;
+    confirming.current = false;
+    void refetch();
+  }, [trust, refetch]);
   const editor = useMetadataEditor();
 
   return (
@@ -104,6 +117,7 @@ function limitProblem(text: string, min: number, max: number): string | null {
 function failureText(error: unknown): string {
   const uncertain = "Shelfarr could not confirm whether the settings were saved. Reload the page to see what the server has, and save again if needed.";
   if (!(error instanceof ApiError)) return uncertain;
+  if (error.status !== null && error.status >= 200 && error.status < 300) return uncertain;
   switch (error.kind) {
     case "network":
     case "server":
@@ -120,9 +134,9 @@ function failureText(error: unknown): string {
 }
 
 function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor: MetadataEditor }) {
-  const ids = { heading: useId(), enabled: useId(), enabledHint: useId(), limit: useId(), limitHint: useId(), limitError: useId(), reach: useId() };
+  const ids = { heading: useId(), enabled: useId(), enabledHint: useId(), limit: useId(), limitHint: useId(), limitError: useId() };
   const form = useRef<HTMLFormElement>(null);
-  const { queryClient, keys } = useServices();
+  const { queryClient, keys, guard } = useServices();
   const { draft, setDraft, problems, setProblems, edits, saving, mutation, outcome, say, clear } = editor;
   const saved = settings.open_library;
   const range = settings.search_limit_range;
@@ -170,6 +184,7 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
     }
     saving.current = true;
     const revision = edits.current;
+    void queryClient.cancelQueries({ queryKey: keys.metadataSettings });
     mutation.mutate(
       { revision: draft.base ?? settings.revision, change },
       {
@@ -178,8 +193,10 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
         },
         onSuccess: (answer) => {
           const current = edits.current === revision;
+          if (answer.kind !== "rejected" && guard.isActive()) queryClient.setQueryData(keys.metadataSettings, answer.settings);
           if (answer.kind === "saved") {
             if (current) reset();
+            else setDraft((latest) => ({ ...latest, base: answer.settings.revision }));
             say("success", current ? "Metadata settings saved." : "The earlier change was saved. Your newer change is not saved yet.");
             return;
           }
@@ -203,7 +220,7 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
 
   const limitInvalid = Boolean(problems.search_limit);
   return (
-    <section className="account-card settings-section" aria-labelledby={ids.heading}>
+    <section className="account-card" aria-labelledby={ids.heading}>
       <h2 id={ids.heading}>Metadata</h2>
       <p className="field-hint">Where Shelfarr looks up books when someone searches.</p>
       <form ref={form} className="account-form" method="post" noValidate aria-labelledby={ids.heading} onSubmit={submit}>
@@ -260,7 +277,7 @@ function MetadataForm({ settings, editor }: { settings: MetadataSettings; editor
             </p>
           ) : null}
         </div>
-        <Reach id={ids.reach} settings={settings} />
+        <Reach settings={settings} />
         <div className="form-actions">
           <button type="submit" className="button button--primary" disabled={mutation.isPending} aria-busy={mutation.isPending}>
             {mutation.isPending ? "Saving…" : "Save metadata settings"}
@@ -282,7 +299,7 @@ const REACH: Record<Exclude<MetadataReach, "available" | "provider_paused">, str
   server_off: "Discover search is switched off for this server when it starts, so Discover sends nothing to Open Library whatever is saved here.",
   provider_disabled: "Discover does not search, because Open Library is off.",
   provider_not_selected: "Discover does not search, because the classic settings choose a different metadata source.",
-  settings_unreadable: "Discover cannot search until the saved values above can be read.",
+  settings_unreadable: "Discover cannot search, because a saved setting it reads cannot be read.",
 };
 
 function minutes(seconds: number): string {
@@ -301,9 +318,9 @@ function reachText(discover: MetadataSettings["discover"]): string {
   }
 }
 
-function Reach({ id, settings }: { id: string; settings: MetadataSettings }) {
+function Reach({ settings }: { settings: MetadataSettings }) {
   return (
-    <p id={id} className="settings-reach">
+    <p className="settings-reach">
       <strong>Discover now: </strong>
       {reachText(settings.discover)}
     </p>
