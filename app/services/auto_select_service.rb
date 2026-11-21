@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class AutoSelectService
+  INFO_HASH_FORMAT = /\A[a-f0-9]{40}\z/
+
   class SelectionResult
     attr_reader :selected, :reason, :search_result
 
@@ -30,16 +32,22 @@ class AutoSelectService
   def call
     refresh_file_size_scores!
     matching_results = find_matching_results
-    candidates = matching_results.select(&:downloadable?)
+    downloadable = matching_results.select(&:downloadable?)
+    candidates = without_blocked_info_hashes(downloadable)
 
     if matching_results.empty?
       log_skip("no results meeting criteria (confidence >= #{@confidence_threshold}, language: #{@requested_language})")
       return SelectionResult.new(selected: false, reason: :no_matching_results)
     end
 
-    if candidates.empty?
+    if downloadable.empty?
       log_skip("#{matching_results.size} results match criteria but none are downloadable")
       return SelectionResult.new(selected: false, reason: :no_downloadable_results)
+    end
+
+    if candidates.empty?
+      log_skip("#{downloadable.size} downloadable results repeat a failed info hash")
+      return SelectionResult.new(selected: false, reason: :duplicate_info_hash)
     end
 
     best_result = candidates.first
@@ -134,6 +142,35 @@ class AutoSelectService
   def meets_seeder_threshold?(result)
     return true if result.usenet? || result.direct_download?
     (result.seeders || 0) >= @min_seeders
+  end
+
+  # Another indexer can return the same torrent as a different search result.
+  # Skip that info hash once a release with it has failed or been blocklisted.
+  def without_blocked_info_hashes(results)
+    blocked = blocked_info_hashes
+    return results if blocked.empty?
+
+    results.reject { |result| blocked.include?(result.info_hash) }
+  end
+
+  def blocked_info_hashes
+    hashes = @request.search_results.blocklisted.filter_map(&:info_hash)
+    @request.downloads.failed.pluck(:download_type, :external_id).each do |download_type, external_id|
+      next unless torrent_download_type?(download_type)
+
+      hash = normalize_info_hash(external_id)
+      hashes << hash if hash
+    end
+    hashes.uniq
+  end
+
+  def torrent_download_type?(download_type)
+    download_type.blank? || download_type == "torrent"
+  end
+
+  def normalize_info_hash(value)
+    hash = value.to_s.strip.downcase
+    hash if hash.match?(INFO_HASH_FORMAT)
   end
 
   def log_success(result)

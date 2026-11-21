@@ -222,7 +222,11 @@ module DownloadClients
     end
 
     def build_add_params(options)
-      params = {}
+      # Deluge's queue setting can remove a finished torrent at ratio 0 before
+      # the next download check. Keep it so the monitor can import the completed
+      # download. A label that applies its own queue settings can still replace
+      # this after the torrent is added.
+      params = { "remove_at_ratio" => false }
       params["download_location"] = options[:save_path] if options[:save_path].present?
       params["add_paused"] = options[:paused] if options.key?(:paused)
       params

@@ -20,6 +20,51 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     Thread.current[:deluge_sessions] = {}
   end
 
+  test "add_torrent asks Deluge not to remove the torrent when its share ratio is reached" do
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"auth.login"/)
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
+          body: { result: true, error: nil, id: 1 }.to_json
+        )
+
+      captured = nil
+      stub_request(:post, "http://localhost:8112/json")
+        .with do |request|
+          body = JSON.parse(request.body)
+          if body["method"] == "core.add_torrent_magnet"
+            captured = body.dig("params", 1)
+            true
+          else
+            false
+          end
+        end
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { result: "new_torrent_id", error: nil, id: 1 }.to_json
+        )
+
+      result = @client.add_torrent(
+        "magnet:?xt=urn:btih:#{"ab" * 20}",
+        save_path: "/downloads/books",
+        paused: false
+      )
+
+      assert_equal "new_torrent_id", result
+      assert_equal(
+        {
+          "download_location" => "/downloads/books",
+          "add_paused" => false,
+          "remove_at_ratio" => false
+        },
+        captured
+      )
+    end
+  end
+
   test "add_torrent adds magnet and returns id" do
     VCR.turned_off do
       stub_request(:post, "http://localhost:8112/json")

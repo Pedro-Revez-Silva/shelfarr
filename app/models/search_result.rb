@@ -115,6 +115,19 @@ class SearchResult < ApplicationRecord
     magnet_url.presence || download_url
   end
 
+  # 40-character lowercase hex info hash, when the release link carries one.
+  def info_hash
+    [ magnet_url, download_url, provider_payload_value(:magnet_url) ].each do |candidate|
+      next if candidate.blank?
+
+      parsed = MagnetLink.info_hash(candidate)
+      next if RemoteResult.failed?(parsed)
+      return parsed if parsed.present?
+    end
+
+    nil
+  end
+
   def usenet?
     download_url.present? && magnet_url.blank? && seeders.nil?
   end

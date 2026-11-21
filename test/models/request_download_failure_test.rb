@@ -5,6 +5,9 @@ require "test_helper"
 class RequestDownloadFailureTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
+  SAME_INFO_HASH = ("04f437b8" + ("ab" * 16)).freeze
+  OTHER_INFO_HASH = ("cd" * 20).freeze
+
   setup do
     SettingsService.set(:auto_select_confidence_threshold, 50)
     SettingsService.set(:auto_select_min_seeders, 1)
@@ -67,6 +70,125 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert fallback.reload.selected?
     assert request.reload.downloading?
     assert_not request.attention_needed?
+  end
+
+  test "handle_download_failure does not reselect another indexer's copy of the same info hash" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    selected = create_result(
+      request,
+      guid: "failed",
+      status: :selected,
+      seeders: 100,
+      indexer: "IndexerA",
+      magnet_url: magnet_for(SAME_INFO_HASH)
+    )
+    duplicate = create_result(
+      request,
+      guid: "same-hash",
+      status: :rejected,
+      seeders: 90,
+      indexer: "IndexerB",
+      magnet_url: magnet_for(SAME_INFO_HASH)
+    )
+    other = create_result(
+      request,
+      guid: "other-hash",
+      status: :rejected,
+      seeders: 10,
+      indexer: "IndexerC",
+      magnet_url: magnet_for(OTHER_INFO_HASH)
+    )
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      download_type: "torrent"
+    )
+
+    outcome = nil
+    assert_enqueued_with(job: DownloadJob) do
+      outcome = request.handle_download_failure!(failed_download, reason: "Download not found in client")
+    end
+
+    assert_equal :selected_next, outcome
+    assert_equal [ other.id ], request.search_results.selected.pluck(:id)
+    assert_not duplicate.reload.selected?
+    assert_equal other.id, request.downloads.order(:id).last.search_result_id
+  end
+
+  test "handle_download_failure does not reselect a candidate matching the failed download info hash" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    selected = create_result(
+      request,
+      guid: "failed-torrent-url",
+      status: :selected,
+      seeders: 40,
+      indexer: "IndexerA",
+      magnet_url: nil,
+      download_url: "http://indexer.example/download/123.torrent"
+    )
+    duplicate = create_result(
+      request,
+      guid: "same-hash-url",
+      status: :rejected,
+      seeders: 30,
+      indexer: "IndexerB",
+      magnet_url: nil,
+      download_url: "https://indexer-b.example/get?xt=urn:btih:#{SAME_INFO_HASH.upcase}"
+    )
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :downloading,
+      download_type: "torrent",
+      external_id: SAME_INFO_HASH.upcase
+    )
+
+    outcome = nil
+    assert_no_difference -> { request.downloads.count } do
+      assert_no_enqueued_jobs only: DownloadJob do
+        outcome = request.handle_download_failure!(failed_download, reason: "Download not found in client")
+      end
+    end
+
+    assert_equal :exhausted, outcome
+    assert_not duplicate.reload.selected?
+    assert request.reload.not_found?
+    assert_includes request.issue_description, "duplicate info hash"
+  end
+
+  test "handle_download_failure still selects a torrent after a usenet id that looks like an info hash" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    selected = create_result(
+      request,
+      guid: "failed-nzb",
+      status: :selected,
+      seeders: nil,
+      magnet_url: nil,
+      download_url: "http://indexer.example/book.nzb"
+    )
+    torrent = create_result(
+      request,
+      guid: "torrent-fallback",
+      status: :rejected,
+      seeders: 5,
+      magnet_url: magnet_for(SAME_INFO_HASH)
+    )
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      download_type: "usenet",
+      external_id: SAME_INFO_HASH
+    )
+
+    outcome = request.handle_download_failure!(failed_download, reason: "Usenet failed")
+
+    assert_equal :selected_next, outcome
+    assert torrent.reload.selected?
   end
 
   test "handle_download_failure never reselects a blocklisted candidate" do
@@ -248,6 +370,10 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
   end
 
   private
+
+  def magnet_for(info_hash)
+    "magnet:?xt=urn:btih:#{info_hash}&dn=Fallback+Book"
+  end
 
   def assert_idle_attention_clears_downloading(request)
     request.reload
