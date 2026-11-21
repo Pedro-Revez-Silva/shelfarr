@@ -293,6 +293,12 @@ class Request < ApplicationRecord
     retry_job.enqueue ? :post_processing_queued : :post_processing_recovery_pending
   end
 
+  # Hashes already rejected for this request. Fallback selection uses this so a
+  # later search cannot grab the same torrent from a different indexer.
+  def blocked_torrent_info_hashes
+    search_results.blocklisted.filter_map(&:torrent_info_hash)
+  end
+
   def handle_download_failure!(download, reason:)
     download.update!(status: :failed) unless download.failed?
 
@@ -1025,6 +1031,15 @@ class Request < ApplicationRecord
 
   def blocklist_result!(search_result, reason:, download: nil)
     return false unless search_result
+
+    download ||= downloads.where(search_result: search_result).order(created_at: :desc, id: :desc).first
+    remember_release_info_hash!(search_result, download)
+    blocklisted = persist_blocklist!(search_result, reason:, download:)
+    blocklist_same_info_hash!(release_info_hashes(search_result, download), reason:, download:)
+    blocklisted
+  end
+
+  def persist_blocklist!(search_result, reason:, download:)
     return false if search_result.blocklisted?
 
     search_result.blocklist!(reason)
@@ -1037,10 +1052,40 @@ class Request < ApplicationRecord
       details: {
         search_result_id: search_result.id,
         title: search_result.title,
-        reason: reason
+        reason: reason,
+        info_hash: search_result.torrent_info_hash
       }
     )
     true
+  end
+
+  def blocklist_same_info_hash!(hashes, reason:, download:)
+    return if hashes.empty?
+
+    search_results.not_blocklisted.find_each do |result|
+      next unless hashes.include?(result.torrent_info_hash)
+
+      persist_blocklist!(result, reason:, download:)
+      result.update!(status: :rejected) if result.pending?
+    end
+  end
+
+  def release_info_hashes(search_result, download)
+    [
+      search_result&.torrent_info_hash,
+      MagnetLink.normalize_info_hash(download&.external_id)
+    ].select { |hash| hash.is_a?(String) }.uniq
+  end
+
+  # The client reports the info hash after the add. Keep it on the release so
+  # a download URL with no magnet still matches copies from other indexers.
+  def remember_release_info_hash!(search_result, download)
+    return if search_result.torrent_info_hash.present?
+
+    hash = MagnetLink.normalize_info_hash(download&.external_id)
+    return unless hash.is_a?(String)
+
+    search_result.update!(info_hash: hash)
   end
 
   def auto_select_enabled?

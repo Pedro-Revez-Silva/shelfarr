@@ -97,6 +97,17 @@ class SearchResult < ApplicationRecord
     blocklisted_at.present?
   end
 
+  # The torrent identity shared by the same release on different indexers.
+  # Prefer the stored hash, then a magnet, then a download URL that embeds one.
+  def torrent_info_hash
+    [ info_hash, magnet_url, download_url ].each do |candidate|
+      hash = MagnetLink.normalize_info_hash(candidate)
+      return hash if hash.is_a?(String)
+    end
+
+    nil
+  end
+
   def blocklist!(reason)
     attributes = {
       blocklisted_at: Time.current,

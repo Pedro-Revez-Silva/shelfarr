@@ -1492,6 +1492,49 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "saves an indexer info hash and keeps a hash learned from the download client" do
+    book = Book.create!(title: "Stored Hash", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    info_hash = "ef" * 20
+    result = IndexerClients::Result.new(
+      guid: "stored-hash",
+      title: "Stored Hash Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      size_bytes: 2048,
+      seeders: 3,
+      leechers: 0,
+      download_url: "http://prowlarr.example/1/download",
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil,
+      info_hash: info_hash
+    )
+
+    saved = SearchJob.new.send(:save_indexer_result, request, result, "prowlarr")
+
+    assert_equal info_hash, saved.info_hash
+    assert_nil saved.magnet_url
+
+    saved.update!(blocklisted_at: Time.current, blocklist_reason: "failed", status: :rejected)
+    refresh = IndexerClients::Result.new(
+      guid: "stored-hash",
+      title: result.title,
+      indexer: result.indexer,
+      size_bytes: result.size_bytes,
+      seeders: result.seeders,
+      leechers: 0,
+      download_url: result.download_url,
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil
+    )
+
+    refreshed = SearchJob.new.send(:save_indexer_result, request, refresh, "prowlarr")
+
+    assert_equal info_hash, refreshed.info_hash
+    assert refreshed.blocklisted?
+  end
+
   test "preliminary scoring uses a known file size before a result counts as a strong match" do
     SettingsService.set(:indexer_search_scope, "strict")
     SettingsService.set(:min_match_confidence, 80)

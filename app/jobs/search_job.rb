@@ -616,6 +616,7 @@ class SearchJob < ApplicationJob
       leechers: result.leechers,
       download_url: result.download_url,
       magnet_url: result.magnet_url,
+      info_hash: result.info_hash.presence || search_result.info_hash,
       info_url: result.info_url,
       published_at: result.published_at,
       source: source

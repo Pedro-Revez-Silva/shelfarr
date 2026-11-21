@@ -178,6 +178,33 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal high_seeder, selection.search_result
   end
 
+  test "does not auto-select a later result that repeats a blocklisted info hash" do
+    shared_hash = "a" * 40
+    other_hash = "b" * 40
+    blocked = create_search_result(
+      seeders: 100,
+      status: :rejected,
+      magnet_url: nil,
+      download_url: "http://indexer.example/old.torrent",
+      info_hash: shared_hash
+    )
+    blocked.blocklist!("Download not found in client")
+    duplicate = create_search_result(
+      seeders: 80,
+      magnet_url: nil,
+      download_url: "http://other.example/same.torrent",
+      info_hash: shared_hash
+    )
+    fallback = create_search_result(seeders: 5, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert duplicate.reload.rejected?
+    assert_not duplicate.blocklisted?
+  end
+
   test "skips blocklisted best candidate and selects next eligible result" do
     blocklisted = create_search_result(seeders: 100, magnet_url: "magnet:?blocked")
     blocklisted.blocklist!("Previous failure")

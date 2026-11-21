@@ -3,18 +3,20 @@
 module IndexerClients
   Result = Data.define(
     :guid, :title, :indexer, :indexer_id, :size_bytes, :seeders, :leechers,
-    :download_url, :magnet_url, :info_url, :published_at, :category_ids
+    :download_url, :magnet_url, :info_url, :published_at, :category_ids, :info_hash
   ) do
     def initialize(
       guid:, title:, indexer:, size_bytes:, seeders:, leechers:,
-      download_url:, magnet_url:, info_url:, published_at:, category_ids: [], indexer_id: nil
+      download_url:, magnet_url:, info_url:, published_at:, category_ids: [], indexer_id: nil,
+      info_hash: nil
     )
       super(
         guid:, title:, indexer:,
         indexer_id: Integer(indexer_id, exception: false),
         size_bytes:, seeders:, leechers:,
         download_url:, magnet_url:, info_url:, published_at:,
-        category_ids: Array(category_ids).filter_map { |id| Integer(id, exception: false) }.uniq
+        category_ids: Array(category_ids).filter_map { |id| Integer(id, exception: false) }.uniq,
+        info_hash: info_hash.is_a?(String) ? info_hash : nil
       )
     end
 

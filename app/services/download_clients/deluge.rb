@@ -50,6 +50,9 @@ module DownloadClients
       end
 
       assign_configured_label!(torrent_id)
+      # label.set_torrent applies the label's queue settings and can turn
+      # removal back on. Disable it again once that label is in place.
+      disable_remove_at_ratio!(torrent_id) if configured_label.present?
       torrent_id
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
@@ -221,10 +224,23 @@ module DownloadClients
       progress.to_f.round
     end
 
+    def disable_remove_at_ratio!(torrent_id)
+      rpc_call("core.set_torrent_options", [ [ torrent_id ], { "remove_at_ratio" => false } ])
+    rescue Base::Error, Faraday::Error => error
+      Rails.logger.warn "[Deluge] Could not keep torrent #{torrent_id} after its share ratio: #{error.message}"
+      RemoteResult::Failed.new(error)
+    end
+
     def build_add_params(options)
       params = {}
       params["download_location"] = options[:save_path] if options[:save_path].present?
       params["add_paused"] = options[:paused] if options.key?(:paused)
+      # Deluge can delete a torrent the moment its share ratio is reached. A
+      # small download finishes between monitor polls, so the client looks
+      # empty and the grab is failed even though the files are complete.
+      # stop_at_ratio still pauses at the configured ratio. Shelfarr does not
+      # remove the torrent after import, so the paused torrent stays put.
+      params["remove_at_ratio"] = false
       params
     end
 

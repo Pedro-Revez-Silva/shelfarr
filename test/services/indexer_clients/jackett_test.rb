@@ -197,4 +197,35 @@ class IndexerClients::JackettTest < ActiveSupport::TestCase
       assert_requested request, times: 2
     end
   end
+
+  test "search stores a torznab infohash when the enclosure is a torrent file" do
+    info_hash = "ab" * 20
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:torznab="http://torznab.com/schemas/2015/feed">
+        <channel>
+          <item>
+            <title>Same Book From Another Indexer</title>
+            <guid>jackett-guid-hash</guid>
+            <jackettindexer>SecondIndexer</jackettindexer>
+            <enclosure url="http://jackett.example/download/1" length="2048" type="application/x-bittorrent" />
+            <torznab:attr name="infohash" value="#{info_hash.upcase}" />
+            <torznab:attr name="seeders" value="4" />
+          </item>
+        </channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9117/api/v2\.0/indexers/all/results/torznab/api})
+        .with(query: hash_including("apikey" => "jackett-api-key", "t" => "search"))
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
+      result = IndexerClients::Jackett.search("test query", book_type: :ebook).first
+
+      assert_equal "http://jackett.example/download/1", result.download_url
+      assert_nil result.magnet_url
+      assert_equal info_hash, result.info_hash
+    end
+  end
 end

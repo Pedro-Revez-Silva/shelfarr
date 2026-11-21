@@ -90,6 +90,38 @@ class ProwlarrClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search stores an info hash when the download url is not a magnet" do
+    info_hash = "cd" * 20
+
+    VCR.turned_off do
+      stub_request(:get, %r{localhost:9696/api/v1/search})
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: [
+            {
+              "guid" => "prowlarr-hash",
+              "title" => "Same Book EPUB",
+              "indexer" => "OtherIndexer",
+              "indexerId" => 12,
+              "size" => 4096,
+              "seeders" => 3,
+              "leechers" => 0,
+              "downloadUrl" => "http://prowlarr.example/2/download",
+              "infoHash" => info_hash.upcase,
+              "publishDate" => "2024-01-15T10:00:00Z"
+            }
+          ].to_json
+        )
+
+      result = ProwlarrClient.search("same book").first
+
+      assert_equal "http://prowlarr.example/2/download", result.download_url
+      assert_nil result.magnet_url
+      assert_equal info_hash, result.info_hash
+    end
+  end
+
   test "search uses Prowlarr book search when title or author are provided" do
     VCR.turned_off do
       stub_indexers(STRUCTURED_INDEXER)
