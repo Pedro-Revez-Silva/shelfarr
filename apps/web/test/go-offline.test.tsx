@@ -3,8 +3,9 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { resetFirstPage } from "../src/components/PageHeading";
 import type { GoView } from "../src/contract";
 import { GoApp } from "../src/go/GoApp";
-import { ACCOUNT, FakeServer } from "./helpers";
-import { API, error, goBoot, signedIn, signedOut } from "./go-helpers";
+import userEvent from "@testing-library/user-event";
+import { ACCOUNT, FakeServer, detail } from "./helpers";
+import { API, error, goBoot, libraryServer, signedIn, signedOut } from "./go-helpers";
 import { AccountGuard } from "../src/api/account-guard";
 import { OfflineProvider } from "../src/offline/context";
 import { SaveForOffline } from "../src/offline/SaveForOffline";
@@ -27,7 +28,7 @@ function storeFor(account: string, confirmedAt = Date.now()): MemoryOfflineStore
   return store;
 }
 
-function renderOffline(server: FakeServer, store: MemoryOfflineStore, view: GoView = "downloads", url = "/preview/library/downloads", offline: typeof OFFLINE | undefined = OFFLINE) {
+function renderOffline(server: FakeServer, store: MemoryOfflineStore, view: GoView = "downloads", url = "/preview/library/downloads", offline: typeof OFFLINE | null = OFFLINE) {
   resetFirstPage();
   window.history.replaceState(null, "", url);
   return render(<GoApp boot={{ ...goBoot(view), ...(offline ? { offline } : {}) }} fetcher={server.fetcher} store={store} />);
@@ -97,7 +98,7 @@ describe("offline reading in the Go preview", () => {
 
   test("without the offline option, the account recorded for offline reading is forgotten", async () => {
     const store = storeFor("5");
-    renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => ({ body: signedIn() })).on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT, server: { name: "Shelf", version: "1" }, links: {} } })), store, "library", "/preview/library", undefined);
+    renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => ({ body: signedIn() })).on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT, server: { name: "Shelf", version: "1" }, links: {} } })), store, "library", "/preview/library", null);
     await waitFor(() => expect(store.record).toBeNull());
   });
 
@@ -241,5 +242,49 @@ describe("the save control", () => {
     store.attemptRecords.set("5|7", { key: "5|7", account: "5", id: "7", title: "Member's Saved Book", assetId: NEWER_ID, startedAt: 1, failure: null });
     renderControl(store, EPUB_ID);
     expect(await screen.findByText("The last save didn't finish, so nothing new was stored. Your earlier saved copy is unchanged.")).toBeTruthy();
+  });
+});
+
+describe("saving from the Go details page", () => {
+  const files = [{ id: EPUB_ID, filename: "Saved Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: 2048, position: 0, page_count: null }];
+
+  function detailsServer(bootstrap: () => unknown) {
+    return libraryServer(bootstrap).on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ files }) } }));
+  }
+
+  test("an EPUB's details offer saving, the navigation links Downloads and the note says what can be saved", async () => {
+    const store = new MemoryOfflineStore();
+    renderOffline(detailsServer(() => ({ ...signedIn(), offline_expires_in: 3600 })), store, "details", "/preview/library/7");
+    const section = (await screen.findByRole("heading", { name: "Offline reading" })).closest("section") as HTMLElement;
+    expect(within(section).getByRole("button", { name: "Save for offline reading" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Downloads" }).getAttribute("href")).toBe("/preview/library/downloads");
+    expect(screen.getByRole("note").textContent).toContain("save EPUBs for offline reading in this browser");
+  });
+
+  test("without the option, or for a book without an EPUB, nothing offline is offered", async () => {
+    const view = renderOffline(detailsServer(() => signedIn()), new MemoryOfflineStore(), "details", "/preview/library/7", null);
+    await screen.findByRole("heading", { name: detail().title });
+    expect(screen.queryByRole("heading", { name: "Offline reading" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Downloads" })).toBeNull();
+    expect(screen.getByRole("note").textContent).toContain("downloads and offline reading are not available here yet");
+    view.unmount();
+    renderOffline(
+      libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 })).on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ files: [{ ...files[0]!, format: "pdf" }] }) } })),
+      new MemoryOfflineStore(),
+      "details",
+      "/preview/library/7",
+    );
+    await screen.findByRole("heading", { name: detail().title });
+    expect(screen.queryByRole("heading", { name: "Offline reading" })).toBeNull();
+  });
+
+  test("signing in names the offline window, so the details page can offer saving straight away", async () => {
+    const server = detailsServer(() => signedOut("login-token")).on("POST", /\/auth\/login$/, () => ({ body: { ...signedIn(), offline_expires_in: 3600 } }));
+    renderOffline(server, new MemoryOfflineStore(), "details", "/preview/library/7");
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Username"), "reader");
+    await user.type(screen.getByLabelText("Password"), "synthetic-password");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("button", { name: "Save for offline reading" })).toBeTruthy();
   });
 });
