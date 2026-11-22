@@ -80,7 +80,7 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     sign_in_as(@member)
     with_catalogue("openlibrary" => [ [ catalogue_result, catalogue_result(work_id: "openlibrary:OL901W", title: "Owned") ], false ]) do
         body = discover("middlemarch", user: @member)
-        assert_equal [ "account", "items", "providers", "query", "unavailable" ], body.keys.sort
+        assert_equal [ "account", "items", "providers", "query", "request_options", "unavailable" ], body.keys.sort
         assert_equal [ [ "Open Library" ], [] ], body.values_at("providers", "unavailable")
         first, owned = body.fetch("items")
         assert_equal({ "source" => "openlibrary", "id" => "OL900W" }, first.fetch("book").except("metadata"))
@@ -108,7 +108,8 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
   test "discover says when no catalogue is switched on and refuses a malformed query" do
     sign_in_as(@member)
     MetadataService.stub(:enabled_metadata_providers, []) do
-      assert_equal({ "account" => @member.id.to_s, "query" => "middlemarch", "providers" => [], "unavailable" => [], "items" => [] }, discover("middlemarch", user: @member))
+      assert_equal({ "account" => @member.id.to_s, "query" => "middlemarch", "providers" => [], "unavailable" => [], "items" => [],
+        "request_options" => WebPreview::RequestOptions.representation.deep_stringify_keys }, discover("middlemarch", user: @member))
     end
     preview_get web_preview_api_discover_path(q: "a\u0007b"), user: @member
     assert_response :unprocessable_entity
@@ -123,7 +124,8 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal({ "id" => WORK, "also" => [], "details" => "catalogue", "title" => "Middlemarch", "author" => "George Eliot", "year" => 1871,
       "description" => "Lives in a provincial town.", "cover" => { "url" => nil, "style" => WebPreview::BookPage.cover_style(WORK) },
       "source" => { "name" => "Open Library", "url" => "https://openlibrary.org/works/OL900W" },
-      "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "publication" => nil, "request" => nil } } }, book)
+      "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "publication" => nil, "request" => nil } },
+      "request_options" => { "default_format" => "ask", "default_language" => "en", "languages" => [ { "code" => "en", "name" => "English" } ], "note_limit" => 1_000 } }, book)
   end
 
   test "a hand-off without a description keeps its own details and takes only the missing ones from the catalogue" do

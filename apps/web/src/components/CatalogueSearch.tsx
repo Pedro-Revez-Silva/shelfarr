@@ -1,8 +1,10 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, failureKind } from "../api/errors";
-import type { CatalogueAnswer, CatalogueItem } from "../contract";
-import { useCatalogue, useSession } from "../queries";
+import type { CatalogueAnswer, CatalogueItem, RequestOptions } from "../contract";
+import { useCatalogue, useRequestBook, useSession } from "../queries";
+import { actionFailure } from "./requestText";
+import { choiceFor, createdSentence, initialExtras, offersLanguage, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
 import { Cover } from "./Cover";
 import { FindTabs, YourRequests } from "./FindRequests";
 import { checkQuery, MAX_QUERY_CHARACTERS } from "./DiscoverPage";
@@ -24,7 +26,7 @@ export function CatalogueSearch() {
       <header className="page-heading">
         <p className="eyebrow">Find books</p>
         <PageHeading id="discover-heading">Find</PageHeading>
-        <p className="lede">Search the catalogues this server uses by title or author, see what is already in the library, and open a book to request it.</p>
+        <p className="lede">Search the catalogues this server uses by title or author, see what is already in the library, and request a book from its result or its page.</p>
       </header>
       <FindTabs />
       <SearchForm
@@ -50,7 +52,7 @@ export function CatalogueSearch() {
       {query === null ? <YourRequests /> : null}
       {session.data ? (
         <p className="discover-note">
-          Need series, collections, comics or several formats at once? <a href={session.data.links.discover}>Use the classic search<span className="sr-only"> (opens the classic Shelfarr app)</span></a>.
+          Need series, collections or comics? <a href={session.data.links.discover}>Use the classic search<span className="sr-only"> (opens the classic Shelfarr app)</span></a>.
         </p>
       ) : null}
     </section>
@@ -165,7 +167,7 @@ function Results({ answer }: { answer: CatalogueAnswer }) {
     <ol className="discover-list">
       {answer.items.map((item) => (
         <li key={`${item.book.source}:${item.book.id}`}>
-          <Result item={item} query={answer.query} />
+          <Result item={item} query={answer.query} options={answer.request_options ?? null} />
         </li>
       ))}
     </ol>
@@ -179,7 +181,7 @@ const STATE_TEXT: Record<CatalogueItem["formats"][number]["state"], string> = {
   in_library: "in library",
 };
 
-function Result({ item, query }: { item: CatalogueItem; query: string }) {
+function Result({ item, query, options }: { item: CatalogueItem; query: string; options: RequestOptions | null }) {
   const titleId = useId();
   const owned = item.formats.some((format) => format.state === "in_library");
   return (
@@ -204,7 +206,58 @@ function Result({ item, query }: { item: CatalogueItem; query: string }) {
             </li>
           ))}
         </ul>
+        {options ? <ResultRequest item={item} query={query} options={options} /> : null}
       </div>
     </article>
+  );
+}
+
+function ResultRequest({ item, query, options }: { item: CatalogueItem; query: string; options: RequestOptions }) {
+  const request = useRequestBook({ source: item.book.source, id: item.book.id, metadata: item.book.metadata ?? undefined });
+  const [pressed, setPressed] = useState<RequestFormat | null>(null);
+  const [extras, setExtras] = useState(() => initialExtras(options));
+  const done = useRef<HTMLParagraphElement>(null);
+  const plan = requestPlan(item.formats, options.default_format);
+  const succeeded = request.isSuccess;
+  useEffect(() => {
+    if (succeeded) done.current?.focus();
+  }, [succeeded]);
+  const send = (format: RequestFormat) => {
+    if (request.isPending) return;
+    setPressed(format);
+    request.mutate(choiceFor(format, extras, options));
+  };
+  if (plan.length === 0 && !request.isSuccess) return null;
+  return (
+    <div className="result-request">
+      {request.isSuccess ? (
+        <p ref={done} tabIndex={-1} className="result-request-done">
+          {createdSentence(request.data.results)}{" "}
+          <Link to="/books/$source/$sourceId" params={{ source: item.book.source, sourceId: item.book.id }} search={{ q: query, ...(item.book.metadata ? { metadata: item.book.metadata } : {}) }}>
+            Follow it on its page<span className="sr-only">: {item.title}</span>
+          </Link>
+        </p>
+      ) : null}
+      {plan.length > 0 ? (
+        <div className="result-request-actions">
+          {plan.map((entry) => {
+            const mine = pressed === entry.format;
+            return (
+              <button key={entry.format} type="button" className="button" aria-disabled={request.isPending ? true : undefined} onClick={() => send(entry.format)}>
+                {mine && request.isPending ? "Requesting…" : mine && request.isError ? "Try requesting again" : requestLabel(entry.format)}
+                <span className="sr-only"> of {item.title}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {plan.length > 0 && offersLanguage(options) ? <RequestExtrasFields options={options} extras={extras} onChange={setExtras} disabled={request.isPending} /> : null}
+      {request.isError ? (
+        <p className="field-error" role="alert">
+          {actionFailure(request.error, "The request could not be made. Nothing was changed.")}
+        </p>
+      ) : null}
+      {request.isSuccess ? <RejectedFormats results={request.data.results} /> : null}
+    </div>
   );
 }

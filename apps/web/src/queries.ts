@@ -6,9 +6,9 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import type { AccountAnswer, BookLocation, MetadataAnswer } from "./api/client";
+import type { AccountAnswer, BookLocation, MetadataAnswer, RequestChoice } from "./api/client";
 import { ApiError, failureKind, isApiError, unconfirmed } from "./api/errors";
-import type { Acquisition, Book, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import type { Acquisition, Book, CatalogueAnswer, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useServices } from "./services";
 
@@ -415,9 +415,28 @@ function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Pro
   });
 }
 
-export function useRequestBookEbook(location: BookLocation) {
-  const { api } = useServices();
-  return useBookChange(location, () => api.requestBookEbook(location), (answer) => answer.book);
+export function withBookStates(answer: CatalogueAnswer, location: Pick<BookLocation, "source" | "id">, book: Book): CatalogueAnswer {
+  const states = book.formats.map((format) => ({ book_type: format.book_type, state: format.state }));
+  return { ...answer, items: answer.items.map((item) => (item.book.source === location.source && item.book.id === location.id ? { ...item, formats: states } : item)) };
+}
+
+export function useRequestBook(location: BookLocation) {
+  const { api, keys, guard } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (choice: RequestChoice) => api.requestBook(location, choice),
+    onSuccess: (answer) => {
+      if (!guard.isActive()) return;
+      client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), answer.book);
+      client.setQueriesData<CatalogueAnswer>({ queryKey: keys.catalogueAll }, (current) => (current ? withBookStates(current, location, answer.book) : current));
+    },
+    onSettled: () => {
+      if (!guard.isActive()) return;
+      for (const queryKey of [keys.bookAll(location.source, location.id), keys.requestsAll, keys.libraryAll, keys.continueAll]) {
+        void client.invalidateQueries({ queryKey });
+      }
+    },
+  });
 }
 
 export function useChooseCopy(location: BookLocation, requestId: string) {

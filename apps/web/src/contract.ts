@@ -579,6 +579,15 @@ export const bookFormatSchema = z.object({
 });
 export type BookFormat = z.infer<typeof bookFormatSchema>;
 
+export const requestFormatChoices = ["ask", "ebook", "audiobook", "both"] as const;
+export const requestOptionsSchema = z.object({
+  default_format: z.enum(requestFormatChoices),
+  default_language: z.string(),
+  languages: z.array(z.object({ code: z.string().min(1), name: z.string().min(1) })),
+  note_limit: z.number().int().positive(),
+});
+export type RequestOptions = z.infer<typeof requestOptionsSchema>;
+
 export const bookSchema = z.object({
   id: workIdentifier,
   also: z.array(workIdentifier),
@@ -590,11 +599,14 @@ export const bookSchema = z.object({
   cover: z.object({ url: httpsUrl.nullable(), style: z.enum(coverStyles) }),
   source: z.object({ name: z.string(), url: httpsUrl.nullable() }),
   formats: z.array(bookFormatSchema),
+  request_options: requestOptionsSchema.optional(),
 });
 export type Book = z.infer<typeof bookSchema>;
 
 export const bookEnvelopeSchema = z.object({ account: identifier, book: bookSchema });
-export const bookRequestOutcomeSchema = z.object({ account: identifier, outcome: z.enum(["created", "existing"]), book: bookSchema });
+export const bookRequestResultSchema = z.object({ book_type: z.enum(bookFormatTypes), outcome: z.enum(["created", "existing", "rejected"]), message: z.string().optional() });
+export type BookRequestResult = z.infer<typeof bookRequestResultSchema>;
+export const bookRequestOutcomeSchema = z.object({ account: identifier, outcome: z.enum(["created", "existing"]), results: z.array(bookRequestResultSchema).optional(), book: bookSchema });
 export type BookRequestOutcome = z.infer<typeof bookRequestOutcomeSchema>;
 export const requestActionSchema = z.object({ account: identifier, request: z.object({ id: identifier, status: z.string() }), message: z.string().optional() });
 export type RequestActionAnswer = z.infer<typeof requestActionSchema>;
@@ -616,7 +628,14 @@ export const catalogueItemSchema = z.object({
 });
 export type CatalogueItem = z.infer<typeof catalogueItemSchema>;
 
-export const catalogueSchema = z.object({ account: identifier, query: z.string(), providers: z.array(z.string()), unavailable: z.array(z.string()), items: z.array(catalogueItemSchema) });
+export const catalogueSchema = z.object({
+  account: identifier,
+  query: z.string(),
+  providers: z.array(z.string()),
+  unavailable: z.array(z.string()),
+  items: z.array(catalogueItemSchema),
+  request_options: requestOptionsSchema.optional(),
+});
 export type CatalogueAnswer = z.infer<typeof catalogueSchema>;
 
 export const bookSearchSchema = z.object({

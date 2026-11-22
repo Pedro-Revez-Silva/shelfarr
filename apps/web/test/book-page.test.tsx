@@ -75,7 +75,7 @@ describe("the Book page", () => {
     const card = screen.getByRole("region", { name: "On this server" });
     const rows = within(card).getAllByRole("listitem");
     expect(rows.map((row) => row.textContent)).toEqual(["EbookNot in libraryRequest ebook of Middlemarch", "AudiobookNot in library"]);
-    expect(within(card).getByText("This preview requests ebooks only.")).toBeTruthy();
+    expect(within(card).queryByRole("button", { name: /audiobook/ })).toBeNull();
 
     await userEvent.click(within(card).getByRole("button", { name: "Request ebook of Middlemarch" }));
     expect(await within(card).findByText("Requested")).toBeTruthy();

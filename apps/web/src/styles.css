@@ -2219,10 +2219,68 @@ thead th {
 .format-action:empty {
   display: none;
 }
-.request-ebook {
+.request-ebook,
+.request-format {
   display: grid;
   gap: 6px;
   justify-items: start;
+}
+.request-both {
+  display: flex;
+  margin-top: 12px;
+}
+.request-extras {
+  margin-top: 12px;
+}
+.request-extras > summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  color: var(--accent);
+}
+.request-extras-fields {
+  display: grid;
+  gap: 16px;
+  padding-block: 8px 4px;
+}
+.request-extras textarea {
+  width: 100%;
+  min-height: 96px;
+  padding: 12px 16px;
+  background: var(--paper);
+  border: 1px solid var(--muted);
+  border-radius: 12px;
+  font: inherit;
+  font-size: max(1rem, 1em);
+  resize: vertical;
+}
+.request-extras .field-hint,
+.request-rejections {
+  margin: 0;
+}
+.request-rejections {
+  margin-top: 10px;
+  padding-inline-start: 1.2em;
+}
+.result-request {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+.result-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.result-request-done {
+  margin: 0;
+  font-weight: 550;
+}
+.result-request-done a {
+  color: var(--accent);
+  text-underline-offset: 3px;
 }
 .format-advisory {
   color: var(--muted);
