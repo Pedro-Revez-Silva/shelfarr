@@ -11,8 +11,9 @@ class WebPreview::BooksController < WebPreview::APIController
   end
 
   def create_request
-    page = book_page
-    outcome = CREATION_LOCK.synchronize { request_ebook(page) }
+    outcome = CREATION_LOCK.synchronize do
+      API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_ebook(book_page) }
+    end
     return render_error("request_rejected", :unprocessable_entity, message: outcome) if outcome.is_a?(String)
 
     render json: { account: web_preview_account_id, outcome: outcome, book: book_page.representation }, status: outcome == :created ? :created : :ok
@@ -21,7 +22,7 @@ class WebPreview::BooksController < WebPreview::APIController
   private
 
   def request_ebook(page)
-    return :existing if duplicate?(page)
+    return :existing unless page.requestable?(REQUESTED_TYPE)
     return "This book's details could not be loaded, so it cannot be requested yet. Try again later." if page.metadata[:title].blank?
 
     result = RequestCreationService.call(
@@ -33,25 +34,16 @@ class WebPreview::BooksController < WebPreview::APIController
       origin: { created_via: "web" }
     )
     return :created if result.created_requests.any?
-    return :existing if duplicate?(page)
 
     result.errors.first.to_s.first(300).presence || "The request could not be made."
-  end
-
-  def duplicate?(page)
-    DuplicateDetectionService.check(work_id: page.work_ids.first, source_work_ids: page.work_ids.drop(1), book_type: REQUESTED_TYPE).block?
   end
 
   def book_page
     work_id = WebPreview::BookPage.work_id(params[:source], params[:source_id])
     raise ActiveRecord::RecordNotFound unless work_id
 
-    WebPreview::BookPage.new(
-      user: Current.user,
-      work_id: work_id,
-      handoff: RequestMetadataHandoff.fetch(user: Current.user, token: params[:metadata]),
-      publication: ->(book) { publication_summary(book) }
-    )
+    details = WebPreview::BookHandoff.fetch(user: Current.user, token: params[:metadata], work_id: work_id)
+    WebPreview::BookPage.new(user: Current.user, work_id: work_id, links: details[:links], details: details, publication: ->(book) { publication_summary(book) })
   end
 
   def publication_summary(book)

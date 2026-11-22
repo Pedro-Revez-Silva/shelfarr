@@ -10,7 +10,7 @@ class WebPreview::RequestsController < WebPreview::APIController
     result = request.search_results.find(identifier(params[:result_id]))
     request.with_lock do
       result.reload
-      raise ArgumentError, "This copy can no longer be chosen. The page shows what can be chosen now." unless WebPreview::BookPage.choosing_allowed?(request) && WebPreview::BookPage.choosable?(result)
+      raise ArgumentError, "This copy can no longer be chosen. The page shows what can be chosen now." unless WebPreview::BookPage.choosing_allowed?(request) && result.downloadable?
 
       request.select_result!(result)
     end

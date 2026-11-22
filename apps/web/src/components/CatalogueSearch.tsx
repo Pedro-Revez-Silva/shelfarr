@@ -38,7 +38,10 @@ export function CatalogueSearch() {
       {answer.isError ? <SearchFailure error={answer.error} onRetry={() => void answer.refetch()} /> : null}
       {answer.data && answer.data.unavailable.length > 0 ? (
         <p className="notice" role="note">
-          {answer.data.unavailable.join(", ")} could not be reached, so these results may be incomplete. Try again in a moment.
+          {answer.data.unavailable.join(", ")} could not be reached, so these results may be incomplete.{" "}
+          <button type="button" className="button button--subtle" aria-disabled={answer.isFetching ? true : undefined} onClick={() => (answer.isFetching ? undefined : void answer.refetch())}>
+            {answer.isFetching ? "Searching…" : "Search again"}
+          </button>
         </p>
       ) : null}
       {answer.data ? <Results answer={answer.data} /> : null}

@@ -28,7 +28,7 @@ function request(overrides: Partial<BookRequest> = {}): BookRequest {
 }
 
 function format(bookType: BookFormat["book_type"], overrides: Partial<BookFormat> = {}): BookFormat {
-  return { book_type: bookType, state: "requestable", note: null, publication: null, request: null, ...overrides };
+  return { book_type: bookType, state: "requestable", publication: null, request: null, ...overrides };
 }
 
 function book(overrides: Partial<Book> = {}): Book {
@@ -91,21 +91,33 @@ describe("the Book page", () => {
     expect(screen.queryByText("Choose a copy")).toBeNull();
   });
 
-  test("follows the ordinary workflow by itself from finding a copy to getting the file to the reader", async () => {
-    let current = book({ formats: [format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching" }) }), format("audiobook")] });
-    const { services } = renderApp({ server: bookServer(() => current), url: BOOK_URL });
-    expect(await screen.findByText(/Looking for a suitable copy/)).toBeTruthy();
-    expect(screen.queryByRole("radio")).toBeNull();
-    current = book({ formats: [format("ebook", { state: "requested", request: request({ status: "downloading", stage: "downloading", download_percent: 42 }) }), format("audiobook")] });
-    await act(() => services.queryClient.invalidateQueries());
+  test("polls by itself from getting the file to the reader, with no click", async () => {
+    let current = book({ formats: [format("ebook", { state: "requested", request: request({ status: "downloading", stage: "downloading", download_percent: 42 }) }), format("audiobook")] });
+    const server = bookServer(() => current);
+    renderApp({ server, url: BOOK_URL });
     expect(await screen.findByText("Getting the file · 42%")).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Ebook request progress" })).getByText("Getting the file").closest("li")?.getAttribute("aria-current")).toBe("step");
     current = book({ details: "library", formats: [format("ebook", { state: "in_library", publication: summary({ reader_url: "/sub/read/7" }) }), format("audiobook")] });
-    await act(() => services.queryClient.invalidateQueries());
-    const card = await screen.findByRole("region", { name: "On this server" });
-    const open = await within(card).findByRole("link", { name: "Start reading The Quiet Library in the reader" });
+    const card = screen.getByRole("region", { name: "On this server" });
+    const open = await within(card).findByRole("link", { name: "Start reading The Quiet Library in the reader" }, { timeout: 6_000 });
     expect(open.getAttribute("href")).toBe("/sub/read/7");
     expect(screen.queryByRole("region", { name: "Ebook request progress" })).toBeNull();
+    expect(server.called("GET", /\/books\/openlibrary\/OL900W/).length).toBeGreaterThanOrEqual(2);
+  }, 10_000);
+
+  test("looking for a copy promises the automatic path and offers no copy controls", async () => {
+    const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching" }) });
+    renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });
+    expect(await screen.findByText(/Looking for a suitable copy/)).toBeTruthy();
+    expect(screen.queryByRole("radio")).toBeNull();
+  });
+
+  test("an import that stopped for attention is not shown as still being added", async () => {
+    const ebook = format("ebook", { state: "requested", request: request({ status: "processing", stage: "processing", attention_needed: true }) });
+    renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });
+    expect(await screen.findByText(/stopped working on this request/)).toBeTruthy();
+    expect(screen.queryByText(/being added to the library/)).toBeNull();
+    expect(bookRefreshInterval(book({ formats: [ebook] }))).toBe(60_000);
   });
 
   test("a request that stopped for attention says so instead of promising an automatic download", async () => {
@@ -161,13 +173,18 @@ describe("the Book page", () => {
     expect(screen.getByRole("link", { name: "Add a link or file on the classic request page (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/requests/41");
   });
 
-  test("a copy that can no longer be chosen is disabled and an empty choice is announced and focuses the first choosable copy", async () => {
-    const candidates = [{ ...COPIES[0]!, id: "500", title: "Gone copy", state: "rejected" as const, downloadable: false }, { ...COPIES[1]!, downloadable: true }];
-    const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", choice_needed: true, copies: { selectable: true, can_search_again: false, candidates } }) });
-    const server = bookServer(book({ formats: [ebook, format("audiobook")] }), ADMIN);
-    renderApp({ server, url: BOOK_URL });
-    const [gone, usable] = (await screen.findAllByRole("radio")) as HTMLInputElement[];
-    expect([gone?.disabled, usable?.disabled, usable?.checked]).toEqual([true, false, true]);
+  test("a copy that stops being downloadable after a refresh cannot be sent; the error is announced and focus moves to a copy that can", async () => {
+    let candidates = COPIES;
+    const server = bookServer(() => book({ formats: [format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", choice_needed: true, copies: { selectable: true, can_search_again: false, candidates } }) }), format("audiobook")] }), ADMIN);
+    const { services } = renderApp({ server, url: BOOK_URL });
+    await userEvent.click(await screen.findByLabelText("Middlemarch (text edition)"));
+    candidates = [COPIES[0]!, { ...COPIES[1]!, downloadable: false }];
+    await act(() => services.queryClient.invalidateQueries());
+    await waitFor(() => expect((screen.getByLabelText("Middlemarch (text edition)") as HTMLInputElement).disabled).toBe(true));
+    await userEvent.click(screen.getByRole("button", { name: "Download this copy" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("⚠ Choose one copy that can be downloaded first.");
+    expect(document.activeElement).toBe(screen.getByLabelText("Middlemarch (with illustrations)"));
+    expect(server.called("POST", /selection$/)).toEqual([]);
   });
 
   test("a refused choice says why and keeps the table", async () => {
@@ -269,8 +286,10 @@ describe("Discover in the Rails preview", () => {
   test("says when some catalogues could not be reached, so results may be incomplete", async () => {
     const server = standardServer().on("GET", /\/api\/v1\/discover\?/, () => ({ body: { ...answer, providers: ["Hardcover", "Open Library"], unavailable: ["Hardcover"] } }));
     renderApp({ server, url: "/sub/preview/discover?q=middlemarch" });
-    expect((await screen.findByRole("note")).textContent).toBe("Hardcover could not be reached, so these results may be incomplete. Try again in a moment.");
+    expect((await screen.findByRole("note")).textContent).toBe("Hardcover could not be reached, so these results may be incomplete. Search again");
     expect(screen.getByRole("link", { name: "Middlemarch" })).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Search again" }));
+    await waitFor(() => expect(server.called("GET", /discover\?/)).toHaveLength(2));
   });
 
   test("says when no catalogue is switched on", async () => {

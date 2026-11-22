@@ -123,12 +123,12 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal({ "id" => WORK, "also" => [], "details" => "catalogue", "title" => "Middlemarch", "author" => "George Eliot", "year" => 1871,
       "description" => "Lives in a provincial town.", "cover" => { "url" => nil, "style" => WebPreview::BookPage.cover_style(WORK) },
       "source" => { "name" => "Open Library", "url" => "https://openlibrary.org/works/OL900W" },
-      "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "note" => nil, "publication" => nil, "request" => nil } } }, book)
+      "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "publication" => nil, "request" => nil } } }, book)
   end
 
   test "a hand-off without a description keeps its own details and takes only the missing ones from the catalogue" do
     sign_in_as(@member)
-    token = RequestMetadataHandoff.params_for(user: @member, metadata: { work_id: WORK, title: "Middlemarch", author: "George Eliot", first_publish_year: 1871 })[:metadata_token]
+    token = WebPreview::BookHandoff.store(user: @member, details: { work_id: WORK, title: "Middlemarch", author: "George Eliot", year: 1871 })
     book = BookMetadataLookupService.stub(:call, { title: "Middlemarch: A Study", author: "G. Eliot", description: "Lives in a provincial town." }) { book_json(user: @member, metadata: token) }
     assert_equal [ "Middlemarch", "George Eliot", 1871, "Lives in a provincial town." ], book.values_at("title", "author", "year", "description")
   end
@@ -183,7 +183,7 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
 
     request.update!(user: @admin)
     other = format_of(book_json(user: @member), "ebook")
-    assert_equal({ "book_type" => "ebook", "state" => "requested_by_someone", "note" => nil, "publication" => nil, "request" => nil }, other)
+    assert_equal({ "book_type" => "ebook", "state" => "requested_by_someone", "publication" => nil, "request" => nil }, other)
     assert_not_includes response.body, @admin.name
   end
 
@@ -217,16 +217,11 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal "downloading", format_of(book_json(user: @admin), "ebook").dig("request", "stage")
   end
 
-  test "a copy cannot be chosen once a download is queued or the copy was set aside, and a bad size is left out" do
+  test "a copy cannot be chosen once a download is queued, and a bad size is left out" do
     request, copies = requested_middlemarch
     copies.first.update!(size_bytes: -1)
     sign_in_as(@admin)
     assert_nil format_of(book_json(user: @admin), "ebook").dig("request", "copies", "candidates", 0, "size_bytes")
-    copies.last.update!(status: :rejected)
-    post web_preview_api_request_selection_path(request), params: { result_id: copies.last.id.to_s }, headers: account_headers(@admin), as: :json
-    assert_response :conflict
-    assert_equal "not_selectable", response.parsed_body.fetch("error")
-    copies.last.update!(status: :pending)
     request.downloads.create!(name: "queued", status: :queued, search_result: copies.first)
     assert_no_enqueued_jobs(only: DownloadJob) do
       post web_preview_api_request_selection_path(request), params: { result_id: copies.last.id.to_s }, headers: account_headers(@admin), as: :json
@@ -234,6 +229,22 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_response :conflict
     assert_equal [ "queued" ], request.downloads.reload.map(&:status)
     assert_equal false, format_of(book_json(user: @admin), "ebook").dig("request", "copies", "selectable")
+  end
+
+  test "after a chosen copy failed, an administrator can still choose another copy the request had set aside" do
+    request, copies = requested_middlemarch
+    copies.first.update!(status: :rejected)
+    copies.last.update!(status: :rejected)
+    request.downloads.create!(name: "failed", status: :failed, search_result: copies.first)
+    request.update!(status: :not_found, attention_needed: true, issue_description: "Download failed: refused. Select another release manually.")
+    sign_in_as(@admin)
+    ebook = format_of(book_json(user: @admin), "ebook")
+    assert_equal [ "requested", true, [ true, true ] ], [ ebook.fetch("state"), ebook.dig("request", "copies", "selectable"), ebook.dig("request", "copies", "candidates").map { |copy| copy.fetch("downloadable") } ]
+    assert_enqueued_with(job: DownloadJob) do
+      post web_preview_api_request_selection_path(request), params: { result_id: copies.last.id.to_s }, headers: account_headers(@admin), as: :json
+    end
+    assert_response :success
+    assert_equal "downloading", request.reload.status
   end
 
   test "an administrator can search again, and a copy of another request cannot be chosen" do
@@ -292,29 +303,47 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_nil stranger.reload.open_library_work_id
   end
 
-  test "a hand-off's server-made links group the work, and a comic gets no Book page link" do
+  test "a hand-off Discover made groups the work by its links, a classic hand-off token is ignored, and a comic gets no Book page link" do
     Book.create!(title: "Middlemarch", book_type: :audiobook, hardcover_id: "88", file_path: @audio_path)
     sign_in_as(@member)
-    token = RequestMetadataHandoff.params_for(user: @member, metadata: { work_id: WORK, source_work_ids: [ WORK, "hardcover:88" ], title: "Middlemarch", author: "George Eliot", description: "x" })[:metadata_token]
+    token = WebPreview::BookHandoff.store(user: @member, details: { work_id: WORK, links: [ "hardcover:88" ], title: "Middlemarch", author: "George Eliot", description: "x" })
     book = book_json(user: @member, metadata: token)
     assert_equal [ [ "hardcover:88" ], "in_library" ], [ book.fetch("also"), format_of(book, "audiobook").fetch("state") ]
+    classic = RequestMetadataHandoff.params_for(user: @member, metadata: { work_id: WORK, source_work_ids: [ WORK, "hardcover:88" ], title: "Middlemarch" })[:metadata_token]
+    book = BookMetadataLookupService.stub(:call, {}) { book_json(user: @member, metadata: classic) }
+    assert_equal [ [], "requestable", "missing" ], [ book.fetch("also"), format_of(book, "audiobook").fetch("state"), book.fetch("details") ]
     comic = Book.create!(title: "Comic", book_type: :comicbook, comic_vine_id: "4000-1", file_path: @epub_path)
     assert_nil WebPreview::BookPage.path_for(comic)
   end
 
-  test "an own request with nothing found yet stays visible with its next search, and another account's outcome is not disclosed" do
+  test "a request with a search still scheduled keeps the ebook taken for everyone, and no account sees another account's outcome" do
     request, = requested_middlemarch(status: :searching)
     request.search_results.destroy_all
-    request.update!(status: :not_found, next_retry_at: 2.hours.from_now)
+    request.update!(status: :not_found, next_retry_at: 2.hours.from_now, user: @member)
     sign_in_as(@member)
     ebook = format_of(book_json(user: @member), "ebook")
     assert_equal [ "requested", "not_found", request.next_retry_at.iso8601 ], [ ebook.fetch("state"), ebook.dig("request", "stage"), ebook.dig("request", "next_retry_at") ]
 
-    request.update!(user: @admin, status: :failed)
-    other = format_of(book_json(user: @member), "ebook")
-    assert_equal [ "requestable", nil, nil ], other.values_at("state", "note", "request")
-    request.update!(user: @member)
-    assert_match(/previous request for this ebook failed/, format_of(book_json(user: @member), "ebook").fetch("note"))
+    request.update!(user: @admin)
+    other = BookMetadataLookupService.stub(:call, { title: "Middlemarch" }) { book_json(user: @member) }
+    assert_equal({ "book_type" => "ebook", "state" => "requested_by_someone", "publication" => nil, "request" => nil }, format_of(other, "ebook"))
+    assert_no_difference("Request.count") { BookMetadataLookupService.stub(:call, { title: "Middlemarch" }) { request_ebook(user: @member) } }
+    assert_equal "existing", response.parsed_body.fetch("outcome")
+
+    request.update!(status: :failed)
+    assert_equal({ "book_type" => "ebook", "state" => "requestable", "publication" => nil, "request" => nil }, format_of(book_json(user: @member), "ebook"))
+    assert_not_includes response.body, "failed"
+  end
+
+  test "an acquired ebook wins over an earlier placeholder for the same work, and no second request is made" do
+    placeholder = Book.create!(title: "Middlemarch", book_type: :ebook, hardcover_id: "77")
+    Request.create!(book: placeholder, user: @member, status: :failed)
+    @ebook.update!(google_books_id: "gb-1")
+    Book.create!(title: "Middlemarch", book_type: :audiobook, hardcover_id: "77", google_books_id: "gb-1")
+    sign_in_as(@member)
+    ebook = format_of(book_json(user: @member, source: "hardcover", id: "77"), "ebook")
+    assert_equal [ "in_library", @ebook.id.to_s ], [ ebook.fetch("state"), ebook.dig("publication", "id") ]
+    assert_no_difference("Request.count") { post web_preview_api_book_requests_path(source: "hardcover", source_id: "77"), headers: account_headers(@member), as: :json }
   end
 
   test "an acquired ebook whose file is gone is still on the shelf but cannot be opened" do

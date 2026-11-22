@@ -152,7 +152,6 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
       {book.formats.some((format) => format.book_type === "audiobook" && format.state === "requestable") ? (
         <p className="format-advisory">This preview requests ebooks only.</p>
       ) : null}
-      {book.formats.map((format) => (format.note ? <p key={format.book_type} className="format-advisory">{format.note}</p> : null))}
     </section>
   );
 }
@@ -364,7 +363,7 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
 }
 
 export function stalled(request: BookRequest): boolean {
-  return request.attention_needed && !request.choice_needed && request.stage !== "downloading" && request.stage !== "processing";
+  return request.attention_needed && !request.choice_needed;
 }
 
 function stageSentence(request: BookRequest, admin: boolean): string {

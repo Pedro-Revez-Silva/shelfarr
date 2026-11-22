@@ -501,7 +501,6 @@ export type BookRequest = z.infer<typeof bookRequestSchema>;
 export const bookFormatSchema = z.object({
   book_type: z.enum(bookFormatTypes),
   state: z.enum(bookFormatStates),
-  note: z.string().nullable(),
   publication: publicationSummarySchema.nullable(),
   request: bookRequestSchema.nullable(),
 });

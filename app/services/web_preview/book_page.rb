@@ -7,6 +7,7 @@ module WebPreview
     SOURCE_ID = /\A[A-Za-z0-9_-]{1,64}\z/
     WORK_ID = /\A(?<source>#{SOURCES.join("|")}):(?<id>[A-Za-z0-9_-]{1,64})\z/
     MAX_LINKS = 9
+    ACTIVE_STATUSES = [ *Request::OPEN_STATUSES, "not_found" ].freeze
     COPY_STATUSES = %w[searching not_found].freeze
     ACTIVE_DOWNLOADS = %i[queued downloading paused].freeze
     COVER_STYLES = %w[clay moss slate oat plum stone].freeze
@@ -32,40 +33,35 @@ module WebPreview
       COPY_STATUSES.include?(request.status) && !request.downloads.where(status: ACTIVE_DOWNLOADS).exists?
     end
 
-    def self.choosable?(result)
-      result.pending? && result.downloadable?
-    end
-
-    def initialize(user:, work_id:, handoff:, publication:)
+    def initialize(user:, work_id:, links: [], details: {}, publication: nil)
       @user = user
       @work_id = work_id
-      @handoff = handoff[:work_id] == work_id ? handoff : {}
+      @seeds = [ work_id, *Array(links).map(&:to_s).select { |value| value.match?(WORK_ID) } ].uniq.first(MAX_LINKS)
+      @details = details
       @publication = publication
     end
 
     def work_ids
       @work_ids ||= begin
-        seeds = [ @work_id, *Array(@handoff[:source_work_ids]).map(&:to_s).select { |value| value.match?(WORK_ID) } ].uniq
-        linked = stored_books(Book.preload_by_work_ids(seeds)).flat_map { |book| Book.work_ids_for(book) }
-        [ *seeds, *linked.select { |value| value.match?(WORK_ID) } ].uniq.first(MAX_LINKS)
+        linked = stored_books(Book.preload_by_work_ids(@seeds)).flat_map { |book| Book.work_ids_for(book) }
+        [ *@seeds, *linked.select { |value| value.match?(WORK_ID) } ].uniq.first(MAX_LINKS)
       end
     end
 
     def representation
-      {
-        id: @work_id,
-        also: work_ids.drop(1),
-        **metadata_fields,
-        formats: FORMATS.map { |book_type| format(book_type) }
-      }
+      { id: @work_id, also: work_ids.drop(1), **metadata_fields, formats: FORMATS.map { |book_type| format(book_type) } }
+    end
+
+    def states
+      FORMATS.map { |book_type| { book_type: book_type, state: state(book_type) } }
+    end
+
+    def requestable?(book_type)
+      state(book_type) == "requestable"
     end
 
     def metadata
       @metadata ||= local_metadata || handoff_metadata || catalogue_metadata || {}
-    end
-
-    def details_origin
-      metadata[:origin] || "missing"
     end
 
     private
@@ -74,26 +70,56 @@ module WebPreview
       @lookup ||= Book.preload_by_work_ids(work_ids)
     end
 
-    def books
-      @books ||= FORMATS.filter_map { |book_type| Book.find_in_lookup(lookup, work_ids, book_type: book_type) }
-    end
-
     def stored_books(found)
       found.values.flat_map(&:values).uniq
     end
 
+    def books_of(book_type)
+      stored_books(lookup).select { |book| book.book_type == book_type }.sort_by(&:id)
+    end
+
+    def book_for(book_type)
+      candidates = books_of(book_type)
+      candidates.find(&:acquired?) || candidates.find { |book| active_request(book) } || candidates.first
+    end
+
+    def active_request(book)
+      book&.requests&.select { |request| ACTIVE_STATUSES.include?(request.status) }&.max_by { |request| [ request.created_at, request.id ] }
+    end
+
+    def state(book_type)
+      book = book_for(book_type)
+      return "in_library" if book&.acquired?
+
+      request = active_request(book)
+      return "requestable" unless request
+
+      visible?(request) ? "requested" : "requested_by_someone"
+    end
+
+    def format(book_type)
+      book = book_for(book_type)
+      current = state(book_type)
+      {
+        book_type: book_type,
+        state: current,
+        publication: current == "in_library" ? @publication.call(book) : nil,
+        request: current == "requested" ? request_fields(active_request(book)) : nil
+      }
+    end
+
     def local_metadata
-      book = books.find(&:acquired?) || books.first
+      book = stored_books(lookup).select { |found| FORMATS.include?(found.book_type) }.min_by { |found| [ found.acquired? ? 0 : 1, found.id ] }
       return unless book
 
       { origin: "library", title: book.title, author: book.author.presence, year: book.year, description: book.description.presence, cover_url: book.cover_url }
     end
 
     def handoff_metadata
-      return if @handoff[:title].blank?
+      return if @details[:title].blank?
 
-      found = { origin: "catalogue", title: @handoff[:title], author: @handoff[:author].presence, year: @handoff[:first_publish_year],
-        description: @handoff[:description].presence, cover_url: @handoff[:cover_url] }
+      found = { origin: "catalogue", title: @details[:title], author: @details[:author].presence, year: @details[:year],
+        description: @details[:description].presence, cover_url: @details[:cover_url] }
       return found if found[:author] && found[:description]
 
       (catalogue_metadata || {}).merge(found.compact)
@@ -113,7 +139,7 @@ module WebPreview
       source, = Book.parse_work_id(@work_id)
       probe = Book.new.tap { |book| book.assign_work_id(@work_id) }
       {
-        details: details_origin,
+        details: metadata[:origin] || "missing",
         title: metadata[:title].to_s.presence,
         author: metadata[:author],
         year: metadata[:year].to_s.match?(/\A\d{1,4}\z/) ? metadata[:year].to_i : nil,
@@ -121,24 +147,6 @@ module WebPreview
         cover: { url: Consumer::SafeLink.call(metadata[:cover_url]), style: self.class.cover_style(@work_id) },
         source: { name: MetadataSources.display_name(source), url: probe.metadata_source_url }
       }
-    end
-
-    def format(book_type)
-      check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: work_ids.drop(1), book_type: book_type, existing_books_lookup: lookup)
-      book = Book.find_in_lookup(lookup, work_ids, book_type: book_type)
-      entry = { book_type: book_type, state: "requestable", note: nil, publication: nil, request: nil }
-      return entry.merge(state: "in_library", publication: @publication.call(book)) if book&.acquired?
-
-      if check.block? && check.existing_request
-        request = check.existing_request
-        return visible?(request) ? entry.merge(state: "requested", request: request_fields(request)) : entry.merge(state: "requested_by_someone")
-      end
-
-      latest = book&.requests&.reject(&:completed?)&.max_by { |request| [ request.created_at, request.id ] }
-      return entry unless latest && visible?(latest)
-      return entry.merge(state: "requested", request: request_fields(latest)) if latest.not_found?
-
-      entry.merge(note: check.warn? ? check.message : nil)
     end
 
     def visible?(request)
@@ -157,7 +165,7 @@ module WebPreview
     def copies(request)
       candidates = request.search_results.best_first.to_a
       {
-        selectable: self.class.choosing_allowed?(request) && candidates.any? { |result| self.class.choosable?(result) },
+        selectable: self.class.choosing_allowed?(request) && candidates.any?(&:downloadable?),
         can_search_again: request.search_refresh_allowed?,
         candidates: candidates.map { |result| candidate(result) }
       }
@@ -173,7 +181,7 @@ module WebPreview
         source: result.source_display_name,
         state: result.status,
         skipped: result.blocklisted?,
-        downloadable: self.class.choosable?(result)
+        downloadable: result.downloadable?
       }
     end
   end

@@ -45,12 +45,10 @@ class WebPreview::DiscoverController < WebPreview::APIController
   end
 
   def annotate(results)
-    entries = results.filter_map do |result|
+    results.filter_map do |result|
       ids = work_ids(result)
-      [ result, ids ] if ids.first&.match?(WebPreview::BookPage::WORK_ID)
+      item(result, ids) if ids.first&.match?(WebPreview::BookPage::WORK_ID)
     end
-    lookup = Book.preload_by_work_ids(entries.flat_map(&:last))
-    entries.map { |result, ids| item(result, ids, lookup) }
   end
 
   def work_ids(result)
@@ -58,33 +56,23 @@ class WebPreview::DiscoverController < WebPreview::APIController
     [ result.work_id, *sources ].compact_blank.map(&:to_s).uniq.first(WebPreview::BookPage::MAX_LINKS)
   end
 
-  def item(result, ids, lookup)
+  def item(result, ids)
     source, source_id = Book.parse_work_id(ids.first)
     year = result.year.to_s.match?(/\A\d{1,4}\z/) ? result.year.to_i : nil
+    page = WebPreview::BookPage.new(user: Current.user, work_id: ids.first, links: ids.drop(1))
     {
-      book: { source: source, id: source_id, metadata: handoff_token(result, ids, year) },
+      book: { source: source, id: source_id, metadata: handoff_token(result, page, year) },
       title: result.title.to_s,
       author: result.author.presence,
       year: year,
       cover: { url: Consumer::SafeLink.call(result.cover_url), style: WebPreview::BookPage.cover_style(ids.first) },
       source_name: result.respond_to?(:source_name) ? result.source_name : MetadataSources.display_name(source),
-      formats: WebPreview::BookPage::FORMATS.map { |book_type| { book_type: book_type, state: format_state(ids, book_type, lookup) } }
+      formats: page.states
     }
   end
 
-  def format_state(ids, book_type, lookup)
-    check = DuplicateDetectionService.check(work_id: ids.first, source_work_ids: ids.drop(1), book_type: book_type, existing_books_lookup: lookup)
-    return "requestable" unless check.block?
-    return "in_library" if check.existing_book&.acquired?
-
-    request = check.existing_request
-    request && (request.user_id == Current.user.id || Current.user.admin?) ? "requested" : "requested_by_someone"
-  end
-
-  def handoff_token(result, ids, year)
-    metadata = { work_id: ids.first, source_work_ids: ids, title: result.title, author: result.author, cover_url: result.cover_url,
-      first_publish_year: year, description: result.respond_to?(:description) ? result.description.to_s.first(2_000).presence : nil, content_kind: ContentKinds::BOOK }
-    token = RequestMetadataHandoff.params_for(user: Current.user, metadata: metadata)[:metadata_token]
-    token if token.is_a?(String)
+  def handoff_token(result, page, year)
+    WebPreview::BookHandoff.store(user: Current.user, details: { work_id: page.work_ids.first, links: page.work_ids.drop(1), title: result.title, author: result.author,
+      year: year, description: result.respond_to?(:description) ? result.description.to_s.first(2_000).presence : nil, cover_url: result.cover_url })
   end
 end

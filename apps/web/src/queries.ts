@@ -367,7 +367,7 @@ const WAITING_STAGES = new Set(["queued", "searching"]);
 
 export function bookRefreshInterval(book: Book | undefined): number | false {
   const requests = (book?.formats ?? []).flatMap((format) => (format.request ? [format.request] : []));
-  if (requests.some((request) => TRANSFERRING_STAGES.has(request.stage))) return BOOK_TRANSFER_MS;
+  if (requests.some((request) => TRANSFERRING_STAGES.has(request.stage) && !request.attention_needed)) return BOOK_TRANSFER_MS;
   if (requests.some((request) => WAITING_STAGES.has(request.stage) && !request.attention_needed)) return BOOK_WAITING_MS;
   if (requests.some((request) => request.attention_needed || (request.stage === "not_found" && request.next_retry_at !== null))) return BOOK_RETRY_MS;
   return false;
@@ -388,7 +388,7 @@ export function useCatalogue(query: string | null) {
 export function useBook(location: BookLocation) {
   const { api, keys } = useServices();
   return useQuery({
-    queryKey: keys.book(location.source, location.id),
+    queryKey: keys.book(location.source, location.id, location.metadata ?? null),
     queryFn: ({ signal }) => api.book(location, signal),
     refetchInterval: ({ state }) => bookRefreshInterval(state.data),
   });
@@ -402,11 +402,11 @@ function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Pro
     onSuccess: (answer: T) => {
       if (!guard.isActive()) return;
       const book = after?.(answer) ?? null;
-      if (book) client.setQueryData(keys.book(location.source, location.id), book);
+      if (book) client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), book);
     },
     onSettled: () => {
       if (!guard.isActive()) return;
-      void client.invalidateQueries({ queryKey: keys.book(location.source, location.id) });
+      void client.invalidateQueries({ queryKey: keys.bookAll(location.source, location.id) });
       void client.invalidateQueries({ queryKey: keys.catalogueAll });
       void client.invalidateQueries({ queryKey: keys.libraryAll });
       void client.invalidateQueries({ queryKey: keys.continueAll });
