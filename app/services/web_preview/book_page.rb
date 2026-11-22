@@ -185,11 +185,11 @@ module WebPreview
       {
         selectable: self.class.choosing_allowed?(request) && candidates.any?(&:downloadable?),
         can_search_again: request.search_refresh_allowed?,
-        candidates: candidates.map { |result| candidate(result) }
+        candidates: candidates.map { |result| self.class.candidate(result) }
       }
     end
 
-    def candidate(result)
+    def self.candidate(result)
       {
         id: result.id.to_s,
         title: result.title.to_s,
