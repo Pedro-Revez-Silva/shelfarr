@@ -48,7 +48,7 @@ export function CatalogueSearch() {
           </button>
         </p>
       ) : null}
-      {answer.data ? <Results answer={answer.data} /> : null}
+      {answer.data ? <Results answer={answer.data} searchedAt={answer.dataUpdatedAt} /> : null}
       {query === null ? <YourRequests /> : null}
       {session.data ? (
         <p className="discover-note">
@@ -148,7 +148,7 @@ function SearchFailure({ error, onRetry }: { error: unknown; onRetry: () => void
   return <ErrorPanel error={error} onRetry={onRetry} />;
 }
 
-function Results({ answer }: { answer: CatalogueAnswer }) {
+function Results({ answer, searchedAt }: { answer: CatalogueAnswer; searchedAt: number }) {
   if (answer.providers.length === 0) {
     return (
       <EmptyState title="No catalogue is switched on">
@@ -167,7 +167,7 @@ function Results({ answer }: { answer: CatalogueAnswer }) {
     <ol className="discover-list">
       {answer.items.map((item) => (
         <li key={`${item.book.source}:${item.book.id}`}>
-          <Result item={item} query={answer.query} options={answer.request_options ?? null} />
+          <Result item={item} query={answer.query} options={answer.request_options ?? null} searchedAt={searchedAt} />
         </li>
       ))}
     </ol>
@@ -181,9 +181,15 @@ const STATE_TEXT: Record<CatalogueItem["formats"][number]["state"], string> = {
   in_library: "in library",
 };
 
-function Result({ item, query, options }: { item: CatalogueItem; query: string; options: RequestOptions | null }) {
+type FormatStates = CatalogueItem["formats"];
+type RowRequest = ReturnType<typeof useRequestBook>;
+
+function Result({ item, query, options, searchedAt }: { item: CatalogueItem; query: string; options: RequestOptions | null; searchedAt: number }) {
   const titleId = useId();
-  const owned = item.formats.some((format) => format.state === "in_library");
+  const request = useRequestBook({ source: item.book.source, id: item.book.id, metadata: item.book.metadata ?? undefined });
+  const formats: FormatStates =
+    request.isSuccess && request.submittedAt >= searchedAt ? request.data.book.formats.map((format) => ({ book_type: format.book_type, state: format.state })) : item.formats;
+  const owned = formats.some((format) => format.state === "in_library");
   return (
     <article className={owned ? "discover-result discover-result--owned" : "discover-result"} aria-labelledby={titleId}>
       <Cover publication={{ title: item.title, author: item.author, book_type: "ebook", cover: item.cover }} />
@@ -200,24 +206,23 @@ function Result({ item, query, options }: { item: CatalogueItem; query: string; 
         <p className="book-author">{item.author ?? "Author not listed"}</p>
         <p className="discover-meta">{[item.year !== null ? `First published ${item.year}` : null, `From ${item.source_name}`].filter(Boolean).join(" · ")}</p>
         <ul className="discover-formats" aria-label="On this server">
-          {item.formats.map((format) => (
+          {formats.map((format) => (
             <li key={format.book_type} className={`format-chip format-chip--${format.state}`}>
               {format.book_type === "ebook" ? "Ebook" : "Audiobook"}: {STATE_TEXT[format.state]}
             </li>
           ))}
         </ul>
-        {options ? <ResultRequest item={item} query={query} options={options} /> : null}
+        {options ? <ResultRequest item={item} formats={formats} request={request} query={query} options={options} /> : null}
       </div>
     </article>
   );
 }
 
-function ResultRequest({ item, query, options }: { item: CatalogueItem; query: string; options: RequestOptions }) {
-  const request = useRequestBook({ source: item.book.source, id: item.book.id, metadata: item.book.metadata ?? undefined });
+function ResultRequest({ item, formats, request, query, options }: { item: CatalogueItem; formats: FormatStates; request: RowRequest; query: string; options: RequestOptions }) {
   const [pressed, setPressed] = useState<RequestFormat | null>(null);
   const [extras, setExtras] = useState(NO_EXTRAS);
   const done = useRef<HTMLParagraphElement>(null);
-  const plan = requestPlan(item.formats, options);
+  const plan = requestPlan(formats, options);
   const succeeded = request.isSuccess;
   useEffect(() => {
     if (succeeded) done.current?.focus();
@@ -232,7 +237,7 @@ function ResultRequest({ item, query, options }: { item: CatalogueItem; query: s
     <div className="result-request">
       {request.isSuccess ? (
         <p ref={done} tabIndex={-1} className="result-request-done">
-          {outcomeSentence(request.data.results, item.formats)}{" "}
+          {outcomeSentence(request.data.results, formats)}{" "}
           <Link to="/books/$source/$sourceId" params={{ source: item.book.source, sourceId: item.book.id }} search={{ q: query, ...(item.book.metadata ? { metadata: item.book.metadata } : {}) }}>
             Follow it on its page<span className="sr-only">: {item.title}</span>
           </Link>

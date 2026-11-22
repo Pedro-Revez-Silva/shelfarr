@@ -278,28 +278,28 @@ describe("what a press sends and shows after the answer", () => {
     expect(server.called("GET", /discover\?/)).toHaveLength(2);
   });
 
-  test("an older answer that arrives last does not undo a newer state on linked results", async () => {
-    const linked: CatalogueItem = { ...ITEM, book: { source: "google_books", id: "gb-77", metadata: null }, title: "Middlemarch (Google Books)" };
-    const older = deferred<ReturnType<typeof outcome>>();
-    const newer = deferred<ReturnType<typeof outcome>>();
-    const server = findServer(catalogue(options({ default_format: "ask" }), [ITEM, linked]))
-      .on("POST", /openlibrary\/OL900W\/requests/, () => older.promise)
-      .on("POST", /google_books\/gb-77\/requests/, () => newer.promise);
+  test("a row shows the server's newest answer for its own work, including a format another tab cancelled", async () => {
+    const server = findServer(catalogue(options({ default_format: "ask" }), [{ ...ITEM, formats: [{ book_type: "ebook", state: "requested" }, ITEM.formats[1]!] }])).on("POST", /\/requests/, () =>
+      outcome(book([format("ebook"), requested("audiobook", "52")]), [{ book_type: "audiobook", outcome: "created" }]),
+    );
     renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
-    const [first, second] = await screen.findAllByRole("article");
-    const user = userEvent.setup();
-    await user.click(within(first!).getByRole("button", { name: "Request ebook of Middlemarch" }));
-    await user.click(within(second!).getByRole("button", { name: "Request audiobook of Middlemarch (Google Books)" }));
-    const both = { ...book([requested("ebook", "41"), requested("audiobook", "52")]), id: "google_books:gb-77", also: ["openlibrary:OL900W"] };
-    await act(async () => newer.resolve(outcome(both, [{ book_type: "audiobook", outcome: "created" }])));
-    await within(second!).findByText("Audiobook requested.", { exact: false });
-    const ebookOnly = { ...book([requested("ebook", "41"), format("audiobook")]), also: ["google_books:gb-77"] };
-    await act(async () => older.resolve(outcome(ebookOnly, [{ book_type: "ebook", outcome: "created" }])));
-    await within(first!).findByText("Ebook requested.", { exact: false });
-    for (const row of [first!, second!]) {
-      expect(within(row).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: requested");
-      expect(within(row).queryByRole("button", { name: /^Request/ })).toBeNull();
-    }
+    await userEvent.click(await screen.findByRole("button", { name: "Request audiobook of Middlemarch" }));
+    await screen.findByText("Audiobook requested.", { exact: false });
+    expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: requested");
+    expect(screen.getByRole("button", { name: "Request ebook of Middlemarch" })).toBeTruthy();
+  });
+
+  test("a search made after the answer wins over it", async () => {
+    let shelved = false;
+    const server = findServer(catalogue(options())).on("POST", /\/requests/, () => outcome(book([requested("ebook", "41"), format("audiobook")]), [{ book_type: "ebook", outcome: "created" }]));
+    server.on("GET", /\/api\/v1\/discover\?/, () => ({ body: catalogue(options(), [{ ...ITEM, formats: [{ book_type: "ebook", state: shelved ? "in_library" : "requestable" }, ITEM.formats[1]!] }]) }));
+    const { services } = renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    await screen.findByText("Ebook requested.", { exact: false });
+    expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: not in library");
+    shelved = true;
+    await act(async () => services.queryClient.refetchQueries({ queryKey: services.keys.catalogueAll }));
+    await waitFor(() => expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: in libraryAudiobook: not in library"));
   });
 
   test("an unconfirmed press keeps its message after the refresh removes the last action", async () => {
@@ -338,11 +338,13 @@ describe("what a press sends and shows after the answer", () => {
     expect(server.called("GET", /discover\?/)).toHaveLength(1);
   });
 
-  test("every Find result for the same work takes the answer's states, and a note is not sent twice", async () => {
+  test("another result for the same work keeps its search state until pressed, the server answers that press, and a note is not sent twice", async () => {
     const linked: CatalogueItem = { ...ITEM, book: { source: "google_books", id: "gb-77", metadata: null }, title: "Middlemarch (Google Books)" };
     const unrelated = { ...ITEM, book: { ...ITEM.book, id: "OL901W" }, title: "Persuasion" };
     const answered = { ...book([format("ebook"), requested("audiobook", "52")]), also: ["google_books:gb-77"] };
-    const server = findServer(catalogue(options({ default_format: "ask" }), [ITEM, linked, unrelated])).on("POST", /\/requests/, () => outcome(answered, [{ book_type: "audiobook", outcome: "created" }]));
+    const server = findServer(catalogue(options({ default_format: "ask" }), [ITEM, linked, unrelated]))
+      .on("POST", /openlibrary\/OL900W\/requests/, () => outcome(answered, [{ book_type: "audiobook", outcome: "created" }]))
+      .on("POST", /google_books\/gb-77\/requests/, () => ({ body: { account: ACCOUNT, outcome: "existing", results: [{ book_type: "audiobook", outcome: "existing" }], book: { ...answered, id: "google_books:gb-77", also: ["openlibrary:OL900W"] } } }));
     renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
     const [first] = await screen.findAllByRole("article");
     const user = userEvent.setup();
@@ -351,12 +353,15 @@ describe("what a press sends and shows after the answer", () => {
     await user.click(within(first!).getByRole("button", { name: "Request audiobook of Middlemarch" }));
     await within(first!).findByText("Audiobook requested.", { exact: false });
     const [, second, third] = screen.getAllByRole("article");
-    expect(within(second!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: requested");
+    expect(within(second!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: not in library");
     expect(within(third!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: not in library");
+    await user.click(within(second!).getByRole("button", { name: "Request audiobook of Middlemarch (Google Books)" }));
+    expect(await within(second!).findByText("Already requested.", { exact: false })).toBeTruthy();
+    expect(within(second!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: requested");
     expect((within(first!).getByLabelText("Note (optional)") as HTMLTextAreaElement).value).toBe("");
     await user.click(within(first!).getByRole("button", { name: "Request ebook of Middlemarch" }));
-    await waitFor(() => expect(server.called("POST", /\/requests/)).toHaveLength(2));
-    expect(server.called("POST", /\/requests/).map((sent) => sent.body)).toEqual([{ book_type: "audiobook", notes: "Unabridged narrator" }, { book_type: "ebook" }]);
+    await waitFor(() => expect(server.called("POST", /OL900W\/requests/)).toHaveLength(2));
+    expect(server.called("POST", /OL900W\/requests/).map((sent) => sent.body)).toEqual([{ book_type: "audiobook", notes: "Unabridged narrator" }, { book_type: "ebook" }]);
   });
 
   test("a format that reached the library meanwhile is called that, not requested", async () => {

@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-query";
 import type { AccountAnswer, BookLocation, MetadataAnswer, RequestChoice } from "./api/client";
 import { ApiError, failureKind, isApiError, unconfirmed } from "./api/errors";
-import type { Acquisition, Book, BookFormatState, CatalogueAnswer, CatalogueItem, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import type { Acquisition, Book, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useServices } from "./services";
 
@@ -415,19 +415,6 @@ function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Pro
   });
 }
 
-const STATE_RANK: Record<BookFormatState, number> = { requestable: 0, requested_by_someone: 1, requested: 1, in_library: 2 };
-
-function laterState(shown: BookFormatState, answered: BookFormatState): BookFormatState {
-  return STATE_RANK[answered] >= STATE_RANK[shown] ? answered : shown;
-}
-
-export function withBookStates(answer: CatalogueAnswer, book: Book): CatalogueAnswer {
-  const works = new Set([book.id, ...book.also]);
-  const answered = new Map(book.formats.map((format) => [format.book_type, format.state]));
-  const merged = (formats: CatalogueItem["formats"]) => formats.map((format) => ({ ...format, state: laterState(format.state, answered.get(format.book_type) ?? format.state) }));
-  return { ...answer, items: answer.items.map((item) => (works.has(`${item.book.source}:${item.book.id}`) ? { ...item, formats: merged(item.formats) } : item)) };
-}
-
 export function useRequestBook(location: BookLocation) {
   const { api, keys, guard } = useServices();
   const client = useQueryClient();
@@ -436,7 +423,6 @@ export function useRequestBook(location: BookLocation) {
     onSuccess: (answer) => {
       if (!guard.isActive()) return;
       client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), answer.book);
-      client.setQueriesData<CatalogueAnswer>({ queryKey: keys.catalogueAll }, (current) => (current ? withBookStates(current, answer.book) : current));
     },
     onError: (error) => {
       if (guard.isActive() && unconfirmed(error)) void client.invalidateQueries({ queryKey: keys.catalogueAll });

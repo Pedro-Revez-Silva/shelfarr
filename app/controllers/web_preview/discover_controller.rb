@@ -61,6 +61,8 @@ class WebPreview::DiscoverController < WebPreview::APIController
     source, source_id = Book.parse_work_id(ids.first)
     year = result.year.to_s.match?(/\A\d{1,4}\z/) ? result.year.to_i : nil
     page = WebPreview::BookPage.new(user: Current.user, work_id: ids.first, links: ids.drop(1))
+    return if ContentKinds.graphic?(page.content_kind)
+
     {
       book: { source: source, id: source_id, metadata: handoff_token(result, page, year) },
       title: result.title.to_s,

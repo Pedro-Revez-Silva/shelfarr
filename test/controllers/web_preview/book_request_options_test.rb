@@ -243,9 +243,16 @@ class WebPreview::BookRequestOptionsTest < ActionDispatch::IntegrationTest
     assert_equal [ 401, { "error" => "signed_out" } ], [ response.status, response.parsed_body ]
   end
 
-  test "a stored graphic work offers no book format whatever catalogue address it has" do
+  test "a stored graphic work offers no book format whatever catalogue address it has, and Find leaves it out" do
     Book.create!(title: "Middlemarch: The Graphic Novel", book_type: :comicbook, content_kind: :graphic, open_library_work_id: "OL900W")
     sign_in_as(@member)
+    found = OpenLibraryClient::SearchResult.new(work_id: "OL900W", title: "Middlemarch", author: "George Eliot", first_publish_year: 1871, cover_id: nil, edition_count: 3)
+    hits = [ MetadataSearch::ResultNormalizer.call("openlibrary", found, requested_content_kind: ContentKinds::BOOK) ]
+    search = ->(*_args, **_options, &each) { each.call("openlibrary", hits, false) }
+    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
+      MetadataService.stub(:each_provider_search, search) { preview_get web_preview_api_discover_path(q: "middlemarch"), user: @member }
+    end
+    assert_equal [ 200, [] ], [ response.status, response.parsed_body.fetch("items") ]
     assert_equal [], BookMetadataLookupService.stub(:call, DETAILS) { book_json }.dig("request_options", "formats")
     assert_no_difference("Request.count") { request_book(body: { book_type: "audiobook" }) }
     assert_equal [ 422, { "error" => "invalid_request" } ], [ response.status, response.parsed_body ]
