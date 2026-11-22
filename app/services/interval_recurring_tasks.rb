@@ -24,22 +24,27 @@ class IntervalRecurringTasks
   class Reconciler
     attr_reader :pending_catch_ups
 
-    def initialize(interval:, executor:)
+    def initialize(interval:, executor:, dynamic_tasks_enabled: true)
       @executor = executor
+      @dynamic_tasks_enabled = dynamic_tasks_enabled
       @pending_catch_ups = TASKS.keys
       @timer = Concurrent::TimerTask.new(execution_interval: interval) { run }
     end
 
     def start
-      run
+      run(startup: true)
     ensure
       @timer.execute
     end
 
-    def run
+    def run(startup: false)
       @executor.wrap do
         IntervalRecurringTasks.reconcile!
-        @pending_catch_ups = IntervalRecurringTasks.catch_up!(@pending_catch_ups)
+        if @dynamic_tasks_enabled || startup
+          @pending_catch_ups = IntervalRecurringTasks.catch_up!(@pending_catch_ups)
+        else
+          IntervalRecurringTasks.catch_up!(nearest: false)
+        end
       end
     end
 
@@ -55,18 +60,18 @@ class IntervalRecurringTasks
   class << self
     attr_reader :reconciler
 
-    def sync_all!
-      TASKS.each_key { |key| sync_task!(key) }
+    def sync_all!(replace_static: true)
+      TASKS.each_key { |key| sync_task!(key, replace_static:) }
     end
 
     def sync_setting!(setting_key)
       setting_key = setting_key.to_sym
       key = TASKS.each_key.find { |task_key| TASKS.fetch(task_key)[:setting] == setting_key }
-      sync_task!(key) if key
+      sync_task!(key, replace_static: false) if key
     end
 
-    def reconcile!
-      sync_all!
+    def reconcile!(replace_static: false)
+      sync_all!(replace_static:)
       true
     rescue ActiveRecord::ActiveRecordError => error
       Rails.logger.warn "[Shelfarr] Interval recurring tasks were not reconciled: #{error.message}"
@@ -81,9 +86,9 @@ class IntervalRecurringTasks
       RemoteResult::Failed.new(error)
     end
 
-    def scheduler_started!(reconcile_every: RECONCILE_INTERVAL, executor: Rails.application.executor)
+    def scheduler_started!(dynamic_tasks_enabled: true, reconcile_every: RECONCILE_INTERVAL, executor: Rails.application.executor)
       scheduler_stopped!
-      @reconciler = Reconciler.new(interval: reconcile_every, executor: executor)
+      @reconciler = Reconciler.new(interval: reconcile_every, executor:, dynamic_tasks_enabled:)
       @reconciler.start
     end
 
@@ -100,8 +105,8 @@ class IntervalRecurringTasks
       @reconciler&.pending_catch_ups || []
     end
 
-    def catch_up!(keys = TASKS.keys, now: Time.current)
-      keys.select { |key| still_missed?(catch_up_task(key, now)) }
+    def catch_up!(keys = TASKS.keys, now: Time.current, nearest: true)
+      keys.select { |key| still_missed?(catch_up_task(key, now, nearest:)) }
     end
 
     def schedule_for(interval_seconds)
@@ -139,44 +144,51 @@ class IntervalRecurringTasks
       RemoteResult.failed?(result) || !result
     end
 
-    def catch_up_task(key, now)
+    def catch_up_task(key, now, nearest:)
       config = TASKS.fetch(key)
       schedule = desired_schedule(config)
       return true if schedule.nil?
 
-      task = SolidQueue::RecurringTask.dynamic.find_by(key: key)
+      task = SolidQueue::RecurringTask.find_by(key: key)
+      return true if task&.static?
       return false unless same_task?(task, key, task_options(config, schedule))
 
-      slot = missed_slot(task.schedule, now)
-      slot.nil? || task.enqueue(at: slot) || SolidQueue::RecurringExecution.exists?(task_key: key, run_at: slot)
+      slot = missed_slot(task.schedule, now, nearest:)
+      return true if slot.nil? || SolidQueue::RecurringExecution.exists?(task_key: key, run_at: slot)
+
+      task.enqueue(at: slot) || SolidQueue::RecurringExecution.exists?(task_key: key, run_at: slot)
     rescue ActiveRecord::ActiveRecordError => error
       Rails.logger.warn "[Shelfarr] #{key} catch-up will be retried: #{error.message}"
       RemoteResult::Failed.new(error)
     end
 
-    def missed_slot(schedule, now)
+    def missed_slot(schedule, now, nearest:)
       cron = Fugit.parse(schedule)
       missed = cron.previous_time(now.change(usec: 0) + 1.second).to_t
+      return missed unless nearest
+
       upcoming = cron.next_time(now).to_t
       missed if now - missed < upcoming - now
     end
 
-    def sync_task!(key)
+    def sync_task!(key, replace_static:)
       attempts = 0
       begin
         attempts += 1
-        write_task!(key)
+        write_task!(key, replace_static:)
       rescue ActiveRecord::RecordNotUnique
         retry if attempts < 3
         raise
       end
     end
 
-    def write_task!(key)
+    def write_task!(key, replace_static:)
       config = TASKS.fetch(key)
 
       SolidQueue::RecurringTask.transaction do
         existing = SolidQueue::RecurringTask.uncached { SolidQueue::RecurringTask.find_by(key: key) }
+        next if existing&.static? && !replace_static
+
         schedule = Setting.uncached { desired_schedule(config) }
         if schedule.nil?
           existing&.destroy!
@@ -219,7 +231,7 @@ class IntervalRecurringTasks
     end
 
     def interval_minutes(interval_seconds)
-      [ (interval_seconds.to_f / 60).ceil, 1 ].max
+      [ interval_seconds.to_i, 60 ].max.ceildiv(60)
     end
 
     def whole_days?(minutes)
@@ -233,7 +245,7 @@ class IntervalRecurringTasks
     end
 
     def tick_minutes(minutes)
-      minutes.downto(1).find { |step| (minutes % step).zero? && uniform_tick?(step) }
+      [ minutes, DAY_MINUTES ].min.downto(1).find { |step| (minutes % step).zero? && uniform_tick?(step) }
     end
 
     def uniform_tick?(step)

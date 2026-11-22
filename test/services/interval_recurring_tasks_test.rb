@@ -338,6 +338,12 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     end
   end
 
+  test "very large custom intervals keep a bounded elapsed tick calculation" do
+    minutes = 10**20 / 1440 * 1440 + 61
+
+    assert_equal "every minute UTC", IntervalRecurringTasks.schedule_for(minutes * 60)
+  end
+
   test "a catch-up one second before a tick is left to that tick, which then runs once" do
     with_memory_cache do
       SettingsService.set(:health_check_interval, 300)
@@ -414,9 +420,11 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
       Rails.stub(:env, ActiveSupport::EnvironmentInquirer.new("development")) do
         IntervalRecurringTasks.stub(:sync_all!, ->(**) { synced = true }) do
           SolidQueue.stub(:on_scheduler_start, proc { |&hook| registered << [ :start, hook ] }) do
-            SolidQueue.stub(:on_scheduler_stop, proc { |&hook| registered << [ :stop, hook ] }) do
-              assert_no_enqueued_jobs do
-                load Rails.root.join("config/initializers/interval_recurring_tasks.rb").to_s
+            SolidQueue::Scheduler.stub(:after_boot, proc { |&hook| registered << [ :after_boot, hook ] }) do
+              SolidQueue.stub(:on_scheduler_stop, proc { |&hook| registered << [ :stop, hook ] }) do
+                assert_no_enqueued_jobs do
+                  load Rails.root.join("config/initializers/interval_recurring_tasks.rb").to_s
+                end
               end
             end
           end
@@ -425,18 +433,23 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     end
 
     assert_not synced, "booting the app reconciled recurring tasks outside the scheduler"
-    assert_equal %i[start stop], registered.map(&:first)
+    assert_equal %i[start after_boot stop], registered.map(&:first)
     assert SolidQueue::Scheduler.lifecycle_hooks[:start].any?
     assert SolidQueue::Scheduler.lifecycle_hooks[:stop].any?
 
-    started = 0
+    started = []
     stopped = 0
-    IntervalRecurringTasks.stub(:scheduler_started!, -> { started += 1 }) do
-      IntervalRecurringTasks.stub(:scheduler_stopped!, -> { stopped += 1 }) do
-        registered.each { |_event, hook| hook.call(nil) }
+    reconciled = []
+    scheduler = SolidQueue::Scheduler.new(recurring_tasks: [], dynamic_tasks_enabled: false)
+    IntervalRecurringTasks.stub(:reconcile!, ->(replace_static:) { reconciled << replace_static }) do
+      IntervalRecurringTasks.stub(:scheduler_started!, ->(dynamic_tasks_enabled:) { started << dynamic_tasks_enabled }) do
+        IntervalRecurringTasks.stub(:scheduler_stopped!, -> { stopped += 1 }) do
+          registered.each { |_event, hook| scheduler.instance_exec(&hook) }
+        end
       end
     end
-    assert_equal 1, started
+    assert_equal [ true ], reconciled
+    assert_equal [ false ], started
     assert_equal 1, stopped
   end
 
@@ -445,6 +458,56 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
 
     assert_includes kinds.call, :scheduler
     assert_not_includes kinds.call(skip_recurring: true), :scheduler
+  end
+
+  test "scheduler startup catches a tick crossed while installing the timers" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+    travel_to Time.utc(2026, 11, 15, 0, 4, 59)
+    scheduler = SolidQueue::Scheduler.new(recurring_tasks: [], dynamic_tasks_enabled: true)
+
+    scheduler.recurring_schedule.stub(:schedule_tasks, -> { travel 2.seconds }) do
+      scheduler.stub(:register, -> {}) do
+        scheduler.stub(:launch_heartbeat, -> {}) do
+          assert_enqueued_jobs 1, only: HealthCheckJob do
+            scheduler.run_callbacks(:boot) {}
+          end
+        end
+      end
+    end
+  ensure
+    IntervalRecurringTasks.scheduler_stopped!
+  end
+
+  test "health checks keep running when a custom scheduler disables dynamic tasks" do
+    SettingsService.set(:audiobookshelf_library_sync_interval, 0)
+    travel_to Time.utc(2026, 11, 15, 0, 4, 59)
+    scheduler = SolidQueue::Scheduler.new(recurring_tasks: [], dynamic_tasks_enabled: false)
+
+    scheduler.stub(:register, -> {}) do
+      scheduler.stub(:launch_heartbeat, -> {}) do
+        assert_no_enqueued_jobs only: HealthCheckJob do
+          scheduler.run_callbacks(:boot) {}
+        end
+      end
+    end
+
+    travel 2.seconds
+    assert_enqueued_jobs 1, only: HealthCheckJob do
+      IntervalRecurringTasks.reconciler.run
+    end
+  ensure
+    IntervalRecurringTasks.scheduler_stopped!
+  end
+
+  test "custom static tasks keep their schedule when Shelfarr reconciles or changes an interval" do
+    health = SolidQueue::RecurringTask.create!(
+      key: "health_check", class_name: "HealthCheckJob", queue_name: "default", static: true,
+      arguments: [ { scheduled: true } ], schedule: "every 15 minutes"
+    )
+
+    SettingsService.set(:health_check_interval, 1200)
+    assert IntervalRecurringTasks.reconcile!
+    assert_equal "every 15 minutes", health.reload.schedule
   end
 
   test "scheduler start reconciles, catches up and keeps reconciling from committed settings" do
@@ -472,7 +535,7 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     SettingsService.set(:health_check_interval, 600)
 
     SolidQueue::RecurringTask.stub(:transaction, failing_queue_lock) do
-      SolidQueue::RecurringTask.stub(:dynamic, failing_queue_lock) do
+      SolidQueue::RecurringTask.stub(:find_by, failing_queue_lock) do
         SettingsService.set(:health_check_interval, 900)
         assert_no_enqueued_jobs only: [ HealthCheckJob, AudiobookshelfLibrarySyncJob ] do
           IntervalRecurringTasks.scheduler_started!(reconcile_every: 60)
@@ -573,7 +636,7 @@ class IntervalRecurringTasksTest < ActiveSupport::TestCase
     old = IntervalRecurringTasks::Reconciler.new(interval: 60, executor: executor)
     replacement = IntervalRecurringTasks::Reconciler.new(interval: 60, executor: executor)
 
-    SolidQueue::RecurringTask.stub(:dynamic, failing_queue_lock) do
+    SolidQueue::RecurringTask.stub(:find_by, failing_queue_lock) do
       replacement.run
     end
     old.run
