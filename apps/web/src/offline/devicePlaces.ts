@@ -1,5 +1,5 @@
 import type { Locator, ProgressPlace } from "../contract";
-import type { OfflineStore } from "./model";
+import { pendingUpload, type OfflineStore } from "./model";
 
 export type DeviceSaveState = { kind: "idle" } | { kind: "kept" } | { kind: "failed" } | { kind: "stopped" } | { kind: "replaced" };
 
@@ -17,14 +17,16 @@ export class DevicePlaces {
   private readonly account: string;
   private readonly id: string;
   private readonly onRefused: () => void;
+  private readonly onKept: () => void;
   private readonly now: () => number;
 
-  constructor(store: OfflineStore, account: string, id: string, onRefused: () => void, now: () => number = Date.now) {
+  constructor(store: OfflineStore, account: string, id: string, onRefused: () => void, now: () => number = Date.now, onKept: () => void = () => undefined) {
     this.store = store;
     this.account = account;
     this.id = id;
     this.onRefused = onRefused;
     this.now = now;
+    this.onKept = onKept;
   }
 
   getState = (): DeviceSaveState => this.state;
@@ -62,11 +64,17 @@ export class DevicePlaces {
           this.id,
           (book) =>
             book.asset.id === next.place.asset_id
-              ? { ...book, devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now() } }
+              ? {
+                  ...book,
+                  devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now(), upload: pendingUpload() },
+                }
               : null,
           this.now(),
         );
-        if (outcome === "updated") this.set({ kind: "kept" });
+        if (outcome === "updated") {
+          this.set({ kind: "kept" });
+          this.onKept();
+        }
         else if (outcome === "unchanged") {
           this.stop();
           this.set({ kind: "replaced" });

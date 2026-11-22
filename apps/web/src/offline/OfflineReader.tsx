@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderAsset } from "../contract";
 import { Loading } from "../components/States";
 import { EpubReader } from "../reader/EpubReader";
@@ -8,18 +8,19 @@ import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { useOffline, type Offline } from "./context";
 import { DevicePlaces, type DeviceSaveState } from "./devicePlaces";
-import { openingLocator, type SavedBook } from "./model";
+import { openingLocator, type SavedBook, type Upload } from "./model";
+import { uploadText } from "./text";
 
 type Opened = { kind: "loading" } | { kind: "missing" } | { kind: "ready"; book: SavedBook; blob: Blob };
 
 const NO_PLACE = () => undefined;
 
-function placeMessage(state: DeviceSaveState): string {
+function placeMessage(state: DeviceSaveState, upload: Upload | undefined | null): string {
   switch (state.kind) {
     case "idle":
-      return "You're reading the copy saved on this device. Places you reach are kept on this device only and aren't sent to your account.";
+      return upload === null ? "You're reading the copy saved on this device. Places you reach are sent to your account once Shelfarr can be reached." : uploadText(upload);
     case "kept":
-      return "Your place is kept on this device only.";
+      return uploadText(upload ?? undefined);
     case "failed":
       return "Couldn't keep your place on this device. Turn the page again to retry.";
     case "stopped":
@@ -83,8 +84,45 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
 
 function SavedCopyReader({ offline, book, blob, engine, back }: { offline: Offline; book: SavedBook; blob: Blob; engine: string; back: { href: string; label: string; returns: boolean } }) {
   const { guard } = useServices();
-  const [places] = useState(() => new DevicePlaces(offline.store, book.account, book.id, () => guard.lock("signed_out")));
+  const latest = useRef(offline);
+  useEffect(() => {
+    latest.current = offline;
+  }, [offline]);
+  const [places] = useState(
+    () =>
+      new DevicePlaces(
+        offline.store,
+        book.account,
+        book.id,
+        () => guard.lock("signed_out"),
+        Date.now,
+        () => {
+          if (latest.current.connected) latest.current.sync?.request();
+        },
+      ),
+  );
   const state = useSyncExternalStore(places.subscribe, places.getState, places.getState);
+  const [upload, setUpload] = useState<Upload | undefined | null>(() => (book.devicePlace?.asset_id === book.asset.id ? book.devicePlace.upload : null));
+  const store = offline.store;
+  const sync = offline.sync;
+
+  useEffect(() => {
+    let current = true;
+    const refresh = () =>
+      void store
+        .book(book.account, book.id)
+        .then((stored) => {
+          if (current && stored?.devicePlace?.asset_id === book.asset.id) setUpload(stored.devicePlace.upload);
+        })
+        .catch(() => undefined);
+    const stopPlaces = places.subscribe(refresh);
+    const stopSync = sync?.subscribe(refresh);
+    return () => {
+      current = false;
+      stopPlaces();
+      stopSync?.();
+    };
+  }, [store, sync, places, book.account, book.id, book.asset.id]);
   const [start] = useState(() => openingLocator(book));
   const [source] = useState(() => () => blob.arrayBuffer());
   const asset: ReaderAsset = { id: book.asset.id, filename: book.asset.filename, format: "epub", media_type: book.asset.media_type, size_bytes: book.asset.size_bytes, position: 0, url: back.href };
@@ -101,9 +139,9 @@ function SavedCopyReader({ offline, book, blob, engine, back }: { offline: Offli
   }, [places, guard]);
 
   const footer = (
-    <div className={`save-status${state.kind === "kept" || state.kind === "idle" ? "" : " save-status--attention"}`} data-state={state.kind}>
+    <div className={`save-status${(state.kind === "kept" || state.kind === "idle") && upload?.state !== "held" ? "" : " save-status--attention"}`} data-state={state.kind}>
       <p role={state.kind === "failed" || state.kind === "replaced" ? "alert" : "status"} className="save-status-text">
-        {placeMessage(state)}
+        {placeMessage(state, upload)}
       </p>
     </div>
   );

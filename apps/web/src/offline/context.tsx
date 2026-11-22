@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import type { OfflineBoot } from "../contract";
 import type { ConfirmedAccount, OfflineStore } from "./model";
+import type { SyncRunner } from "./sync";
 
 export type Offline = {
   boot: OfflineBoot;
@@ -8,6 +9,7 @@ export type Offline = {
   confirmation: ConfirmedAccount | null;
   connected: boolean;
   confirm: () => Promise<ConfirmedAccount>;
+  sync: SyncRunner | null;
 };
 
 const OfflineContext = createContext<Offline | null>(null);

@@ -1,4 +1,4 @@
-import type { FailureKind } from "./model";
+import type { FailureKind, Upload } from "./model";
 
 export const FAILURES: Record<FailureKind, string> = {
   network: "The connection dropped before the book was saved, so nothing new was stored. Try again when you're connected.",
@@ -21,3 +21,19 @@ const MOMENT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeSty
 
 export const formatDay = (at: number): string => DATE.format(at);
 export const formatMoment = (at: number): string => MOMENT.format(at);
+
+export function uploadText(upload: Upload | undefined): string {
+  switch (upload?.state) {
+    case undefined:
+    case "pending":
+      return "Your place is saved on this device and will be sent to your account as soon as Shelfarr can be reached.";
+    case "synced":
+      return "Your place was sent to your account.";
+    case "superseded":
+      return "Your account already has a later place from another device, so this device's place wasn't sent. It is kept here.";
+    case "held":
+      return upload.reason === "rejected"
+        ? `Your account didn't accept this device's place${upload.message ? `: ${upload.message}` : ""}. It is kept here.`
+        : "This device's place wasn't sent because your account has a place in another file or with an unclear time. Open the book while connected to choose.";
+  }
+}

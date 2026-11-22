@@ -471,7 +471,13 @@ describe("places kept on this device", () => {
     places.record({ asset_id: EPUB_ID, locator: locator("a") }, NOW - 50);
     places.record({ asset_id: EPUB_ID, locator: locator("b") }, NOW - 40);
     await places.flush();
-    expect((await store.book("5", "7"))?.devicePlace).toEqual({ asset_id: EPUB_ID, locator: locator("b"), observedAt: new Date(NOW - 40).toISOString(), recordedAt: NOW });
+    expect((await store.book("5", "7"))?.devicePlace).toEqual({
+      asset_id: EPUB_ID,
+      locator: locator("b"),
+      observedAt: new Date(NOW - 40).toISOString(),
+      recordedAt: NOW,
+      upload: { state: "pending", request: null, rebases: 0 },
+    });
     clock += 1_000;
     places.record({ asset_id: EPUB_ID, locator: locator("c") }, NOW - 100);
     await places.flush();

@@ -4,7 +4,7 @@ import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { announceChange, onChange, useOffline, type Offline } from "./context";
 import { ACCOUNT_LIMIT_BYTES, describeLocator, laterDevicePlace, offlineUntil, type Attempt, type SavedBook } from "./model";
-import { FAILURES, formatDay, formatMoment } from "./text";
+import { FAILURES, formatDay, formatMoment, uploadText } from "./text";
 
 type Listing = { books: SavedBook[]; unfinished: Attempt[]; others: { books: number; bytes: number }; persisted: boolean | null };
 
@@ -21,7 +21,7 @@ async function list(offline: Offline, account: string): Promise<Listing> {
 
 function placeText(book: SavedBook): string {
   const device = laterDevicePlace(book);
-  if (device) return `On this device: ${describeLocator(device.locator)} (${formatMoment(device.recordedAt)}), kept here only and not in your account.`;
+  if (device && device.upload?.state !== "synced") return `On this device: ${describeLocator(device.locator)} (${formatMoment(device.recordedAt)}). ${uploadText(device.upload)}`;
   if (book.accountPlace?.asset_id === book.asset.id) return `Opens at your account's place when this device last connected: ${describeLocator(book.accountPlace.locator)}.`;
   return "Opens at the beginning.";
 }
@@ -49,11 +49,16 @@ export function DownloadsPage() {
     }
   }, [offline, account, guard]);
 
+  const sync = offline?.sync;
   useEffect(() => {
     void refresh();
     const stop = onChange(() => void refresh());
-    return stop;
-  }, [refresh]);
+    const stopSync = sync?.subscribe(() => void refresh());
+    return () => {
+      stop();
+      stopSync?.();
+    };
+  }, [refresh, sync]);
 
   if (!offline) return null;
   const confirmation = offline.confirmation;
@@ -96,7 +101,7 @@ export function DownloadsPage() {
       </header>
       {offline.connected ? null : (
         <p className="notice downloads-offline" role="status">
-          You're offline. Saved books open from this list, and the places you reach are kept on this device only until you connect again.
+          You're offline. Saved books open from this list. The places you reach are saved on this device and sent to your account as soon as Shelfarr can be reached again.
           {confirmation ? ` Offline access for this account lasts until ${formatMoment(offlineUntil(confirmation))}.` : ""}
         </p>
       )}

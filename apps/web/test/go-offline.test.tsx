@@ -200,7 +200,7 @@ function renderControl(store: MemoryOfflineStore, currentAsset: string | null) {
   const loads: string[] = [];
   render(
     <ServicesProvider services={services}>
-      <OfflineProvider value={{ boot: OFFLINE, store, confirmation: { account: "5", confirmedAt: Date.now(), validForMs: DAY }, connected: true, confirm: () => Promise.reject(new Error("unused")) }}>
+      <OfflineProvider value={{ boot: OFFLINE, store, confirmation: { account: "5", confirmedAt: Date.now(), validForMs: DAY }, connected: true, confirm: () => Promise.reject(new Error("unused")), sync: null }}>
         <SaveForOffline id="7" title="Member's Saved Book" currentAsset={currentAsset} load={async () => {
           loads.push("7");
           return readerPublication();
@@ -622,6 +622,90 @@ describe("second review regressions", () => {
       expect(store.opens).toBe(opened);
     } finally {
       globalThis.fetch = network;
+    }
+  });
+});
+
+describe("sending offline places automatically", () => {
+  const OFFLINE_AT = "2026-11-20T11:00:00.000Z";
+  const place = { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { cfi: "epubcfi(/6/4!/4/2/1:0)", progression: 0.5, totalProgression: 0.75 } };
+
+  function pendingStore(account = "5") {
+    const store = storeFor(account);
+    const book = store.saved.get("5|7")!;
+    store.saved.set("5|7", { ...book, devicePlace: { asset_id: EPUB_ID, locator: place, observedAt: OFFLINE_AT, recordedAt: Date.now() - 1000, upload: { state: "pending", request: null, rebases: 0 } } });
+    return store;
+  }
+
+  function progressServer(bootstrap: () => unknown) {
+    return new FakeServer()
+      .on("GET", /\/auth\/bootstrap$/, bootstrap as never)
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+      .on("PUT", /\/api\/v1\/library\/7\/progress$/, (request) => ({
+        body: { account: "5", progress: { ...(request.body as object), position_seconds: null, version: 1, updated_at: "2026-11-20T12:00:00.000Z" } },
+      }));
+  }
+
+  test("a place reached offline is sent as soon as the server answers again, with no click and its own activity time", async () => {
+    let reachable = false;
+    const server = progressServer(() => {
+      if (!reachable) throw new TypeError("Failed to fetch");
+      return { body: { ...signedIn("5", "fresh-token"), offline_expires_in: 3600 } };
+    });
+    const store = pendingStore();
+    renderOffline(server, store);
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    expect(server.called("PUT", /progress$/)).toEqual([]);
+    reachable = true;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    await waitFor(() => expect(server.called("PUT", /progress$/)).toHaveLength(1));
+    const sent = server.called("PUT", /progress$/)[0]!;
+    expect(sent.body).toEqual({ asset_id: EPUB_ID, locator: place, observed_at: OFFLINE_AT, expected_version: 0, client_mutation_id: expect.any(String) });
+    expect(sent.headers["x-csrf-token"]).toBe("fresh-token");
+    expect(sent.headers["x-shelfarr-account"]).toBe("5");
+    await waitFor(() => expect(store.saved.get("5|7")?.devicePlace?.upload).toEqual({ state: "synced", version: 1 }));
+  });
+
+  test("a place left waiting is sent when the app next opens online, and nothing is sent when nothing waits", async () => {
+    const store = pendingStore();
+    const server = progressServer(() => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } }));
+    const restore = withRegisteredWorker();
+    try {
+      const view = renderOffline(server, store, "library", "/preview/library");
+      await waitFor(() => expect(server.called("PUT", /progress$/)).toHaveLength(1));
+      expect((server.called("PUT", /progress$/)[0]!.body as { observed_at: string }).observed_at).toBe(OFFLINE_AT);
+      view.unmount();
+      const quiet = progressServer(() => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } }));
+      renderOffline(quiet, store, "library", "/preview/library");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(quiet.called("PUT", /progress$/)).toEqual([]);
+      expect(quiet.called("GET", /\/auth\/bootstrap$/)).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test("nothing is sent when the server now answers for another account or signed out", async () => {
+    for (const answer of [{ ...signedIn("4"), offline_expires_in: 3600 }, signedOut()]) {
+      let reachable = false;
+      const server = progressServer(() => {
+        if (!reachable) throw new TypeError("Failed to fetch");
+        return { body: answer };
+      });
+      const store = pendingStore();
+      const view = renderOffline(server, store);
+      await screen.findByRole("heading", { name: "Member's Saved Book" });
+      reachable = true;
+      await act(async () => {
+        window.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(server.called("PUT", /progress$/)).toEqual([]);
+      expect(store.saved.get("5|7")?.devicePlace?.upload?.state).toBe("pending");
+      view.unmount();
     }
   });
 });

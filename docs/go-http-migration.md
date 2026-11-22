@@ -907,8 +907,9 @@ JBIG2 decoders or CMaps (shipped, but no fixture uses them), comic archives larg
 
 Status: **experimental, default-off, one browser, one account at a time.** With the reader switched on and one more
 explicit option, an allowlisted account can save an EPUB in its browser from the book's details or the reader, open
-it from **Downloads** while the server cannot be reached, turn pages and come back to the place it reached. Offline
-places stay in that browser: nothing is sent to the account from offline reading in this slice.
+it from **Downloads** while the server cannot be reached, turn pages and come back to the place it reached. The place
+reached offline is sent to the account automatically, with its original activity time, as soon as Shelfarr answers again,
+while the page is open or the next time the app opens.
 
 ### Switching it on, and what it needs
 
@@ -998,9 +999,40 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   open on a replaced edition stops recording). The place with the later activity time wins: the account's `observed_at`
   when it has one, otherwise when each place reached this browser. Back online, the reader opens at the account's place
   and offers **Go to the place on this device** while that place is later and different; showing it writes nothing, and
-  the next deliberate move is saved through the ordinary compare-and-set. A place is never sent from offline reading,
-  never reported as synced and never removed by going online. Every place the server confirms or answers with while
-  reading online is remembered as the saved copy's account place.
+  the next deliberate move is saved through the ordinary compare-and-set. Every place the server confirms or answers with
+  while reading online is remembered as the saved copy's account place.
+
+### Sending places reached offline
+
+Each deliberate move offline marks the saved book's `devicePlace` as `upload: {state:"pending", request:null}` in the same
+IndexedDB write; a place stored by the earlier candidate without `upload` is treated as pending when it is later than the
+account place. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
+
+* **When.** A page runs one sender at a time (a Web Lock `shelfarr-go-preview-offline-sync|<account>` across tabs; no
+  service worker or Background Sync): on the initial verified load of any Go page with `-web-offline`, on focus,
+  visibility and `online`, after the offline page's 20 s reachability check finds the same account again, after each
+  offline move once connected, and after an uncertain answer at 2, 5, 15, 30 and then every 60 s. The `online` event is
+  only a hint: nothing is sent until a real `auth/bootstrap` answer arrives. With nothing pending it makes no request.
+* **Who.** Before sending, the sender asks `auth/bootstrap` again; it sends only for the same signed-in account, with that
+  answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
+  `PUT /preview/api/v1/library/:id/progress` at `priority: "low"`. A signed-out, refused, other-account or option-off
+  answer, a page lock or an expired record stops it; the pending place stays.
+* **What.** `{asset_id, locator, observed_at: the original activity time, expected_version: the last account version
+  this browser learned (0 if none), client_mutation_id}`, stored before it is sent, so an uncertain answer (network
+  failure, `5xx`, refused token) resends the identical request later, also after a reload. A place equal to the known
+  account place is marked sent without a request.
+* **Answers** (the Rails outbox rules, with the server's own compare-and-set and chronology checks; `resolve_conflict` is
+  never sent): `200` → `synced` and the account place becomes it; `409` naming this request's own mutation id →
+  `synced`; `409` with an earlier, plausibly dated place in the same edition (or no row) → rebased on that version with a
+  new mutation id and the same `observed_at`, at most five times; `409` with a later or identical place → `superseded`
+  (this device's place is kept, the account keeps its later place); an undated, implausible or other-file place → `held`
+  until the reader chooses online; `422 invalid_progress` or `404` → `held` with the server's message; `401` stops. Only
+  the record whose mutation id was answered is changed, so a late answer never clears a newer offline move, which is then
+  sent on the version just learned. Two tabs sending the same stored request are settled by the server's replay of that
+  mutation id.
+* **Shown.** The offline reader and Downloads say whether the place is waiting to be sent, was sent, was kept because the
+  account has a later place, or was not sent and why; the online reader offers the device place only while it is later and
+  different.
 
 ### Contract before and after
 
@@ -1014,7 +1046,9 @@ POST /preview/api/v1/auth/login                      same addition              
 ```
 
 Unchanged: every other route and answer, the media, reader and progress routes, cookies, CSRF, schema, stored rows.
-Clients that do not know `offline` or `offline_expires_in` ignore them. Rows written: none (a save only reads media).
+Clients that do not know `offline` or `offline_expires_in` ignore them. Rows written: a save only reads media; sending a
+place reached offline writes the ordinary `consumer_progresses` row through the existing compare-and-set, exactly as an
+online page turn does, and Rails and the native apps read it.
 
 ### Rollback and coexistence with Rails
 
@@ -1028,9 +1062,9 @@ offline it can still open Downloads and the reader for an account confirmed in t
 
 Nothing here touches the Rails offline reader: its `/read` scope and `/read-offline-worker.js`, its manifest and install
 identity, the `shelfarr-offline` database, the `shelfarr-offline-shell.v1|*` and `shelfarr-offline-media.v1|*` caches and
-its outbox are neither read, adopted, moved nor deleted. Downloads made in one are not visible in the other, and a place
-reached offline in the Go preview stays in this browser's Go database: the locator has the same EPUB shape the account
-and Rails use, but this slice never sends it.
+its outbox are neither read, adopted, moved nor deleted. Downloads made in one are not visible in the other; a place
+reached offline in the Go preview reaches the account through the Go progress route, after which every client, Rails
+included, resumes there.
 
 ### Verification and limits
 

@@ -202,7 +202,7 @@ function StatusText({ state, outdated, compact }: { state: CopyState; outdated: 
     case "checking":
       return <p>Checking this browser for a saved copy…</p>;
     case "none":
-      return <p>{compact ? "Not saved on this device." : "Keep this EPUB in this browser to read it without a connection. Places you reach offline stay on this device."}</p>;
+      return <p>{compact ? "Not saved on this device." : "Keep this EPUB in this browser to read it without a connection. Places you reach offline are sent to your account when Shelfarr can be reached again."}</p>;
     case "saving":
       return <p>{state.here ? "Saving for offline reading…" : "Saving in another tab…"}</p>;
     case "saved":

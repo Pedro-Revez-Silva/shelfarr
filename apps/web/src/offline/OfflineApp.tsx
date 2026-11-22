@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AccountGuard } from "../api/account-guard";
-import { ApiError } from "../api/errors";
+import { definitiveRefusal } from "./reachability";
 import { AuthFrame } from "../go/AuthFrame";
 import type { AuthClient } from "../go/auth";
 import { PageHeading } from "../components/PageHeading";
@@ -11,30 +11,40 @@ import { OfflineProvider, confirmationFrom, type Offline } from "./context";
 import { DownloadsPage } from "./DownloadsPage";
 import { offlineUntil, type ConfirmedAccount, type OfflineStore } from "./model";
 import { OfflineReader } from "./OfflineReader";
+import { createPlaceSync } from "./placeSync";
 import { SaveFailure } from "./save";
 
 const PROBE_INTERVAL_MS = 20_000;
 const CHECK_INTERVAL_MS = 30_000;
 
-export function serverUnreachable(error: unknown): boolean {
-  if (!(error instanceof ApiError)) return false;
-  return error.kind === "network" || error.status === 502 || error.status === 503 || error.status === 504;
-}
 
-export function definitiveRefusal(error: unknown): boolean {
-  return error instanceof ApiError && typeof error.status === "number" && error.status >= 400 && error.status < 500;
-}
 
-type Props = { boot: GoBoot & { offline: OfflineBoot }; auth: AuthClient; store: OfflineStore; record: ConfirmedAccount; onConnected: () => void };
+type Props = {
+  boot: GoBoot & { offline: OfflineBoot };
+  auth: AuthClient;
+  store: OfflineStore;
+  record: ConfirmedAccount;
+  fetcher?: typeof fetch | undefined;
+  onConnected: () => void;
+};
 
-export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
+export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: Props) {
   const [built] = useState(() => {
     const guard = new AccountGuard(record.account);
     const services = createServices({ boot: { version: 1, account: record.account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go" }, guard, csrfToken: () => null });
-    return { guard, services };
+    const sync = createPlaceSync({ boot, auth, store, guard, fetcher });
+    return { guard, services, sync };
   });
-  const { guard, services } = built;
-  const [offline, setOffline] = useState<Offline>({ boot: boot.offline, store, confirmation: record, connected: false, confirm: () => Promise.reject(new SaveFailure("network")) });
+  const { guard, services, sync } = built;
+  const [offline, setOffline] = useState<Offline>({ boot: boot.offline, store, confirmation: record, connected: false, confirm: () => Promise.reject(new SaveFailure("network")), sync: null });
+
+  useEffect(() => {
+    const stop = guard.subscribe(() => sync.stop());
+    return () => {
+      stop();
+      sync.stop();
+    };
+  }, [guard, sync]);
 
   const recheck = useCallback(async () => {
     const state = await store.accountState().catch(() => null);
@@ -71,8 +81,9 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
       guard.lock("account_changed");
       return;
     }
-    setOffline((value) => ({ ...value, confirmation, connected: true }));
-  }, [auth, store, guard, recheck]);
+    setOffline((value) => ({ ...value, confirmation, connected: true, sync }));
+    sync.request();
+  }, [auth, store, guard, recheck, sync]);
 
   const until = offline.confirmation ? offlineUntil(offline.confirmation) : 0;
   useEffect(() => {
@@ -130,7 +141,7 @@ function OfflineView({ boot, connected, onConnected }: { boot: GoBoot; connected
     <>
       {connected ? (
         <p className="notice offline-reconnected" role="status">
-          You're connected again. Places you reached offline stay on this device.{" "}
+          You're connected again. Places you reached offline are being sent to your account.{" "}
           <button type="button" className="button" onClick={onConnected}>
             Continue online
           </button>

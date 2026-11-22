@@ -17,8 +17,10 @@ import { LockedScreen } from "../components/LockedScreen";
 import { confirmationFrom, OfflineProvider, type Offline } from "../offline/context";
 import { DownloadsPage } from "../offline/DownloadsPage";
 import type { ConfirmedAccount, OfflineStore } from "../offline/model";
-import { definitiveRefusal, OfflineApp, OfflineUnavailable, serverUnreachable } from "../offline/OfflineApp";
+import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
+import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
 import { SaveFailure } from "../offline/save";
+import { createPlaceSync } from "../offline/placeSync";
 import { offlineStore } from "../offline/store";
 import { hasWorker, retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
@@ -151,7 +153,7 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
         />
       );
     case "offline":
-      return boot.offline ? <OfflineApp key={epoch} boot={{ ...boot, offline: boot.offline }} auth={auth} store={store} record={state.record} onConnected={() => void load()} /> : null;
+      return boot.offline ? <OfflineApp key={epoch} boot={{ ...boot, offline: boot.offline }} auth={auth} store={store} record={state.record} fetcher={fetcher} onConnected={() => void load()} /> : null;
     case "offline_unavailable":
       return <OfflineUnavailable onRetry={() => void load()} />;
   }
@@ -279,9 +281,29 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
             if (!(await store.confirm(fresh))) throw new SaveFailure("signed_out");
             return fresh;
           },
+          sync: createPlaceSync({ boot, auth, store, guard: services.guard, fetcher }),
         }
       : null,
   );
+
+  useEffect(() => {
+    const sync = offline?.sync;
+    if (!sync) return;
+    const request = () => sync.request();
+    const visible = () => document.visibilityState === "visible" && request();
+    const stop = services.guard.subscribe(() => sync.stop());
+    request();
+    window.addEventListener("focus", request);
+    window.addEventListener("online", request);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stop();
+      sync.stop();
+      window.removeEventListener("focus", request);
+      window.removeEventListener("online", request);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [offline, services]);
 
   useEffect(() => {
     const queryClient = services.queryClient;

@@ -1,4 +1,4 @@
-import type { Locator, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import type { Locator, ProgressRequest, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
 
 export const BOOK_LIMIT_BYTES = 32 * 1024 * 1024;
 export const ACCOUNT_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -10,7 +10,13 @@ export type AccountState = { record: ConfirmedAccount | null; clearedAt: number 
 
 export type SavedAsset = { id: string; filename: string; media_type: string; size_bytes: number };
 export type AccountPlace = { asset_id: string; locator: Locator; version: number; observedAt: string | null; learnedAt: number };
-export type DevicePlace = { asset_id: string; locator: Locator; observedAt: string; recordedAt: number };
+export type Upload =
+  | { state: "pending"; request: ProgressRequest | null; rebases: number }
+  | { state: "synced"; version: number }
+  | { state: "superseded"; version: number }
+  | { state: "held"; reason: "conflict" | "rejected"; message: string | null };
+
+export type DevicePlace = { asset_id: string; locator: Locator; observedAt: string; recordedAt: number; upload?: Upload };
 
 export type SavedBook = {
   key: string;
@@ -103,4 +109,16 @@ export function openingLocator(book: SavedBook): Locator | null {
 export function describeLocator(locator: Locator | null): string {
   const total = locator?.locations?.totalProgression;
   return typeof total === "number" && Number.isFinite(total) ? `${Math.round(Math.min(1, Math.max(0, total)) * 100)}% through` : "a saved place";
+}
+
+export type PendingUpload = Extract<Upload, { state: "pending" }>;
+
+export const pendingUpload = (): PendingUpload => ({ state: "pending", request: null, rebases: 0 });
+
+export function unsentPlace(book: SavedBook): (DevicePlace & { upload: PendingUpload }) | null {
+  const device = book.devicePlace;
+  if (!device || device.asset_id !== book.asset.id) return null;
+  if (device.upload?.state === "pending") return { ...device, upload: device.upload };
+  if (device.upload === undefined && laterDevicePlace(book)) return { ...device, upload: pendingUpload() };
+  return null;
 }

@@ -4,7 +4,7 @@ import type { OfferedPlace } from "../reader/EpubReader";
 import { samePlace } from "../reader/shared";
 import { announceChange, type Offline } from "./context";
 import { describeLocator, deviceIsLater, rememberAccountPlace, type DevicePlace, type SavedBook } from "./model";
-import { formatMoment } from "./text";
+import { formatMoment, uploadText } from "./text";
 
 export type RememberedPlace = { remember: (progress: StoredProgress) => void; offer: (assetId: string) => OfferedPlace | null };
 
@@ -17,8 +17,9 @@ export function offeredDevicePlace(book: SavedBook, server: StoredProgress | nul
 }
 
 function offerFor(device: DevicePlace): OfferedPlace {
+  const status = device.upload?.state === "held" ? uploadText(device.upload) : "It is being sent to your account.";
   return {
-    text: `On ${formatMoment(device.recordedAt)} you reached ${describeLocator(device.locator)} in the copy saved on this device, while offline. That place is kept on this device only; it isn't in your account.`,
+    text: `On ${formatMoment(device.recordedAt)} you reached ${describeLocator(device.locator)} in the copy saved on this device, while offline. ${status}`,
     action: "Go to the place on this device",
     locator: device.locator,
   };
