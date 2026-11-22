@@ -84,13 +84,12 @@ module WebPreview
       stored_books.select { |book| book.book_type == book_type }
     end
 
-    def book_for(book_type)
-      candidates = books_of(book_type)
-      candidates.find(&:acquired?) || candidates.find { |book| active_request(book) } || candidates.first
+    def acquired_book(book_type)
+      books_of(book_type).select(&:acquired?).max_by { |book| [ File.exist?(book.file_path.to_s) ? 1 : 0, book.id ] }
     end
 
-    def active_request(book)
-      requests = book&.requests.to_a
+    def active_request(book_type)
+      requests = books_of(book_type).flat_map { |book| book.requests.to_a }
       latest(requests.select(&:open?)) || latest(requests.select(&:not_found?))
     end
 
@@ -99,23 +98,21 @@ module WebPreview
     end
 
     def state(book_type)
-      book = book_for(book_type)
-      return "in_library" if book&.acquired?
+      return "in_library" if acquired_book(book_type)
 
-      request = active_request(book)
+      request = active_request(book_type)
       return "requestable" unless request
 
       visible?(request) ? "requested" : "requested_by_someone"
     end
 
     def format(book_type)
-      book = book_for(book_type)
       current = state(book_type)
       {
         book_type: book_type,
         state: current,
-        publication: current == "in_library" ? @publication.call(book) : nil,
-        request: current == "requested" ? request_fields(active_request(book)) : nil
+        publication: current == "in_library" ? @publication.call(acquired_book(book_type)) : nil,
+        request: current == "requested" ? request_fields(active_request(book_type)) : nil
       }
     end
 

@@ -363,6 +363,21 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal [ "requested", request.id.to_s, true ], [ ebook.fetch("state"), ebook.dig("request", "id"), ebook.dig("request", "own") ]
   end
 
+  test "across records of the same work, an open request wins over an older one that found nothing, and a readable copy wins over a missing one" do
+    older = Book.create!(title: "Middlemarch", book_type: :ebook, hardcover_id: "77")
+    Request.create!(book: older, user: @admin, status: :not_found, next_retry_at: 1.hour.from_now)
+    newer = Book.create!(title: "Middlemarch", book_type: :ebook, hardcover_id: "77", open_library_work_id: "OL900W")
+    working = Request.create!(book: newer, user: @member, status: :searching)
+    sign_in_as(@member)
+    ebook = format_of(book_json(user: @member, source: "hardcover", id: "77"), "ebook")
+    assert_equal [ "requested", working.id.to_s, true ], [ ebook.fetch("state"), ebook.dig("request", "id"), ebook.dig("request", "own") ]
+
+    older.update!(file_path: File.join(@root, "gone.epub"))
+    newer.update!(file_path: @epub_path)
+    publication = format_of(book_json(user: @member, source: "hardcover", id: "77"), "ebook").fetch("publication")
+    assert_equal [ newer.id.to_s, "available" ], publication.values_at("id", "availability")
+  end
+
   test "an acquired ebook whose file is gone is still on the shelf but cannot be opened" do
     @ebook.update!(open_library_work_id: "OL900W")
     File.unlink(@epub_path)
