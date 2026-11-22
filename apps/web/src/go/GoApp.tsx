@@ -255,10 +255,9 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   useEffect(
     () =>
       services.guard.subscribe(() => {
-        const refusedAt = services.guard.lockAskedAt ?? Date.now();
-        const everyone = services.guard.getState().status === "signed_out";
+        const refusedAt = services.guard.lockAskedAt;
         void (async () => {
-          if (boot.offline) await store.release(refusedAt, everyone ? undefined : account);
+          if (boot.offline && refusedAt !== null) await store.release(refusedAt);
           await refreshOfflineAccount(boot, auth, store);
         })().catch(() => undefined);
       }),

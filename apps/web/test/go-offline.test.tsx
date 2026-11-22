@@ -889,6 +889,32 @@ describe("fifth review regressions in the app", () => {
     }
   });
 
+  test("an account change clears every record confirmed before the refused request, whichever account it names", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5", Date.now() - DAY);
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          if (calls > 1) return new Promise<never>(() => undefined);
+          return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, async () => {
+          store.record = { account: "4", confirmedAt: Date.now() - 1, validForMs: 30 * DAY };
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return error(401, "account_changed");
+        });
+      renderOffline(server, store, "library", "/preview/library");
+      await screen.findByRole("heading", { name: "The signed-in account changed" });
+      await waitFor(() => expect(store.record).toBeNull());
+    } finally {
+      restore();
+    }
+  });
+
   test("a late sign-out answer cannot erase a confirmation from a question asked after it", async () => {
     const restore = withRegisteredWorker();
     try {

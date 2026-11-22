@@ -43,8 +43,7 @@ export function confirmedState(current: AccountState, value: ConfirmedAccount): 
   return { record: { ...value, seenAt: Math.max(current.record?.seenAt ?? 0, value.seenAt ?? 0, value.confirmedAt) }, clearedAt: current.clearedAt };
 }
 
-export function releasedState(current: AccountState, askedAt: number, account?: string): AccountState {
-  if (account !== undefined && current.record !== null && current.record.account !== account) return current;
+export function releasedState(current: AccountState, askedAt: number): AccountState {
   const record = current.record !== null && current.record.confirmedAt <= askedAt ? null : current.record;
   return { record, clearedAt: Math.max(current.clearedAt, askedAt) };
 }
@@ -75,10 +74,10 @@ export class IndexedDbOfflineStore implements OfflineStore {
     });
   }
 
-  async release(askedAt: number, account?: string): Promise<boolean> {
+  async release(askedAt: number): Promise<boolean> {
     if (!(await this.exists())) return true;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = releasedState(await readAccount(stores), askedAt, account);
+      const next = releasedState(await readAccount(stores), askedAt);
       await writeAccount(stores, next);
       return next.record === null;
     });

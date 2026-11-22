@@ -74,7 +74,7 @@ export class DevicePlaces {
                 locator: next.place.locator,
                 observedAt: new Date(observedAt).toISOString(),
                 recordedAt: this.now(),
-                basedOn: book.accountPlace && book.accountPlace.learnedAt <= next.at ? book.accountPlace.version : 0,
+                basedOn: book.accountPlace && book.accountPlace.learnedAt < next.at ? book.accountPlace.version : 0,
                 upload: pendingUpload(),
               },
             };

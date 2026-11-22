@@ -42,7 +42,7 @@ export type OfflineStore = {
   prepare(): Promise<void>;
   accountState(): Promise<AccountState>;
   confirm(value: ConfirmedAccount): Promise<boolean>;
-  release(askedAt: number, account?: string): Promise<boolean>;
+  release(askedAt: number): Promise<boolean>;
   forget(account?: string, at?: number): Promise<void>;
   touch(account: string, now: number): Promise<boolean>;
   books(account: string): Promise<SavedBook[]>;

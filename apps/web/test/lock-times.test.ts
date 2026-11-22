@@ -4,6 +4,8 @@ import { ApiClient } from "../src/api/client";
 import { AuthClient, CsrfSession } from "../src/go/auth";
 import { fetchBook } from "../src/reader/media";
 import { guardedFetch } from "../src/reader/pages";
+import { createServices } from "../src/services";
+import { waitFor } from "@testing-library/react";
 import { boot } from "./helpers";
 import { signedOut } from "./go-helpers";
 
@@ -67,6 +69,14 @@ describe("a lock carries the moment its refused request was sent", () => {
       globalThis.fetch = network;
     }
     lockedWhenSent(guard, sent);
+  });
+
+  test("a session check answered signed out later", async () => {
+    const { fetcher, sent } = slowAnswer(401, { error: "signed_out" });
+    const services = createServices({ boot, csrfToken: () => null, fetcher });
+    services.revalidate();
+    await waitFor(() => expect(services.guard.isActive()).toBe(false));
+    lockedWhenSent(services.guard, sent);
   });
 
   test("a page read answered signed out later", async () => {

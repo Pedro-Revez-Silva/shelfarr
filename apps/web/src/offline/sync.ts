@@ -2,7 +2,7 @@ import type { ProgressAnswer } from "../api/client";
 import { isApiError } from "../api/errors";
 import type { ProgressRequest, StoredProgress } from "../contract";
 import { plausibleObservedAt, samePlace } from "../reader/shared";
-import { rememberAccountPlace, unsentPlace, type OfflineStore, type SavedBook, type Upload } from "./model";
+import { rememberAccountPlace, unsentPlace, type AccountPlace, type DevicePlace, type OfflineStore, type SavedBook, type Upload } from "./model";
 
 export const MAX_REBASES = 5;
 export const RETRY_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
@@ -58,6 +58,12 @@ export async function syncPlaces(deps: SyncDeps): Promise<SyncResult> {
   return transient ? { kind: "retry" } : { kind: "settled" };
 }
 
+function moveBase(known: AccountPlace | null, device: DevicePlace): number {
+  if (device.basedOn === undefined) return 0;
+  const learnedLater = known !== null && known.version === device.basedOn && known.learnedAt >= Date.parse(device.observedAt);
+  return learnedLater ? 0 : device.basedOn;
+}
+
 async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () => string): Promise<{ request: ProgressRequest; rebases: number; assetId: string } | null> {
   const prepared: { value: { request: ProgressRequest; rebases: number; assetId: string } | null } = { value: null };
   await deps.store.updateBook(
@@ -67,11 +73,12 @@ async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () =
       const device = unsentPlace(book);
       if (!device) return null;
       const stored = device.upload.request;
-      const request: ProgressRequest = stored ? (device.basedOn === undefined ? { ...stored, expected_version: 0 } : stored) : {
+      const base = moveBase(book.accountPlace, device);
+      const request: ProgressRequest = stored ? (device.upload.rebases === 0 ? { ...stored, expected_version: Math.min(stored.expected_version, base) } : stored) : {
         asset_id: device.asset_id,
         locator: device.locator,
         observed_at: device.observedAt,
-        expected_version: device.basedOn ?? 0,
+        expected_version: base,
         client_mutation_id: uuid(),
       };
       prepared.value = { request, rebases: device.upload.rebases, assetId: device.asset_id };

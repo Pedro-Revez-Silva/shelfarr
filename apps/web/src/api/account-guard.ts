@@ -54,7 +54,7 @@ export class AccountGuard {
     return this.askedAt;
   }
 
-  lock(reason: LockReason, askedAt: number = Date.now()): void {
+  lock(reason: LockReason, askedAt: number | null = null): void {
     if (!this.isActive()) return;
     this.state = { status: reason };
     this.askedAt = askedAt;

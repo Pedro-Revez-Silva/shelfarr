@@ -32,8 +32,8 @@ export class MemoryOfflineStore implements OfflineStore {
     this.record = next.record;
     return true;
   }
-  async release(askedAt: number, account?: string) {
-    const next = releasedState({ record: this.record, clearedAt: this.clearedAt }, askedAt, account);
+  async release(askedAt: number) {
+    const next = releasedState({ record: this.record, clearedAt: this.clearedAt }, askedAt);
     this.record = next.record;
     this.clearedAt = next.clearedAt;
     return this.record === null;
