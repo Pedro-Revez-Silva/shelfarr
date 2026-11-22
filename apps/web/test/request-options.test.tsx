@@ -352,6 +352,53 @@ describe("what a press sends and shows after the answer", () => {
     expect(within(card()).getByRole("button", { name: "Request ebook of Middlemarch" })).toBeTruthy();
   });
 
+  test("Find opened while a Book request is still running searches again once it settles", async () => {
+    const answer = deferred<ReturnType<typeof outcome>>();
+    const firstSearch = deferred<{ body: CatalogueAnswer }>();
+    let current = book([format("ebook"), format("audiobook")]);
+    const server = bookServer(() => current).on("POST", /\/requests/, () => answer.promise);
+    let searches = 0;
+    server.on("GET", /\/api\/v1\/discover\?/, () => {
+      searches += 1;
+      return searches === 1 ? firstSearch.promise : { body: catalogue(options(), [{ ...ITEM, formats: states("requested", "requestable") }]) };
+    });
+    const { router } = renderApp({ server, url: `${BOOK_URL}?q=middlemarch` });
+    await userEvent.click(await within(await screen.findByRole("region", { name: "On this server" })).findByRole("button", { name: "Request ebook of Middlemarch" }));
+    await act(async () => router.navigate({ to: "/find", search: { q: "middlemarch" } }));
+    await waitFor(() => expect(searches).toBe(1));
+    current = book([requested("ebook", "41"), format("audiobook")]);
+    await act(async () => answer.resolve(outcome(current, [{ book_type: "ebook", outcome: "created" }])));
+    await act(async () => firstSearch.resolve({ body: catalogue(options()) }));
+    await waitFor(() => expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: not in library"));
+    expect(searches).toBe(2);
+    expect(screen.queryByRole("button", { name: "Request ebook of Middlemarch" })).toBeNull();
+  });
+
+  test("when the search after a press fails, the stale result offers no request until it is searched again", async () => {
+    const { server, save } = liveFind([ITEM]);
+    let failing = false;
+    server.on("POST", /\/requests/, () => {
+      save("openlibrary:OL900W", states("requested", "requestable"));
+      failing = true;
+      return outcome(book([requested("ebook", "41"), format("audiobook")]), [{ book_type: "ebook", outcome: "created" }]);
+    });
+    server.on("GET", /\/api\/v1\/discover\?/, () =>
+      failing ? { status: 503, body: { error: "search_unavailable" } } : { body: catalogue(options(), [ITEM]) },
+    );
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    expect(await screen.findByRole("heading", { name: "The catalogue could not be reached" })).toBeTruthy();
+    expect(screen.getByText("Ebook requested.", { exact: false })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Request ebook of Middlemarch" }).getAttribute("aria-disabled")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Request ebook of Middlemarch" }));
+    expect(server.called("POST", /\/requests/)).toHaveLength(1);
+    failing = false;
+    server.on("GET", /\/api\/v1\/discover\?/, () => ({ body: catalogue(options(), [{ ...ITEM, formats: states("requested", "requestable") }]) }));
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: not in library"));
+    expect(screen.queryByRole("button", { name: "Request ebook of Middlemarch" })).toBeNull();
+  });
+
   test("a refused retry of the remaining format keeps the format already saved", async () => {
     const { server, save } = liveFind([ITEM], options({ default_format: "both" }));
     server.on("POST", /\/requests/, (sent) => {

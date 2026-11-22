@@ -48,7 +48,7 @@ export function CatalogueSearch() {
           </button>
         </p>
       ) : null}
-      {answer.data ? <Results answer={answer.data} refreshing={answer.isFetching} /> : null}
+      {answer.data ? <Results answer={answer.data} current={!answer.isFetching && !answer.isError} /> : null}
       {query === null ? <YourRequests /> : null}
       {session.data ? (
         <p className="discover-note">
@@ -148,7 +148,7 @@ function SearchFailure({ error, onRetry }: { error: unknown; onRetry: () => void
   return <ErrorPanel error={error} onRetry={onRetry} />;
 }
 
-function Results({ answer, refreshing }: { answer: CatalogueAnswer; refreshing: boolean }) {
+function Results({ answer, current }: { answer: CatalogueAnswer; current: boolean }) {
   if (answer.providers.length === 0) {
     return (
       <EmptyState title="No catalogue is switched on">
@@ -167,7 +167,7 @@ function Results({ answer, refreshing }: { answer: CatalogueAnswer; refreshing: 
     <ol className="discover-list">
       {answer.items.map((item) => (
         <li key={`${item.book.source}:${item.book.id}`}>
-          <Result item={item} query={answer.query} options={answer.request_options ?? null} refreshing={refreshing} />
+          <Result item={item} query={answer.query} options={answer.request_options ?? null} current={current} />
         </li>
       ))}
     </ol>
@@ -181,7 +181,7 @@ const STATE_TEXT: Record<CatalogueItem["formats"][number]["state"], string> = {
   in_library: "in library",
 };
 
-function Result({ item, query, options, refreshing }: { item: CatalogueItem; query: string; options: RequestOptions | null; refreshing: boolean }) {
+function Result({ item, query, options, current }: { item: CatalogueItem; query: string; options: RequestOptions | null; current: boolean }) {
   const titleId = useId();
   const owned = item.formats.some((format) => format.state === "in_library");
   return (
@@ -206,19 +206,19 @@ function Result({ item, query, options, refreshing }: { item: CatalogueItem; que
             </li>
           ))}
         </ul>
-        {options ? <ResultRequest item={item} query={query} options={options} refreshing={refreshing} /> : null}
+        {options ? <ResultRequest item={item} query={query} options={options} current={current} /> : null}
       </div>
     </article>
   );
 }
 
-function ResultRequest({ item, query, options, refreshing }: { item: CatalogueItem; query: string; options: RequestOptions; refreshing: boolean }) {
+function ResultRequest({ item, query, options, current }: { item: CatalogueItem; query: string; options: RequestOptions; current: boolean }) {
   const request = useRequestBook({ source: item.book.source, id: item.book.id, metadata: item.book.metadata ?? undefined });
   const [pressed, setPressed] = useState<RequestFormat | null>(null);
   const [extras, setExtras] = useState(NO_EXTRAS);
   const done = useRef<HTMLParagraphElement>(null);
   const plan = requestPlan(item.formats, options);
-  const busy = request.isPending || refreshing;
+  const busy = request.isPending || !current;
   const succeeded = request.isSuccess;
   useEffect(() => {
     if (succeeded) done.current?.focus();

@@ -424,11 +424,13 @@ export function useRequestBook(location: BookLocation) {
       if (!guard.isActive()) return;
       client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), answer.book);
     },
-    onSettled: () => {
+    onSettled: async () => {
       if (!guard.isActive()) return;
-      for (const queryKey of [keys.bookAll(location.source, location.id), keys.catalogueAll, keys.requestsAll, keys.libraryAll, keys.continueAll]) {
+      for (const queryKey of [keys.bookAll(location.source, location.id), keys.requestsAll, keys.libraryAll, keys.continueAll]) {
         void client.invalidateQueries({ queryKey });
       }
+      await client.cancelQueries({ queryKey: keys.catalogueAll });
+      if (guard.isActive()) void client.invalidateQueries({ queryKey: keys.catalogueAll });
     },
   });
 }
