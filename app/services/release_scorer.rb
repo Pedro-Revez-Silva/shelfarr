@@ -213,14 +213,22 @@ class ReleaseScorer
   # marker ("The Red Book C. G. Jung"). Bracketed years and spaced bitrates
   # come off next, before a numeral is read.
   def prepared_release_title
-    @prepared_release_title ||= SequenceMarker.without_recognised_metadata(
-      SequenceMarker.without_author_credit(
-        @search_result.title.to_s,
-        author: @book.author,
-        protected_title: @book.title
-      ),
-      preserve_title: @book.title
+    @prepared_release_title ||= without_audiobook_file_count(
+      SequenceMarker.without_recognised_metadata(
+        SequenceMarker.without_author_credit(
+          @search_result.title.to_s,
+          author: @book.author,
+          protected_title: @book.title
+        ),
+        preserve_title: @book.title
+      )
     )
+  end
+
+  def without_audiobook_file_count(title)
+    return title unless @parsed[:format] == :audiobook
+
+    SequenceMarker.without_one_file_count(title, preserve_title: @book.title)
   end
 
   def comparable_titles

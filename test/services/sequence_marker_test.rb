@@ -246,12 +246,19 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     end
   end
 
-  test "treats a later explicit volume after an unnumbered title as a sequel" do
+  test "treats an explicit volume after an unnumbered title as another book" do
     assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 2")
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов RUS Том 2")
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 1")
     assert SequenceMarker.sequel_conflict?("Dune", "Dune Part 2 Frank Herbert")
-    assert_not SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 1")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune Messiah Book 2 Frank Herbert")
     assert_not SequenceMarker.sequel_conflict?("Dune Book 2", "Dune Book 2 Part 2")
-    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune 1 file Frank Herbert M4B")
+  end
+
+  test "removes a one file qualifier unless the title contains it" do
+    assert_equal "Dune   M4B", SequenceMarker.without_one_file_count("Dune 1 file M4B", preserve_title: "Dune")
+    assert_equal "Case 1 File   M4B",
+      SequenceMarker.without_one_file_count("Case 1 File 1-file M4B", preserve_title: "Case 1 File")
   end
 
   test "strips an author whose apostrophe is a modifier letter" do

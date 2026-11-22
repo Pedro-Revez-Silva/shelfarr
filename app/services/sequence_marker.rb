@@ -52,13 +52,15 @@ class SequenceMarker
   FORMAT_WORDS = %w[
     epub pdf mobi azw azw3 fb2 ebook audiobook m4b mp3 flac cbr cbz retail multi
   ].freeze
-  FOLLOWER_WORDS = (MARKER_WORDS + ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
+  RELEASE_TAG_WORDS = (ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
+  FOLLOWER_WORDS = (MARKER_WORDS + RELEASE_TAG_WORDS).uniq.freeze
   FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.map { |word|
     Regexp.escape(word)
   }.join("|").freeze
   GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :FOLLOWER_WORDS, :FOLLOWER_ALTERNATION,
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
+    :FOLLOWER_ALTERNATION,
     :GLUED_VOLUME_PATTERN
 
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
@@ -191,7 +193,7 @@ class SequenceMarker
       return false if words.empty?
 
       numeric_sequel_token?(words.first) || cjk_volume_prefix?(words) ||
-        (!explicit_volume?(Array(after_phrase)) && later_volume?(words))
+        (!explicit_volume?(Array(after_phrase)) && explicit_volume_after_tags?(words))
     end
 
     # Bracketed years and spaced bitrates are release metadata. Unicode
@@ -204,7 +206,17 @@ class SequenceMarker
       prepared = prepared.gsub(BRACKETED_YEAR) { |year|
         kept_years.include?(year[/\d{4}/]) ? year : " "
       }
-      without_one_file_count(prepared.gsub(SPACED_BITRATE, " "), preserve_title)
+      prepared.gsub(SPACED_BITRATE, " ")
+    end
+
+    def without_one_file_count(text, preserve_title: nil)
+      source = text.to_s
+      title_spans = phrase_spans(source, preserve_title)
+      source.gsub(ONE_FILE_COUNT) {
+        match = Regexp.last_match
+        span = match.begin(0)...match.end(0)
+        title_spans.any? { |title_span| spans_overlap?(span, title_span) } ? match[0] : " "
+      }
     end
 
     # Canonical tokens only. "Ⅱ:The" stays "2 the" here; the punctuationless
@@ -441,18 +453,13 @@ class SequenceMarker
       }
     end
 
-    def without_one_file_count(text, preserve_title)
-      return text if TitleKey.normalize_decimal_digits(preserve_title.to_s).match?(ONE_FILE_COUNT)
-
-      text.gsub(ONE_FILE_COUNT, " ")
-    end
-
     def explicit_volume?(tokens)
       tokens.each_cons(2).any? { |word, number| neutral_volume?(word, number) }
     end
 
-    def later_volume?(tokens)
-      neutral_volume?(tokens[0], tokens[1]) && tokens[1].to_i > 1
+    def explicit_volume_after_tags?(tokens)
+      words = tokens.drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
+      neutral_volume?(words[0], words[1])
     end
 
     def neutral_volume?(word, number)

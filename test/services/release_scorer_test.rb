@@ -363,14 +363,18 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert tagged.breakdown[:auto_select_allowed]
   end
 
-  test "does not auto-select a later explicit volume of an unnumbered title" do
+  test "does not auto-select an explicit volume of an unnumbered title" do
     @book.update!(title: "Рыцари Сорока Островов", author: "Сергей Лукьяненко", book_type: :audiobook)
     @request.update!(language: "ru")
 
     [
       "Сергей Лукьяненко - Рыцари Сорока Островов Том 2 [RUS] M4B",
       "Сергей Лукьяненко - Рыцари Сорока Островов Книга II [RUS] M4B",
-      "Сергей Лукьяненко - Рыцари Сорока Островов Volume 2 [RUS] M4B"
+      "Сергей Лукьяненко - Рыцари Сорока Островов Volume 2 [RUS] M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов [RUS] Том 2 M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов Том 1 [RUS] M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов Том 1 + Том 2 [RUS] M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов Том 1-2 [RUS] M4B"
     ].each do |release_title|
       score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
 
@@ -379,30 +383,38 @@ class ReleaseScorerTest < ActiveSupport::TestCase
       assert_not score.high_confidence?, "#{release_title} #{score.total}"
     end
 
-    first = ReleaseScorer.score(
-      @request.search_results.new(title: "Сергей Лукьяненко - Рыцари Сорока Островов Том 1 [RUS] M4B", seeders: 50),
+    whole = ReleaseScorer.score(
+      @request.search_results.new(title: "Сергей Лукьяненко - Рыцари Сорока Островов [RUS] M4B", seeders: 50),
       @request
     )
 
-    assert_equal 100, first.breakdown[:title], first.breakdown.inspect
+    assert_equal 100, whole.breakdown[:title], whole.breakdown.inspect
+    assert whole.breakdown[:auto_select_allowed], whole.breakdown.inspect
   end
 
-  test "keeps a first explicit volume of an unnumbered latin title" do
+  test "does not auto-select a first or zero volume of an unnumbered latin title" do
     @book.update!(title: "The Way of Kings", author: "Brandon Sanderson", book_type: :audiobook)
 
-    first = ReleaseScorer.score(
-      @request.search_results.new(title: "The Way of Kings Book 1 - Brandon Sanderson English M4B", seeders: 50),
-      @request
-    )
-    second = ReleaseScorer.score(
-      @request.search_results.new(title: "The Way of Kings Book 2 - Brandon Sanderson English M4B", seeders: 50),
+    [
+      "The Way of Kings Book 1 - Brandon Sanderson English M4B",
+      "The Way of Kings Book 2 - Brandon Sanderson English M4B",
+      "The Way of Kings Volume 0 - Brandon Sanderson English M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
+
+      assert_equal 0, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert_not score.breakdown[:auto_select_allowed], release_title
+    end
+
+    series = ReleaseScorer.score(
+      @request.search_results.new(
+        title: "The Way of Kings (Stormlight Archive Book 1) - Brandon Sanderson English M4B",
+        seeders: 50
+      ),
       @request
     )
 
-    assert_equal 100, first.breakdown[:title], first.breakdown.inspect
-    assert first.breakdown[:auto_select_allowed], first.breakdown.inspect
-    assert_equal 0, second.breakdown[:title], second.breakdown.inspect
-    assert_not second.breakdown[:auto_select_allowed]
+    assert_equal 100, series.breakdown[:title], series.breakdown.inspect
   end
 
   test "reads a one file audiobook qualifier as structure, not a sequel" do
@@ -423,16 +435,30 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
-  test "keeps a one file phrase that belongs to the title" do
-    @book.update!(title: "Case 1 File", author: "Ada Lovelace", book_type: :audiobook)
+  test "keeps a one file phrase outside audiobook releases" do
+    @book.update!(title: "The Archive Incident", author: "Ada Lovelace", book_type: :ebook)
 
-    same = ReleaseScorer.score(
-      @request.search_results.new(title: "Case 1 File - Ada Lovelace English M4B", seeders: 50),
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "The Archive Incident 1 File - Ada Lovelace English EPUB", seeders: 50),
       @request
     )
 
-    assert_equal 100, same.breakdown[:title], same.breakdown.inspect
-    assert same.breakdown[:auto_select_allowed], same.breakdown.inspect
+    assert_equal 0, score.breakdown[:title], score.breakdown.inspect
+    assert_not score.breakdown[:auto_select_allowed]
+  end
+
+  test "keeps a one file phrase that belongs to the title" do
+    @book.update!(title: "Case 1 File", author: "Ada Lovelace", book_type: :audiobook)
+
+    [
+      "Case 1 File - Ada Lovelace English M4B",
+      "Case 1 File [1 file] - Ada Lovelace English M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
+
+      assert_equal 100, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert score.breakdown[:auto_select_allowed], "#{release_title} #{score.breakdown.inspect}"
+    end
   end
 
   test "matches cyrillic titles that differ only by yo and ye" do
