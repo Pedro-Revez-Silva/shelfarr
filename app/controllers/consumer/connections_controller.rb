@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class Consumer::ConnectionsController < ApplicationController
+  include WarmEntry
+
   before_action :private_response
 
   def show

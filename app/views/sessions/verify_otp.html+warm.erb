@@ -1,0 +1,15 @@
+<% content_for :title, "Two-step verification · Shelfarr" %>
+<section class="auth-card" aria-labelledby="otp-heading">
+  <h1 id="otp-heading">Two-step verification</h1>
+  <p class="lede">Enter the code from your authenticator app.</p>
+  <%= render "shared/entry_flash" %>
+  <%= form_with url: submit_otp_session_path, method: :post, class: "auth-form" do |form| %>
+    <div class="field">
+      <%= form.label :otp_code, "Verification code" %>
+      <%= form.text_field :otp_code, required: true, autofocus: true, maxlength: 8, autocomplete: "one-time-code", autocapitalize: "characters", autocorrect: "off", spellcheck: false, class: "code-input", aria: { describedby: "otp-backup-hint" } %>
+      <p id="otp-backup-hint" class="muted">Lost your authenticator? Enter one of your backup codes instead.</p>
+    </div>
+    <%= form.submit "Verify", class: "button button--primary button--large" %>
+  <% end %>
+  <p class="muted"><%= link_to "Cancel and sign in again", new_session_path, class: "entry-link" %></p>
+</section>

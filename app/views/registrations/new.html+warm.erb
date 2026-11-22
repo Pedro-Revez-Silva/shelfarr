@@ -1,0 +1,37 @@
+<% content_for :title, "Create your account · Shelfarr" %>
+<section class="auth-card" aria-labelledby="sign-up-heading">
+  <h1 id="sign-up-heading">Create your account</h1>
+  <p class="lede">You are the first person on this server, so this account will be its administrator.</p>
+  <%= render "shared/entry_flash" %>
+  <%= form_with model: @user, url: sign_up_path, class: "auth-form" do |form| %>
+    <% if @user.errors.any? %>
+      <div class="form-error" role="alert" tabindex="-1" autofocus data-entry-errors>
+        <p><%= pluralize(@user.errors.count, "problem") %> stopped the account being created:</p>
+        <ul class="entry-error-list">
+          <% @user.errors.each do |error| %>
+            <li><%= error.full_message %></li>
+          <% end %>
+        </ul>
+      </div>
+    <% end %>
+    <div class="field">
+      <%= form.label :name, "Name" %>
+      <%= form.text_field :name, required: true, autofocus: @user.errors.none?, autocomplete: "name", aria: { invalid: @user.errors.include?(:name) } %>
+    </div>
+    <div class="field">
+      <%= form.label :username, "Username" %>
+      <%= form.text_field :username, required: true, autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: false, aria: { describedby: "sign-up-username-hint", invalid: @user.errors.include?(:username) } %>
+      <p id="sign-up-username-hint" class="muted">Lowercase letters, numbers and underscores only.</p>
+    </div>
+    <div class="field">
+      <%= form.label :password, "Password" %>
+      <%= form.password_field :password, required: true, minlength: 12, maxlength: 72, autocomplete: "new-password", aria: { describedby: "sign-up-password-hint", invalid: @user.errors.include?(:password) } %>
+      <p id="sign-up-password-hint" class="muted">At least 12 characters.</p>
+    </div>
+    <div class="field">
+      <%= form.label :password_confirmation, "Confirm password" %>
+      <%= form.password_field :password_confirmation, required: true, minlength: 12, maxlength: 72, autocomplete: "new-password", aria: { invalid: @user.errors.include?(:password_confirmation) } %>
+    </div>
+    <%= form.submit "Create account", class: "button button--primary button--large" %>
+  <% end %>
+</section>

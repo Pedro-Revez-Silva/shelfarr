@@ -5,6 +5,8 @@
 # address to the freshly installed app through a shelfarr://connect link.
 # Signing in still happens in the browser afterwards, as usual.
 class AndroidAppsController < ApplicationController
+  include WarmEntry
+
   allow_unauthenticated_access
 
   def show

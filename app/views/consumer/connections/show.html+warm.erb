@@ -1,0 +1,63 @@
+<% content_for :head do %>
+  <meta name="turbo-cache-control" content="no-cache">
+<% end %>
+<% content_for :title, "Connect your Shelfarr app · Shelfarr" %>
+<section class="auth-card" aria-labelledby="connect-heading">
+  <% if @grant&.pending? && !@grant.decidable_by?(Current.user) %>
+    <h1 id="connect-heading">Different account</h1>
+    <%= render "shared/entry_flash" %>
+    <p class="lede" data-consumer-approval="wrong-account">This code belongs to an app that is connected to a different Shelfarr account, so <strong><%= Current.user.name %></strong> can't approve it.</p>
+    <p class="muted">Sign out, sign in with the account the app uses, then open the code again. Nothing has changed for either account.</p>
+    <div class="state-actions">
+      <%= button_to "Sign out", session_path, method: :delete, class: "button" %>
+    </div>
+  <% elsif @grant&.pending? %>
+    <% if @grant.upgrade? %>
+      <h1 id="connect-heading">Allow requesting from your app</h1>
+      <%= render "shared/entry_flash" %>
+      <p class="lede"><strong class="client-name"><%= @grant.client_name %></strong>, already connected as <strong><%= Current.user.name %></strong>, is asking to also request books.</p>
+    <% else %>
+      <h1 id="connect-heading">Connect your Shelfarr app</h1>
+      <%= render "shared/entry_flash" %>
+      <p class="lede"><strong class="client-name"><%= @grant.client_name %></strong> is asking to connect as <strong><%= Current.user.name %></strong>.</p>
+    <% end %>
+    <p class="muted">Check that this code matches the one shown in the app you just opened:</p>
+    <p class="user-code" aria-label="Code <%= @user_code.upcase.chars.join(" ") %>"><%= @user_code.upcase %></p>
+    <% if @grant.requesting? %>
+      <div class="permissions" data-consumer-approval="requesting">
+        <p class="permissions-title">If you allow it, the app can:</p>
+        <ul>
+          <li>Browse and download your library, and save your reading and listening progress.</li>
+          <li><strong>Search for titles and request ebooks and audiobooks as <%= Current.user.name %>.</strong> Requests follow this server's usual rules, including duplicate checks.</li>
+          <li>See and cancel your own requests.</li>
+        </ul>
+        <p class="muted">It cannot see other people's requests, manage users or change server settings. You can revoke it from your Account page.</p>
+        <% if @grant.upgrade? %>
+          <p class="muted">If you choose Not now, the app keeps its current read-and-listen access.</p>
+        <% end %>
+      </div>
+    <% else %>
+      <p class="muted" data-consumer-approval="base">The app can browse and download your library and save your reading and listening progress. It cannot request books or manage your server. You can revoke it from your Account page.</p>
+    <% end %>
+    <p class="warning">Only approve a connection you started yourself. Do not approve a code someone sent you.</p>
+    <%= form_with url: consumer_connect_path, class: "state-actions consent-actions" do |form| %>
+      <%= form.hidden_field :user_code, value: @user_code %>
+      <button name="decision" value="allow" class="button button--primary button--large"><%= @grant.upgrade? ? "Allow requesting" : (@grant.requesting? ? "Connect and allow requesting" : "Connect app") %></button>
+      <button name="decision" value="deny" class="button button--large"><%= @grant.upgrade? ? "Not now" : "Deny" %></button>
+    <% end %>
+  <% else %>
+    <h1 id="connect-heading">Connect your Shelfarr app</h1>
+    <%= render "shared/entry_flash" %>
+    <% if @user_code.present? && flash.now[:alert].blank? %>
+      <p class="form-error" role="alert" data-consumer-approval="unknown-code">That code wasn't found, has expired or has already been used. Check it, or start again in the app.</p>
+    <% end %>
+    <p class="lede">Enter the code displayed in your Shelfarr app. Codes expire after ten minutes.</p>
+    <%= form_with url: consumer_connect_path, method: :get, class: "auth-form" do |form| %>
+      <div class="field">
+        <%= form.label :user_code, "Connection code" %>
+        <%= form.text_field :user_code, value: @user_code, required: true, maxlength: 32, autocomplete: "off", autocapitalize: "characters", autocorrect: "off", spellcheck: false, class: "code-input", autofocus: @user_code.blank? %>
+      </div>
+      <button type="submit" class="button button--primary button--large">Check code</button>
+    <% end %>
+  <% end %>
+</section>

@@ -1,0 +1,26 @@
+.entry-app .auth-main--wide { max-width: 42rem; display: grid; gap: 16px; align-content: start; }
+.entry-app .auth-card code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; padding: 1px 6px; border-radius: 6px; background: var(--sunken); overflow-wrap: anywhere; }
+.entry-app .auth-card .notice { margin-bottom: 0; }
+.entry-app .auth-form > .button, .entry-app .entry-sso-form .button { width: 100%; }
+.entry-app .auth-form .field_with_errors { display: contents; }
+.entry-app .entry-link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.entry-app .entry-divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 14px; }
+.entry-app .entry-divider::before, .entry-app .entry-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.entry-app .entry-error-list { list-style: disc; padding-inline-start: 1.25rem; margin-top: 6px; display: grid; gap: 2px; }
+.entry-app .entry-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.entry-app .entry-tag { font-family: var(--sans); font-size: 14px; font-weight: 550; letter-spacing: 0; padding: 4px 12px; border-radius: 999px; background: var(--accent-soft); color: var(--ink); }
+.entry-app .entry-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.entry-app .entry-facts dt { color: var(--muted); font-size: 13px; }
+.entry-app .entry-facts dd { margin: 0; font-weight: 550; }
+.entry-app .entry-facts__wide { grid-column: 1 / -1; }
+.entry-app .entry-details summary { cursor: pointer; color: var(--muted); min-height: 44px; display: flex; align-items: center; }
+.entry-app .entry-notes { white-space: pre-line; font-size: 14px; }
+.entry-app .entry-steps { display: grid; gap: 24px; list-style: none; padding: 0; margin: 8px 0 0; }
+.entry-app .entry-steps li { display: grid; gap: 10px; justify-items: start; }
+.entry-app .entry-steps h2 { font-size: 17px; margin: 0; }
+.entry-app .entry-aside { gap: 10px; }
+.entry-app .entry-aside h2 { font-size: 17px; margin: 0; }
+@media (max-width: 480px) {
+  .entry-app .auth-card { padding: 24px 18px; border-radius: 22px; }
+  .entry-app .entry-steps .button { width: 100%; }
+}

@@ -1,0 +1,13 @@
+<% provider_name = SettingsService.get(:oidc_provider_name, default: "SSO") %>
+<% content_for :title, "Sign in with #{provider_name} · Shelfarr" %>
+<section class="auth-card" aria-labelledby="oidc-heading" data-controller="oidc-redirect">
+  <h1 id="oidc-heading">Redirecting to <%= provider_name %></h1>
+  <p class="lede">This server signs you in with <%= provider_name %>.</p>
+  <%= render "shared/entry_flash" %>
+  <div class="state-actions">
+    <%= button_to oidc_auth_path, method: :post, class: "button button--primary button--large", form: { data: { oidc_redirect_target: "form" } } do %>
+      Continue to <%= provider_name %>
+    <% end %>
+  </div>
+  <p class="muted">If <%= provider_name %> is unavailable or you need local access, <%= link_to "use local sign-in instead", new_session_path(local: 1), class: "entry-link" %>.</p>
+</section>

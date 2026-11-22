@@ -1,0 +1,41 @@
+<% content_for :title, "Sign in · Shelfarr" %>
+<% provider_name = SettingsService.get(:oidc_provider_name, default: "SSO") %>
+<section class="auth-card" aria-labelledby="sign-in-heading">
+  <div hidden data-controller="consumer-offline-signed-out" data-consumer-offline-signed-out-base-value="<%= request.script_name %>"></div>
+  <h1 id="sign-in-heading">Sign in</h1>
+  <%= render "shared/entry_flash" %>
+
+  <% if params[:local].present? && SettingsService.oidc_auto_redirect? %>
+    <p class="notice" role="status" data-entry-local-fallback>This server normally signs you in with <%= provider_name %>. This page is the local sign-in fallback.</p>
+  <% end %>
+
+  <% if SettingsService.auth_disabled? %>
+    <p class="warning" data-entry-auth-off>Passwords are switched off on this server. Enter your username to continue.</p>
+    <%= form_with url: session_url, class: "auth-form" do |form| %>
+      <div class="field">
+        <%= form.label :username, "Username" %>
+        <%= form.text_field :username, required: true, autofocus: true, autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: false, value: params[:username] %>
+      </div>
+      <%= form.submit "Continue", class: "button button--primary button--large" %>
+    <% end %>
+  <% else %>
+    <% if SettingsService.oidc_configured? %>
+      <%= button_to oidc_auth_path, method: :post, class: "button button--primary button--large entry-sso", form: { class: "entry-sso-form" } do %>
+        Sign in with <%= provider_name %>
+      <% end %>
+      <p class="entry-divider"><span>or use your password</span></p>
+    <% end %>
+
+    <%= form_with url: session_url, class: "auth-form" do |form| %>
+      <div class="field">
+        <%= form.label :username, "Username" %>
+        <%= form.text_field :username, required: true, autofocus: params[:local].present? || !SettingsService.oidc_configured?, autocomplete: "username", autocapitalize: "none", autocorrect: "off", spellcheck: false, value: params[:username] %>
+      </div>
+      <div class="field">
+        <%= form.label :password, "Password" %>
+        <%= form.password_field :password, required: true, autocomplete: "current-password", maxlength: 72 %>
+      </div>
+      <%= form.submit "Sign in", class: "button #{SettingsService.oidc_configured? ? '' : 'button--primary '}button--large" %>
+    <% end %>
+  <% end %>
+</section>

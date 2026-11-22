@@ -1,0 +1,7 @@
+<% if flash[:alert].present? %>
+  <p class="form-error" role="alert" data-entry-flash="alert"><%= flash[:alert] %></p>
+<% end %>
+<% flash.each do |kind, text| %>
+  <% next if kind.to_s == "alert" || text.blank? %>
+  <p class="notice" role="status" data-entry-flash="<%= kind %>"><%= text %></p>
+<% end %>

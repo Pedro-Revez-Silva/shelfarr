@@ -1,0 +1,15 @@
+<% if @allowed && @grant.upgrade? %>
+  <% heading, message = "Requesting allowed", "Return to the Shelfarr app. It can now find and request books for you; your downloads and saved places are unchanged." %>
+<% elsif @allowed %>
+  <% heading, message = "App connected", (@grant.requesting? ? "Return to the Shelfarr app to open your library and request books." : "Return to the Shelfarr app to open your library.") %>
+<% elsif @grant.upgrade? %>
+  <% heading, message = "Requesting not allowed", "The app keeps its current read-and-listen access and cannot request books." %>
+<% else %>
+  <% heading, message = "Connection denied", "The app was not granted access to your account." %>
+<% end %>
+<% content_for :title, "#{heading} · Shelfarr" %>
+<section class="auth-card" aria-labelledby="connect-result-heading" data-consumer-approval-result="<%= @allowed ? "allowed" : "denied" %>">
+  <h1 id="connect-result-heading"><%= heading %></h1>
+  <p class="lede"><%= message %></p>
+  <p class="muted">You can close this page.</p>
+</section>

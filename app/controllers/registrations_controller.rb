@@ -1,4 +1,6 @@
 class RegistrationsController < ApplicationController
+  include WarmEntry
+
   allow_unauthenticated_access only: [:new, :create]
 
   before_action :require_admin_for_new_users, only: [:new, :create]
@@ -30,6 +32,10 @@ class RegistrationsController < ApplicationController
     else
       params.require(:user).permit(:name, :username, :password, :password_confirmation)
     end
+  end
+
+  def warm_entry_page?
+    User.active.none?
   end
 
   def first_user?
