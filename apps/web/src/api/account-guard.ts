@@ -5,6 +5,7 @@ export type LockReason = Exclude<GuardState["status"], "active">;
 export type Trust = "trusted" | "checking" | "unverified";
 
 type Listener = () => void;
+type RefusalListener = (askedAt: number) => void;
 
 export class AccountGuard {
   readonly account: string;
@@ -14,6 +15,7 @@ export class AccountGuard {
   private askedAt: number | null = null;
   private readonly listeners = new Set<Listener>();
   private readonly trustListeners = new Set<Listener>();
+  private readonly refusalListeners = new Set<RefusalListener>();
   private readonly settleWaiters = new Set<() => void>();
 
   constructor(account: string) {
@@ -26,6 +28,13 @@ export class AccountGuard {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+    };
+  };
+
+  subscribeRefusals = (listener: RefusalListener): (() => void) => {
+    this.refusalListeners.add(listener);
+    return () => {
+      this.refusalListeners.delete(listener);
     };
   };
 
@@ -55,9 +64,12 @@ export class AccountGuard {
   }
 
   lock(reason: LockReason, askedAt: number | null = null): void {
+    if (askedAt !== null) {
+      this.askedAt = Math.max(this.askedAt ?? askedAt, askedAt);
+      for (const listener of [...this.refusalListeners]) listener(askedAt);
+    }
     if (!this.isActive()) return;
     this.state = { status: reason };
-    this.askedAt = askedAt;
     this.releaseWaiters();
     for (const listener of [...this.listeners]) listener();
   }

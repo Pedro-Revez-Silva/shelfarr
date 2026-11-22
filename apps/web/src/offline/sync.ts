@@ -82,7 +82,8 @@ async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () =
         client_mutation_id: uuid(),
       };
       prepared.value = { request, rebases: device.upload.rebases, assetId: device.asset_id };
-      return stored ? null : { ...book, devicePlace: { ...device, upload: { state: "pending", request, rebases: device.upload.rebases } } };
+      if (stored && stored.expected_version === request.expected_version) return null;
+      return { ...book, devicePlace: { ...device, upload: { state: "pending", request, rebases: device.upload.rebases } } };
     },
     now(),
   );

@@ -252,17 +252,18 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   });
   const { csrf, services, router } = built;
 
-  useEffect(
-    () =>
-      services.guard.subscribe(() => {
-        const refusedAt = services.guard.lockAskedAt;
-        void (async () => {
-          if (boot.offline && refusedAt !== null) await store.release(refusedAt);
-          await refreshOfflineAccount(boot, auth, store);
-        })().catch(() => undefined);
-      }),
-    [services, boot, auth, store],
-  );
+  useEffect(() => {
+    const stopRefusals = services.guard.subscribeRefusals((refusedAt) => {
+      if (boot.offline) void store.release(refusedAt).catch(() => undefined);
+    });
+    const stopLocks = services.guard.subscribe(() => {
+      void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+    });
+    return () => {
+      stopRefusals();
+      stopLocks();
+    };
+  }, [services, boot, auth, store]);
 
   const [offline] = useState<Offline | null>(() =>
     boot.offline

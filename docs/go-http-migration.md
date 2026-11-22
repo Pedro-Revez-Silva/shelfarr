@@ -985,7 +985,8 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   by a later question; signing out clears against everything asked until then. A page lock caused by a server refusal is such an answer: it
   clears at once against the moment the refused request was sent (any account's record confirmed before then, so another
   account's tab confirms again on its next check), then asks `auth/bootstrap` again to restore a still-valid session; a
-  lock without such a moment (a role change seen in an answer) only asks again; a sign-in also
+  lock without such a moment (a role change seen in an answer) only asks again, and a refusal answered after the page is
+  already locked still clears; a sign-in also
   asks again rather than using the login answer. An expired record is cleared against every question asked up to its
   own confirmation, and a later question's positive answer is newer truth about the session and is accepted with its own
   window. A confirmation answered while the clock was far ahead stays ahead of later questions until the corrected clock
@@ -1117,7 +1118,9 @@ comics, which this slice does not offer. Known limit: device places from two tab
 so after the clock is set back a new tab's move dated before the stored one is not kept until the clock catches up; a
 confirmation answered while the clock was far ahead blocks renewing offline access until the corrected clock passes it;
 removing the saved copy from the online reader leaves that page's offer of the device place until it reloads (opening it
-writes nothing).
+writes nothing); questions are ordered by millisecond, so a refusal and another tab's confirmation asked in the same
+millisecond resolve toward clearing (that tab confirms again on its next check); a move stored by an unreleased
+intermediate build of this branch with a base learned in the same millisecond as a repeated turn is not detected.
 
 ## Account: display name and password (opt-in)
 

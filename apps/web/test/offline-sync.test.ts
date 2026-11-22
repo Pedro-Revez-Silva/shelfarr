@@ -501,6 +501,23 @@ describe("fifth review regressions", () => {
     expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "held", reason: "conflict", message: null });
   });
 
+  test("a corrected first attempt is stored, so its retry is identical even after a newer account place is learned", async () => {
+    const request: ProgressRequest = { asset_id: EPUB_ID, locator: locator("device"), observed_at: OFFLINE_AT, expected_version: 4, client_mutation_id: "stored-earlier" };
+    const book = offlineBook({
+      accountPlace: { asset_id: EPUB_ID, locator: locator("checkpoint"), version: 4, observedAt: null, learnedAt: Date.parse(OFFLINE_AT) },
+      devicePlace: { ...offlineBook().devicePlace!, basedOn: 4, upload: { state: "pending", request, rebases: 0 } },
+    });
+    const store = await storeWith(book);
+    const run = harness(store, [failing(new ApiError("network", "lost")), conflict(serverProgress({ version: 5, locator: locator("newer"), observed_at: null, client_mutation_id: "other-device" }))]);
+    expect(await syncPlaces(run.deps)).toEqual({ kind: "retry" });
+    await store.updateBook("5", "7", (stored) => rememberAccountPlace(stored, serverProgress({ version: 5, locator: locator("newer"), observed_at: null, client_mutation_id: "other-device" }), NOW), NOW);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => [write.body.expected_version, write.body.client_mutation_id])).toEqual([
+      [0, "stored-earlier"],
+      [0, "stored-earlier"],
+    ]);
+  });
+
   test("a place stored without its base is rebased on the server's version once it answers", async () => {
     const store = await storeWith(offlineBook({ devicePlace: { asset_id: EPUB_ID, locator: locator("device"), observedAt: OFFLINE_AT, recordedAt: NOW - 1000, upload: { state: "pending", request: null, rebases: 0 } } }));
     const earlier = serverProgress({ version: 4, locator: locator("elsewhere"), observed_at: "2026-11-20T10:30:00.000Z", client_mutation_id: "other-device" });

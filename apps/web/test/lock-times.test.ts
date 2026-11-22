@@ -86,3 +86,17 @@ describe("a lock carries the moment its refused request was sent", () => {
     lockedWhenSent(guard, sent);
   });
 });
+
+describe("refusals after a lock", () => {
+  test("a refusal answered after a lock without a send time still reaches its listeners with its own send time", () => {
+    const guard = new AccountGuard("5");
+    const refusals: number[] = [];
+    guard.subscribeRefusals((askedAt) => refusals.push(askedAt));
+    guard.lock("access_changed");
+    expect(refusals).toEqual([]);
+    guard.lock("signed_out", 1234);
+    expect(refusals).toEqual([1234]);
+    expect(guard.getState()).toEqual({ status: "access_changed" });
+    expect(guard.lockAskedAt).toBe(1234);
+  });
+});
