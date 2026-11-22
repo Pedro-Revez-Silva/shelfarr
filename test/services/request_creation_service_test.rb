@@ -196,6 +196,43 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "checks the supplied title and author even when provider details differ" do
+    title = "The Hound of the Baskervilles"
+    Book.create!(title: title, author: "Arthur Conan Doyle", book_type: :ebook,
+      hardcover_id: "hc-baskervilles", file_path: "/ebooks/baskervilles.epub")
+
+    BookMetadataLookupService.stub(:call, { title: title, author: "Sir Arthur Conan Doyle" }) do
+      assert_no_difference [ "Book.count", "Request.count" ] do
+        result = RequestCreationService.call(
+          user: @user, work_id: "google_books:gb-baskervilles", book_types: [ "ebook" ],
+          metadata_attrs: { title: title, author: "Arthur Conan Doyle" }
+        )
+
+        assert_equal [ "#{title} Ebook: This ebook is already in your library." ], result.errors
+        assert_empty result.created_requests
+      end
+    end
+  end
+
+  test "rechecks exact source requests after a metadata lookup" do
+    work_id = "google_books:gb-request-created-during-lookup"
+    metadata = { title: "New Concurrent Request", author: "Service Author" }
+    concurrent_request = lambda do |*|
+      book = Book.create!(**metadata, google_books_id: "gb-request-created-during-lookup", book_type: :ebook)
+      users(:two).requests.create!(book: book, status: :pending)
+      metadata
+    end
+
+    BookMetadataLookupService.stub(:call, concurrent_request) do
+      assert_difference [ "Book.count", "Request.count" ], 1 do
+        result = RequestCreationService.call(user: @user, work_id: work_id, book_types: [ "ebook" ])
+
+        assert_equal [ "New Concurrent Request Ebook: This ebook already has an active request." ], result.errors
+        assert_empty result.created_requests
+      end
+    end
+  end
+
   test "still requests another format when only one format is already acquired" do
     Book.create!(
       title: "Project Hail Mary",

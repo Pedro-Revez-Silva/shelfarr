@@ -65,41 +65,9 @@ class RequestCreationService
       else
         {}
       end
-      label = resolved_metadata[:title].presence || input.metadata_attrs[:title].presence || input.work_id
-
-      book_types.each do |book_type|
-        duplicate_check = exact_blocks[book_type] || DuplicateDetectionService.check(
-          work_id: input.work_id,
-          source_work_ids: input.source_work_ids,
-          book_type: book_type,
-          title: resolved_metadata[:title].presence || input.metadata_attrs[:title],
-          author: resolved_metadata[:author].presence || input.metadata_attrs[:author],
-          existing_books_lookup: existing_books_lookup
-        )
-
-        if duplicate_check.block?
-          errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate_check.message}"
-          next
-        end
-
-        warnings << duplicate_check.message if duplicate_check.warn?
-
-        book = find_or_create_book_for_source(
-          book_type,
-          input: input,
-          existing_books_lookup: existing_books_lookup,
-          metadata: resolved_metadata
-        )
-        request = build_request(book, input.metadata_attrs)
-
-        if request.save
-          after_create(request)
-          created_requests << request
-          input.source_work_ids.each { |source_work_id| existing_books_lookup[source_work_id.to_s][book.book_type] = book }
-        else
-          errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
-        end
-      end
+      requests = persist_requests(input, resolved_metadata, warnings:, errors:)
+      requests.each { |request| after_create(request) }
+      created_requests.concat(requests)
     end
 
     Result.new(created_requests: created_requests, warnings: warnings.compact, errors: errors)
@@ -218,6 +186,50 @@ class RequestCreationService
         existing_books_lookup: existing_books_lookup
       )
       blocks[book_type] = duplicate_check if duplicate_check.block?
+    end
+  end
+
+  def persist_requests(input, metadata, warnings:, errors:)
+    label = metadata[:title].presence || input.metadata_attrs[:title].presence || input.work_id
+
+    Book.uncached do
+      Book.transaction do
+        lookup = Book.preload_by_work_ids([ input.work_id, *input.source_work_ids ])
+        book_types.filter_map do |book_type|
+          duplicate = check_duplicates(input, book_type, lookup, metadata)
+          if duplicate.block?
+            errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate.message}"
+            next
+          end
+
+          warnings << duplicate.message if duplicate.warn?
+          book = find_or_create_book_for_source(book_type, input:, existing_books_lookup: lookup, metadata:)
+          request = build_request(book, input.metadata_attrs)
+          if request.save
+            input.source_work_ids.each { |id| lookup[id.to_s][book_type] = book }
+            request
+          else
+            errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{request.errors.full_messages.join(', ')}"
+            nil
+          end
+        end
+      end
+    end
+  end
+
+  def check_duplicates(input, book_type, lookup, metadata)
+    supplied = input.metadata_attrs.values_at(:title, :author)
+    resolved = metadata.values_at(:title, :author)
+    if supplied.any?(&:blank?)
+      resolved = resolved.zip(supplied).map { |detail, fallback| detail.presence || fallback }
+    end
+
+    arguments = { work_id: input.work_id, source_work_ids: input.source_work_ids, book_type:, existing_books_lookup: lookup }
+    result = DuplicateDetectionService.check(**arguments, title: supplied.first, author: supplied.last)
+    if result.block? || resolved == supplied || resolved.any?(&:blank?)
+      result
+    else
+      DuplicateDetectionService.check(**arguments, title: resolved.first, author: resolved.last)
     end
   end
 
