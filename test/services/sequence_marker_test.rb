@@ -225,6 +225,95 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     assert_not_includes SequenceMarker.neutralize(source), "100"
   end
 
+  test "reads russian volume part and book markers and rejects conflicting numbers" do
+    assert_equal [ "1" ], SequenceMarker.numbers("Война и мир. Том 1")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том 2")
+    assert_equal [ "2" ], SequenceMarker.numbers("ВОЙНА И МИР. ТОМ 2")
+    assert_equal [ "2" ], SequenceMarker.numbers("Книга2")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том II")
+    assert_equal [ "2" ], SequenceMarker.numbers("Война и мир. Том-2")
+    assert_equal [ "3" ], SequenceMarker.numbers("Тихий Дон. Часть 3")
+    assert_equal [ "4" ], SequenceMarker.numbers("Сборник. Выпуск 4")
+    assert_equal "Война и мир. volume 2", SequenceMarker.neutralize("Война и мир. Том 2")
+    assert SequenceMarker.conflict?("Война и мир. Том 1", "Война и мир. Том 2")
+    assert SequenceMarker.conflict?("Война и мир. Книга 1", "Война и мир. Часть 2")
+    assert_not SequenceMarker.conflict?("Война и мир. Том 1", "Война и мир. Volume 1")
+    assert_not SequenceMarker.conflict?("Война и мир. Том 2", "Война и мир. Книга 2")
+
+    [ "Книга джунглей", "Том Сойер", "В том числе", "часть речи" ].each do |title|
+      assert_empty SequenceMarker.numbers(title), title
+      assert_equal title, SequenceMarker.neutralize(title), title
+    end
+  end
+
+  test "treats an explicit volume after an unnumbered title as another book" do
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 2")
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов RUS Том 2")
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 1")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune Part 2 Frank Herbert")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune Messiah Book 2 Frank Herbert")
+    assert_not SequenceMarker.sequel_conflict?("Dune Book 2", "Dune Book 2 Part 2")
+  end
+
+  test "distinguishes bare sequel numbers after language tags from release metadata" do
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2 EPUB")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2 M4B")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 64 EPUB")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English Volume 64 M4B")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune EPUB English Book 2")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune EPUB 2 files")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 2 files EPUB")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 12hours M4B")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 64 M4B")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 128 M4A")
+  end
+
+  test "removes a one file qualifier unless the title contains it" do
+    assert_equal "Dune   M4B", SequenceMarker.without_one_file_count("Dune 1 file M4B", preserve_title: "Dune")
+    assert_equal "Case 1 File   M4B",
+      SequenceMarker.without_one_file_count("Case 1 File 1-file M4B", preserve_title: "Case 1 File")
+  end
+
+  test "strips an author whose apostrophe is a modifier letter" do
+    releases = [
+      "Wise Blood - Flannery OConnor English EPUB",
+      "Wise Blood - Flannery O'Connor English EPUB",
+      "Wise Blood - Flannery O\u02BCConnor English EPUB",
+      "Wise Blood - Flannery O\u02BBConnor English EPUB"
+    ]
+    authors = [
+      "Flannery O\u02BCConnor",
+      "Flannery O\u02BBConnor",
+      "Flannery O'Connor",
+      "Flannery OConnor"
+    ]
+
+    authors.product(releases).each do |author, release|
+      source = SequenceMarker.without_author_credit(
+        release,
+        author: author,
+        protected_title: "Wise Blood"
+      )
+
+      assert_includes source, "Wise Blood", "#{author.inspect} in #{release}"
+      assert_not_includes source, "Connor", "#{author.inspect} in #{release}"
+      assert_not_includes source, "Flannery", "#{author.inspect} in #{release}"
+    end
+  end
+
+  test "removes a cjk author credit that precedes a short title" do
+    source = SequenceMarker.without_author_credit(
+      "刘慈欣 - 三体 [CHS] M4B",
+      author: "刘慈欣",
+      protected_title: "三体"
+    )
+
+    assert_not_includes source, "刘慈欣"
+    assert_includes source, "三体"
+    assert_includes source, "[CHS]"
+  end
+
   test "reads an abbreviated roman volume before a language code" do
     release = "Victor.Hugo.-.Les.Miserables.T.V.FR.EPUB"
 

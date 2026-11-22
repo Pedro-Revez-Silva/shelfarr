@@ -54,6 +54,7 @@ class ReleaseScorer
     auto_select_allowed = @format_preferences.auto_select_allowed &&
       !explicit_format_conflict? &&
       !ambiguous_title_alias_match? &&
+      !sequel_title_conflict? &&
       (@comic_issue_match.nil? || issue_status == :exact) &&
       size_limit[:allowed]
     breakdown = {
@@ -138,11 +139,11 @@ class ReleaseScorer
   def calculate_title_score
     return 100 if @comic_issue_match&.fetch(:status, nil) == :exact
 
-    title_variants = SearchTitleVariantService.call(@book.title)
     # Every marker is rewritten to "volume N", so trigrams cannot tell
     # volume 2 from volume 3. A mismatched number is a different book.
-    comparable = title_variants.reject { |title| SequenceMarker.conflict?(title, prepared_release_title) }
+    comparable = comparable_titles
     return 0 if comparable.empty?
+    return 0 if sequel_title_conflict?
 
     release_key = release_title_key
     book_titles = comparable
@@ -162,11 +163,33 @@ class ReleaseScorer
   end
 
   def exact_title_phrase_match?(release_title, book_title, short_title:)
-    phrase = /(?:\A|\s)#{Regexp.escape(book_title)}(?:\z|\s)/
-    return false unless release_title.match?(phrase)
+    phrase_endings(release_title, book_title).any? do |ending|
+      next false unless acceptable_phrase_position?(release_title, book_title, ending, short_title: short_title)
+
+      !SequenceMarker.leading_sequel_numeral?(release_title[ending..].to_s.split, after_phrase: book_title.split)
+    end
+  end
+
+  def acceptable_phrase_position?(release_title, book_title, ending, short_title:)
     return true unless short_title
 
-    release_title == book_title || release_title.start_with?("#{book_title} ")
+    release_title == book_title ||
+      (ending == book_title.length && release_title.start_with?("#{book_title} "))
+  end
+
+  def phrase_endings(release_title, book_title)
+    return [] if book_title.blank?
+
+    pattern = /(?:\A|\s)#{Regexp.escape(book_title)}(?=\z|\s)/
+    endings = []
+    offset = 0
+    while (match = pattern.match(release_title, offset))
+      endings << match.end(0)
+      break if match.end(0) <= offset
+
+      offset = match.end(0)
+    end
+    endings
   end
 
   def exact_normalized_title_match?(book_title)
@@ -184,11 +207,37 @@ class ReleaseScorer
   # The author credit is not part of the title, so initials cannot finish a
   # marker ("The Red Book C. G. Jung").
   def prepared_release_title
-    @prepared_release_title ||= SequenceMarker.without_author_credit(
-      @search_result.title.to_s,
-      author: @book.author,
-      protected_title: @book.title
+    @prepared_release_title ||= without_audiobook_file_count(
+      SequenceMarker.without_recognised_metadata(
+        SequenceMarker.without_author_credit(
+          @search_result.title.to_s,
+          author: @book.author,
+          protected_title: @book.title
+        ),
+        preserve_title: @book.title
+      )
     )
+  end
+
+  def without_audiobook_file_count(title)
+    return title unless @parsed[:format] == :audiobook
+
+    SequenceMarker.without_one_file_count(title, preserve_title: @book.title)
+  end
+
+  def comparable_titles
+    @comparable_titles ||= SearchTitleVariantService.call(@book.title).reject { |title|
+      SequenceMarker.conflict?(title, prepared_release_title)
+    }
+  end
+
+  def sequel_title_conflict?
+    return false if @comic_issue_match
+    return @sequel_title_conflict if instance_variable_defined?(:@sequel_title_conflict)
+
+    conflicting, compatible = comparable_titles.partition { |title| SequenceMarker.sequel_conflict?(title, prepared_release_title) }
+    @sequel_title_conflict = comparable_titles.empty? ||
+      (conflicting.any? && compatible.none? { |title| exact_normalized_title_match?(title) })
   end
 
   def release_title_key

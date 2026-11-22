@@ -15,6 +15,7 @@ class SequenceMarker
     band teil buch
     tomo parte libro livro volumen
     deel boek
+    том часть книга выпуск
   ].freeze
   NEUTRAL_MARKER = "volume"
   NUMBER_WORDS = {
@@ -47,16 +48,19 @@ class SequenceMarker
   ANY_NUMBER = "#{NUMERIC_NUMBER}|#{NUMBER_WORD}"
   # Release words after an abbreviated roman marker ("T V FR", "T V Partie").
   # Language tokens come from the release parser, so codes and names stay one list.
-  FORMAT_WORDS = %w[
-    epub pdf mobi azw azw3 fb2 ebook audiobook m4b mp3 flac cbr cbz retail multi
-  ].freeze
-  FOLLOWER_WORDS = (MARKER_WORDS + ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
+  AUDIO_FORMAT_WORDS = %w[m4a m4b mp3 flac].freeze
+  FORMAT_WORDS = (%w[epub pdf mobi azw azw3 fb2 ebook audiobook cbr cbz retail multi] + AUDIO_FORMAT_WORDS).freeze
+  LANGUAGE_TAG_WORDS = (ReleaseParserService.language_tokens - FORMAT_WORDS).freeze
+  RELEASE_TAG_WORDS = (LANGUAGE_TAG_WORDS + FORMAT_WORDS).freeze
+  FOLLOWER_WORDS = (MARKER_WORDS + RELEASE_TAG_WORDS).uniq.freeze
   FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.map { |word|
     Regexp.escape(word)
   }.join("|").freeze
   GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :FOLLOWER_WORDS, :FOLLOWER_ALTERNATION,
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :AUDIO_FORMAT_WORDS, :FORMAT_WORDS,
+    :LANGUAGE_TAG_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
+    :FOLLOWER_ALTERNATION,
     :GLUED_VOLUME_PATTERN
 
   # Digits may be glued ("Vol2", "T2", "T.2", "T02"). A full word needs a
@@ -102,10 +106,23 @@ class SequenceMarker
   ).freeze
   private_constant :SEPARATOR_PATTERN
 
-  # TitleKey deletes these before tokenizing, so "Shakespeare's" and
-  # "Shakespeares" are the same span.
-  TITLE_QUOTE_CHARACTERS = /['"`´’‘]/
-  private_constant :TITLE_QUOTE_CHARACTERS
+  PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
+  BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
+  SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
+  BARE_AUDIO_BITRATES = %w[32 48 56 64 80 96 112 128 160 192 224 256 320].freeze
+  RELEASE_METADATA = Regexp.union(BRACKETED_YEAR, SPACED_BITRATE)
+  CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
+  CJK_VOLUME_PREFIX = /
+    \A第
+    (?<number>\d+|[ivxlcdm]+|[#{CHINESE_NUMERALS}]+)
+    [部卷巻]?
+  /x
+  NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
+  GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
+  ONE_FILE_COUNT = ReleaseParserService::ONE_FILE_COUNT_PATTERN
+  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :BARE_AUDIO_BITRATES, :RELEASE_METADATA,
+    :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+    :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX, :ONE_FILE_COUNT
 
   class << self
     def separate_marker_punctuation(text)
@@ -162,7 +179,46 @@ class SequenceMarker
       shared.times.any? { |index| left_numbers[index] != right_numbers[index] }
     end
 
+    def leading_sequel_numeral?(tokens, after_phrase:)
+      words = drop_leading_bitrate(Array(tokens))
+      return false if words.empty?
+      return true if numeric_sequel_token?(words.first) || language_tagged_sequel_numeral?(words)
+
+      after_tags = words.drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
+      cjk_volume_prefix?(after_tags) ||
+        (!explicit_volume?(Array(after_phrase)) && neutral_volume?(after_tags[0], after_tags[1]))
+    end
+
+    def without_recognised_metadata(text, preserve_title: nil)
+      without_matches_outside_title(TitleKey.normalize_decimal_digits(text), RELEASE_METADATA, preserve_title)
+    end
+
+    def without_one_file_count(text, preserve_title: nil)
+      without_matches_outside_title(text.to_s, ONE_FILE_COUNT, preserve_title)
+    end
+
+    def sequel_conflict?(left, right)
+      left_tokens = classification_tokens(left, preserve_title: left)
+      right_tokens = classification_tokens(right, preserve_title: left)
+      return false if left_tokens.empty? || right_tokens.empty?
+
+      phrase_sequel_conflict?(left_tokens, right_tokens) ||
+        phrase_sequel_conflict?(right_tokens, left_tokens) ||
+        bare_trailing_sequence_conflict?(left_tokens, right_tokens)
+    end
+
     private
+
+    def without_matches_outside_title(source, pattern, title)
+      return source unless pattern.match?(source)
+
+      title_spans = phrase_spans(source, title)
+      source.gsub(pattern) {
+        match = Regexp.last_match
+        span = match.begin(0)...match.end(0)
+        title_spans.any? { |title_span| spans_overlap?(span, title_span) } ? match[0] : " "
+      }
+    end
 
     # Exact phrases keep an apostrophe as its own token ("Shakespeare.s").
     # Marker words are compared after sequence normalization ("Band" / "Volume")
@@ -337,28 +393,182 @@ class SequenceMarker
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
     def normalized_source_tokens(text)
       folded = +""
-      offsets = []
-      text.each_char.with_index do |char, index|
-        next if char.match?(TITLE_QUOTE_CHARACTERS)
+      starts = []
+      ends = []
+      offset = 0
 
-        ActiveSupport::Inflector.transliterate(char).downcase.each_char do |out|
-          folded << out
-          offsets << index
+      text.to_s.grapheme_clusters.each do |cluster|
+        source_start = offset
+        offset += cluster.length
+        source_end = offset
+        next if quote_cluster?(cluster)
+
+        TitleKey.fold(cluster).each_char do |char|
+          folded << char
+          starts << source_start
+          ends << source_end
         end
       end
 
       tokens = []
-      folded.scan(/[a-z0-9]+/) do
+      folded.scan(TitleKey::WORD_PATTERN) do
         match = Regexp.last_match
         tokens << [
           TitleKey.new(match[0]).canonical,
-          offsets[match.begin(0)],
-          offsets[match.end(0) - 1] + 1,
+          starts.fetch(match.begin(0)),
+          ends.fetch(match.end(0) - 1),
           match[0],
           folded[match.end(0)] == "."
         ]
       end
       tokens
+    end
+
+    def quote_cluster?(cluster)
+      cluster.each_char.all? { |char| TitleKey.quote_character?(char) }
+    end
+
+    def explicit_volume?(tokens)
+      tokens.each_cons(2).any? { |word, number| neutral_volume?(word, number) }
+    end
+
+    def neutral_volume?(word, number)
+      word == NEUTRAL_MARKER && number.to_s.match?(/\A\d+\z/)
+    end
+
+    def language_tagged_sequel_numeral?(words)
+      return false unless LANGUAGE_TAG_WORDS.include?(words.first)
+
+      number, *tags = words.drop_while { |word| LANGUAGE_TAG_WORDS.include?(word) }
+      return false if BARE_AUDIO_BITRATES.include?(number) && AUDIO_FORMAT_WORDS.include?(tags.first)
+
+      whole_sequel_numeral?(number) && tags.all? { |tag| RELEASE_TAG_WORDS.include?(tag) }
+    end
+
+    def drop_leading_bitrate(tokens)
+      words = tokens.map(&:to_s)
+      while words.length >= 2 &&
+          TitleKey.normalize_decimal_digits(words[0]).match?(/\A\d{2,3}\z/) &&
+          words[1].match?(/\Akbps\z/i)
+        words = words.drop(2)
+      end
+      words
+    end
+
+    def classification_tokens(text, preserve_title:)
+      TitleKey.new(neutralize(without_recognised_metadata(text, preserve_title:))).canonical.split
+    end
+
+    def phrase_sequel_conflict?(phrase, host)
+      return false if phrase.empty? || phrase.length > host.length
+
+      short = phrase.join(" ").length < 4
+      endings = (0..(host.length - phrase.length)).filter_map do |start|
+        next if short && !start.zero?
+
+        matched = host[start, phrase.length]
+        ending = start + phrase.length
+        next host[ending..] if matched == phrase
+        next unless matched[0...-1] == phrase[0...-1] && matched.last.start_with?(phrase.last)
+
+        glued = matched.last.delete_prefix(phrase.last)
+        [ glued, *host[ending..] ] if glued.match?(/\A\d+\z/)
+      end
+
+      endings.any? && endings.all? { |tail| leading_sequel_numeral?(tail, after_phrase: phrase) }
+    end
+
+    def bare_trailing_sequence_conflict?(left, right)
+      left_base, left_number = split_trailing_sequence(left)
+      right_base, right_number = split_trailing_sequence(right)
+      return false if left_number.nil? || right_number.nil?
+      return false unless left_base == right_base
+
+      left_number != right_number
+    end
+
+    def split_trailing_sequence(tokens)
+      return [ tokens, nil ] if tokens.empty?
+
+      number = canonical_sequence_number(tokens.last)
+      return [ tokens, nil ] if number.nil?
+
+      [ tokens[0...-1], number ]
+    end
+
+    def canonical_sequence_number(token)
+      text = normalized_numeral(token)
+      return unless whole_sequel_numeral?(text)
+
+      text.match?(/\A\d+\z/) ? text.to_i.to_s : ROMAN_VALUES[text]
+    end
+
+    def normalized_numeral(token)
+      TitleKey.normalize_decimal_digits(token.to_s).downcase
+    end
+
+    def numeric_sequel_token?(token)
+      text = normalized_numeral(token)
+      whole_sequel_numeral?(text) || glued_sequel_numeral?(text)
+    end
+
+    def whole_sequel_numeral?(text)
+      text = normalized_numeral(text)
+      return false if text.match?(PUBLICATION_YEAR)
+      return text.to_i.positive? if text.match?(/\A\d+\z/)
+      return false if NON_SEQUEL_ROMAN_TOKENS.include?(text)
+      return false if text.length < 2 && text != "i"
+
+      ROMAN_VALUES.key?(text)
+    end
+
+    def glued_sequel_numeral?(text)
+      text = normalized_numeral(text)
+      if (digits = text[/\A\d+/])
+        return false unless digits.length < text.length
+        return false if digits.match?(PUBLICATION_YEAR)
+        return false if text[digits.length..].match?(GLUED_NUMERAL_SUFFIX)
+
+        return digits.to_i.positive?
+      end
+
+      roman = longest_leading_roman(text)
+      return false if roman.nil? || roman.length == text.length
+
+      text[roman.length..].match?(/\A[^\p{ASCII}]/)
+    end
+
+    def longest_leading_roman(text)
+      letters = text[/\A[ivxlcdm]+/]
+      return if letters.blank?
+
+      letters.length.downto(1) do |size|
+        candidate = letters[0, size]
+        next if NON_SEQUEL_ROMAN_TOKENS.include?(candidate)
+        next if candidate.length < 2 && candidate != "i"
+        return candidate if ROMAN_VALUES.key?(candidate)
+      end
+
+      nil
+    end
+
+    def cjk_volume_prefix?(tokens)
+      first = normalized_numeral(tokens.first)
+      if (match = first.match(CJK_VOLUME_PREFIX))
+        return sequel_number_body?(match[:number])
+      end
+      return false unless first == "第"
+
+      sequel_number_body?(tokens[1])
+    end
+
+    def sequel_number_body?(token)
+      text = normalized_numeral(token)
+      return false if text.blank?
+      return true if text.match?(/\A\d+\z/) && text.to_i.positive?
+      return true if text.match?(/\A[#{CHINESE_NUMERALS}]+\z/)
+
+      ROMAN_VALUES.key?(text)
     end
 
     def spans_overlap?(left, right)
