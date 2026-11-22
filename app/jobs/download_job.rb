@@ -47,6 +47,7 @@ class DownloadJob < ApplicationJob
     "azw3" => "azw3",
     "epub" => "epub",
     "epub3" => "epub",
+    "fb2" => "fb2",
     "kf8" => "mobi",
     "kindle" => "mobi",
     "mobi" => "mobi",
@@ -582,7 +583,7 @@ class DownloadJob < ApplicationJob
     begin
       staged_file = staged.io
       staged_file.binmode
-      download_file_via_http(search_result, download_url, staged_file, download: download)
+      download_file_via_http(search_result, download_url, staged_file, download: download, ebook_extension: extension)
       verify_anna_archive_digest!(staged_file, expected_md5) if expected_md5
       verify_downloaded_ebook!(staged_file, expected_extension: extension)
 
@@ -626,6 +627,7 @@ class DownloadJob < ApplicationJob
 
     normalized_url = url.to_s.downcase
 
+    return "fb2" if normalized_url.match?(/[?&](?:format|extension)=fb2(?:[&#]|\z)/)
     return "epub" if normalized_url.include?("epub")
     return "pdf" if normalized_url.include?("pdf")
     if normalized_url.include?("mobi") || normalized_url.include?("kf8") || normalized_url.match?(/\.kindle(\.|[?#]|\z)/)
@@ -638,6 +640,7 @@ class DownloadJob < ApplicationJob
     return "pdf" if title.include?("pdf")
     return "mobi" if title.include?("mobi")
     return "azw3" if title.include?("azw3")
+    return "fb2" if title_format_hint?(title, "fb2")
 
     "epub"
   end
@@ -726,7 +729,7 @@ class DownloadJob < ApplicationJob
     result
   end
 
-  def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES, download: nil)
+  def download_file_via_http(search_result, url, destination, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES, download: nil, ebook_extension: nil)
     endpoint = validate_direct_download_url!(url, search_result)
     unless destination.respond_to?(:write) && destination.respond_to?(:stat)
       raise ArgumentError, "Direct downloads must target an already-open private staging file"
@@ -782,7 +785,8 @@ class DownloadJob < ApplicationJob
           validate_direct_download_response_headers!(
             content_type: response["Content-Type"],
             content_length: response["Content-Length"],
-            max_bytes: max_bytes
+            max_bytes: max_bytes,
+            ebook_extension: ebook_extension
           )
 
           destination.rewind
@@ -893,10 +897,11 @@ class DownloadJob < ApplicationJob
     url.to_s.strip.gsub(" ", "%20")
   end
 
-  def validate_direct_download_response_headers!(content_type:, content_length:, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES)
-    normalized_content_type = content_type.to_s.split(";").first.to_s.downcase
+  def validate_direct_download_response_headers!(content_type:, content_length:, max_bytes: MAX_DIRECT_DOWNLOAD_BYTES, ebook_extension: nil)
+    normalized_content_type = content_type.to_s.split(";").first.to_s.strip.downcase
+    fiction_book_type = ebook_extension == "fb2" && normalized_content_type.in?(%w[application/x-fictionbook+xml application/xml text/xml])
 
-    if normalized_content_type.present? &&
+    if normalized_content_type.present? && !fiction_book_type &&
         (normalized_content_type.start_with?("text/") ||
          normalized_content_type.include?("html") ||
          normalized_content_type.include?("json") ||
@@ -914,6 +919,12 @@ class DownloadJob < ApplicationJob
     with_regular_download_io(path) do |file|
       file_size = file.stat.size
       raise "Downloaded file is empty" if file_size.zero?
+
+      if expected_extension == "fb2"
+        head = read_download_head(file, [ FictionBookSignature::MAX_BYTES, file_size ].min)
+        raise "Downloaded file is not a valid FictionBook ebook" unless FictionBookSignature.matches?(head)
+        return
+      end
 
       head = read_download_head(file, [ 512, file_size ].min)
       lowered = head.downcase

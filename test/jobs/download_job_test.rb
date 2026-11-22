@@ -1459,6 +1459,36 @@ class DownloadJobTest < ActiveJob::TestCase
     end
   end
 
+  {
+    "URL extension" => [ "book.fb2", "Custom Provider Book" ],
+    "URL format parameter" => [ "book?format=fb2", "Custom Provider Book" ],
+    "format hint" => [ "book", "Custom Provider Book [FB2]" ]
+  }.each do |source, (filename, title)|
+    test "custom provider downloads a FictionBook ebook using the #{source}" do
+      Dir.mktmpdir do |dir|
+        setup_custom_provider_download(output_path: dir)
+        @custom_provider_download.search_result.update!(title: title)
+        url = "https://files.test/#{filename}"
+        declaration, document = file_fixture("test_ebook.fb2").binread.split("\n", 2)
+        content = [ declaration, "<!-- #{'x' * 700} -->", document ].join("\n")
+
+        VCR.turned_off do
+          stub_request(:post, "http://provider.test/acquire").to_return_json(
+            body: { download_type: "direct", direct_url: url }
+          )
+          stub_request(:get, url).to_return(status: 200, body: content, headers: { "Content-Type" => "application/x-fictionbook+xml" })
+
+          DownloadJob.perform_now(@custom_provider_download.id)
+        end
+
+        assert @custom_provider_request.reload.completed?, @custom_provider_request.issue_description
+        path = @custom_provider_download.reload.download_path
+        assert_equal "Provider Author - Custom Provider Book.fb2", File.basename(path)
+        assert_equal content, File.binread(path)
+      end
+    end
+  end
+
   test "custom provider direct audiobook file downloads into audiobook output path" do
     Dir.mktmpdir do |dir|
       setup_custom_provider_audiobook_download(output_path: dir)

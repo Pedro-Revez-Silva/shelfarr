@@ -92,6 +92,10 @@ class UploadCreator
       return Result.new(alert: request.direct_acquisition_recovery_message)
     end
 
+    if extension == "fb2" && !FictionBookSignature.matches?(uploaded_file.read(FictionBookSignature::MAX_BYTES))
+      return Result.new(alert: "Uploaded FB2 file is not a valid FictionBook ebook")
+    end
+
     begin
       temp_path, actual_size = save_uploaded_file
     rescue UploadImportFileService::IngressTooLargeError => error

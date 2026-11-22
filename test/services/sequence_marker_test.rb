@@ -3,6 +3,9 @@
 require "test_helper"
 
 class SequenceMarkerTest < ActiveSupport::TestCase
+  test "recognizes abbreviated roman volumes followed by FB2" do
+    assert_equal [ "5" ], SequenceMarker.numbers("Le Cycle T V FB2")
+  end
   test "reads canonical Roman numbers above one hundred without treating prose as numbers" do
     { "CI" => "101", "CD" => "400", "D" => "500", "CMXCIX" => "999", "MMMCMXCIX" => "3999" }.each do |roman, number|
       assert_equal [ number ], SequenceMarker.numbers("Series Tome #{roman}")

@@ -7,7 +7,7 @@ require "logger"
 # Files are copied by default to preserve seeding for torrent downloads.
 # Usenet downloads are removed from the client after successful import.
 class PostProcessingJob < ApplicationJob
-  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu].freeze
+  EBOOK_FILE_EXTENSIONS = %w[epub pdf mobi azw azw3 cbz cbr djvu fb2].freeze
   EBOOK_COVER_EXTENSIONS = %w[jpg jpeg png webp].freeze
   AUDIOBOOK_COVER_EXTENSIONS = %w[bmp gif jpeg jpg png webp].freeze
   # SABnzbd (and some torrent clients) report a completed file path instead of
@@ -1080,9 +1080,8 @@ class PostProcessingJob < ApplicationJob
     end
 
     supported_ebook_found = false
-    paths = ebook_directory_files(source)
-
-    paths.each do |path|
+    unrecognized_fb2 = nil
+    ebook_directory_files(source).each do |path|
       extension = path_extension(path)
       next unless ebook_import_candidate?(path, extension)
 
@@ -1090,11 +1089,17 @@ class PostProcessingJob < ApplicationJob
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
 
-      unless allowed_ebook_import_file?(path, extension: extension)
+      if allowed_ebook_import_file?(path, extension: extension)
+        supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
+      elsif extension == "fb2"
+        unrecognized_fb2 ||= path
+      else
         raise "Unsupported ebook import file type: #{File.basename(path)}"
       end
+    end
 
-      supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
+    if unrecognized_fb2 && !supported_ebook_found
+      raise "Unsupported ebook import file type: #{File.basename(unrecognized_fb2)}"
     end
 
     raise "No supported ebook files found in download" unless supported_ebook_found
@@ -1129,7 +1134,8 @@ class PostProcessingJob < ApplicationJob
       stat = file.stat
       return false unless stat.file? && stat.size.positive?
 
-      head = file.read([ 512, stat.size ].min)
+      signature_size = extension == "fb2" ? FictionBookSignature::MAX_BYTES : 512
+      head = file.read([ signature_size, stat.size ].min)
     end
     return false if executable_file_signature?(head)
 
@@ -1144,6 +1150,8 @@ class PostProcessingJob < ApplicationJob
       head.start_with?("Rar!\x1A\x07\x00") || head.start_with?("Rar!\x1A\x07\x01\x00")
     when "djvu"
       head.start_with?("AT&TFORM") && %w[DJVU DJVM].include?(head.byteslice(12, 4))
+    when "fb2"
+      FictionBookSignature.matches?(head)
     when "jpg", "jpeg"
       head.start_with?("\xFF\xD8\xFF".b)
     when "png"
@@ -2083,8 +2091,7 @@ class PostProcessingJob < ApplicationJob
   def multiple_incoming_media_files?(source_path)
     count = 0
     ebook_directory_files(source_path).each do |path|
-      next if File.symlink?(path)
-      next unless ebook_file?(path)
+      next unless replacement_ebook_file?(path)
 
       count += 1
       return true if count > 1
@@ -2092,6 +2099,12 @@ class PostProcessingJob < ApplicationJob
     false
   rescue SystemCallError => error
     RemoteResult::Failed.new(error)
+  end
+
+  def replacement_ebook_file?(path)
+    return false if File.symlink?(path) || !ebook_file?(path)
+
+    path_extension(path) != "fb2" || allowed_ebook_import_file?(path, extension: "fb2")
   end
 
   def directory_source?(path)
@@ -2106,11 +2119,7 @@ class PostProcessingJob < ApplicationJob
     return File.extname(source_path).presence unless directory
 
     ebook_directory_files(source_path).each do |path|
-      next if File.symlink?(path)
-
-      extension = File.extname(path)
-      normalized = extension.delete_prefix(".").downcase
-      return extension if EBOOK_FILE_EXTENSIONS.include?(normalized)
+      return File.extname(path) if replacement_ebook_file?(path)
     end
     nil
   rescue SystemCallError => error
