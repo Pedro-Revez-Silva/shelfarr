@@ -84,6 +84,17 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the stylesheet the warm pages link carries their layout rules" do
+    with_warm_entry { get new_session_path }
+    stylesheet = css_select("link[rel=stylesheet]").sole["href"]
+
+    get stylesheet
+
+    assert_response :success
+    assert_includes response.body, ".entry-app .auth-main--wide"
+    assert_includes response.body, ".auth-card"
+  end
+
   test "servers without the web preview keep the current pages at the same addresses" do
     get new_session_path
     assert_response :success
