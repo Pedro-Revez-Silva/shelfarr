@@ -26,6 +26,7 @@ module DownloadClients
     LABEL_ASSIGN_RETRY_WAIT = 0.25
     LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
     LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
+    DUPLICATE_TORRENT_PATTERN = /already in session|already being added/i
     TRANSIENT_LABEL_ERROR_PATTERNS = [
       /unknown torrent/i,
       /timeout/i,
@@ -36,9 +37,9 @@ module DownloadClients
       ensure_authenticated!
       ensure_configured_label!
 
-      params = build_add_params(options)
+      start_after_staging = !add_paused?(options)
       prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
-      result = submit_torrent(prepared, params)
+      result = submit_new_torrent(prepared, build_add_params(options))
       torrent_id = result if result.is_a?(String) && result.present?
 
       if torrent_id.blank?
@@ -49,11 +50,7 @@ module DownloadClients
         return nil
       end
 
-      assign_configured_label!(torrent_id)
-      # Auto-labeling and label.set_torrent can turn removal back on after the
-      # add returns. The torrent is still paused, so clear that flag before it
-      # is allowed to run and hit a share ratio of 0.
-      start_added_torrent!(torrent_id, start_paused: options[:paused] == true)
+      stage_added_torrent!(torrent_id, start: start_after_staging)
       torrent_id
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
@@ -225,30 +222,38 @@ module DownloadClients
       progress.to_f.round
     end
 
-    def start_added_torrent!(torrent_id, start_paused:)
-      disable_remove_at_ratio!(torrent_id)
-      resume_added_torrent!(torrent_id) unless start_paused
-    rescue Base::Error, Faraday::Error => error
-      remove_unlabelled_torrent(torrent_id)
-      raise error
+    def add_paused?(options)
+      return options[:paused] == true if options.key?(:paused)
+
+      rpc_call("core.get_config_value", [ "add_paused" ]) == true
+    rescue Base::ConnectionError, Base::AuthenticationError
+      raise
+    rescue Base::Error => error
+      raise Base::ConfigurationError, "Deluge could not report its add_paused setting: #{error.message}"
     end
 
-    def disable_remove_at_ratio!(torrent_id)
+    def submit_new_torrent(prepared, params)
+      submit_torrent(prepared, params)
+    rescue Base::ConnectionError, Base::AuthenticationError
+      raise
+    rescue Base::Error => error
+      raise unless DUPLICATE_TORRENT_PATTERN.match?(error.message)
+
+      raise Base::ConfigurationError, "Deluge already has this torrent; Shelfarr left it untouched: #{error.message}"
+    end
+
+    def stage_added_torrent!(torrent_id, start:)
+      assign_configured_label!(torrent_id)
       rpc_call("core.set_torrent_options", [ [ torrent_id ], { "remove_at_ratio" => false } ])
-    end
-
-    def resume_added_torrent!(torrent_id)
-      rpc_call("core.resume_torrent", [ [ torrent_id ] ])
+      rpc_call("core.resume_torrent", [ [ torrent_id ] ]) if start
+    rescue Base::Error, Faraday::Error => error
+      discard_staged_torrent(torrent_id)
+      raise Base::ConfigurationError, "Deluge could not prepare the added torrent: #{error.message}"
     end
 
     def build_add_params(options)
       params = {}
       params["download_location"] = options[:save_path] if options[:save_path].present?
-      # Add paused so a finished torrent cannot be removed while auto-labeling
-      # or label.set_torrent turns removal back on. Resume happens only after
-      # remove_at_ratio is forced off. stop_at_ratio can still pause later.
-      # Shelfarr does not remove the torrent after import, so that paused
-      # torrent stays put.
       params["add_paused"] = true
       params["remove_at_ratio"] = false
       params
@@ -322,7 +327,6 @@ module DownloadClients
         end
       end
 
-      remove_unlabelled_torrent(torrent_id)
       raise label_error
     end
 
@@ -355,20 +359,12 @@ module DownloadClients
       TRANSIENT_LABEL_ERROR_PATTERNS.any? { |pattern| pattern.match?(error.message) }
     end
 
-    def remove_unlabelled_torrent(torrent_id)
-      # The ID came directly from this add request, so removing its partial data
-      # cannot affect a torrent submitted by another application.
-      removed = remove_torrent(torrent_id, delete_files: true)
-      enqueue_stale_cleanup(torrent_id) unless removed
-    rescue Base::Error => cleanup_error
-      Rails.logger.error "[Deluge] Failed to remove unlabelled torrent #{torrent_id}: #{cleanup_error.message}"
-      enqueue_stale_cleanup(torrent_id)
-    end
+    def discard_staged_torrent(torrent_id)
+      return if remove_torrent(torrent_id, delete_files: false)
 
-    def enqueue_stale_cleanup(torrent_id)
-      StaleClientDispatchCleanupJob.perform_later(config.id, torrent_id)
-    rescue StandardError => e
-      Rails.logger.error "[Deluge] Failed to enqueue cleanup for unlabelled torrent #{torrent_id}: #{e.class}"
+      Rails.logger.error "[Deluge] Deluge did not remove staged torrent #{torrent_id}; it stays paused"
+    rescue Base::Error => cleanup_error
+      Rails.logger.error "[Deluge] Failed to remove staged torrent #{torrent_id}; it stays paused: #{cleanup_error.message}"
     end
 
     def configured_label

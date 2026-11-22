@@ -97,10 +97,8 @@ class SearchResult < ApplicationRecord
     blocklisted_at.present?
   end
 
-  # The torrent identity shared by the same release on different indexers.
-  # Prefer the stored hash, then a magnet, then a download URL that embeds one.
   def torrent_info_hash
-    [ info_hash, magnet_url, download_url ].each do |candidate|
+    [ magnet_url, info_hash, download_url ].each do |candidate|
       hash = MagnetLink.normalize_info_hash(candidate)
       return hash if hash.is_a?(String)
     end

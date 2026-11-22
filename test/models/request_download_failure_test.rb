@@ -479,6 +479,226 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert_equal :no_selected_result, request.blocklist_and_select_next!(reason: "No selected release")
   end
 
+  test "a failed info hash still blocks fallback after Refresh Search removes its release" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    failed_hash = "2" * 40
+    other_hash = "3" * 40
+    selected = create_result(
+      request,
+      guid: "opaque-url",
+      status: :selected,
+      seeders: 40,
+      magnet_url: nil,
+      download_url: "http://prowlarr.example/1/download?id=1"
+    )
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent"
+    )
+
+    assert_equal :exhausted, request.handle_download_failure!(failed_download, reason: "Download not found in client")
+
+    request.refresh_search!
+    assert_not SearchResult.exists?(selected.id)
+    assert_nil failed_download.reload.search_result_id
+
+    request.update!(status: :searching)
+    same_torrent = create_result(request, guid: "fresh-copy", seeders: 100, magnet_url: "magnet:?xt=urn:btih:#{failed_hash}")
+    other = create_result(request, guid: "fresh-other", seeders: 5, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    assert AutoSelectService.call(request).success?
+
+    assert other.reload.selected?
+    assert same_torrent.reload.rejected?
+  end
+
+  test "a torrent cancelled by a manual switch stays a viable fallback" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    healthy_hash = "4" * 40
+    replacement_hash = "5" * 40
+    healthy = create_result(request, guid: "healthy", status: :selected, seeders: 50, magnet_url: "magnet:?xt=urn:btih:#{healthy_hash}")
+    replacement = create_result(request, guid: "replacement", seeders: 10, magnet_url: "magnet:?xt=urn:btih:#{replacement_hash}")
+    healthy_download = request.downloads.create!(
+      name: healthy.title,
+      search_result: healthy,
+      status: :downloading,
+      external_id: healthy_hash,
+      download_type: "torrent"
+    )
+
+    replacement_download = request.select_result!(replacement)
+    assert healthy_download.reload.failed?
+    replacement_download.update!(status: :failed, external_id: replacement_hash, download_type: "torrent")
+
+    assert_equal :manual_review, request.handle_download_failure!(replacement_download, reason: "Download not found in client")
+    assert_nil healthy_download.reload.blocklisted_info_hash
+    assert_equal replacement_hash, replacement_download.reload.blocklisted_info_hash
+
+    request.refresh_search!
+    SettingsService.set(:auto_select_enabled, true)
+    request.update!(status: :searching)
+    healthy_copy = create_result(request, guid: "healthy-copy", seeders: 5, magnet_url: "magnet:?xt=urn:btih:#{healthy_hash}")
+    create_result(request, guid: "replacement-copy", seeders: 100, magnet_url: "magnet:?xt=urn:btih:#{replacement_hash}")
+
+    assert AutoSelectService.call(request).success?
+    assert healthy_copy.reload.selected?
+  end
+
+  test "manually selecting a release with a failed info hash overrides the stored failure" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    failed_hash = "6" * 40
+    selected = create_result(request, guid: "failed", status: :selected, magnet_url: "magnet:?xt=urn:btih:#{failed_hash}")
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent"
+    )
+    request.handle_download_failure!(failed_download, reason: "Download not found in client")
+    request.refresh_search!
+    request.update!(status: :searching)
+    fresh_copy = create_result(request, guid: "fresh-copy", magnet_url: "magnet:?xt=urn:btih:#{failed_hash}")
+
+    assert_difference -> { request.request_events.where(event_type: "blocklist_overridden").count }, 1 do
+      request.select_result!(fresh_copy)
+    end
+
+    assert_nil failed_download.reload.blocklisted_info_hash
+    assert_empty request.blocked_torrent_info_hashes
+  end
+
+  test "Refresh Search does not bring back a failed opaque release under the same GUID" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    opaque_url = "http://prowlarr.example/1/download?id=opaque"
+    selected = create_result(request, guid: "opaque-guid", status: :selected, seeders: 40, magnet_url: nil, download_url: opaque_url)
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: "7" * 40,
+      download_type: "torrent"
+    )
+    request.handle_download_failure!(failed_download, reason: "Download not found in client")
+    request.refresh_search!
+    request.update!(status: :searching)
+
+    returned_again = create_result(request, guid: "opaque-guid", seeders: 100, magnet_url: nil, download_url: opaque_url)
+    other = create_result(request, guid: "other-guid", seeders: 5)
+
+    assert AutoSelectService.call(request).success?
+    assert other.reload.selected?
+    assert_not returned_again.reload.selected?
+  end
+
+  test "the magnet that would be dispatched decides whether a result repeats a failed hash" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    failed_hash = "a" * 40
+    selected = create_result(request, guid: "failed", status: :selected, seeders: 10, magnet_url: "magnet:?xt=urn:btih:#{failed_hash}")
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent"
+    )
+    mislabelled = create_result(
+      request,
+      guid: "mislabelled",
+      status: :rejected,
+      seeders: 90,
+      info_hash: "b" * 40,
+      magnet_url: "magnet:?xt=urn:btih:#{failed_hash}"
+    )
+    other = create_result(request, guid: "other", status: :rejected, seeders: 5)
+
+    assert_equal :selected_next, request.handle_download_failure!(failed_download, reason: "Download not found in client")
+
+    assert other.reload.selected?
+    assert mislabelled.reload.blocklisted?
+  end
+
+  test "overriding a migrated opaque release clears the hash recorded on its failed download" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request(status: :not_found)
+    failed_hash = "c" * 40
+    opaque = create_result(request, guid: "legacy-opaque", status: :rejected, magnet_url: nil, download_url: "http://indexer.example/legacy.torrent")
+    opaque.blocklist!("Download not found in client")
+    failed_download = request.downloads.create!(
+      name: opaque.title,
+      search_result: opaque,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash
+    )
+
+    request.select_result!(opaque)
+
+    assert_nil failed_download.reload.blocklisted_info_hash
+    assert_empty request.blocked_torrent_info_hashes
+  end
+
+  test "a republished GUID with a different torrent is judged by its hash, not its GUID" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    failed_hash = "d" * 40
+    replacement_hash = "e" * 40
+    selected = create_result(request, guid: "provider-guid", status: :selected, magnet_url: "magnet:?xt=urn:btih:#{failed_hash}")
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent"
+    )
+    request.handle_download_failure!(failed_download, reason: "Download not found in client")
+    request.refresh_search!
+    request.update!(status: :searching)
+    replacement = create_result(request, guid: "provider-guid", seeders: 50, magnet_url: "magnet:?xt=urn:btih:#{replacement_hash}")
+
+    assert AutoSelectService.call(request).success?
+    assert replacement.reload.selected?
+    assert_equal [ failed_hash ], request.blocked_torrent_info_hashes
+  end
+
+  test "the hash the client reported replaces a stale advertised hash" do
+    SettingsService.set(:auto_select_enabled, true)
+    request = build_request
+    reported_hash = "1" * 40
+    advertised_hash = "2" * 40
+    selected = create_result(
+      request,
+      guid: "stale-metadata",
+      status: :selected,
+      seeders: 40,
+      magnet_url: nil,
+      download_url: "http://indexer.example/stale.torrent",
+      info_hash: advertised_hash
+    )
+    healthy = create_result(request, guid: "healthy", status: :rejected, seeders: 5, magnet_url: "magnet:?xt=urn:btih:#{advertised_hash}")
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: reported_hash,
+      download_type: "torrent"
+    )
+
+    assert_equal :selected_next, request.handle_download_failure!(failed_download, reason: "Download not found in client")
+
+    assert healthy.reload.selected?
+    assert_equal [ reported_hash ], request.blocked_torrent_info_hashes
+  end
+
   private
 
   def assert_idle_attention_clears_downloading(request)

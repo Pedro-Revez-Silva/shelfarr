@@ -40,6 +40,12 @@ class Download < ApplicationRecord
     "#{progress}%"
   end
 
+  def torrent_info_hash
+    return unless download_type == "torrent"
+
+    MagnetLink.normalize_info_hash(external_id)
+  end
+
   # Failed rows are history. A completed row owns its client id only until
   # that id is released. Anything still queued or running owns it now.
   def self.current_external_id_owner(external_id, download_client_id:, except_id: nil)

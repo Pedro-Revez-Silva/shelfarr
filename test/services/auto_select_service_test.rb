@@ -239,49 +239,6 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_not duplicate.reload.selected?
   end
 
-  test "does not auto-select a magnet matching a failed opaque download saved without an info hash" do
-    shared_hash = "c" * 40
-    other_hash = "d" * 40
-    blocked = create_search_result(
-      seeders: 20,
-      status: :rejected,
-      magnet_url: nil,
-      download_url: "http://indexer.example/opaque.torrent",
-      info_hash: nil
-    )
-    blocked.blocklist!("Download not found in client")
-    download = @request.downloads.create!(
-      name: blocked.title,
-      search_result: blocked,
-      status: :failed,
-      external_id: shared_hash.upcase,
-      download_type: "torrent"
-    )
-    RequestEvent.create!(
-      request: @request,
-      download: download,
-      event_type: "release_blocklisted",
-      source: "request",
-      level: :warn,
-      message: "Blocklisted release after failed download",
-      details: { "search_result_id" => blocked.id, "reason" => "Download not found in client" }
-    )
-    @request.update!(status: :not_found)
-    @request.refresh_search!
-
-    assert_nil download.reload.search_result_id
-    assert_not @request.search_results.blocklisted.exists?
-
-    duplicate = create_search_result(seeders: 70, magnet_url: "magnet:?xt=urn:btih:#{shared_hash}")
-    fallback = create_search_result(seeders: 3, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
-
-    selection = AutoSelectService.call(@request)
-
-    assert selection.success?
-    assert_equal fallback, selection.search_result
-    assert_not duplicate.reload.selected?
-  end
-
   test "still auto-selects a torrent whose download was cancelled rather than blocklisted" do
     shared_hash = "e" * 40
     cancelled = create_search_result(seeders: 15, magnet_url: "magnet:?xt=urn:btih:#{shared_hash}")

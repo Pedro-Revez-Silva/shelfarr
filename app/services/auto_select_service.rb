@@ -119,6 +119,7 @@ class AutoSelectService
 
   def find_matching_results
     blocked_hashes = @request.blocked_torrent_info_hashes
+    blocked_guids = @request.blocked_release_guids
     @request.search_results
       .pending
       .not_blocklisted
@@ -126,14 +127,12 @@ class AutoSelectService
       .matches_language(@requested_language)
       .best_first
       .select(&:auto_select_allowed_by_preferences?)
-      .reject { |result| blocked_info_hash?(result, blocked_hashes) }
+      .reject { |result| previously_failed?(result, blocked_hashes, blocked_guids) }
   end
 
-  # A blocklisted release is one search result. The same torrent from another
-  # indexer is a different row, and grabbing it repeats the failure.
-  def blocked_info_hash?(result, blocked_hashes)
+  def previously_failed?(result, blocked_hashes, blocked_guids)
     hash = result.torrent_info_hash
-    hash.present? && blocked_hashes.include?(hash)
+    hash ? blocked_hashes.include?(hash) : blocked_guids.include?(result.guid)
   end
 
   def meets_confidence_threshold?(result)

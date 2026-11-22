@@ -293,15 +293,15 @@ class Request < ApplicationRecord
     retry_job.enqueue ? :post_processing_queued : :post_processing_recovery_pending
   end
 
-  # Hashes already rejected for this request. Fallback selection uses this so a
-  # later search cannot grab the same torrent from a different indexer.
-  # Refresh Search deletes the result rows, so the hash is also read from the
-  # blocklist event and the failed download that survived that deletion.
   def blocked_torrent_info_hashes
     (
-      blocklisted_result_info_hashes +
-      blocklisted_failure_info_hashes
+      search_results.blocklisted.filter_map(&:torrent_info_hash) +
+        downloads.where.not(blocklisted_info_hash: [ nil, "" ]).pluck(:blocklisted_info_hash)
     ).uniq
+  end
+
+  def blocked_release_guids
+    downloads.where.not(blocklisted_release_guid: [ nil, "" ]).distinct.pluck(:blocklisted_release_guid)
   end
 
   def handle_download_failure!(download, reason:)
@@ -928,8 +928,7 @@ class Request < ApplicationRecord
       cancel_download(download)
     end
 
-    if search_result.blocklisted?
-      search_result.clear_blocklist!
+    if override_blocklisted_release!(search_result)
       track_diagnostic(
         "blocklist_overridden",
         message: "Blocklist overridden for selected release",
@@ -1034,40 +1033,41 @@ class Request < ApplicationRecord
     )
   end
 
-  def blocklisted_result_info_hashes
-    search_results.blocklisted.includes(:downloads).flat_map do |result|
-      [ result.torrent_info_hash, *download_info_hashes(result.downloads) ]
-    end.select { |hash| hash.is_a?(String) }
-  end
-
-  def blocklisted_failure_info_hashes
-    request_events.where(event_type: "release_blocklisted").includes(:download).flat_map do |event|
-      [ event_detail_info_hash(event.details), *download_info_hashes([ event.download ]) ]
-    end.select { |hash| hash.is_a?(String) }
-  end
-
-  def download_info_hashes(downloads)
-    downloads.filter_map { |download| info_hash_string(MagnetLink.normalize_info_hash(download&.external_id)) }
-  end
-
-  def info_hash_string(value)
-    value if value.is_a?(String)
-  end
-
-  def event_detail_info_hash(details)
-    return nil unless details.is_a?(Hash)
-
-    MagnetLink.normalize_info_hash(details["info_hash"] || details[:info_hash])
-  end
-
   def blocklist_result!(search_result, reason:, download: nil)
+    download ||= search_result && downloads.where(search_result: search_result).order(created_at: :desc, id: :desc).first
+    hashes = release_info_hashes(search_result, download)
+    remember_blocklisted_release!(download, search_result, hashes)
     return false unless search_result
 
-    download ||= downloads.where(search_result: search_result).order(created_at: :desc, id: :desc).first
     remember_release_info_hash!(search_result, download)
     blocklisted = persist_blocklist!(search_result, reason:, download:)
-    blocklist_same_info_hash!(release_info_hashes(search_result, download), reason:, download:)
+    blocklist_same_info_hash!(hashes, reason:, download:)
     blocklisted
+  end
+
+  def remember_blocklisted_release!(download, search_result, hashes)
+    return if download.nil? || hashes.empty? || download.blocklisted_info_hash.present?
+
+    download.update!(
+      blocklisted_info_hash: download.torrent_info_hash || hashes.first,
+      blocklisted_release_guid: search_result&.guid
+    )
+  end
+
+  def override_blocklisted_release!(search_result)
+    recorded = downloads.where.not(blocklisted_info_hash: [ nil, "" ]).to_a
+    known_hash = search_result.torrent_info_hash
+    same_release = recorded.select do |download|
+      download.search_result_id == search_result.id ||
+        (known_hash.nil? && download.blocklisted_release_guid == search_result.guid)
+    end
+    hashes = [ known_hash, *same_release.map(&:blocklisted_info_hash) ].compact.uniq
+    overridden = recorded.select { |download| same_release.include?(download) || hashes.include?(download.blocklisted_info_hash) }
+    downloads.where(id: overridden.map(&:id)).update_all(blocklisted_info_hash: nil, blocklisted_release_guid: nil, updated_at: Time.current)
+
+    same_torrent = search_results.blocklisted.select { |result| result.id == search_result.id || hashes.include?(result.torrent_info_hash) }
+    same_torrent.each(&:clear_blocklist!)
+    overridden.any? || same_torrent.any?
   end
 
   def persist_blocklist!(search_result, reason:, download:)
@@ -1102,21 +1102,14 @@ class Request < ApplicationRecord
   end
 
   def release_info_hashes(search_result, download)
-    [
-      search_result&.torrent_info_hash,
-      MagnetLink.normalize_info_hash(download&.external_id)
-    ].select { |hash| hash.is_a?(String) }.uniq
+    [ download&.torrent_info_hash || search_result&.torrent_info_hash ].compact
   end
 
-  # The client reports the info hash after the add. Keep it on the release so
-  # a download URL with no magnet still matches copies from other indexers.
   def remember_release_info_hash!(search_result, download)
-    return if search_result.torrent_info_hash.present?
+    hash = download&.torrent_info_hash
+    return if hash.nil? || MagnetLink.info_hash(search_result.magnet_url).is_a?(String)
 
-    hash = MagnetLink.normalize_info_hash(download&.external_id)
-    return unless hash.is_a?(String)
-
-    search_result.update!(info_hash: hash)
+    search_result.update!(info_hash: hash) unless search_result.info_hash == hash
   end
 
   def auto_select_enabled?

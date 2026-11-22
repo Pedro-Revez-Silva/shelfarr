@@ -18,6 +18,9 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     @client = @client_record.adapter
 
     Thread.current[:deluge_sessions] = {}
+    stub_deluge_rpc("core.get_config_value", false, params: [ "add_paused" ])
+    stub_deluge_rpc("core.set_torrent_options", nil)
+    stub_deluge_rpc("core.resume_torrent", nil)
   end
 
   test "add_torrent adds magnet and returns id" do
@@ -45,32 +48,15 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" },
           body: { result: "new_torrent_id", error: nil, id: 1 }.to_json
         )
-      stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
 
       result = @client.add_torrent("magnet:?xt=urn:btih:abcdef")
       assert_equal "new_torrent_id", result
     end
   end
 
-  test "add_torrent tells Deluge not to remove the torrent when its share ratio is reached" do
+  test "add_torrent stages a paused torrent, keeps it after its share ratio, then resumes it" do
     VCR.turned_off do
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"auth.login"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
-          body: { result: true, error: nil, id: 1 }.to_json
-        )
-
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"core.get_session_state"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { result: [ "known_torrent_id" ], error: nil, id: 1 }.to_json
-        )
-
+      stub_deluge_login
       captured = nil
       stub_request(:post, "http://localhost:8112/json")
         .with do |request|
@@ -85,94 +71,182 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" },
           body: { result: "new_torrent_id", error: nil, id: 1 }.to_json
         )
+      options_stub = stub_deluge_rpc(
+        "core.set_torrent_options",
+        nil,
+        params: [ [ "new_torrent_id" ], { "remove_at_ratio" => false } ]
+      )
+      resume_stub = stub_deluge_rpc("core.resume_torrent", nil, params: [ [ "new_torrent_id" ] ])
 
-      stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
+      methods = recorded_deluge_methods do
+        assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
 
-      assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef")
-      assert_equal false, captured["remove_at_ratio"]
-      assert_equal true, captured["add_paused"]
-    end
-  end
-
-  test "add_torrent stays paused until removal is disabled, then resumes" do
-    VCR.turned_off do
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"auth.login"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
-          body: { result: true, error: nil, id: 1 }.to_json
-        )
-      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
-
-      captured = nil
-      stub_request(:post, "http://localhost:8112/json")
-        .with do |request|
-          body = JSON.parse(request.body)
-          next false unless body["method"] == "core.add_torrent_magnet"
-
-          captured = body.dig("params", 1)
-          true
-        end
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { result: "new_torrent_id", error: nil, id: 1 }.to_json
-        )
-
-      options_stub = stub_request(:post, "http://localhost:8112/json")
-        .with do |request|
-          body = JSON.parse(request.body)
-          body["method"] == "core.set_torrent_options" &&
-            body["params"] == [ [ "new_torrent_id" ], { "remove_at_ratio" => false } ]
-        end
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { result: nil, error: nil, id: 1 }.to_json
-        )
-      resume_stub = stub_request(:post, "http://localhost:8112/json")
-        .with do |request|
-          body = JSON.parse(request.body)
-          body["method"] == "core.resume_torrent" && body["params"] == [ [ "new_torrent_id" ] ]
-        end
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { result: nil, error: nil, id: 1 }.to_json
-        )
-
-      recorded = WebMock::RequestRegistry.instance.requested_signatures.hash.keys.size
-      assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef")
-      assert_equal true, captured["add_paused"]
-      assert_equal false, captured["remove_at_ratio"]
+      assert_equal({ "add_paused" => true, "remove_at_ratio" => false }, captured)
       assert_requested options_stub, times: 1
       assert_requested resume_stub, times: 1
-
-      methods = WebMock::RequestRegistry.instance.requested_signatures.hash.keys.drop(recorded).map do |signature|
-        JSON.parse(signature.body)["method"]
-      end
-      assert_operator methods.index("core.set_torrent_options"), :<, methods.index("core.resume_torrent")
+      assert_equal(
+        [ "core.get_config_value", "core.add_torrent_magnet", "core.set_torrent_options", "core.resume_torrent" ],
+        methods - [ "auth.login" ]
+      )
     end
   end
 
-  test "add_torrent leaves the torrent paused when the caller asked for it paused" do
+  test "add_torrent leaves the torrent paused when Deluge adds new torrents paused" do
     VCR.turned_off do
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"auth.login"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
-          body: { result: true, error: nil, id: 1 }.to_json
-        )
-      stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
+      stub_deluge_login
+      stub_deluge_rpc("core.get_config_value", true, params: [ "add_paused" ])
       stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
-      stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
+      options_stub = stub_deluge_rpc(
+        "core.set_torrent_options",
+        nil,
+        params: [ [ "new_torrent_id" ], { "remove_at_ratio" => false } ]
+      )
+
+      assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+
+      assert_requested options_stub, times: 1
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+    end
+  end
+
+  test "add_torrent follows an explicit paused option instead of the Deluge default" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.get_config_value", true, params: [ "add_paused" ])
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      resume_stub = stub_deluge_rpc("core.resume_torrent", nil, params: [ [ "new_torrent_id" ] ])
+
+      assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef", paused: false)
+      assert_requested resume_stub, times: 1
 
       assert_equal "new_torrent_id", @client.add_torrent("magnet:?xt=urn:btih:abcdef", paused: true)
+      assert_requested resume_stub, times: 1
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.get_config_value"/
+    end
+  end
+
+  test "add_torrent removes only the staged torrent metadata when the ratio override fails" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      stub_deluge_rpc("core.set_torrent_options", nil, error: { "message" => "Unknown torrent" })
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], false ])
+
+      error = assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_match(/core.set_torrent_options/, error.message)
+      assert_requested remove_stub, times: 1
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+    end
+  end
+
+  test "add_torrent removes only the staged torrent metadata when resume loses the connection" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.resume_torrent"/)
+        .to_raise(Faraday::ConnectionFailed.new("connection lost"))
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], false ])
+
+      assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_requested remove_stub, times: 1
+    end
+  end
+
+  test "add_torrent leaves a staged torrent it cannot remove paused instead of removing it later by hash" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      stub_deluge_rpc("core.set_torrent_options", nil, error: { "message" => "Unknown torrent" })
+      remove_stub = stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.remove_torrents"/)
+        .to_raise(Faraday::ConnectionFailed.new("connection lost"))
+
+      assert_no_enqueued_jobs only: StaleClientDispatchCleanupJob do
+        assert_raises(DownloadClients::Base::ConfigurationError) do
+          @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+      end
+      assert_requested remove_stub, times: 1
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+    end
+  end
+
+  test "add_torrent leaves Deluge untouched when the add response is lost" do
+    VCR.turned_off do
+      torrent_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      stub_deluge_login
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.add_torrent_magnet"/)
+        .to_raise(Faraday::TimeoutError.new("timed out"))
+
+      assert_raises(DownloadClients::Base::ConnectionError) do
+        @client.add_torrent("magnet:?xt=urn:btih:#{torrent_hash}")
+      end
+
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.get_torrents_status"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.set_torrent_options"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+    end
+  end
+
+  test "add_torrent reports an authentication failure while staging as a client configuration failure" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.set_torrent_options"/)
+        .to_return(status: 401, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], false ])
+
+      assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_requested remove_stub, times: 1
+    end
+  end
+
+  test "add_torrent reports an unreadable add_paused setting as a client configuration failure" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.get_config_value", nil, params: [ "add_paused" ], error: { "message" => "Unknown method" })
+
+      assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.add_torrent_magnet"/
+    end
+  end
+
+  test "add_torrent leaves a torrent that is already in Deluge untouched" do
+    VCR.turned_off do
+      existing_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+      stub_deluge_login
+      stub_deluge_rpc(
+        "core.add_torrent_magnet",
+        nil,
+        error: { "message" => "Torrent already in session (#{existing_hash})." }
+      )
+
+      error = assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:#{existing_hash}")
+      end
+
+      assert_match(/already in session/, error.message)
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.set_torrent_options"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+      assert_no_enqueued_jobs only: StaleClientDispatchCleanupJob
     end
   end
 
@@ -230,29 +304,18 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" },
           body: { result: nil, error: nil, id: 1 }.to_json
         )
-      resume_stub = stub_request(:post, "http://localhost:8112/json")
-        .with do |request|
-          body = JSON.parse(request.body)
-          body["method"] == "core.resume_torrent" && body["params"] == [ [ "new_torrent_id" ] ]
-        end
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: { result: nil, error: nil, id: 1 }.to_json
-        )
 
-      recorded = WebMock::RequestRegistry.instance.requested_signatures.hash.keys.size
-      assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
-      assert_equal false, captured["remove_at_ratio"]
-      assert_equal true, captured["add_paused"]
-      assert_requested options_stub, times: 1
-      assert_requested resume_stub, times: 1
-
-      methods = WebMock::RequestRegistry.instance.requested_signatures.hash.keys.drop(recorded).map do |signature|
-        JSON.parse(signature.body)["method"]
+      methods = recorded_deluge_methods do
+        assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
       end
-      assert_operator methods.index("label.set_torrent"), :<, methods.index("core.set_torrent_options")
-      assert_operator methods.index("core.set_torrent_options"), :<, methods.index("core.resume_torrent")
+      assert_equal true, captured["add_paused"]
+      assert_equal false, captured["remove_at_ratio"]
+      assert_requested options_stub, times: 1
+
+      assert_equal(
+        [ "core.add_torrent_magnet", "label.set_torrent", "core.set_torrent_options", "core.resume_torrent" ],
+        methods & [ "core.add_torrent_magnet", "label.set_torrent", "core.set_torrent_options", "core.resume_torrent" ]
+      )
     end
   end
 
@@ -296,7 +359,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: nil, error: nil, id: 1 }.to_json
         )
       stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
 
       assert_equal "new_torrent_id", client.add_torrent("magnet:?xt=urn:btih:abcdef")
       assert_requested(add_stub)
@@ -304,7 +366,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent retries transient label failures before removing its partial files" do
+  test "add_torrent retries transient label failures before removing the staged torrent metadata" do
     VCR.turned_off do
       @client_record.update!(category: "shelfarr")
       client = @client_record.adapter
@@ -322,7 +384,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
       stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
       set_stub = stub_deluge_rpc("label.set_torrent", nil, error: { "message" => "Unknown Torrent" })
-      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], true ])
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], false ])
 
       client.stub(:sleep, nil) do
         assert_raises DownloadClients::Base::Error do
@@ -335,7 +397,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent schedules cleanup when Deluge reports a removal error" do
+  test "add_torrent leaves the staged torrent paused when Deluge reports a removal error" do
     VCR.turned_off do
       @client_record.update!(category: "shelfarr")
       client = @client_record.adapter
@@ -355,11 +417,11 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       stub_deluge_rpc(
         "core.remove_torrents",
         [ [ "new_torrent_id", "Permission denied" ] ],
-        params: [ [ "new_torrent_id" ], true ]
+        params: [ [ "new_torrent_id" ], false ]
       )
 
-      assert_enqueued_with(job: StaleClientDispatchCleanupJob, args: [ @client_record.id, "new_torrent_id" ]) do
-        assert_raises DownloadClients::Base::Error do
+      assert_no_enqueued_jobs only: StaleClientDispatchCleanupJob do
+        assert_raises DownloadClients::Base::ConfigurationError do
           client.add_torrent("magnet:?xt=urn:btih:abcdef")
         end
       end
@@ -385,10 +447,10 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       set_stub = stub_request(:post, "http://localhost:8112/json")
         .with(body: /"label.set_torrent"/)
         .to_raise(Faraday::ConnectionFailed.new("connection lost"))
-      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], true ])
+      remove_stub = stub_deluge_rpc("core.remove_torrents", [], params: [ [ "new_torrent_id" ], false ])
 
       client.stub(:sleep, nil) do
-        assert_raises DownloadClients::Base::ConnectionError do
+        assert_raises DownloadClients::Base::ConfigurationError do
           client.add_torrent("magnet:?xt=urn:btih:abcdef")
         end
       end
@@ -416,7 +478,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       stub_deluge_rpc("core.get_session_state", [ "known_torrent_id" ])
       stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
       stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
 
       set_stub = stub_request(:post, "http://localhost:8112/json")
         .with do |request|
@@ -476,7 +537,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       add_label_stub = stub_deluge_rpc("label.add", nil, params: [ "shelfarr" ])
       stub_deluge_rpc("core.add_torrent_magnet", "new_torrent_id")
       stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
 
       set_stub = stub_request(:post, "http://localhost:8112/json")
         .with do |request|
@@ -566,9 +626,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           body: { result: "magnet_torrent_id", error: nil, id: 1 }.to_json
         )
 
-      stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
-
       result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/123")
 
       assert_equal "magnet_torrent_id", result
@@ -622,9 +679,6 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           headers: { "Content-Type" => "application/json" },
           body: { result: "file_torrent_id", error: nil, id: 1 }.to_json
         )
-
-      stub_deluge_rpc("core.set_torrent_options", nil)
-      stub_deluge_rpc("core.resume_torrent", nil)
 
       result = @client.add_torrent("http://prowlarr:9696/api/v1/indexer/download/456.torrent")
 
@@ -1152,6 +1206,14 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
   end
 
   private
+
+  def recorded_deluge_methods
+    recorded = WebMock::RequestRegistry.instance.requested_signatures.hash.keys.size
+    yield
+    WebMock::RequestRegistry.instance.requested_signatures.hash.keys.drop(recorded).map do |signature|
+      JSON.parse(signature.body)["method"]
+    end
+  end
 
   def stub_deluge_login
     stub_request(:post, "http://localhost:8112/json")

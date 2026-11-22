@@ -3445,6 +3445,102 @@ class DownloadJobTest < ActiveJob::TestCase
     assert book.reload.acquisition_reserved?
   end
 
+  test "a Deluge staging failure is a client failure that keeps the release eligible" do
+    @client.destroy!
+    deluge = DownloadClient.create!(
+      name: "Test Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    Thread.current[:deluge_sessions] = {}
+    torrent_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    @selected_result.update!(magnet_url: "magnet:?xt=urn:btih:#{torrent_hash}", download_url: nil)
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .to_return do |request|
+          method = JSON.parse(request.body)["method"]
+          result, error = {
+            "auth.login" => [ true, nil ],
+            "core.get_session_state" => [ [], nil ],
+            "core.get_config_value" => [ false, nil ],
+            "core.get_torrents_status" => [ {}, nil ],
+            "core.add_torrent_magnet" => [ torrent_hash, nil ],
+            "core.set_torrent_options" => [ nil, { "message" => "Unknown torrent" } ],
+            "core.remove_torrents" => [ [], nil ]
+          }.fetch(method)
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test; Path=/" },
+            body: { result: result, error: error, id: 1 }.to_json
+          }
+        end
+
+      DownloadJob.perform_now(@download.id)
+    end
+
+    assert @download.reload.failed?
+    assert @download.configuration_failure?
+    assert_nil @download.blocklisted_info_hash
+    assert_not @selected_result.reload.blocklisted?
+    assert_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents","params":\[\["#{torrent_hash}"\],false\]/
+    assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+    assert_equal deluge.id, DownloadClientSelector.for_torrent.id
+  end
+
+  test "Retry does not blocklist a release when Deluge still holds its staged torrent" do
+    @client.destroy!
+    DownloadClient.create!(
+      name: "Test Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    Thread.current[:deluge_sessions] = {}
+    torrent_hash = "b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+    @selected_result.update!(magnet_url: "magnet:?xt=urn:btih:#{torrent_hash}", download_url: nil)
+    added = false
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .to_return do |request|
+          method = JSON.parse(request.body)["method"]
+          duplicate = method == "core.add_torrent_magnet" && added
+          added ||= method == "core.add_torrent_magnet"
+          result, error = {
+            "auth.login" => [ true, nil ],
+            "core.get_session_state" => [ [], nil ],
+            "core.get_config_value" => [ false, nil ],
+            "core.add_torrent_magnet" => duplicate ? [ nil, { "message" => "Torrent already in session (#{torrent_hash})." } ] : [ torrent_hash, nil ],
+            "core.set_torrent_options" => [ nil, { "message" => "Unknown torrent" } ],
+            "core.remove_torrents" => [ [ [ torrent_hash, "Permission denied" ] ], nil ]
+          }.fetch(method)
+          {
+            status: 200,
+            headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test; Path=/" },
+            body: { result: result, error: error, id: 1 }.to_json
+          }
+        end
+
+      DownloadJob.perform_now(@download.id)
+      @request.reload.retry_now!
+      DownloadJob.perform_now(@request.downloads.order(:id).last.id)
+    end
+
+    retried = @request.downloads.order(:id).last
+    assert_not_equal @download.id, retried.id
+    assert retried.failed?
+    assert retried.configuration_failure?
+    assert_not @selected_result.reload.blocklisted?
+    assert_empty @request.reload.blocked_torrent_info_hashes
+    assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+  end
+
   private
 
   def perform_download_with_vanishing_external_id_owner

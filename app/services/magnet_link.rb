@@ -5,8 +5,6 @@ require "uri"
 class MagnetLink
   BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
-  # A 40-character hex info hash, whether it arrives as a magnet, a bare
-  # hash, or a URL that carries a btih parameter. Anything else is nil.
   def self.normalize_info_hash(value)
     extracted = info_hash(value)
     return extracted if extracted.is_a?(String)
