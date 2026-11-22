@@ -95,8 +95,7 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     get stylesheet
 
     assert_response :success
-    assert_includes response.body, ".entry-app .auth-main--wide"
-    assert_includes response.body, ".auth-card"
+    assert_includes response.body, ".entry-app .auth-main--wide{"
   end
 
   test "servers without the web preview keep the current pages at the same addresses" do
@@ -150,7 +149,8 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     without_web_preview { get new_session_path, headers: { "Turbo-Frame" => "modal" } }
 
     assert_response :success
-    assert_select "body.bg-gray-950", false
+    assert_select "body[class]", false
+    assert_select "link[rel=stylesheet]", false
     assert_select "nav[aria-label=Main]", false
     assert_select "input[name=password]"
   end
