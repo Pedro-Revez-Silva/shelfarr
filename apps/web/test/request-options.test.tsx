@@ -278,6 +278,58 @@ describe("what a press sends and shows after the answer", () => {
     expect(server.called("GET", /discover\?/)).toHaveLength(2);
   });
 
+  test("an older answer that arrives last does not undo a newer state on linked results", async () => {
+    const linked: CatalogueItem = { ...ITEM, book: { source: "google_books", id: "gb-77", metadata: null }, title: "Middlemarch (Google Books)" };
+    const older = deferred<ReturnType<typeof outcome>>();
+    const newer = deferred<ReturnType<typeof outcome>>();
+    const server = findServer(catalogue(options({ default_format: "ask" }), [ITEM, linked]))
+      .on("POST", /openlibrary\/OL900W\/requests/, () => older.promise)
+      .on("POST", /google_books\/gb-77\/requests/, () => newer.promise);
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    const [first, second] = await screen.findAllByRole("article");
+    const user = userEvent.setup();
+    await user.click(within(first!).getByRole("button", { name: "Request ebook of Middlemarch" }));
+    await user.click(within(second!).getByRole("button", { name: "Request audiobook of Middlemarch (Google Books)" }));
+    const both = { ...book([requested("ebook", "41"), requested("audiobook", "52")]), id: "google_books:gb-77", also: ["openlibrary:OL900W"] };
+    await act(async () => newer.resolve(outcome(both, [{ book_type: "audiobook", outcome: "created" }])));
+    await within(second!).findByText("Audiobook requested.", { exact: false });
+    const ebookOnly = { ...book([requested("ebook", "41"), format("audiobook")]), also: ["google_books:gb-77"] };
+    await act(async () => older.resolve(outcome(ebookOnly, [{ book_type: "ebook", outcome: "created" }])));
+    await within(first!).findByText("Ebook requested.", { exact: false });
+    for (const row of [first!, second!]) {
+      expect(within(row).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: requested");
+      expect(within(row).queryByRole("button", { name: /^Request/ })).toBeNull();
+    }
+  });
+
+  test("an unconfirmed press keeps its message after the refresh removes the last action", async () => {
+    let saved = false;
+    const server = findServer(catalogue(options(), [{ ...ITEM, formats: [ITEM.formats[0]!, { book_type: "audiobook", state: "in_library" }] }])).on("POST", /\/requests/, () => {
+      saved = true;
+      return { status: 500, body: { error: "server_error" } };
+    });
+    server.on("GET", /\/api\/v1\/discover\?/, () => ({ body: catalogue(options(), [{ ...ITEM, formats: [{ book_type: "ebook", state: saved ? "requested" : "requestable" }, { book_type: "audiobook", state: "in_library" }] }]) }));
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    await waitFor(() => expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: in library"));
+    expect(screen.queryByRole("button", { name: /^Request/ })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toBe("The server did not confirm this. The page now shows the current state; try again only if nothing changed.");
+  });
+
+  test("a combined press the server did not confirm says so on the Book page after it shows what was saved", async () => {
+    let current = book([format("ebook"), format("audiobook")], options({ default_format: "both" }));
+    const server = bookServer(() => current).on("POST", /\/requests/, () => {
+      current = book([format("ebook"), requested("audiobook", "52")], current.request_options);
+      return { status: 500, body: { error: "server_error" } };
+    });
+    renderApp({ server, url: BOOK_URL });
+    await userEvent.click(await within(await screen.findByRole("region", { name: "On this server" })).findByRole("button", { name: "Request ebook and audiobook of Middlemarch" }));
+    expect(await screen.findByRole("region", { name: "Audiobook request progress" })).toBeTruthy();
+    expect(within(card()).queryByRole("button", { name: /ebook and audiobook/ })).toBeNull();
+    expect(within(card()).getByRole("alert").textContent).toBe("The server did not confirm this. The page now shows the current state; try again only if nothing changed.");
+    expect(within(card()).getByRole("button", { name: "Request ebook of Middlemarch" })).toBeTruthy();
+  });
+
   test("a refused press does not search Find again", async () => {
     const server = findServer(catalogue(options())).on("POST", /\/requests/, () => ({ status: 422, body: { error: "request_rejected", message: "Not today" } }));
     renderApp({ server, url: "/sub/preview/find?q=middlemarch" });

@@ -165,6 +165,7 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
       },
     });
   };
+  const pressedShown = plan.some((entry) => entry.format === pressed) || (pressed !== "both" && book.formats.some((format) => format.book_type === pressed && offered(format, options)));
   const button = (format: RequestFormat, accent: boolean) => (
     <RequestButton format={format} accent={accent} title={book.title} busy={request.isPending || unavailable} mine={pressed === format} pending={request.isPending} error={request.isError ? request.error : null} onPress={send} />
   );
@@ -185,6 +186,11 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
       {plan.some((entry) => entry.format === "both") ? <div className="request-both">{button("both", true)}</div> : null}
       {plan.length > 0 ? <RequestExtrasFields options={options} extras={extras} onChange={setExtras} disabled={request.isPending} /> : null}
       {request.isSuccess ? <RejectedFormats results={request.data.results} /> : null}
+      {request.isError && !pressedShown ? (
+        <p className="field-error" role="alert">
+          {actionFailure(request.error, "The request could not be made. Nothing was changed.")}
+        </p>
+      ) : null}
     </section>
   );
 }

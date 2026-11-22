@@ -578,6 +578,7 @@ export const bookFormatSchema = z.object({
   request: bookRequestSchema.nullable(),
 });
 export type BookFormat = z.infer<typeof bookFormatSchema>;
+export type BookFormatState = BookFormat["state"];
 
 export const requestFormatChoices = ["ask", "ebook", "audiobook", "both"] as const;
 export const requestOptionsSchema = z.object({

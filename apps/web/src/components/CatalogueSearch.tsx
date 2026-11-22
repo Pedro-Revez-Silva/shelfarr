@@ -227,7 +227,7 @@ function ResultRequest({ item, query, options }: { item: CatalogueItem; query: s
     setPressed(format);
     request.mutate(choiceFor(format, extras, options), { onSuccess: () => setExtras((current) => ({ ...current, notes: "" })) });
   };
-  if (plan.length === 0 && !request.isSuccess) return null;
+  if (plan.length === 0 && request.isIdle) return null;
   return (
     <div className="result-request">
       {request.isSuccess ? (

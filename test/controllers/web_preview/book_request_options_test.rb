@@ -231,13 +231,24 @@ class WebPreview::BookRequestOptionsTest < ActionDispatch::IntegrationTest
     assert_equal({ "book_type" => "ebook", "state" => "requested_by_someone", "publication" => nil, "request" => nil }, answer.fetch("book").fetch("formats").find { |entry| entry.fetch("book_type") == "ebook" })
     assert_no_match(/#{Regexp.escape(@member.name.to_s)}/, response.body) if @member.name.present?
 
-    Request.where(user: @admin).destroy_all
+    Request.destroy_all
+    Book.where(open_library_work_id: "OL900W").destroy_all
     session = Current.session
     ending = ->(*) { session.destroy!; DETAILS }
-    BookMetadataLookupService.stub(:call, ending) do
-      post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "audiobook" }, headers: account_headers(@admin), as: :json
+    assert_no_difference("Request.count") do
+      BookMetadataLookupService.stub(:call, ending) do
+        post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "audiobook" }, headers: account_headers(@admin), as: :json
+      end
     end
     assert_equal [ 401, { "error" => "signed_out" } ], [ response.status, response.parsed_body ]
+  end
+
+  test "a stored graphic work offers no book format whatever catalogue address it has" do
+    Book.create!(title: "Middlemarch: The Graphic Novel", book_type: :comicbook, content_kind: :graphic, open_library_work_id: "OL900W")
+    sign_in_as(@member)
+    assert_equal [], BookMetadataLookupService.stub(:call, DETAILS) { book_json }.dig("request_options", "formats")
+    assert_no_difference("Request.count") { request_book(body: { book_type: "audiobook" }) }
+    assert_equal [ 422, { "error" => "invalid_request" } ], [ response.status, response.parsed_body ]
   end
 
   test "choosing a format still needs the page's account and CSRF token" do
