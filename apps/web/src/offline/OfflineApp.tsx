@@ -9,8 +9,9 @@ import { createServices, ServicesProvider, useGuardState } from "../services";
 import { useDocumentTitle } from "../title";
 import { OfflineProvider, confirmationFrom, type Offline } from "./context";
 import { DownloadsPage } from "./DownloadsPage";
-import { usable, type ConfirmedAccount, type OfflineStore } from "./model";
+import { offlineUntil, type ConfirmedAccount, type OfflineStore } from "./model";
 import { OfflineReader } from "./OfflineReader";
+import { SaveFailure } from "./save";
 
 const PROBE_INTERVAL_MS = 20_000;
 const CHECK_INTERVAL_MS = 30_000;
@@ -18,6 +19,10 @@ const CHECK_INTERVAL_MS = 30_000;
 export function serverUnreachable(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
   return error.kind === "network" || error.status === 502 || error.status === 503 || error.status === 504;
+}
+
+export function definitiveRefusal(error: unknown): boolean {
+  return error instanceof ApiError && typeof error.status === "number" && error.status >= 400 && error.status < 500;
 }
 
 type Props = { boot: GoBoot & { offline: OfflineBoot }; auth: AuthClient; store: OfflineStore; record: ConfirmedAccount; onConnected: () => void };
@@ -29,43 +34,51 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
     return { guard, services };
   });
   const { guard, services } = built;
-  const [offline, setOffline] = useState<Offline>({ boot: boot.offline, store, confirmation: record, connected: false });
+  const [offline, setOffline] = useState<Offline>({ boot: boot.offline, store, confirmation: record, connected: false, confirm: () => Promise.reject(new SaveFailure("network")) });
 
   const recheck = useCallback(async () => {
-    const current = await store.account().catch(() => null);
-    const switched = current !== null && current.account !== guard.account;
-    if (!usable(current, guard.account, Date.now())) guard.lock(switched ? "account_changed" : "signed_out");
+    const state = await store.accountState().catch(() => null);
+    const switched = state?.record != null && state.record.account !== guard.account;
+    const kept = !switched && state !== null && (await store.touch(guard.account, Date.now()).catch(() => false));
+    if (!kept) guard.lock(switched ? "account_changed" : "signed_out");
   }, [store, guard]);
 
   const probe = useCallback(async () => {
     if (!guard.isActive()) return;
+    const before = await store.accountState().catch(() => null);
+    if (!before) return;
     let answer;
     try {
       answer = await auth.bootstrap();
     } catch (error) {
-      if (serverUnreachable(error)) return;
+      if (!definitiveRefusal(error) || !guard.isActive()) return;
       await store.forget().catch(() => undefined);
       guard.lock("signed_out");
       return;
     }
-    if (!answer.authenticated) {
+    if (!guard.isActive()) return;
+    const confirmation = answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, Date.now()) : null;
+    if (!answer.authenticated || !confirmation) {
       await store.forget().catch(() => undefined);
       guard.lock("signed_out");
       return;
     }
-    const confirmation = confirmationFrom(answer.account, answer.offline_expires_in, Date.now());
-    if (!confirmation) {
-      await store.forget().catch(() => undefined);
-      guard.lock("signed_out");
+    if (!(await store.confirm(confirmation, before.generation).catch(() => false))) {
+      await recheck();
       return;
     }
-    await store.confirm(confirmation).catch(() => undefined);
     if (answer.account !== guard.account) {
       guard.lock("account_changed");
       return;
     }
     setOffline((value) => ({ ...value, confirmation, connected: true }));
-  }, [auth, store, guard]);
+  }, [auth, store, guard, recheck]);
+
+  const until = offline.confirmation ? offlineUntil(offline.confirmation) : 0;
+  useEffect(() => {
+    const timer = setTimeout(() => void recheck(), Math.max(0, Math.min(until - Date.now() + 1, 2_147_000_000)));
+    return () => clearTimeout(timer);
+  }, [until, recheck]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -74,9 +87,13 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
       void recheck().finally(() => root.removeAttribute("data-offline-check"));
       void probe();
     };
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) window.location.reload();
+      else show();
+    };
     const visible = () => document.visibilityState === "visible" && show();
     window.addEventListener("pagehide", hide);
-    window.addEventListener("pageshow", show);
+    window.addEventListener("pageshow", restored);
     window.addEventListener("focus", show);
     window.addEventListener("online", show);
     document.addEventListener("visibilitychange", visible);
@@ -84,7 +101,7 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
     const probes = setInterval(() => void probe(), PROBE_INTERVAL_MS);
     return () => {
       window.removeEventListener("pagehide", hide);
-      window.removeEventListener("pageshow", show);
+      window.removeEventListener("pageshow", restored);
       window.removeEventListener("focus", show);
       window.removeEventListener("online", show);
       document.removeEventListener("visibilitychange", visible);

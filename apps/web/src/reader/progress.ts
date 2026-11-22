@@ -201,6 +201,7 @@ export class ProgressSession {
   }
 
   private reconcile(request: ProgressRequest, remote: StoredProgress | null): void {
+    if (remote) this.confirmed?.(remote);
     const now = this.options.now();
     const localTime = plausibleObservedAt(request.observed_at, now);
     const remoteTime = remote ? plausibleObservedAt(remote.observed_at, now) : null;

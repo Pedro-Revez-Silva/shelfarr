@@ -226,9 +226,24 @@ func TestSignInAndBootstrapNameTheOfflineWindowOfTheSessionCappedAtThirtyDays(t 
 		if test.elapsed == 0 && login["offline_expires_in"] != float64(test.want) {
 			t.Errorf("%s days: login window %v, want %d", test.days, login["offline_expires_in"], test.want)
 		}
-		if resumed["authenticated"] != true || resumed["offline_expires_in"] != float64(test.want) {
+		window, _ := resumed["offline_expires_in"].(float64)
+		if resumed["authenticated"] != true || window < float64(test.want-1) || window > float64(test.want) {
 			t.Errorf("%s days after %s: bootstrap %v, want %d", test.days, test.elapsed, resumed, test.want)
 		}
+	}
+}
+
+func TestTheOfflineWindowNeverOutlivesTheSignedSessionCookie(t *testing.T) {
+	h, _ := offlineHarness(t, true)
+	livetest.Exec(t, h.path, `INSERT INTO settings (key, value, value_type) VALUES ('session_max_age_days', '1', 'integer')`)
+	client := h.client()
+	client.signIn("alice", alicePassword)
+	livetest.Exec(t, h.path, `UPDATE settings SET value = '30' WHERE key = 'session_max_age_days'`)
+	h.clock.Advance(20 * time.Hour)
+	_, resumed := client.bootstrap()
+	window, _ := resumed["offline_expires_in"].(float64)
+	if resumed["authenticated"] != true || window < 4*3600-1 || window > 4*3600 {
+		t.Fatalf("the window must end with the cookie signed at sign-in, got %v", resumed)
 	}
 }
 

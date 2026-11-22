@@ -119,6 +119,12 @@ func TestRailsSessionCookieEnvelopeRoundTripsAndEnforcesPurposeAndExpiry(t *test
 	if value, ok := verifier.VerifiedMessage(token, "cookie.session_id", now); !ok || string(value) != "42" {
 		t.Fatalf("round trip %s %v", value, ok)
 	}
+	if value, until, ok := verifier.VerifiedMessageUntil(token, "cookie.session_id", now); !ok || string(value) != "42" || !until.Equal(now.Add(time.Minute)) {
+		t.Fatalf("expiry %s %v %v", value, until, ok)
+	}
+	if _, _, ok := verifier.VerifiedMessageUntil(token, "cookie.session_id", now.Add(time.Minute)); ok {
+		t.Fatal("an expired message must not verify")
+	}
 	for name, check := range map[string]func() bool{
 		"other purpose": func() bool { _, ok := verifier.VerifiedMessage(token, "cookie.other", now); return ok },
 		"at expiry": func() bool {

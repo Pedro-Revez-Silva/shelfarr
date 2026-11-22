@@ -1,18 +1,40 @@
-import { bookKey, usable, type Attempt, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook } from "./model";
+import {
+  ACCOUNT_LIMIT_BYTES,
+  bookKey,
+  usable,
+  type AccountState,
+  type Attempt,
+  type CommitOutcome,
+  type ConfirmedAccount,
+  type FailureKind,
+  type OfflineStore,
+  type SavedBook,
+  type UpdateOutcome,
+} from "./model";
 
 export const DATABASE_NAME = "shelfarr-go-preview-offline";
 const DATABASE_VERSION = 1;
 const ACCOUNT_KEY = "current";
 
 type StoredFile = { key: string; account: string; assetId: string; blob: Blob };
-type StoredAccount = ConfirmedAccount & { id: typeof ACCOUNT_KEY };
+type StoredAccount = { id: typeof ACCOUNT_KEY; record: ConfirmedAccount | null; generation: number };
 type StoreName = "account" | "books" | "files" | "attempts";
+type Stores = Record<StoreName, IDBObjectStore>;
 
 function completed<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+async function readAccount(stores: Stores): Promise<AccountState> {
+  const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
+  return { record: stored?.record ?? null, generation: stored?.generation ?? 0 };
+}
+
+function writeAccount(stores: Stores, record: ConfirmedAccount | null, generation: number): Promise<IDBValidKey> {
+  return completed(stores.account.put({ id: ACCOUNT_KEY, record, generation } satisfies StoredAccount));
 }
 
 export class IndexedDbOfflineStore implements OfflineStore {
@@ -24,23 +46,43 @@ export class IndexedDbOfflineStore implements OfflineStore {
     return (await indexedDB.databases()).some((database) => database.name === DATABASE_NAME);
   }
 
-  async account(): Promise<ConfirmedAccount | null> {
-    if (!(await this.exists())) return null;
-    const stored = await this.run(["account"], "readonly", (stores) => completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY)));
-    return stored ? { account: stored.account, confirmedAt: stored.confirmedAt, validForMs: stored.validForMs } : null;
+  async prepare(): Promise<void> {
+    await this.database();
   }
 
-  confirm(value: ConfirmedAccount): Promise<void> {
+  async accountState(): Promise<AccountState> {
+    if (!(await this.exists())) return { record: null, generation: 0 };
+    return this.run(["account"], "readonly", readAccount);
+  }
+
+  confirm(value: ConfirmedAccount, generation: number): Promise<boolean> {
     return this.run(["account"], "readwrite", async (stores) => {
-      await completed(stores.account.put({ id: ACCOUNT_KEY, ...value }));
+      const current = await readAccount(stores);
+      if (current.generation !== generation) return false;
+      await writeAccount(stores, value, generation + 1);
+      return true;
     });
   }
 
   async forget(account?: string): Promise<void> {
     if (!(await this.exists())) return;
     await this.run(["account"], "readwrite", async (stores) => {
-      const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
-      if (stored && (account === undefined || stored.account === account)) await completed(stores.account.delete(ACCOUNT_KEY));
+      const current = await readAccount(stores);
+      if (account !== undefined && current.record?.account !== account) return;
+      await writeAccount(stores, null, current.generation + 1);
+    });
+  }
+
+  touch(account: string, now: number): Promise<boolean> {
+    return this.run(["account"], "readwrite", async (stores) => {
+      const current = await readAccount(stores);
+      const owned = current.record?.account === account;
+      if (!usable(current.record, account, now)) {
+        if (owned) await writeAccount(stores, null, current.generation + 1);
+        return false;
+      }
+      if (now > (current.record.seenAt ?? 0)) await writeAccount(stores, { ...current.record, seenAt: now }, current.generation);
+      return true;
     });
   }
 
@@ -55,14 +97,14 @@ export class IndexedDbOfflineStore implements OfflineStore {
     return (await this.run(["books"], "readonly", (stores) => completed<SavedBook | undefined>(stores.books.get(bookKey(account, id))))) ?? null;
   }
 
-  async file(account: string, id: string): Promise<Blob | null> {
+  async open(account: string, id: string): Promise<{ book: SavedBook; blob: Blob } | null> {
     if (!(await this.exists())) return null;
     return this.run(["books", "files"], "readonly", async (stores) => {
       const key = bookKey(account, id);
       const book = await completed<SavedBook | undefined>(stores.books.get(key));
       const file = await completed<StoredFile | undefined>(stores.files.get(key));
-      if (!book || !file || file.account !== account || file.assetId !== book.asset.id || file.blob.size !== book.asset.size_bytes) return null;
-      return file.blob;
+      if (!book || !file || book.account !== account || file.account !== account || file.assetId !== book.asset.id || file.blob.size !== book.asset.size_bytes) return null;
+      return { book, blob: file.blob };
     });
   }
 
@@ -79,30 +121,34 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   fail(account: string, id: string, failure: FailureKind): Promise<void> {
     return this.run(["attempts"], "readwrite", async (stores) => {
-      const key = bookKey(account, id);
-      const current = await completed<Attempt | undefined>(stores.attempts.get(key));
+      const current = await completed<Attempt | undefined>(stores.attempts.get(bookKey(account, id)));
       if (current) await completed(stores.attempts.put({ ...current, failure }));
     });
   }
 
-  commit(book: SavedBook, blob: Blob, now: number): Promise<boolean> {
-    return this.run(["account", "books", "files", "attempts"], "readwrite", async (stores) => {
-      const current = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
-      if (!usable(current ?? null, book.account, now)) return false;
+  commit(book: SavedBook, blob: Blob, startedAt: number, now: number): Promise<CommitOutcome> {
+    return this.run(["account", "books", "files", "attempts"], "readwrite", async (stores): Promise<CommitOutcome> => {
+      if (!usable((await readAccount(stores)).record, book.account, now)) return "account";
+      const attempt = await completed<Attempt | undefined>(stores.attempts.get(book.key));
+      if (!attempt || attempt.startedAt !== startedAt || attempt.assetId !== book.asset.id) return "removed";
+      const saved = await completed<SavedBook[]>(stores.books.index("account").getAll(book.account));
+      const others = saved.filter((other) => other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
+      if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";
       await completed(stores.files.put({ key: book.key, account: book.account, assetId: book.asset.id, blob } satisfies StoredFile));
       await completed(stores.books.put(book));
       await completed(stores.attempts.delete(book.key));
-      return true;
+      return "saved";
     });
   }
 
-  updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook, now: number): Promise<boolean> {
-    return this.run(["account", "books"], "readwrite", async (stores) => {
-      const current = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
+  updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook | null, now: number): Promise<UpdateOutcome> {
+    return this.run(["account", "books"], "readwrite", async (stores): Promise<UpdateOutcome> => {
       const book = await completed<SavedBook | undefined>(stores.books.get(bookKey(account, id)));
-      if (!usable(current ?? null, account, now) || !book) return false;
-      await completed(stores.books.put(change(book)));
-      return true;
+      if (!usable((await readAccount(stores)).record, account, now) || !book) return "refused";
+      const next = change(book);
+      if (!next || next === book) return "unchanged";
+      await completed(stores.books.put(next));
+      return "updated";
     });
   }
 
@@ -161,11 +207,11 @@ export class IndexedDbOfflineStore implements OfflineStore {
     return this.opened;
   }
 
-  private async run<T>(names: StoreName[], mode: IDBTransactionMode, work: (stores: Record<StoreName, IDBObjectStore>) => Promise<T>): Promise<T> {
+  private async run<T>(names: StoreName[], mode: IDBTransactionMode, work: (stores: Stores) => Promise<T>): Promise<T> {
     const database = await this.database();
     return new Promise<T>((resolve, reject) => {
       const transaction = database.transaction(names, mode, { durability: "strict" });
-      const stores = Object.fromEntries(names.map((name) => [name, transaction.objectStore(name)])) as Record<StoreName, IDBObjectStore>;
+      const stores = Object.fromEntries(names.map((name) => [name, transaction.objectStore(name)])) as Stores;
       let result: T;
       work(stores).then(
         (value) => {

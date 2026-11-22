@@ -2,7 +2,8 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { ReaderAsset } from "../contract";
 import { Loading } from "../components/States";
 import { EpubReader } from "../reader/EpubReader";
-import { ReaderFrame, readerPublicationId } from "../reader/ReaderApp";
+import { readerPublicationId } from "../reader/ReaderApp";
+import { ReaderFrame } from "../reader/ReaderFrame";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { useOffline, type Offline } from "./context";
@@ -23,6 +24,8 @@ function placeMessage(state: DeviceSaveState): string {
       return "Couldn't keep your place on this device. Turn the page again to retry.";
     case "stopped":
       return "Stopped keeping places because offline access for this account ended.";
+    case "replaced":
+      return "This saved copy was replaced by another edition in another tab, so places from this page are no longer kept. Reopen the book from Downloads.";
   }
 }
 
@@ -39,9 +42,10 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
       return;
     }
     let current = true;
-    Promise.all([offline.store.book(guard.account, id), offline.store.file(guard.account, id)])
-      .then(([book, blob]) => {
-        if (current) setOpened(book && blob && guard.isActive() ? { kind: "ready", book, blob } : { kind: "missing" });
+    offline.store
+      .open(guard.account, id)
+      .then((saved) => {
+        if (current) setOpened(saved && guard.isActive() ? { kind: "ready", book: saved.book, blob: saved.blob } : { kind: "missing" });
       })
       .catch(() => current && setOpened({ kind: "missing" }));
     return () => {
@@ -96,8 +100,8 @@ function SavedCopyReader({ offline, book, blob, engine, back }: { offline: Offli
   }, [places, guard]);
 
   const footer = (
-    <div className={`save-status${state.kind === "failed" || state.kind === "stopped" ? " save-status--attention" : ""}`} data-state={state.kind}>
-      <p role={state.kind === "failed" ? "alert" : "status"} className="save-status-text">
+    <div className={`save-status${state.kind === "kept" || state.kind === "idle" ? "" : " save-status--attention"}`} data-state={state.kind}>
+      <p role={state.kind === "failed" || state.kind === "replaced" ? "alert" : "status"} className="save-status-text">
         {placeMessage(state)}
       </p>
     </div>

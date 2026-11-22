@@ -97,7 +97,7 @@ func (a *App) resume(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return nil, nil
 	}
-	payload, ok := a.cookies.VerifiedMessage(token, sessionPurpose, a.now())
+	payload, cookieExpires, ok := a.cookies.VerifiedMessageUntil(token, sessionPurpose, a.now())
 	if !ok {
 		return nil, nil
 	}
@@ -130,7 +130,11 @@ func (a *App) resume(ctx context.Context, w http.ResponseWriter, r *http.Request
 		a.clearSession(w)
 		return nil, nil
 	}
-	return &browserSession{row: *row, user: *user, expires: row.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)}, nil
+	expires := row.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)
+	if !cookieExpires.IsZero() && cookieExpires.Before(expires) {
+		expires = cookieExpires
+	}
+	return &browserSession{row: *row, user: *user, expires: expires}, nil
 }
 
 func (a *App) security(event string, userID int64) {

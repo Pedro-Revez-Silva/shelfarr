@@ -101,23 +101,25 @@ describe("the offline worker", () => {
       `${ORIGIN}/preview/assets/preview.0000000000000001.js`,
       `${ORIGIN}/preview/assets/preview.0000000000000002.css`,
     ]);
-    expect(installed.state().skipped).toBe(true);
+    expect(installed.state()).toEqual({ skipped: false, claimed: false });
   });
 
-  test("refuses to install when an asset is not the listed file or does not answer 200", async () => {
-    for (const network of [async () => new Response("tampered"), async () => new Response("gone", { status: 404 })] as Network[]) {
+  test("refuses to install when an asset is not the listed file or does not answer 200, and keeps no partial cache", async () => {
+    const secondFails = (failure: () => Response): Network => async (request) => (new URL(request.url).pathname.endsWith(".css") ? failure() : assetNetwork(request));
+    for (const network of [async () => new Response("tampered"), async () => new Response("gone", { status: 404 }), secondFails(() => new Response("busy", { status: 503 })), secondFails(() => new Response("tampered"))] as Network[]) {
       const installed = await worker(network);
+      await installed.caches.open("shelfarr-go-preview-offline.v1|v1");
       await expect(installed.lifecycle("install")).rejects.toThrow();
-      expect(installed.state().skipped).toBe(false);
+      expect(await installed.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v1"]);
     }
   });
 
-  test("activation removes only its own earlier versions", async () => {
+  test("activation removes only its own earlier versions and never takes over open pages", async () => {
     const installed = await worker(assetNetwork);
     for (const name of ["shelfarr-go-preview-offline.v1|v1", "shelfarr-go-preview-offline.v1|v2", "shelfarr-offline-shell.v1|http://shelf.test|abc", "shelfarr-offline-media.v1|http://shelf.test|5", "other-app"]) await installed.caches.open(name);
     await installed.lifecycle("activate");
     expect(await installed.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v2", "shelfarr-offline-shell.v1|http://shelf.test|abc", "shelfarr-offline-media.v1|http://shelf.test|5", "other-app"]);
-    expect(installed.state().claimed).toBe(true);
+    expect(installed.state()).toEqual({ skipped: false, claimed: false });
   });
 
   test("offers the static shell for Downloads and the reader only when the server cannot be reached", async () => {

@@ -60,16 +60,22 @@ export function DownloadsPage() {
 
   const remove = async (book: SavedBook | Attempt) => {
     setRemoving(null);
-    await offline.store.remove(account, book.id).catch(() => undefined);
-    setNotice(`Removed “${book.title}” from this browser.`);
+    const removed = await offline.store.remove(account, book.id).then(
+      () => true,
+      () => false,
+    );
+    setNotice(removed ? `Removed “${book.title}” from this browser.` : `This browser couldn't remove “${book.title}”. Reload the page and try again.`);
     announceChange();
     await refresh();
     document.getElementById("downloads-heading")?.focus();
   };
 
   const removeOthers = async () => {
-    await offline.store.removeOthers(account).catch(() => undefined);
-    setNotice("Removed the books other accounts saved in this browser.");
+    const removed = await offline.store.removeOthers(account).then(
+      () => true,
+      () => false,
+    );
+    setNotice(removed ? "Removed the books other accounts saved in this browser." : "This browser couldn't remove the other accounts' books. Reload the page and try again.");
     announceChange();
     await refresh();
   };
@@ -94,7 +100,7 @@ export function DownloadsPage() {
           {confirmation ? ` Offline access for this account lasts until ${formatMoment(offlineUntil(confirmation))}.` : ""}
         </p>
       )}
-      <p className="sr-only" role="status">
+      <p className={notice?.startsWith("This browser couldn't") ? "form-error" : "sr-only"} role="status">
         {notice ?? ""}
       </p>
       {failed ? (

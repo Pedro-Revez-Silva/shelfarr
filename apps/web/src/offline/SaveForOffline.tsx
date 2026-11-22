@@ -46,6 +46,7 @@ function SaveControl({ id, title, currentAsset, load, compact, offline }: Props 
   const heading = useId();
   const [state, setState] = useState<CopyState>({ kind: "checking" });
   const [confirmingRemoval, setConfirmingRemoval] = useState(false);
+  const [removalFailed, setRemovalFailed] = useState(false);
   const running = useRef(false);
   const generation = useRef(0);
   const removeButton = useRef<HTMLButtonElement>(null);
@@ -74,9 +75,9 @@ function SaveControl({ id, title, currentAsset, load, compact, offline }: Props 
   }, [refresh]);
 
   const save = async () => {
-    const confirmation = offline.confirmation;
-    if (running.current || !confirmation) return;
+    if (running.current) return;
     running.current = true;
+    setRemovalFailed(false);
     generation.current += 1;
     setConfirmingRemoval(false);
     const previous = state.kind === "saved" ? state.book : state.kind === "failed" || state.kind === "unfinished" ? state.previous : null;
@@ -87,12 +88,13 @@ function SaveControl({ id, title, currentAsset, load, compact, offline }: Props 
       const publication = await load(controller.signal);
       await saveCopy({
         publication,
-        confirmation,
+        account,
+        confirm: offline.confirm,
         offline: offline.boot,
         store: offline.store,
         guard,
         ensureWorker,
-        estimate: () => navigator.storage.estimate(),
+        estimate: async () => (await navigator.storage?.estimate?.()) ?? {},
         locks: navigator.locks,
         onProgress: (received, total) => {
           const now = Date.now();
@@ -120,7 +122,11 @@ function SaveControl({ id, title, currentAsset, load, compact, offline }: Props 
   const remove = async () => {
     setConfirmingRemoval(false);
     generation.current += 1;
-    await offline.store.remove(account, id).catch(() => undefined);
+    const removed = await offline.store.remove(account, id).then(
+      () => true,
+      () => false,
+    );
+    setRemovalFailed(!removed);
     announceChange();
     await refresh();
     keepFocus();
@@ -134,6 +140,7 @@ function SaveControl({ id, title, currentAsset, load, compact, offline }: Props 
       </h2>
       <div ref={status} role="status" className="offline-copy-status" tabIndex={-1}>
         <StatusText state={state} outdated={outdated} compact={compact ?? false} />
+        {removalFailed ? <p className="form-error">This browser couldn't remove the saved copy. Try again.</p> : null}
       </div>
       {state.kind === "saving" && state.here ? (
         <div className="offline-copy-transfer">

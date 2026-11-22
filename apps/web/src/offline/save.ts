@@ -27,7 +27,8 @@ export class SaveFailure extends Error {
 
 export type SaveInputs = {
   publication: ReaderPublication;
-  confirmation: ConfirmedAccount;
+  account: string;
+  confirm: () => Promise<ConfirmedAccount>;
   offline: OfflineBoot;
   store: OfflineStore;
   guard: AccountGuard;
@@ -39,7 +40,30 @@ export type SaveInputs = {
   onProgress?: (received: number, total: number) => void;
 };
 
-const ZIP_SIGNATURE = [0x50, 0x4b, 0x03, 0x04];
+const LOCAL_HEADER = 0x04034b50;
+const CENTRAL_HEADER = 0x02014b50;
+const END_OF_DIRECTORY = 0x06054b50;
+const END_RECORD_BYTES = 22;
+const LONGEST_END = END_RECORD_BYTES + 0xffff;
+
+export async function completeZip(blob: Blob): Promise<boolean> {
+  if (blob.size < END_RECORD_BYTES + 30) return false;
+  const head = new DataView(await blob.slice(0, 4).arrayBuffer());
+  if (head.getUint32(0, true) !== LOCAL_HEADER) return false;
+  const tailStart = Math.max(0, blob.size - LONGEST_END);
+  const tail = new DataView(await blob.slice(tailStart).arrayBuffer());
+  for (let offset = tail.byteLength - END_RECORD_BYTES; offset >= 0; offset -= 1) {
+    if (tail.getUint32(offset, true) !== END_OF_DIRECTORY) continue;
+    const entries = tail.getUint16(offset + 10, true);
+    const size = tail.getUint32(offset + 12, true);
+    const start = tail.getUint32(offset + 16, true);
+    const end = tailStart + offset;
+    if (entries === 0 || offset + END_RECORD_BYTES + tail.getUint16(offset + 20, true) !== tail.byteLength || start + size !== end) return false;
+    const central = new DataView(await blob.slice(start, start + 4).arrayBuffer());
+    return central.byteLength === 4 && central.getUint32(0, true) === CENTRAL_HEADER;
+  }
+  return false;
+}
 
 export const saveLockName = (account: string, id: string): string => `shelfarr-go-preview-offline|${bookKey(account, id)}`;
 
@@ -86,9 +110,9 @@ async function download(url: string, assetId: string, size: number, inputs: Save
     chunks.push(value);
     inputs.onProgress?.(received, size);
   }
-  const head = chunks[0];
-  if (received !== size || !head || ZIP_SIGNATURE.some((byte, index) => head[index] !== byte)) throw new SaveFailure("changed");
-  return new Blob(chunks, { type: "application/epub+zip" });
+  const blob = new Blob(chunks, { type: "application/epub+zip" });
+  if (received !== size || !(await completeZip(blob))) throw new SaveFailure("changed");
+  return blob;
 }
 
 async function checkSpace(inputs: SaveInputs, account: string, id: string, size: number): Promise<void> {
@@ -104,7 +128,9 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
   const asset = savedEpub(publication);
   if (!asset) throw new SaveFailure("unsupported");
   const key = bookKey(account, publication.id);
-  await store.begin({ key, account, id: publication.id, title: publication.title, assetId: asset.id, startedAt: now(), failure: null });
+  const startedAt = now();
+  await checkSpace(inputs, account, publication.id, asset.size_bytes);
+  await store.begin({ key, account, id: publication.id, title: publication.title, assetId: asset.id, startedAt, failure: null });
   try {
     const blob = await download(asset.url, asset.id, asset.size_bytes, inputs);
     guard.assertActive();
@@ -121,7 +147,8 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
       devicePlace: previous?.devicePlace ?? null,
     };
     const book = previous?.accountPlace ? rememberAccountPlace({ ...fresh, accountPlace: previous.accountPlace }, publication.progress, now()) : fresh;
-    if (!(await store.commit(book, blob, now()))) throw new SaveFailure("signed_out");
+    const outcome = await store.commit(book, blob, startedAt, now());
+    if (outcome !== "saved") throw new SaveFailure(outcome === "account" ? "signed_out" : outcome);
   } catch (error) {
     const kind = classify(error);
     await store.fail(account, publication.id, kind).catch(() => undefined);
@@ -130,8 +157,7 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
 }
 
 export async function saveCopy(inputs: SaveInputs): Promise<void> {
-  const { publication, confirmation, guard } = inputs;
-  const account = confirmation.account;
+  const { publication, account, guard } = inputs;
   try {
     const asset = savedEpub(publication);
     if (!asset) throw new SaveFailure("unsupported");
@@ -140,8 +166,8 @@ export async function saveCopy(inputs: SaveInputs): Promise<void> {
     if (guard.account !== account) throw new SaveFailure("signed_out");
     await inputs.ensureWorker(inputs.offline);
     guard.assertActive();
-    await inputs.store.confirm(confirmation);
-    await checkSpace(inputs, account, publication.id, asset.size_bytes);
+    const confirmed = await inputs.confirm();
+    if (confirmed.account !== account) throw new SaveFailure("signed_out");
   } catch (error) {
     throw new SaveFailure(classify(error));
   }

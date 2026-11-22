@@ -1,7 +1,7 @@
 import type { Locator, ProgressPlace } from "../contract";
 import type { OfflineStore } from "./model";
 
-export type DeviceSaveState = { kind: "idle" } | { kind: "kept" } | { kind: "failed" } | { kind: "stopped" };
+export type DeviceSaveState = { kind: "idle" } | { kind: "kept" } | { kind: "failed" } | { kind: "stopped" } | { kind: "replaced" };
 
 const WRITE_DELAY_MS = 300;
 
@@ -57,14 +57,20 @@ export class DevicePlaces {
     this.writing = this.writing.then(async () => {
       if (this.stopped) return;
       try {
-        const kept = await this.store.updateBook(
+        const outcome = await this.store.updateBook(
           this.account,
           this.id,
-          (book) => ({ ...book, devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now() } }),
+          (book) =>
+            book.asset.id === next.place.asset_id
+              ? { ...book, devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now() } }
+              : null,
           this.now(),
         );
-        if (kept) this.set({ kind: "kept" });
-        else {
+        if (outcome === "updated") this.set({ kind: "kept" });
+        else if (outcome === "unchanged") {
+          this.stop();
+          this.set({ kind: "replaced" });
+        } else {
           this.stop();
           this.onRefused();
         }

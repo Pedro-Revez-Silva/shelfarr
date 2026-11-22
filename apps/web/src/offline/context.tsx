@@ -7,6 +7,7 @@ export type Offline = {
   store: OfflineStore;
   confirmation: ConfirmedAccount | null;
   connected: boolean;
+  confirm: () => Promise<ConfirmedAccount>;
 };
 
 const OfflineContext = createContext<Offline | null>(null);

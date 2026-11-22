@@ -1,5 +1,5 @@
 import type { ReaderAsset, ReaderPublication, StoredProgress } from "../src/contract";
-import { bookKey, usable, type Attempt, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook } from "../src/offline/model";
+import { ACCOUNT_LIMIT_BYTES, bookKey, usable, type Attempt, type CommitOutcome, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook, type UpdateOutcome } from "../src/offline/model";
 
 export const EPUB_ID = "e".repeat(64);
 export const NEWER_ID = "f".repeat(64);
@@ -7,6 +7,7 @@ export const DAY = 86_400_000;
 
 export class MemoryOfflineStore implements OfflineStore {
   record: ConfirmedAccount | null = null;
+  generation = 0;
   readonly saved = new Map<string, SavedBook>();
   readonly files = new Map<string, { assetId: string; blob: Blob }>();
   readonly attemptRecords = new Map<string, Attempt>();
@@ -14,20 +15,39 @@ export class MemoryOfflineStore implements OfflineStore {
   confirms: ConfirmedAccount[] = [];
   beforeCommit: (() => void) | null = null;
   failCommit: Error | null = null;
+  failRemove: Error | null = null;
 
   async exists() {
     return true;
   }
-  async account() {
-    return this.record;
+  async prepare() {}
+  async accountState() {
+    return { record: this.record, generation: this.generation };
   }
-  async confirm(value: ConfirmedAccount) {
+  async confirm(value: ConfirmedAccount, generation: number) {
+    if (generation !== this.generation) return false;
     this.confirms.push(value);
     this.record = value;
+    this.generation += 1;
+    return true;
   }
   async forget(account?: string) {
     this.forgets.push(account);
-    if (this.record && (account === undefined || this.record.account === account)) this.record = null;
+    if (account !== undefined && this.record?.account !== account) return;
+    this.record = null;
+    this.generation += 1;
+  }
+  async touch(account: string, now: number) {
+    const owned = this.record?.account === account;
+    if (!usable(this.record, account, now)) {
+      if (owned) {
+        this.record = null;
+        this.generation += 1;
+      }
+      return false;
+    }
+    if (now > (this.record.seenAt ?? 0)) this.record = { ...this.record, seenAt: now };
+    return true;
   }
   async books(account: string) {
     return [...this.saved.values()].filter((book) => book.account === account);
@@ -35,10 +55,10 @@ export class MemoryOfflineStore implements OfflineStore {
   async book(account: string, id: string) {
     return this.saved.get(bookKey(account, id)) ?? null;
   }
-  async file(account: string, id: string) {
+  async open(account: string, id: string) {
     const book = this.saved.get(bookKey(account, id));
     const file = this.files.get(bookKey(account, id));
-    return book && file && file.assetId === book.asset.id ? file.blob : null;
+    return book && file && file.assetId === book.asset.id ? { book, blob: file.blob } : null;
   }
   async attempts(account: string) {
     return [...this.attemptRecords.values()].filter((attempt) => attempt.account === account);
@@ -50,22 +70,29 @@ export class MemoryOfflineStore implements OfflineStore {
     const current = this.attemptRecords.get(bookKey(account, id));
     if (current) this.attemptRecords.set(current.key, { ...current, failure });
   }
-  async commit(book: SavedBook, blob: Blob, now: number) {
+  async commit(book: SavedBook, blob: Blob, startedAt: number, now: number): Promise<CommitOutcome> {
     this.beforeCommit?.();
     if (this.failCommit) throw this.failCommit;
-    if (!usable(this.record, book.account, now)) return false;
+    if (!usable(this.record, book.account, now)) return "account";
+    const attempt = this.attemptRecords.get(book.key);
+    if (!attempt || attempt.startedAt !== startedAt || attempt.assetId !== book.asset.id) return "removed";
+    const others = [...this.saved.values()].filter((other) => other.account === book.account && other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
+    if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";
     this.files.set(book.key, { assetId: book.asset.id, blob });
     this.saved.set(book.key, book);
     this.attemptRecords.delete(book.key);
-    return true;
+    return "saved";
   }
-  async updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook, now: number) {
+  async updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook | null, now: number): Promise<UpdateOutcome> {
     const book = this.saved.get(bookKey(account, id));
-    if (!usable(this.record, account, now) || !book) return false;
-    this.saved.set(book.key, change(book));
-    return true;
+    if (!usable(this.record, account, now) || !book) return "refused";
+    const next = change(book);
+    if (!next || next === book) return "unchanged";
+    this.saved.set(book.key, next);
+    return "updated";
   }
   async remove(account: string, id: string) {
+    if (this.failRemove) throw this.failRemove;
     const key = bookKey(account, id);
     this.saved.delete(key);
     this.files.delete(key);
@@ -80,14 +107,35 @@ export class MemoryOfflineStore implements OfflineStore {
   }
 }
 
-export function epubBytes(size: number): Uint8Array<ArrayBuffer> {
+export const SIZE = 256;
+
+export function epubBytes(size: number = SIZE): Uint8Array<ArrayBuffer> {
+  const name = new TextEncoder().encode("mimetype");
   const bytes = new Uint8Array(size);
-  bytes.set([0x50, 0x4b, 0x03, 0x04]);
+  const view = new DataView(bytes.buffer);
+  const data = size - (30 + name.length) - (46 + name.length) - 22;
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint32(18, data, true);
+  view.setUint32(22, data, true);
+  view.setUint16(26, name.length, true);
+  bytes.set(name, 30);
+  const central = 30 + name.length + data;
+  view.setUint32(central, 0x02014b50, true);
+  view.setUint32(central + 20, data, true);
+  view.setUint32(central + 24, data, true);
+  view.setUint16(central + 28, name.length, true);
+  bytes.set(name, central + 46);
+  const end = central + 46 + name.length;
+  view.setUint32(end, 0x06054b50, true);
+  view.setUint16(end + 8, 1, true);
+  view.setUint16(end + 10, 1, true);
+  view.setUint32(end + 12, end - central, true);
+  view.setUint32(end + 16, central, true);
   return bytes;
 }
 
 export function asset(overrides: Partial<ReaderAsset> = {}): ReaderAsset {
-  return { id: EPUB_ID, filename: "Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: 64, position: 0, url: `/preview/api/v1/accounts/5/library/7/assets/${EPUB_ID}`, ...overrides };
+  return { id: EPUB_ID, filename: "Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: SIZE, position: 0, url: `/preview/api/v1/accounts/5/library/7/assets/${EPUB_ID}`, ...overrides };
 }
 
 export function readerPublication(overrides: Partial<ReaderPublication> = {}): ReaderPublication {
@@ -114,7 +162,7 @@ export function savedBook(overrides: Partial<SavedBook> = {}): SavedBook {
     id: "7",
     title: "Saved Book",
     author: "A. Writer",
-    asset: { id: EPUB_ID, filename: "Book.epub", media_type: "application/epub+zip", size_bytes: 64 },
+    asset: { id: EPUB_ID, filename: "Book.epub", media_type: "application/epub+zip", size_bytes: SIZE },
     savedAt: 1_000,
     accountPlace: null,
     devicePlace: null,

@@ -108,29 +108,36 @@ type messageEnvelope struct {
 const expiryLayout = "2006-01-02T15:04:05.000Z"
 
 func (v Verifier) VerifiedMessage(token, purpose string, now time.Time) (json.RawMessage, bool) {
+	value, _, ok := v.VerifiedMessageUntil(token, purpose, now)
+	return value, ok
+}
+
+func (v Verifier) VerifiedMessageUntil(token, purpose string, now time.Time) (json.RawMessage, time.Time, bool) {
 	payload, ok := v.verifiedPayload(token)
 	if !ok {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	var message messageEnvelope
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	if err := decoder.Decode(&message); err != nil || decoder.More() {
-		return nil, false
+		return nil, time.Time{}, false
 	}
 	if message.Rails.Message == nil || message.Rails.Purpose != purpose {
-		return nil, false
+		return nil, time.Time{}, false
 	}
+	var expires time.Time
 	if message.Rails.Expires != nil {
-		expires, err := time.Parse(time.RFC3339Nano, *message.Rails.Expires)
-		if err != nil || !now.Before(expires) {
-			return nil, false
+		parsed, err := time.Parse(time.RFC3339Nano, *message.Rails.Expires)
+		if err != nil || !now.Before(parsed) {
+			return nil, time.Time{}, false
 		}
+		expires = parsed
 	}
 	value, err := base64.StdEncoding.Strict().DecodeString(*message.Rails.Message)
 	if err != nil || !json.Valid(value) {
-		return nil, false
+		return nil, time.Time{}, false
 	}
-	return value, true
+	return value, expires, true
 }
 
 func (v Verifier) GenerateMessage(value json.RawMessage, purpose string, expires time.Time) (string, error) {

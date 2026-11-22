@@ -16,8 +16,9 @@ import { SignInPage, type LoginToken } from "./SignInPage";
 import { LockedScreen } from "../components/LockedScreen";
 import { confirmationFrom, OfflineProvider, type Offline } from "../offline/context";
 import { DownloadsPage } from "../offline/DownloadsPage";
-import { usable, type ConfirmedAccount, type OfflineStore } from "../offline/model";
-import { OfflineApp, OfflineUnavailable, serverUnreachable } from "../offline/OfflineApp";
+import type { ConfirmedAccount, OfflineStore } from "../offline/model";
+import { definitiveRefusal, OfflineApp, OfflineUnavailable, serverUnreachable } from "../offline/OfflineApp";
+import { SaveFailure } from "../offline/save";
 import { offlineStore } from "../offline/store";
 import { hasWorker, retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
@@ -39,20 +40,23 @@ type Load = { notice?: string; focus?: boolean };
 const RETIRED_WORKER = { scope: "/preview/library/", worker: "/preview/offline-worker.js" };
 const SAVED_VIEWS: readonly GoBoot["view"][] = ["reader", "downloads"];
 
-async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null): Promise<void> {
-  if (!boot.offline) {
-    await retireWorker(RETIRED_WORKER);
-    await store.forget();
-    return;
-  }
+async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null, generation: number | null): Promise<void> {
+  if (!boot.offline) return;
   if (!confirmation) await store.forget();
-  else if (await hasWorker(boot.offline)) await store.confirm(confirmation);
+  else if (generation !== null && (await hasWorker(boot.offline))) await store.confirm(confirmation, generation);
+}
+
+async function retireOffline(store: OfflineStore): Promise<void> {
+  await retireWorker(RETIRED_WORKER);
+  await store.forget();
 }
 
 async function offlineFallback(boot: GoBoot, store: OfflineStore, error: unknown): Promise<AuthState | null> {
   if (!boot.offline || !SAVED_VIEWS.includes(boot.view) || !serverUnreachable(error)) return null;
-  const record = await store.account().catch(() => null);
-  return usable(record, null, Date.now()) ? { kind: "offline", record } : { kind: "offline_unavailable" };
+  const { record } = await store.accountState().catch(() => ({ record: null }));
+  if (!record) return { kind: "offline_unavailable" };
+  const kept = await store.touch(record.account, Date.now()).catch(() => false);
+  return kept ? { kind: "offline", record } : { kind: "offline_unavailable" };
 }
 
 function describeUnavailable(error: unknown): { message: string; retry: boolean } {
@@ -69,14 +73,16 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
   const load = useCallback(
     async (options: Load = {}) => {
       setState({ kind: "loading" });
+      if (!boot.offline) void retireOffline(store).catch(() => undefined);
+      const before = boot.offline ? await store.accountState().catch(() => null) : null;
       try {
         const result = await auth.bootstrap();
         setEpoch((value) => value + 1);
         const next = fromBootstrap(result, options);
-        void keepOfflineAccount(boot, store, next.kind === "signed_in" ? next.confirmation : null).catch(() => undefined);
+        void keepOfflineAccount(boot, store, next.kind === "signed_in" ? next.confirmation : null, before?.generation ?? null).catch(() => undefined);
         setState(next);
       } catch (error) {
-        if (error instanceof ApiError && error.kind === "not_found") void store.forget().catch(() => undefined);
+        if (definitiveRefusal(error)) await store.forget().catch(() => undefined);
         const fallback = await offlineFallback(boot, store, error);
         if (fallback) setEpoch((value) => value + 1);
         setState(fallback ?? { kind: "unavailable", ...describeUnavailable(error) });
@@ -94,7 +100,10 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
       markPageNavigated();
       setEpoch((value) => value + 1);
       const confirmation = confirmationFrom(result.account, result.offline_expires_in, Date.now());
-      void keepOfflineAccount(boot, store, confirmation).catch(() => undefined);
+      void store
+        .accountState()
+        .then((current) => keepOfflineAccount(boot, store, confirmation, current.generation))
+        .catch(() => undefined);
       setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in, confirmation });
     },
     [boot, store],
@@ -236,7 +245,43 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
     [services, account, store],
   );
 
-  const [offline] = useState<Offline | null>(() => (boot.offline ? { boot: boot.offline, store, confirmation, connected: true } : null));
+  const [offline] = useState<Offline | null>(() =>
+    boot.offline
+      ? {
+          boot: boot.offline,
+          store,
+          confirmation,
+          connected: true,
+          confirm: async () => {
+            await store.prepare();
+            const { generation } = await store.accountState();
+            let answer: Bootstrap;
+            try {
+              answer = await auth.bootstrap();
+            } catch (error) {
+              if (definitiveRefusal(error)) {
+                await store.forget();
+                throw new SaveFailure("signed_out");
+              }
+              throw new SaveFailure("network");
+            }
+            if (!answer.authenticated) {
+              await store.forget();
+              services.guard.lock("signed_out");
+              throw new SaveFailure("signed_out");
+            }
+            if (answer.account !== account) {
+              services.guard.lock("account_changed");
+              throw new SaveFailure("signed_out");
+            }
+            const fresh = confirmationFrom(answer.account, answer.offline_expires_in, Date.now());
+            if (!fresh) throw new SaveFailure("unsupported");
+            if (!(await store.confirm(fresh, generation))) throw new SaveFailure("signed_out");
+            return fresh;
+          },
+        }
+      : null,
+  );
 
   useEffect(() => {
     const queryClient = services.queryClient;

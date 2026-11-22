@@ -11,9 +11,10 @@ export const FAILURES: Record<FailureKind, string> = {
   worker: "Offline reading couldn't start in this browser, so nothing was saved. Reload the page and try again.",
   busy: "Another tab is already saving this book. Wait for it to finish.",
   unsupported: "This browser can't keep books for offline reading.",
+  removed: "The saved copy was removed while the new one was saving, so nothing was stored. Save it again if you still want it.",
 };
 
-export const RETRYABLE: ReadonlySet<FailureKind> = new Set(["network", "changed", "space", "storage", "worker", "busy"]);
+export const RETRYABLE: ReadonlySet<FailureKind> = new Set(["network", "changed", "space", "storage", "worker", "busy", "removed"]);
 
 const DATE = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 const MOMENT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });

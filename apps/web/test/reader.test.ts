@@ -10,7 +10,8 @@ import { EpubSession } from "../src/reader/epub";
 import { pageKey, playKey } from "../src/reader/keys";
 import { goReaderLink, goSummaryReaderLink } from "../src/reader/links";
 import { ProgressSession, type SaveState } from "../src/reader/progress";
-import { backTarget, readerPublicationId } from "../src/reader/ReaderApp";
+import { readerPublicationId } from "../src/reader/ReaderApp";
+import { backTarget } from "../src/reader/ReaderFrame";
 import { ACCOUNT, boot, deferred, detail, FakeServer, summary } from "./helpers";
 
 const ASSET = "a".repeat(64);
@@ -116,7 +117,7 @@ describe("saving a reading place", () => {
     await settle();
     expect(session.getState()).toEqual({ kind: "remote", remote: later });
     expect(calls).toHaveLength(1);
-    expect(confirmed).toEqual([]);
+    expect(confirmed).toEqual([later]);
     expect(session.useRemote()).toEqual(later);
     session.record(place(0.3));
     await settle();
@@ -133,7 +134,7 @@ describe("saving a reading place", () => {
     await settle();
     expect(calls[4]?.body).toEqual({ ...place(0.5), observed_at: "2026-11-15T12:00:00.003Z", expected_version: 8, client_mutation_id: "mutation-5", resolve_conflict: true });
     expect(session.getState().kind).toBe("saved");
-    expect(confirmed.map((progress) => progress.version)).toEqual([7, 9]);
+    expect(confirmed.map((progress) => progress.version)).toEqual([5, 6, 7, 8, 9]);
   });
 
   test("nothing is recorded or sent once the account guard locks or the session stops, even when an answer arrives late", async () => {

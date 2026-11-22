@@ -42,13 +42,15 @@
   }
 
   self.addEventListener("install", event => {
-    event.waitUntil(precache().then(() => self.skipWaiting()))
+    event.waitUntil(precache().catch(async error => {
+      await caches.delete(CACHE)
+      throw error
+    }))
   })
 
   self.addEventListener("activate", event => {
     event.waitUntil((async () => {
       for (const name of await caches.keys()) if (name.startsWith(PREFIX) && name !== CACHE) await caches.delete(name)
-      await self.clients.claim()
     })())
   })
 

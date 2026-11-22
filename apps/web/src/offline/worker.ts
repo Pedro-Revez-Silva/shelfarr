@@ -44,7 +44,8 @@ export async function ensureWorker(offline: OfflineBoot): Promise<void> {
   } catch {
     throw new WorkerFailure("Offline support couldn't start in this browser");
   }
-  const worker = registration.installing ?? registration.waiting ?? registration.active;
+  if (registration.active) return;
+  const worker = registration.installing ?? registration.waiting;
   if (!worker) throw new WorkerFailure("Offline support couldn't start in this browser");
   await activated(worker);
 }

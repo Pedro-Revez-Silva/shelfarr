@@ -10,7 +10,7 @@ import { AccountGuard } from "../src/api/account-guard";
 import { OfflineProvider } from "../src/offline/context";
 import { SaveForOffline } from "../src/offline/SaveForOffline";
 import { createServices, ServicesProvider } from "../src/services";
-import { DAY, EPUB_ID, MemoryOfflineStore, NEWER_ID, readerPublication, savedBook } from "./offline-helpers";
+import { DAY, EPUB_ID, MemoryOfflineStore, NEWER_ID, SIZE, epubBytes, readerPublication, savedBook, serverProgress } from "./offline-helpers";
 
 const OFFLINE = { worker: "/preview/offline-worker.js", scope: "/preview/library/", downloads: "/preview/library/downloads" };
 
@@ -200,7 +200,7 @@ function renderControl(store: MemoryOfflineStore, currentAsset: string | null) {
   const loads: string[] = [];
   render(
     <ServicesProvider services={services}>
-      <OfflineProvider value={{ boot: OFFLINE, store, confirmation: { account: "5", confirmedAt: Date.now(), validForMs: DAY }, connected: true }}>
+      <OfflineProvider value={{ boot: OFFLINE, store, confirmation: { account: "5", confirmedAt: Date.now(), validForMs: DAY }, connected: true, confirm: () => Promise.reject(new Error("unused")) }}>
         <SaveForOffline id="7" title="Member's Saved Book" currentAsset={currentAsset} load={async () => {
           loads.push("7");
           return readerPublication();
@@ -286,5 +286,175 @@ describe("saving from the Go details page", () => {
     await user.type(screen.getByLabelText("Password"), "synthetic-password");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("button", { name: "Save for offline reading" })).toBeTruthy();
+  });
+});
+
+function asOfflineBrowser(download: () => Response) {
+  const saved = { secure: Object.getOwnPropertyDescriptor(window, "isSecureContext"), fetch: globalThis.fetch };
+  const fetched: string[] = [];
+  Object.defineProperty(window, "isSecureContext", { value: true, configurable: true });
+  Object.defineProperty(navigator, "serviceWorker", { value: { register: async () => ({ active: {} }), getRegistration: async () => undefined }, configurable: true });
+  Object.defineProperty(globalThis, "caches", { value: { keys: async () => [] }, configurable: true });
+  Object.defineProperty(globalThis, "indexedDB", { value: {}, configurable: true });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    fetched.push(String(input));
+    return download();
+  }) as typeof fetch;
+  return {
+    fetched,
+    restore: () => {
+      globalThis.fetch = saved.fetch;
+      if (saved.secure) Object.defineProperty(window, "isSecureContext", saved.secure);
+      else Reflect.deleteProperty(window, "isSecureContext");
+      for (const target of [navigator, globalThis]) for (const name of ["serviceWorker", "caches", "indexedDB"]) if (Object.getOwnPropertyDescriptor(target, name)?.configurable) Reflect.deleteProperty(target, name);
+    },
+  };
+}
+
+const readerFor = (account: string) => ({ body: { account, publication: readerPublication() } });
+const epub = () => new Response(epubBytes(), { headers: { ETag: `"${EPUB_ID}"`, "Content-Length": String(SIZE) } });
+
+describe("account checks around a save", () => {
+  test("a save confirms the account with the server first and then stores the copy", async () => {
+    const browser = asOfflineBrowser(epub);
+    try {
+      const store = new MemoryOfflineStore();
+      const server = libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 }))
+        .on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ files: [{ id: EPUB_ID, filename: "Saved Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: SIZE, position: 0, page_count: null }] }) } }))
+        .on("GET", /\/api\/v1\/library\/7\/reader$/, () => readerFor(ACCOUNT));
+      renderOffline(server, store, "details", "/preview/library/7");
+      const save = await screen.findByRole("button", { name: "Save for offline reading" });
+      await act(async () => save.click());
+      expect(await screen.findByText(/Saved on this device on/)).toBeTruthy();
+      expect(server.called("GET", /\/auth\/bootstrap$/)).toHaveLength(2);
+      expect(store.record?.account).toBe(ACCOUNT);
+      expect(browser.fetched).toEqual([`/preview/api/v1/accounts/5/library/7/assets/${EPUB_ID}`]);
+      expect(store.saved.has(`${ACCOUNT}|7`)).toBe(true);
+    } finally {
+      browser.restore();
+    }
+  });
+
+  test("a sign-out in another tab while the save checks the account is never undone by the save", async () => {
+    const browser = asOfflineBrowser(epub);
+    try {
+      const store = new MemoryOfflineStore();
+      let loads = 0;
+      const server = libraryServer(() => {
+        loads += 1;
+        if (loads > 1) void store.forget();
+        return { ...signedIn(), offline_expires_in: 3600 };
+      })
+        .on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ files: [{ id: EPUB_ID, filename: "Saved Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: SIZE, position: 0, page_count: null }] }) } }))
+        .on("GET", /\/api\/v1\/library\/7\/reader$/, () => readerFor(ACCOUNT));
+      renderOffline(server, store, "details", "/preview/library/7");
+      const save = await screen.findByRole("button", { name: "Save for offline reading" });
+      await act(async () => save.click());
+      expect(await screen.findByText(/Your session or the signed-in account changed/)).toBeTruthy();
+      expect(store.record).toBeNull();
+      expect(browser.fetched).toEqual([]);
+      expect(store.saved.size).toBe(0);
+    } finally {
+      browser.restore();
+    }
+  });
+});
+
+describe("offline lifecycle regressions", () => {
+  test("a server that switched offline off is honoured even when it cannot be reached", async () => {
+    const store = storeFor("5");
+    renderOffline(unreachable(), store, "downloads", "/preview/library/downloads", null);
+    await screen.findByRole("heading", { name: "Shelfarr is unavailable here" });
+    await waitFor(() => expect(store.record).toBeNull());
+    expect(screen.queryByText(/Saved Book/)).toBeNull();
+  });
+
+  test("any definitive refusal of the account forgets it, so a later outage cannot reopen saved books", async () => {
+    for (const status of [401, 403, 404, 422]) {
+      const store = storeFor("5");
+      const view = renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => error(status, "refused")), store);
+      await waitFor(() => expect(store.record).toBeNull());
+      view.unmount();
+    }
+    const kept = storeFor("5");
+    const view = renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => error(500, "internal_error")), kept);
+    await screen.findByRole("heading", { name: "Shelfarr is unavailable here" });
+    expect(kept.record?.account).toBe("5");
+    view.unmount();
+  });
+
+  test("a slow reconnection answer for the old account cannot restore it after a newer answer signed out", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const answers: (() => unknown)[] = [
+      () => {
+        throw new TypeError("Failed to fetch");
+      },
+      () => new Promise((resolve) => (release = resolve)),
+      () => ({ body: signedOut() }),
+    ];
+    const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => (answers.shift() ?? (() => ({ body: signedOut() })))() as { body: unknown });
+    const store = storeFor("5");
+    renderOffline(server, store);
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(store.record).toBeNull();
+    await act(async () => {
+      release({ body: { ...signedIn("5"), offline_expires_in: 3600 } });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(store.record).toBeNull();
+    expect(screen.queryByText(/Saved Book/)).toBeNull();
+  });
+
+  test("offline access ends at the confirmed boundary while the page stays open, and the record is removed", async () => {
+    const store = storeFor("5", Date.now() - 30 * DAY + 80);
+    renderOffline(unreachable(), store);
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    expect(await screen.findByRole("heading", { name: "Offline access ended" }, { timeout: 2000 })).toBeTruthy();
+    expect(screen.queryByText(/Saved Book/)).toBeNull();
+    expect(store.record).toBeNull();
+  });
+
+  test("a failed removal says so instead of claiming success", async () => {
+    const store = storeFor("5");
+    store.failRemove = new DOMException("disk", "UnknownError");
+    renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } })), store);
+    const item = (await screen.findByRole("heading", { name: "Member's Saved Book" })).closest("li") as HTMLElement;
+    await act(async () => within(item).getByRole("button", { name: "Remove Member's Saved Book" }).click());
+    await act(async () => within(item).getByRole("button", { name: "Remove" }).click());
+    expect(await screen.findByText("This browser couldn't remove “Member's Saved Book”. Reload the page and try again.")).toBeTruthy();
+    expect(screen.queryByText(/^Removed/)).toBeNull();
+    expect(store.saved.has("5|7")).toBe(true);
+  });
+});
+
+describe("the online reader with a saved copy", () => {
+  test("shows the saved copy's state in its header and remembers the account's newer place for offline opening", async () => {
+    const store = storeFor("5");
+    const server = new FakeServer()
+      .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } }))
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+      .on("GET", /\/api\/v1\/library\/7\/reader$/, () => ({ body: { account: "5", publication: readerPublication({ progress: serverProgress({ version: 4 }) }) } }));
+    const network = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("no network in unit tests");
+    }) as unknown as typeof fetch;
+    try {
+      resetFirstPage();
+      window.history.replaceState(null, "", "/preview/library/7/read");
+      render(<GoApp boot={{ ...goBoot("reader"), reader_engine: "/preview/assets/reader-engine.0123456789abcdef.js", offline: OFFLINE }} fetcher={server.fetcher} store={store} />);
+      const header = (await screen.findByRole("heading", { level: 1, name: "Saved Book" })).closest("header") as HTMLElement;
+      expect(await within(header).findByText(/Saved on this device on/)).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Remove saved copy" })).toBeTruthy();
+      await waitFor(() => expect(store.saved.get("5|7")?.accountPlace?.version).toBe(4));
+      expect(store.saved.get("5|7")?.accountPlace?.observedAt).toBe(serverProgress().observed_at);
+    } finally {
+      globalThis.fetch = network;
+    }
   });
 });
