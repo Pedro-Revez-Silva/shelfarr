@@ -141,8 +141,6 @@ class ReleaseScorer
 
     # Every marker is rewritten to "volume N", so trigrams cannot tell
     # volume 2 from volume 3. A mismatched number is a different book.
-    # A bare sequel numeral is decided once on the canonical title, before
-    # punctuationless forms or trigrams can outvote it.
     comparable = comparable_titles
     return 0 if comparable.empty?
     return 0 if sequel_title_conflict?
@@ -164,9 +162,6 @@ class ReleaseScorer
     end
   end
 
-  # A spaced sequel numeral is not the requested book. "三体" must not match
-  # "三体 Ⅱ" once TitleKey folding has turned that numeral into "2". The
-  # numeral has to follow the matched phrase. A publication year still may.
   def exact_title_phrase_match?(release_title, book_title, short_title:)
     phrase_endings(release_title, book_title).any? do |ending|
       next false unless acceptable_phrase_position?(release_title, book_title, ending, short_title: short_title)
@@ -210,8 +205,6 @@ class ReleaseScorer
   end
 
   # The author credit is not part of the title, so initials cannot finish a
-  # marker ("The Red Book C. G. Jung"). Bracketed years and spaced bitrates
-  # come off next, before a numeral is read.
   def prepared_release_title
     @prepared_release_title ||= without_audiobook_file_count(
       SequenceMarker.without_recognised_metadata(
@@ -237,8 +230,6 @@ class ReleaseScorer
     }
   end
 
-  # Comic issue numbers are a separate match. A confirmed book sequel blocks
-  # auto-selection even when the numeric total stays under the threshold.
   def sequel_title_conflict?
     return @sequel_title_conflict if instance_variable_defined?(:@sequel_title_conflict)
 

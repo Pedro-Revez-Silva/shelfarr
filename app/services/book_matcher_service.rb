@@ -85,8 +85,6 @@ class BookMatcherService
       normalized_query_title = normalize(query_title)
       normalized_book_title = normalize(book_title)
       return 0 if SequenceMarker.conflict?(normalized_query_title, normalized_book_title)
-      # "Хроники Амбера 2" has no volume word. The bare numeral is still a
-      # different book, under the same rule ReleaseScorer uses.
       return 0 if SequenceMarker.sequel_conflict?(query_title, book_title)
 
       title_score = string_similarity(normalized_query_title, normalized_book_title)

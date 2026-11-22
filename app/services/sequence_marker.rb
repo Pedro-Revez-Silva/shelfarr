@@ -9,7 +9,6 @@ class SequenceMarker
   # de: band, teil, buch
   # es/it/pt: tomo, parte, libro, livro, volumen
   # nl: deel, boek
-  # ru: том (volume), часть (part), книга (book), выпуск (installment)
   MARKER_WORDS = %w[
     book part vol volume
     tome partie livre
@@ -106,23 +105,15 @@ class SequenceMarker
   ).freeze
   private_constant :SEPARATOR_PATTERN
 
-  # A publication year after a title is not a sequel ("(1894)", ".2026.").
-  # Bare 1800-2099 stays a year. An older year counts only inside brackets
-  # ("Hamlet (1603)"), where a bare number would otherwise be a volume.
   PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
   BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
-  # "128 kbps" is bitrate metadata. The glued form "128kbps" is handled with
-  # the numeral suffix below; this pattern is the separated unit token.
   SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
   CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
-  # No trailing anchor: punctuationless keys glue the marker to the subtitle
-  # ("第2部：黑暗森林" -> "第2部黑暗森林").
   CJK_VOLUME_PREFIX = /
     \A第
     (?<number>\d+|[ivxlcdm]+|[#{CHINESE_NUMERALS}]+)
     [部卷巻]?
   /x
-  # "cd" is a disc label, and it is also the Roman numeral 400.
   NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
   GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
   ONE_FILE_COUNT = ReleaseParserService::ONE_FILE_COUNT_PATTERN
@@ -184,10 +175,6 @@ class SequenceMarker
       shared.times.any? { |index| left_numbers[index] != right_numbers[index] }
     end
 
-    # Folded TitleKey tokens. A bare numeral immediately after an unnumbered
-    # title is another book ("三体 Ⅱ" folds to "三体 2"). Digits, Roman
-    # numerals, and 第N部/卷 count. A publication year does not. A bitrate
-    # number followed by its unit token ("128" "kbps") does not either.
     def leading_sequel_numeral?(tokens, after_phrase:)
       words = drop_leading_bitrate(Array(tokens))
       return false if words.empty?
@@ -196,10 +183,6 @@ class SequenceMarker
         (!explicit_volume?(Array(after_phrase)) && explicit_volume_after_tags?(words))
     end
 
-    # Bracketed years and spaced bitrates are release metadata. Unicode
-    # decimal digits are folded before either pattern runs, so "(١٦٠٣)" and
-    # "１２８ kbps" are recognised too. A year that is part of the book title
-    # stays, so "Hamlet (1603)" still matches itself.
     def without_recognised_metadata(text, preserve_title: nil)
       prepared = TitleKey.normalize_decimal_digits(text.to_s)
       kept_years = bracketed_years(preserve_title)
@@ -219,10 +202,6 @@ class SequenceMarker
       }
     end
 
-    # Canonical tokens only. "Ⅱ:The" stays "2 the" here; the punctuationless
-    # key glues that into "iithe" and would hide the numeral. A conflict is
-    # the shared phrase followed by a sequel numeral, or two different bare
-    # trailing numerals ("Title 1" and "Title 2").
     def sequel_conflict?(left, right)
       left_tokens = classification_tokens(left)
       right_tokens = classification_tokens(right)
@@ -406,10 +385,6 @@ class SequenceMarker
     end
 
     # Source offsets survive quote folding so the span still covers "Shakespeare's".
-    # Folding matches TitleKey: keep letters with no ASCII approximation, and
-    # split on Unicode letters and numerals so a CJK author stays a token.
-    # TitleKey deletes apostrophes, including modifier letters, so
-    # "Shakespeare's" and "Shakespeares" are the same span.
     def normalized_source_tokens(text)
       folded = +""
       starts = []
@@ -480,8 +455,6 @@ class SequenceMarker
       TitleKey.new(neutralize(without_recognised_metadata(text))).canonical.split
     end
 
-    # Every acceptable occurrence of the phrase is followed by a sequel
-    # numeral. One clean occurrence is still the same book.
     def phrase_sequel_conflict?(phrase, host)
       return false if phrase.empty? || phrase.length > host.length
 
@@ -538,8 +511,6 @@ class SequenceMarker
       ROMAN_VALUES.key?(text)
     end
 
-    # The punctuationless key deletes the colon, so "Ⅱ：黑暗森林" becomes
-    # "ii黑暗森林". A digit or Roman prefix of that token is still the sequel.
     def glued_sequel_numeral?(text)
       text = normalized_numeral(text)
       if (digits = text[/\A\d+/])

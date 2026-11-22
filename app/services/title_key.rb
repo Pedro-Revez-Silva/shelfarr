@@ -1,8 +1,6 @@
 # frozen_string_literal: true
 
 class TitleKey
-  # Zeros of every Unicode decimal-digit block. The next nine code points are
-  # digits 1-9, and the blocks do not overlap.
   DECIMAL_DIGIT_ZERO = [
     0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6,
     0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0,
@@ -32,10 +30,6 @@ class TitleKey
     "XV" => "15"
   }.freeze
 
-  # Quotes and apostrophes are removed before folding. An apostrophe can also
-  # split a word; that form is kept only for exact title phrases. U+02BB and
-  # U+02BC are modifier letters, so NFKC leaves them inside a name
-  # ("OʼConnor") unless they are removed with the other apostrophes.
   APOSTROPHE_CHARACTERS = "`'´’‘\u02BB\u02BC"
   QUOTE_CHARACTERS = "#{APOSTROPHE_CHARACTERS}\""
   APOSTROPHE_PATTERN = /[#{APOSTROPHE_CHARACTERS}]/
@@ -74,11 +68,6 @@ class TitleKey
     canonical.length < 4
   end
 
-  # Exact phrases split on every non-letter, including underscores. Unicode
-  # letters and numerals count, so a Cyrillic word is not discarded and "Ⅱ"
-  # stays attached to a title. Marker parsing keeps apostrophes, wrapped
-  # years, and dots, so "Don't" stays one word, "(1894)" is not a volume,
-  # and "C. G." is not a roman numeral.
   def self.normalize_boundaries(text, preserve: "")
     text.to_s.gsub(/[^\p{L}\p{N}]/) { |char| preserve.include?(char) ? char : " " }
   end
@@ -87,11 +76,6 @@ class TitleKey
     normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[].")
   end
 
-  # "?" means the transliterator has no ASCII approximation. Keep that letter
-  # so Cyrillic and CJK stay searchable. Accented Latin still folds ("ß" -> "ss").
-  # NFKC composes "ü" and rewrites a compatibility numeral ("Ⅱ" -> "II").
-  # Casefold maps final sigma ("ς") onto "σ". Decimal digits from other
-  # scripts ("٢", "２") become ASCII before anything classifies a numeral.
   def self.fold(text)
     normalize_decimal_digits(text).tr("ёЁ", "еЕ").gsub(/[^\x00-\x7F]/) { |char|
       transliterated = ActiveSupport::Inflector.transliterate(char)
@@ -99,8 +83,6 @@ class TitleKey
     }.downcase(:fold)
   end
 
-  # Nd digits are ten code points starting at a script's zero. NFKC already
-  # turns compatibility digits (fullwidth "２") into ASCII; the rest stay Nd.
   def self.normalize_decimal_digits(text)
     text.to_s.unicode_normalize(:nfkc).gsub(/\p{Nd}/) { |char|
       ascii_decimal_digit(char) || char
