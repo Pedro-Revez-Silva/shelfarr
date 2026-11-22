@@ -517,3 +517,19 @@ describe("places kept on this device", () => {
     expect(places.getState()).toEqual({ kind: "replaced" });
   });
 });
+
+describe("a refused save download", () => {
+  test("locks the page from the moment the download was asked for", async () => {
+    const store = new IndexedDbOfflineStore();
+    const sent: number[] = [];
+    const { base, guard } = inputs(store, async () => {
+      sent.push(Date.now());
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(JSON.stringify({ error: "signed_out" }), { status: 401, headers: { "content-type": "application/json" } });
+    });
+    expect(await failure(saveCopy(base))).toBe("signed_out");
+    expect(guard.isActive()).toBe(false);
+    expect(sent).toHaveLength(1);
+    expect(guard.lockAskedAt!).toBeLessThanOrEqual(sent[0]!);
+  });
+});

@@ -1,0 +1,78 @@
+import { describe, expect, test } from "bun:test";
+import { AccountGuard } from "../src/api/account-guard";
+import { ApiClient } from "../src/api/client";
+import { AuthClient, CsrfSession } from "../src/go/auth";
+import { fetchBook } from "../src/reader/media";
+import { guardedFetch } from "../src/reader/pages";
+import { boot } from "./helpers";
+import { signedOut } from "./go-helpers";
+
+const ANSWER_DELAY_MS = 30;
+const PLACE = { asset_id: "a", locator: { href: "one.xhtml" }, observed_at: "2026-11-20T11:00:00.000Z", expected_version: 0, client_mutation_id: "m" };
+
+function slowAnswer(status: number, body: unknown) {
+  const sent: number[] = [];
+  const fetcher = (async () => {
+    sent.push(Date.now());
+    await new Promise((resolve) => setTimeout(resolve, ANSWER_DELAY_MS));
+    return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return { fetcher, sent };
+}
+
+async function settled(promise: Promise<unknown>): Promise<void> {
+  await promise.catch(() => undefined);
+}
+
+function lockedWhenSent(guard: AccountGuard, sent: number[]): void {
+  expect(guard.isActive()).toBe(false);
+  expect(sent).toHaveLength(1);
+  expect(guard.lockAskedAt).not.toBeNull();
+  expect(guard.lockAskedAt!).toBeLessThanOrEqual(sent[0]!);
+}
+
+describe("a lock carries the moment its refused request was sent", () => {
+  test("an API request answered signed out later", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(401, { error: "signed_out" });
+    const client = new ApiClient({ boot, guard, csrfToken: () => "token", fetcher });
+    await settled(client.saveProgress("7", PLACE));
+    lockedWhenSent(guard, sent);
+  });
+
+  test("an API answer for another account", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(200, { account: "4", progress: null });
+    const client = new ApiClient({ boot, guard, csrfToken: () => "token", fetcher });
+    await settled(client.saveProgress("7", PLACE));
+    lockedWhenSent(guard, sent);
+  });
+
+  test("a token refresh answered signed out later", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(200, signedOut());
+    const csrf = new CsrfSession(new AuthClient("/preview/api/v1", fetcher), guard, "token", 0);
+    await settled(csrf.refresh());
+    lockedWhenSent(guard, sent);
+  });
+
+  test("a book download answered signed out later", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(401, { error: "signed_out" });
+    const network = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      await settled(fetchBook(new URL("/preview/api/v1/accounts/5/library/7/assets/x", window.location.href).href, guard, new AbortController().signal));
+    } finally {
+      globalThis.fetch = network;
+    }
+    lockedWhenSent(guard, sent);
+  });
+
+  test("a page read answered signed out later", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(401, { error: "signed_out" });
+    await settled(guardedFetch(guard, fetcher as unknown as (input: string, init: RequestInit) => Promise<Response>)("/preview/api/v1/library/7/assets/x/reading_order", {}));
+    lockedWhenSent(guard, sent);
+  });
+});
