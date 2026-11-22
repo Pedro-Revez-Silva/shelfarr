@@ -131,10 +131,9 @@ class AutoSelectService
   end
 
   def previously_failed?(result, blocked_hashes, blocked_guids)
-    hash = result.torrent_info_hash
-    return true if hash && blocked_hashes.include?(hash)
+    return true if result.torrent_info_hashes.intersect?(blocked_hashes)
 
-    result.dispatched_magnet_info_hash.nil? && blocked_guids.include?(result.guid)
+    blocked_guids.include?(result.guid) && result.dispatched_magnet_info_hash.nil?
   end
 
   def meets_confidence_threshold?(result)

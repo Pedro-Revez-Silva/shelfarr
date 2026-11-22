@@ -17,18 +17,23 @@ class MagnetLink
   # Returns the 40-character lowercase hex hash, or nil when the link
   # doesn't carry a valid btih hash.
   def self.info_hash(url)
-    query = magnet_query(url.to_s.strip)
-    return nil unless query
-
-    hashes = query.split(/[&#]/).filter_map { |param| exact_topic_hash(param) }.uniq
+    hashes = info_hashes(url)
     hashes.first if hashes.one?
-  rescue ArgumentError => error
-    RemoteResult::Failed.new(error)
+  end
+
+  def self.info_hashes(url)
+    url = url.to_s
+    return [] unless url.valid_encoding?
+
+    query = magnet_query(url.strip)
+    return [] unless query
+
+    query.split(/[&#]/).filter_map { |param| exact_topic_hash(param) }.uniq
   end
 
   def self.magnet_query(url)
-    url = URI.decode_www_form_component(url) if url.match?(/\Amagnet%3A/i)
-    url.sub(/\Amagnet:\?/i, "") if url.match?(/\Amagnet:\?/i)
+    url = URI::RFC2396_PARSER.unescape(url) if url.match?(/\Amagnet%3A/i)
+    url.sub(/\Amagnet:\?/i, "") if url.valid_encoding? && url.match?(/\Amagnet:\?/i)
   end
   private_class_method :magnet_query
 
@@ -36,7 +41,10 @@ class MagnetLink
     key, value = param.split("=", 2)
     return nil unless value && key.match?(/\A(?:x|%78)(?:t|%74)(?:\.\d+)?\z/i)
 
-    hash = URI.decode_www_form_component(value)[/\Aurn:btih:([0-9a-f]{40}|[a-z2-7]{32})\z/i, 1]
+    topic = URI::RFC2396_PARSER.unescape(value)
+    return nil unless topic.valid_encoding?
+
+    hash = topic[/\Aurn:btih:([0-9a-f]{40}|[a-z2-7]{32})\z/i, 1]
     return nil unless hash
     return hash.downcase if hash.length == 40
 

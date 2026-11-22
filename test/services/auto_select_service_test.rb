@@ -267,6 +267,31 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_not same_release.reload.selected?
   end
 
+  test "skips a new GUID when an ambiguous magnet contains a failed torrent" do
+    failed_hash = "b" * 40
+    other_hash = "a" * 40
+    @request.downloads.create!(
+      name: "Failed release",
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: "failed-guid"
+    )
+    duplicate = create_search_result(
+      guid: "another-indexer-guid",
+      seeders: 90,
+      magnet_url: "magnet:?xt=urn:btih:#{failed_hash}&dn=Book#xt=urn:btih:#{other_hash}"
+    )
+    fallback = create_search_result(seeders: 4, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert_not duplicate.reload.selected?
+  end
+
   test "a magnet exact topic for another torrent lets a previously failed GUID auto-select" do
     failed_hash = "b" * 40
     @request.downloads.create!(

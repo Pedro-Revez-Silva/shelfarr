@@ -138,6 +138,21 @@ class AddBlocklistedInfoHashToDownloadsTest < ActiveSupport::TestCase
     )
   end
 
+  test "does not infer a legacy block when a later override survives without the failure link" do
+    orphaned_failure = insert_download(
+      request_id: 30, external_id: HASH, not_found_count: 3, at: "2026-01-01 00:00:00"
+    )
+    unaffected_failure = insert_download(
+      request_id: 31, external_id: HASH, not_found_count: 3, at: "2026-01-01 00:00:00"
+    )
+    insert_override(request_id: 30, search_result_id: 9_000, at: "2026-01-12 00:00:00")
+
+    run_migration
+
+    assert_nil blocklisted_hash(orphaned_failure)
+    assert_equal HASH, blocklisted_hash(unaffected_failure)
+  end
+
   private
 
   def insert_override(request_id:, search_result_id:, at:)

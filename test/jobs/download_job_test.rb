@@ -3445,6 +3445,61 @@ class DownloadJobTest < ActiveJob::TestCase
     assert book.reload.acquisition_reserved?
   end
 
+  test "Retry Anyway dispatches a replacement magnet for the same failed torrent" do
+    @client.destroy!
+    deluge = DownloadClient.create!(
+      name: "Test Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      enabled: true
+    )
+    Thread.current[:deluge_sessions] = { deluge.id => { cookie: "sessionid=cached" } }
+    failed_hash = "b" * 40
+    expired_url = "https://indexer.example/expired.torrent"
+    magnet = "magnet:?xt=urn:btih:#{failed_hash}"
+    @selected_result.update!(download_url: expired_url, magnet_url: nil)
+    @download.update!(external_id: failed_hash, download_type: "torrent", status: :failed)
+    @request.handle_download_failure!(@download, reason: "Download not found in client")
+    refreshed = IndexerClients::Result.new(
+      guid: @selected_result.guid, title: @selected_result.title, indexer: @selected_result.indexer,
+      size_bytes: 2048, seeders: 30, leechers: 0, download_url: nil, magnet_url: magnet,
+      info_url: nil, published_at: nil
+    )
+    SearchJob.new.send(:save_results, @request, [ { result: refreshed, source: "prowlarr" } ])
+    assert @selected_result.reload.blocklisted?
+
+    retry_download = @request.select_result!(@selected_result)
+    VCR.turned_off do
+      expired = stub_request(:get, expired_url).to_return(status: 403)
+      expired_add = stub_request(:post, "#{deluge.url}/json")
+        .with { |request| JSON.parse(request.body)["method"] == "core.add_torrent_url" }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { error: { code: 4, message: "403 Forbidden" } }.to_json)
+      add = stub_request(:post, "#{deluge.url}/json").with { |request|
+        method, params = JSON.parse(request.body).values_at("method", "params")
+        method == "core.add_torrent_magnet" && params.first == magnet
+      }
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { result: failed_hash }.to_json)
+      {
+        "core.get_session_state" => [],
+        "core.get_config_value" => false,
+        "core.set_torrent_options" => nil,
+        "core.resume_torrent" => nil
+      }.each do |method, result|
+        stub_request(:post, "#{deluge.url}/json")
+          .with { |request| JSON.parse(request.body)["method"] == method }
+          .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: { result: result }.to_json)
+      end
+
+      DownloadJob.perform_now(retry_download.id)
+
+      assert_requested add
+      assert_not_requested expired
+      assert_not_requested expired_add
+      assert_equal failed_hash, retry_download.reload.external_id
+    end
+  end
+
   test "a Deluge staging failure is a client failure that keeps the release eligible" do
     @client.destroy!
     deluge = DownloadClient.create!(

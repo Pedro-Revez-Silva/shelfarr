@@ -98,20 +98,17 @@ class SearchResult < ApplicationRecord
   end
 
   def dispatched_magnet_info_hash
-    return nil unless dispatches_own_torrent_link?
-
-    hash = MagnetLink.info_hash(magnet_url)
-    hash if hash.is_a?(String)
+    hashes = dispatched_magnet_info_hashes
+    hashes.first if hashes.one?
   end
 
   def torrent_info_hash
-    candidates = dispatches_own_torrent_link? ? [ magnet_url, info_hash, download_url ] : [ info_hash ]
-    candidates.each do |candidate|
-      hash = MagnetLink.normalize_info_hash(candidate)
-      return hash if hash.is_a?(String)
-    end
+    hashes = torrent_info_hashes
+    hashes.first if hashes.one?
+  end
 
-    nil
+  def torrent_info_hashes
+    dispatched_magnet_info_hashes.presence || [ MagnetLink.normalize_info_hash(info_hash) ].compact
   end
 
   def blocklist!(reason)
@@ -293,6 +290,13 @@ class SearchResult < ApplicationRecord
   def dispatches_own_torrent_link?
     from_indexer? || source == SOURCE_MANUAL_MAGNET
   end
+
+  def dispatched_magnet_info_hashes
+    return [] unless dispatches_own_torrent_link?
+
+    MagnetLink.info_hashes(download_link)
+  end
+  private :dispatched_magnet_info_hashes
 
   def from_anna_archive?
     source == SOURCE_ANNA_ARCHIVE

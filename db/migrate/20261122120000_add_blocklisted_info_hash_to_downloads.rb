@@ -60,15 +60,18 @@ class AddBlocklistedInfoHashToDownloads < ActiveRecord::Migration[8.1]
           WHERE overrides.request_id = downloads.request_id
             AND overrides.event_type = 'blocklist_overridden'
             AND overrides.created_at > downloads.created_at
-            AND #{event_search_result_id("overrides")} = COALESCE(
-              downloads.search_result_id,
-              (
-                SELECT #{event_search_result_id("failures")} FROM request_events AS failures
-                WHERE failures.download_id = downloads.id
-                  AND failures.event_type = 'release_blocklisted'
-                ORDER BY failures.id
-                LIMIT 1
-              )
+            AND COALESCE(
+              #{event_search_result_id("overrides")} = COALESCE(
+                downloads.search_result_id,
+                (
+                  SELECT #{event_search_result_id("failures")} FROM request_events AS failures
+                  WHERE failures.download_id = downloads.id
+                    AND failures.event_type = 'release_blocklisted'
+                  ORDER BY failures.id
+                  LIMIT 1
+                )
+              ),
+              1
             )
             AND NOT EXISTS (
               SELECT 1 FROM search_results AS reblocked

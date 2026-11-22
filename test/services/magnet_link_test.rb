@@ -63,6 +63,16 @@ class MagnetLinkTest < ActiveSupport::TestCase
     assert_equal hex, MagnetLink.info_hash("magnet:?xt=urn:btih:#{hex}&xt=urn:btih:#{base32}")
   end
 
+  test "keeps viable topics when a magnet is ambiguous or has a malformed topic" do
+    first = "a" * 40
+    second = "b" * 40
+    magnet = "magnet:?xt=urn:btih:#{first}&xt=urn:btih:%ZZ&dn=Book#xt=urn:btih:#{second}"
+
+    assert_equal [ first, second ], MagnetLink.info_hashes(magnet)
+    assert_nil MagnetLink.info_hash(magnet)
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:%FF")
+  end
+
   test "finds no hash in an HTTP link that mentions one" do
     hash = "ab" * 20
 

@@ -618,18 +618,30 @@ class SearchJob < ApplicationJob
       published_at: result.published_at,
       source: source
     )
-    if !search_result.blocklisted?
+    if search_result.blocklisted?
+      refresh_blocklisted_indexer_link(search_result, result)
+    else
       search_result.assign_attributes(
         download_url: result.download_url,
         magnet_url: result.magnet_url,
         info_hash: result.info_hash.presence || search_result.info_hash
       )
-    elsif result.download_url.present? && [ search_result.download_url, result.download_url ].none? { |url| url.to_s.start_with?("magnet:") }
-      search_result.download_url = result.download_url
     end
     search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
     search_result.save!
     search_result
+  end
+
+  def refresh_blocklisted_indexer_link(search_result, result)
+    link = result.download_link.to_s
+    if link.start_with?("magnet:")
+      hash = MagnetLink.info_hash(link)
+      return unless hash && hash == search_result.torrent_info_hash
+
+      search_result.assign_attributes(download_url: result.download_url, magnet_url: result.magnet_url)
+    elsif result.download_url.present? && !search_result.download_link.to_s.start_with?("magnet:")
+      search_result.download_url = result.download_url
+    end
   end
 
   def save_anna_archive_result(request, result)
