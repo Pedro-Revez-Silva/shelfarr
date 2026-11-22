@@ -32,7 +32,7 @@ export function CopyTable({ copies, choose }: { copies: BookCopy[]; choose: Copy
       <div className="copy-table-wrap" role="region" aria-labelledby={captionId} tabIndex={0}>
         <table className="copy-table" aria-describedby={missing ? errorId : undefined}>
           <caption id={captionId} className="sr-only">
-            Copies found for this ebook; choose one to download
+            Copies found; choose one to download
           </caption>
           <thead>
             <tr>

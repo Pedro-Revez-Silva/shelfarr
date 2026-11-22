@@ -238,9 +238,14 @@ function RequestCard({ request }: { request: RequestSummary }) {
       <div className="request-copy">
         <h3 id={titleId}>
           {request.status === "completed" && request.book_page ? (
-            <Link to="/books/$source/$sourceId" params={{ source: request.book_page.source, sourceId: request.book_page.id }} className="request-link">
-              {request.title}
-            </Link>
+            <>
+              <Link to="/books/$source/$sourceId" params={{ source: request.book_page.source, sourceId: request.book_page.id }} className="request-link">
+                {request.title}
+              </Link>{" "}
+              <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-detail-link">
+                Request details<span className="sr-only"> for {request.title}</span>
+              </Link>
+            </>
           ) : (
             <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-link">
               {request.title}

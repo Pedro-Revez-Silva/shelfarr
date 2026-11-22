@@ -225,15 +225,17 @@ function trackedState(request: RequestDetail): (StepState & { download_percent: 
   return { stage, choice_needed: choiceNeeded, attention_needed: request.attention_needed, download_percent: request.download_percent };
 }
 
+const NOUNS: Record<RequestDetail["book_type"], string> = { ebook: "ebook", audiobook: "audiobook", comicbook: "comic", unknown: "book" };
+
 function trackedSentence(request: RequestDetail, admin: boolean): string {
   if (request.status === "awaiting_purchase") return stage(request);
   const state = trackedState(request);
-  return state ? stageSentence(state, admin) : stage(request);
+  return state ? stageSentence(state, admin, NOUNS[request.book_type]) : stage(request);
 }
 
 function TrackedSteps({ request }: { request: RequestDetail }) {
   const state = trackedState(request);
-  return state ? <RequestSteps request={state} /> : null;
+  return state ? <RequestSteps request={state} label={`${BOOK_TYPE_LABELS[request.book_type]} request progress`} /> : null;
 }
 
 const SEARCH_NOTES: Record<NonNullable<Acquisition["search"]>["state"], string> = {

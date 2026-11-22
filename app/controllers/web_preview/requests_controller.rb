@@ -5,12 +5,13 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   IDENTIFIER = /\A[1-9]\d{0,18}\z/
   FILTER_STATUSES = %w[active pending searching not_found downloading processing completed failed awaiting_purchase].freeze
-  MANUAL_KINDS = %w[magnet nzb].freeze
+  MANUAL_FIELDS = { "magnet" => :magnet_url, "nzb" => :nzb_url }.freeze
   RETRY_MESSAGES = {
     post_processing_recovery_pending: "The retry could not be queued now. Shelfarr kept its recovery claim and will retry by itself.",
     active: "A recovery for this request is already running.",
     superseded: "Another recovery attempt took over this request."
   }.freeze
+  NOT_RETRYABLE = "This request can't be retried in its current state."
 
   before_action :require_admin, only: [ :selection, :search, :retry, :manual ]
 
@@ -59,7 +60,7 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   def cancel
     request = Request.for_user(Current.user).find(identifier(params[:id]))
-    return render_error("cannot_cancel", :conflict, message: cancel_message(request)) unless request.can_be_cancelled?
+    return render_error("cannot_cancel", :conflict, message: cancel_message(request)) unless request.can_be_cancelled? && !request.failed?
 
     request.cancel!
     render_action(request)
@@ -69,9 +70,12 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   def retry
     request = Request.find(identifier(params[:id]))
-    return render_error("cannot_retry", :conflict, message: "This request can't be retried in its current state.") unless request.can_retry?
+    return render_error("cannot_retry", :conflict, message: NOT_RETRYABLE) unless request.can_retry?
 
-    message = RETRY_MESSAGES[request.retry_now!]
+    outcome = request.retry_now!
+    return render_error("cannot_retry", :conflict, message: NOT_RETRYABLE) if outcome == :not_retryable
+
+    message = RETRY_MESSAGES[outcome]
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: request.reload.status }, message: message }.compact
   end
 
@@ -81,8 +85,10 @@ class WebPreview::RequestsController < WebPreview::APIController
       remove_as_admin(request)
     elsif request.completed?
       remove_own_history(request)
+    elsif request.failed?
+      remove_own_cancelled(request)
     else
-      return render_error("cannot_remove", :conflict, message: "Only finished requests can be deleted. Cancel this request instead.")
+      return render_error("cannot_remove", :conflict, message: "Cancel this request before deleting it.")
     end
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: "removed" } }
   rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
@@ -92,11 +98,12 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   def manual
     request = Request.find(identifier(params[:id]))
-    kind = params[:kind]
-    return render_error("invalid_request", :unprocessable_entity) unless MANUAL_KINDS.include?(kind) && params[:url].is_a?(String)
+    field = MANUAL_FIELDS[params[:kind]]
+    link = field && params[field]
+    return render_error("invalid_request", :unprocessable_entity) unless link.is_a?(String)
 
     replace = params[:replace_library_file] == true
-    kind == "magnet" ? request.add_manual_magnet!(params[:url], replace_library_file: replace) : request.add_manual_nzb!(params[:url], replace_library_file: replace)
+    field == :magnet_url ? request.add_manual_magnet!(link, replace_library_file: replace) : request.add_manual_nzb!(link, replace_library_file: replace)
     render_action(request)
   rescue ArgumentError => error
     render_error("manual_rejected", :unprocessable_entity, message: error.message.first(300))
@@ -140,6 +147,14 @@ class WebPreview::RequestsController < WebPreview::APIController
     book.destroy if book.requests.reload.empty? && !book.acquisition_blocked?
   end
 
+  def remove_own_cancelled(request)
+    request.claim_destructive_cancellation!
+    book = request.book
+    request.destroy!
+    ActivityTracker.track("request.cancelled", trackable: request)
+    book.destroy if book.requests.empty? && !book.acquisition_blocked?
+  end
+
   def remove_own_history(request)
     book = request.book
     request.destroy_completed_history!
@@ -150,6 +165,7 @@ class WebPreview::RequestsController < WebPreview::APIController
   def cancel_message(request)
     return request.upload_cancellation_blocked_message if request.upload_cancellation_blocked?
     return "This request has already finished." if request.completed?
+    return "This request is already cancelled." if request.failed?
 
     "This request is being finished on the server and can't be cancelled now."
   end

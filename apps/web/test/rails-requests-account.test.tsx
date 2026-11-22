@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AccountSettings, Profile, RequestDetail, RequestList, RequestSummary } from "../src/contract";
 import { placeOf } from "../src/components/Navigation";
@@ -30,7 +30,7 @@ function request(overrides: Partial<RequestSummary> = {}): RequestSummary {
 const memberActions = { cancel: true, remove: null, retry: false, search_again: false, manual_download: false, replaces_library_file: false, upload_url: null, download_url: null } as const;
 
 function detail(overrides: Partial<RequestDetail> = {}): RequestDetail {
-  return { ...request(), attention_reason: null, downloads: [], choice_needed: false, notes: null, year: null, collection_title: null, retry_count: 0, actions: memberActions, store_offers: [], ...overrides };
+  return { ...request(), attention_reason: null, downloads: [], choice_needed: false, notes: null, collection_title: null, retry_count: 0, actions: memberActions, store_offers: [], ...overrides };
 }
 
 function list(items: RequestSummary[], overrides: Partial<RequestList> = {}): RequestList {
@@ -51,7 +51,7 @@ const settings: AccountSettings = {
   member_since: "2026-01-02T10:00:00.000Z",
   requests: { total: 4, completed: 2, pending: 1 },
   two_factor: { enabled: false },
-  oidc: { configured: true, provider: "Pocket ID", linked: false, link_path: "/sub/profile/link_oidc", password_required: true },
+  oidc: { configured: true, provider: "Pocket ID", linked: false, linkable: true, password_required: true },
   api_tokens: [
     { id: "5", name: "Pixel 9", prefix: "shf_abc12345", scopes: ["library:read"], app: true, state: "active", created_at: "2026-11-01T10:00:00.000Z", last_used_at: null, expires_at: null },
     { id: "6", name: "Backup script", prefix: "shf_def67890", scopes: ["requests:read"], app: false, state: "revoked", created_at: "2026-10-01T10:00:00.000Z", last_used_at: "2026-10-02T10:00:00.000Z", expires_at: null },
@@ -60,7 +60,7 @@ const settings: AccountSettings = {
     { scope: "search:read", label: "Search" },
     { scope: "requests:read", label: "Read requests" },
   ],
-  links: { kobo_readers: "/sub/kobo_devices", kobo_accounts: "/sub/kobo_accounts", hardcover: "/sub/profile#hardcover", sign_out: "/sub/session", phone_app: "/sub/consumer/connect", android_app: "/sub/apps/android" },
+  links: { kobo_readers: "/sub/kobo_devices", kobo_accounts: "/sub/kobo_accounts", hardcover: "/sub/profile#hardcover", sign_out: "/sub/session", phone_app: "/sub/consumer/connect", reading_library: "/sub/read", android_app: "/sub/apps/android" },
   server: { release: "Shelfarr 1.0 beta", beta: true, series: "1.0" },
 };
 
@@ -157,9 +157,36 @@ describe("one request in the Rails preview", () => {
     await user.type(within(tools).getByLabelText("Magnet link", { exact: true }), "http://nope");
     await user.click(within(tools).getByRole("button", { name: "Add magnet link" }));
     expect(await within(tools).findByText("Enter a valid magnet link")).toBeTruthy();
-    expect(server.called("POST", /manual$/)[0]?.body).toEqual({ kind: "magnet", url: "http://nope", replace_library_file: false });
+    expect(server.called("POST", /manual$/)[0]?.body).toEqual({ kind: "magnet", magnet_url: "http://nope", replace_library_file: false });
     expect(within(tools).getByText("No copies after 3 searches")).toBeTruthy();
     expect(within(tools).getByText("Client down")).toBeTruthy();
+  });
+
+  test("a member can upload without store offers and delete a cancelled request", async () => {
+    const server = railsServer(detail({ status: "failed", actions: { ...memberActions, cancel: false, remove: "delete_request", upload_url: "/sub/uploads/new?request_id=7" } })).on("POST", /\/requests\/7\/remove$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "removed" } } }));
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    expect((await screen.findByRole("link", { name: "Upload a file for this request" })).getAttribute("href")).toBe("/sub/uploads/new?request_id=7");
+    expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Delete request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, remove it" }));
+    await waitFor(() => expect(server.called("POST", /remove$/)).toHaveLength(1));
+  });
+
+  test("a completed request opens its Book page and keeps a link to its details", async () => {
+    renderApp({ server: railsServer(), url: "/sub/preview/requests" });
+    expect((await screen.findByRole("link", { name: "Request details for Middlemarch" })).getAttribute("href")).toBe("/sub/preview/requests/8");
+  });
+
+  test("a confirmed change of role locks the page instead of keeping another account's requests on screen", async () => {
+    let admin = true;
+    const server = railsServer(detail({ requested_by: { name: "Someone", self: false }, notes: "private note" }), true).on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/sub/admin" } } : {}) }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    expect(await screen.findByText("private note")).toBeTruthy();
+    admin = false;
+    await act(async () => services.revalidate());
+    await waitFor(() => expect(screen.queryByText("private note")).toBeNull());
+    expect(services.guard.getState().status).toBe("access_changed");
   });
 
   test("removing a request asks first and returns to the list", async () => {
@@ -240,11 +267,24 @@ describe("your account in the Rails preview", () => {
     expect(screen.getByText("BBBB2222")).toBeTruthy();
   });
 
-  test("single sign-on links through the classic endpoint and About links administrators to the server", async () => {
-    renderApp({ server: accountServer(profile({ admin: true, links: { ...settings.links, admin: "/sub/admin" } })), url: "/sub/preview/account/security" });
-    const link = await screen.findByRole("button", { name: "Link Pocket ID" });
-    expect(link.closest("form")!.getAttribute("action")).toBe("/sub/profile/link_oidc");
-    cleanup();
+  test("single sign-on starts through an account-bound request, then posts to the provider with the page token", async () => {
+    const submitted: string[] = [];
+    const original = HTMLFormElement.prototype.submit;
+    HTMLFormElement.prototype.submit = function (this: HTMLFormElement) {
+      submitted.push(`${this.getAttribute("action")} ${(this.querySelector("input[name=authenticity_token]") as HTMLInputElement | null)?.value}`);
+    };
+    try {
+      const server = accountServer().on("POST", /\/account\/oidc\/link$/, () => ({ body: { account: ACCOUNT, start: { url: "/sub/auth/oidc" } } }));
+      renderApp({ server, url: "/sub/preview/account/security" });
+      await userEvent.setup().click(await screen.findByRole("button", { name: "Link Pocket ID" }));
+      await waitFor(() => expect(submitted).toEqual(["/sub/auth/oidc page-token"]));
+      expect(server.called("POST", /oidc\/link$/)[0]?.headers["x-shelfarr-account"]).toBe(ACCOUNT);
+    } finally {
+      HTMLFormElement.prototype.submit = original;
+    }
+  });
+
+  test("About links administrators to the server", async () => {
     renderApp({ server: accountServer(profile({ admin: true, links: { ...settings.links, admin: "/sub/admin" } })), url: "/sub/preview/account/about" });
     expect((await screen.findByRole("link", { name: "Release, updates and backups" })).getAttribute("href")).toBe("/sub/admin");
     expect(screen.getByText(/Shelfarr 1.0 beta/)).toBeTruthy();

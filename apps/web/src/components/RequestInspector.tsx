@@ -22,7 +22,9 @@ export function RequestTools({ request, admin }: { request: RequestDetail; admin
 function MainActions({ request, actions, admin }: { request: RequestDetail; actions: RequestActions; admin: boolean }) {
   const retry = useRetryRequest(request.id);
   const search = useSearchRequestAgain(request.id);
-  const shown = request.book_page || actions.cancel || actions.download_url || (admin && (actions.retry || actions.search_again)) || (!admin && actions.remove === "delete_history");
+  const memberUpload = !admin && actions.upload_url !== null && (request.store_offers ?? []).length === 0;
+  const memberRemoval = !admin && (actions.remove === "delete_history" || actions.remove === "delete_request") ? actions.remove : null;
+  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || actions.search_again));
   if (!shown) return null;
   return (
     <div className="copy-actions request-actions">
@@ -39,7 +41,12 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
       {admin && actions.search_again ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
       {actions.cancel ? <CancelTracked request={request} /> : null}
-      {!admin && actions.remove === "delete_history" ? <RemoveRequest request={request} mode="delete_history" /> : null}
+      {memberUpload && actions.upload_url ? (
+        <a className="button" href={actions.upload_url}>
+          Upload a file for this request
+        </a>
+      ) : null}
+      {memberRemoval ? <RemoveRequest request={request} mode={memberRemoval} /> : null}
       {retry.data?.message ? <p role="status">{retry.data.message}</p> : null}
       {retry.isError ? <Failure error={retry.error} fallback="The request could not be retried. Nothing was changed." /> : null}
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
@@ -100,12 +107,16 @@ function CancelTracked({ request }: { request: RequestDetail }) {
   );
 }
 
-function RemoveRequest({ request, mode }: { request: RequestDetail; mode: "admin_remove" | "delete_history" }) {
+function RemoveRequest({ request, mode }: { request: RequestDetail; mode: NonNullable<RequestActions["remove"]> }) {
   const remove = useRemoveRequest(request.id);
   const navigate = useNavigate();
   const finished = request.status === "completed";
-  const label = finished ? "Delete request history" : "Remove request";
-  const question = finished ? "Delete this request's history? Library files are kept." : "Remove this request? Its download is stopped in the download client; files outside the library are kept.";
+  const label = finished ? "Delete request history" : mode === "delete_request" ? "Delete request" : "Remove request";
+  const question = finished
+    ? "Delete this request's history? Library files are kept."
+    : mode === "delete_request"
+      ? "Delete this cancelled request? You can request the book again afterwards."
+      : "Remove this request? Its download is stopped in the download client; files outside the library are kept.";
   return (
     <>
       <Confirm

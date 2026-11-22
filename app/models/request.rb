@@ -236,6 +236,8 @@ class Request < ApplicationRecord
     end
 
     with_search_transition_lock do
+      next :not_retryable unless can_retry?
+
       # A retry starts a fresh provider search. Do not keep showing purchase
       # options quoted by the previous search while that retry is queued.
       queue_fresh_search_under_lock!(

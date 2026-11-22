@@ -43,7 +43,6 @@ module WebPreview
         downloads: @request.downloads.order(id: :desc).map { |download| download_fields(download) },
         choice_needed: @request.needs_manual_selection?,
         notes: @request.notes.to_s.first(TEXT_LIMIT).presence,
-        year: @book.year.to_s.match?(/\A\d{1,4}\z/) ? @book.year.to_i : nil,
         collection_title: @request.collection_title.to_s.first(TEXT_LIMIT).presence,
         retry_count: @request.retry_count.to_i,
         actions: actions,
@@ -83,7 +82,7 @@ module WebPreview
 
     def actions
       {
-        cancel: own? && @request.can_be_cancelled?,
+        cancel: own? && !@request.failed? && @request.can_be_cancelled?,
         remove: removal,
         retry: admin? && @request.can_retry?,
         search_again: admin? && @request.search_refresh_allowed?,
@@ -97,6 +96,7 @@ module WebPreview
     def removal
       return "admin_remove" if admin?
       return "delete_history" if own? && @request.can_delete_completed_history?
+      return "delete_request" if own? && @request.failed? && @request.can_be_cancelled?
 
       nil
     end

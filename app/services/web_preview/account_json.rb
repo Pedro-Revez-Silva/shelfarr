@@ -11,7 +11,6 @@ module WebPreview
       "requests:admin" => "Manage everyone's requests",
       "users:write" => "Create users"
     }.freeze
-    TOKEN_LIMIT = 100
 
     def initialize(user, routes:)
       @user = user
@@ -45,7 +44,7 @@ module WebPreview
         requests: { total: @user.requests.count, completed: @user.requests.completed.count, pending: @user.requests.pending.count },
         two_factor: { enabled: @user.otp_enabled? },
         oidc: oidc,
-        api_tokens: @user.api_tokens.order(created_at: :desc, id: :desc).limit(TOKEN_LIMIT).map { |api_token| token(api_token) },
+        api_tokens: @user.api_tokens.order(created_at: :desc, id: :desc).map { |api_token| token(api_token) },
         token_scopes: allowed_scopes.map { |scope| { scope: scope, label: SCOPE_LABELS.fetch(scope, scope) } },
         links: links,
         server: { release: Shelfarr::ReleaseChannel.current.label, beta: Shelfarr::ReleaseChannel.current.beta?, series: Shelfarr::ReleaseChannel.current.series.to_s }
@@ -69,14 +68,14 @@ module WebPreview
         configured: configured,
         provider: configured ? SettingsService.get(:oidc_provider_name, default: "SSO").to_s : nil,
         linked: configured && @user.oidc_user?,
-        link_path: configured && !@user.oidc_user? ? @routes.link_oidc_profile_path : nil,
+        linkable: configured && !@user.oidc_user?,
         password_required: !SettingsService.auth_disabled?
       }
     end
 
     def links
       value = { kobo_readers: @routes.kobo_devices_path, kobo_accounts: @routes.kobo_accounts_path, hardcover: @routes.profile_path(anchor: "hardcover"),
-        sign_out: @routes.session_path, phone_app: @routes.consumer_connect_path }
+        sign_out: @routes.session_path, phone_app: @routes.consumer_connect_path, reading_library: @routes.consumer_library_path }
       value[:kobo_shared] = @routes.kobo_shared_libraries_path if @user.received_kobo_account_shares.effective.exists?
       android = @routes.helpers.android_app_page_path
       value[:android_app] = android if android

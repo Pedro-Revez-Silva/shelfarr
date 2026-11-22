@@ -346,16 +346,36 @@ export function SingleSignOnCard({ settings }: { settings: AccountSettings }) {
             </div>
           )}
         </>
-      ) : oidc.link_path ? (
-        <form method="post" action={oidc.link_path}>
-          {token ? <input type="hidden" name="authenticity_token" value={token} /> : null}
-          <p className="muted">You will go to {provider} to confirm, then come back to Shelfarr.</p>
-          <button type="submit" className="button">
-            Link {provider}
-          </button>
-        </form>
+      ) : oidc.linkable ? (
+        <LinkSingleSignOn provider={provider} token={token} />
       ) : null}
     </Card>
+  );
+}
+
+function LinkSingleSignOn({ provider, token }: { provider: string; token: string | null }) {
+  const { api } = useServices();
+  const form = useRef<HTMLFormElement>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const start = useMutation({ mutationFn: () => api.startSingleSignOnLink(), onSuccess: setTarget });
+  useEffect(() => {
+    if (target) form.current?.submit();
+  }, [target]);
+  return (
+    <>
+      <p className="muted">You will go to {provider} to confirm, then come back to Shelfarr.</p>
+      <div className="form-actions">
+        <button type="button" className="button" aria-disabled={start.isPending || target ? true : undefined} onClick={() => (start.isPending || target ? undefined : start.mutate())}>
+          {start.isPending || target ? `Opening ${provider}…` : `Link ${provider}`}
+        </button>
+      </div>
+      {start.isError ? <Problem error={start.error} fallback={`${provider} could not be opened. Nothing was changed; try again.`} /> : null}
+      {target ? (
+        <form ref={form} method="post" action={target} hidden>
+          {token ? <input type="hidden" name="authenticity_token" value={token} /> : null}
+        </form>
+      ) : null}
+    </>
   );
 }
 
@@ -514,16 +534,10 @@ export function DevicesSection({ settings }: { settings: AccountSettings }) {
           ) : null}
         </ul>
       </Card>
-      <Card title="This browser" description="Open your library from its own icon, without the browser's address bar.">
-        <ul className="steps-list">
-          <li>
-            <strong>Android:</strong> in Chrome, open the ⋮ menu and choose Add to Home screen or Install.
-          </li>
-          <li>
-            <strong>iPhone and iPad:</strong> in Safari, tap Share, then Add to Home Screen.
-          </li>
-        </ul>
-        <p className="muted">Shelfarr still needs a connection to this server. Without one you can open only the books saved on this device.</p>
+      <Card title="This browser" description="Shelfarr can open from its own icon on your home screen. Install it from your reading library, which keeps the books you save for offline reading.">
+        <p>
+          <a href={settings.links.reading_library}>Open your reading library to install it</a>
+        </p>
       </Card>
       <Card title="Kobo" description="Kobo readers and Kobo accounts still open on their current pages while they move here.">
         <ul className="link-list">

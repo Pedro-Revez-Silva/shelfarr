@@ -240,6 +240,7 @@ Rails.application.routes.draw do
     post "account/two_factor/backup_codes", to: "account_security#backup_codes", as: :account_backup_codes
     post "account/api_tokens", to: "account_security#create_api_token", as: :account_api_tokens
     post "account/api_tokens/:id/revoke", to: "account_security#revoke_api_token", as: :account_api_token_revoke
+    post "account/oidc/link", to: "account_security#start_oidc_link", as: :account_oidc_link
     post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
   end
 

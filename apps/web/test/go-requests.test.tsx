@@ -352,16 +352,15 @@ describe("the Requests page", () => {
     expect(services.queryClient.getQueriesData({ queryKey: services.keys.requestAll }).filter(([, data]) => data !== undefined)).toEqual([]);
   }, 20_000);
 
-  test("the classic preview keeps its page when the role changes, as before", async () => {
+  test("the Rails preview, which now shows role-scoped requests too, stops when the role changes", async () => {
     let admin = true;
     const server = requestsServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }));
     const { services } = renderApp({ server, url: "/sub/preview/library" });
     expect(await screen.findByRole("link", { name: "The Quiet Library" })).toBeTruthy();
     admin = false;
     await act(async () => services.revalidate());
-    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
-    expect(screen.queryByText("This account's access changed")).toBeNull();
-    expect(screen.getByRole("link", { name: "The Quiet Library" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "The Quiet Library" })).toBeNull();
   });
 
   test("a list or request answer whose reach differs from the verified role locks the page and is never shown", async () => {

@@ -106,7 +106,6 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
     for (const queryKey of requestQueries) void queryClient.invalidateQueries({ queryKey, predicate: (query) => query.state.status === "error" });
   };
   const keepsRole = (session: Session): boolean => {
-    if (boot.runtime !== "go") return true;
     const previous = queryClient.getQueryData<Session>(keys.session);
     if (!previous || Boolean(previous.admin) === Boolean(session.admin)) return true;
     guard.lock("access_changed");

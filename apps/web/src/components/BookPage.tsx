@@ -291,12 +291,12 @@ export function requestSteps(request: StepState): { steps: readonly string[]; cu
   }
 }
 
-export function RequestSteps({ request }: { request: StepState }) {
+export function RequestSteps({ request, label = "Ebook request progress" }: { request: StepState; label?: string }) {
   if (request.stage === "available" || request.stage === "completed") return null;
   const { steps, current } = requestSteps(request);
   const stuck = stalled(request) || request.stage === "not_found" || request.stage === "awaiting_purchase" || request.stage === "failed";
   return (
-    <section className="request-steps" aria-label="Ebook request progress">
+    <section className="request-steps" aria-label={label}>
       <p className="request-steps-summary">
         Step {current + 1} of {steps.length} · {steps[current]}
       </p>
@@ -361,7 +361,7 @@ export function stalled(request: Pick<BookRequest, "attention_needed" | "choice_
   return request.attention_needed && !request.choice_needed;
 }
 
-export function stageSentence(request: Pick<BookRequest, "stage" | "choice_needed" | "attention_needed" | "download_percent">, admin: boolean): string {
+export function stageSentence(request: Pick<BookRequest, "stage" | "choice_needed" | "attention_needed" | "download_percent">, admin: boolean, noun = "ebook"): string {
   if (stalled(request)) {
     return admin
       ? "Shelfarr stopped working on this request until someone looks at it."
@@ -374,7 +374,7 @@ export function stageSentence(request: Pick<BookRequest, "stage" | "choice_neede
       if (!request.choice_needed) return "Looking for a suitable copy. Shelfarr downloads it and adds it to the library by itself; this page updates as it goes.";
       return admin
         ? "Copies were found, but none was picked automatically. Choose one to download."
-        : "Copies were found, but none was picked automatically. An administrator can choose one; this page updates when the ebook is in the library.";
+        : `Copies were found, but none was picked automatically. An administrator can choose one; this page updates when the ${noun} is in the library.`;
     case "not_found":
       return "No suitable copy has been found yet.";
     case "awaiting_purchase":

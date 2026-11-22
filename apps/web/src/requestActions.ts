@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { ManualLink } from "./api/client";
 import { useServices } from "./services";
 
 function useRequestChange<V, T>(requestId: string, send: (variables: V) => Promise<T>) {
@@ -42,5 +43,5 @@ export function useChooseRequestCopy(requestId: string) {
 
 export function useManualLink(requestId: string) {
   const { api } = useServices();
-  return useRequestChange(requestId, (link: { kind: "magnet" | "nzb"; url: string; replace_library_file: boolean }) => api.addManualLink(requestId, link));
+  return useRequestChange(requestId, (link: ManualLink) => api.addManualLink(requestId, link));
 }

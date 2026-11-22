@@ -2604,6 +2604,11 @@ thead th {
   margin: 0;
   min-width: 0;
 }
+.request-detail-link {
+  margin-inline-start: 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
 .find-requests-link {
   margin-top: 24px;
 }
@@ -2740,11 +2745,7 @@ thead th {
     grid-column: 3;
     grid-row: 1;
   }
-  .shell-header {
-    grid-template-columns: auto 1fr auto auto;
-  }
-  .bell ~ .classic-link,
-  .bell ~ .sign-out {
+  .bell ~ .classic-link {
     grid-column: 4;
   }
 }

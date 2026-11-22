@@ -62,6 +62,15 @@ class WebPreview::AccountSecurityController < WebPreview::APIController
     render_account
   end
 
+  def start_oidc_link
+    user = Current.user
+    return render_error("oidc_unavailable", :conflict) unless SettingsService.oidc_configured?
+    return render_error("oidc_linked", :conflict) if user.oidc_user?
+
+    session[:pending_oidc_link_user_id] = user.id
+    render json: { account: web_preview_account_id, start: { url: helpers.oidc_auth_path } }
+  end
+
   def unlink_oidc
     user = Current.user
     return render_error("oidc_not_linked", :conflict) unless user.oidc_user?
@@ -80,7 +89,10 @@ class WebPreview::AccountSecurityController < WebPreview::APIController
   end
 
   def requested_scopes(user)
-    requested = APIToken.normalize_scopes(params[:scopes].is_a?(Array) ? params[:scopes].grep(String) : APIToken::SELF_SERVICE_SCOPES)
+    raw = params[:scopes]
+    return unless raw.nil? || raw.is_a?(String) || (raw.is_a?(Array) && raw.all?(String))
+
+    requested = APIToken.normalize_scopes(raw.nil? ? APIToken::SELF_SERVICE_SCOPES : raw)
     allowed = user.admin? ? APIToken::AVAILABLE_SCOPES : APIToken::SELF_SERVICE_SCOPES
     requested if requested.any? && (requested - allowed).empty?
   end

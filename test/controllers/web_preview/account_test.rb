@@ -97,6 +97,9 @@ class WebPreview::AccountTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     send_json(:post, web_preview_api_account_api_tokens_path, user: @member, name: "Bot", scopes: [])
     assert_response :unprocessable_entity
+    send_json(:post, web_preview_api_account_api_tokens_path, user: @member, name: "Bot", scopes: { "a" => "search:read" })
+    assert_response :unprocessable_entity
+    assert_equal %w[search:read], send_json(:post, web_preview_api_account_api_tokens_path, user: @member, name: "One", scopes: "search:read").dig("token", "scopes")
     body = send_json(:post, web_preview_api_account_api_tokens_path, user: @member, name: "Bot", scopes: %w[search:read])
     assert_response :created
     assert APIToken.authenticate(body.fetch("secret"))
@@ -108,7 +111,7 @@ class WebPreview::AccountTest < ActionDispatch::IntegrationTest
     assert_response :not_found
     assert_not foreign.reload.revoked?
     revoked = send_json(:post, web_preview_api_account_api_token_revoke_path(body.dig("token", "id")), user: @member)
-    assert_equal "revoked", revoked.dig("profile", "settings", "api_tokens").sole.fetch("state")
+    assert_equal "revoked", revoked.dig("profile", "settings", "api_tokens").find { |token| token.fetch("id") == body.dig("token", "id") }.fetch("state")
   end
 
   test "an administrator may grant privileged scopes and gets the server settings link" do
@@ -116,6 +119,25 @@ class WebPreview::AccountTest < ActionDispatch::IntegrationTest
     assert_equal "/admin", account(@admin).dig("profile", "settings", "links", "admin")
     send_json(:post, web_preview_api_account_api_tokens_path, user: @admin, name: "Ops", scopes: %w[requests:admin])
     assert_response :created
+  end
+
+  test "every token stays listed and revocable however many were made after it" do
+    phone, = APIToken.issue!(name: "Phone", user: @member, scopes: %w[library:read])
+    105.times { |index| APIToken.issue!(name: "Script #{index}", user: @member, scopes: %w[search:read]).first.revoke! }
+    sign_in_as(@member)
+    assert_includes account(@member).dig("profile", "settings", "api_tokens").map { |token| token.fetch("id") }, phone.id.to_s
+  end
+
+  test "an OIDC link starts only for the account the page was built for" do
+    SettingsService.stub(:oidc_configured?, true) do
+      sign_in_as(@member)
+      post web_preview_api_account_oidc_link_path, headers: account_headers(@admin), as: :json
+      assert_response :unauthorized
+      assert_nil session[:pending_oidc_link_user_id]
+      assert_equal "/auth/oidc", send_json(:post, web_preview_api_account_oidc_link_path, user: @member).dig("start", "url")
+      assert_equal @member.id, session[:pending_oidc_link_user_id]
+      assert account(@member).dig("profile", "settings", "oidc", "linkable")
+    end
   end
 
   test "an OIDC link is removed only with the current password" do

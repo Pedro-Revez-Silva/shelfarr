@@ -130,7 +130,7 @@ export const accountSettingsSchema = z.object({
   member_since: timestamp,
   requests: z.object({ total: z.number().int().nonnegative(), completed: z.number().int().nonnegative(), pending: z.number().int().nonnegative() }),
   two_factor: z.object({ enabled: z.boolean() }),
-  oidc: z.object({ configured: z.boolean(), provider: z.string().nullable(), linked: z.boolean(), link_path: sitePath.nullable(), password_required: z.boolean() }),
+  oidc: z.object({ configured: z.boolean(), provider: z.string().nullable(), linked: z.boolean(), linkable: z.boolean(), password_required: z.boolean() }),
   api_tokens: z.array(apiTokenSchema),
   token_scopes: z.array(z.object({ scope: z.string(), label: z.string() })),
   links: z.object({
@@ -139,6 +139,7 @@ export const accountSettingsSchema = z.object({
     hardcover: sitePath,
     sign_out: sitePath,
     phone_app: sitePath,
+    reading_library: sitePath,
     kobo_shared: sitePath.optional(),
     android_app: sitePath.optional(),
     admin: sitePath.optional(),
@@ -318,7 +319,7 @@ export type BookCopy = z.infer<typeof bookCopySchema>;
 
 export const requestActionsSchema = z.object({
   cancel: z.boolean(),
-  remove: z.enum(["admin_remove", "delete_history"]).nullable(),
+  remove: z.enum(["admin_remove", "delete_history", "delete_request"]).nullable(),
   retry: z.boolean(),
   search_again: z.boolean(),
   manual_download: z.boolean(),
@@ -367,7 +368,6 @@ export const requestDetailSchema = requestSummarySchema.extend({
   acquisition: z.boolean().optional(),
   choice_needed: z.boolean().optional(),
   notes: z.string().nullable().optional(),
-  year: z.number().int().nullable().optional(),
   collection_title: z.string().nullable().optional(),
   retry_count: z.number().int().nonnegative().optional(),
   actions: requestActionsSchema.optional(),
@@ -601,6 +601,7 @@ export type RequestActionAnswer = z.infer<typeof requestActionSchema>;
 
 export const twoFactorSetupSchema = z.object({ account: identifier, setup: z.object({ secret: z.string().min(1), uri: z.string().startsWith("otpauth://"), qr_svg: z.string().nullable() }) });
 export type TwoFactorSetup = z.infer<typeof twoFactorSetupSchema>["setup"];
+export const singleSignOnStartSchema = z.object({ account: identifier, start: z.object({ url: sitePath }) });
 export const backupCodesSchema = z.object({ account: identifier, backup_codes: z.array(z.string().min(1)).min(1) });
 export const createdTokenSchema = z.object({ account: identifier, token: apiTokenSchema, secret: z.string().min(1) });
 export type CreatedToken = z.infer<typeof createdTokenSchema>;
