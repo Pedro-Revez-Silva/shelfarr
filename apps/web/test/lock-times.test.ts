@@ -100,3 +100,43 @@ describe("refusals after a lock", () => {
     expect(guard.lockAskedAt).toBe(1234);
   });
 });
+
+describe("page answers that are not refusals", () => {
+  test("a page answer whose body read is cancelled is an abort, not an account change", async () => {
+    const guard = new AccountGuard("5");
+    const refusals: number[] = [];
+    guard.subscribeRefusals((askedAt) => refusals.push(askedAt));
+    const controller = new AbortController();
+    const fetcher = async (_input: string, init: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(stream) {
+            init.signal?.addEventListener("abort", () => stream.error(new DOMException("Aborted", "AbortError")));
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    const read = guardedFetch(guard, fetcher)("/preview/api/v1/library/7/assets/x/reading_order", { signal: controller.signal });
+    setTimeout(() => controller.abort(), 10);
+    await expect(read).rejects.toMatchObject({ name: "AbortError" });
+    expect(guard.isActive()).toBe(true);
+    expect(refusals).toEqual([]);
+  });
+
+  test("a page answer without an account locks the page but is not dated as a refusal", async () => {
+    const guard = new AccountGuard("5");
+    const refusals: number[] = [];
+    guard.subscribeRefusals((askedAt) => refusals.push(askedAt));
+    const fetcher = async () => new Response("not json", { status: 200 });
+    await settled(guardedFetch(guard, fetcher)("/preview/api/v1/library/7/assets/x/reading_order", {}));
+    expect(guard.getState()).toEqual({ status: "account_changed" });
+    expect(refusals).toEqual([]);
+  });
+
+  test("a page answer naming another account is a refusal dated when it was sent", async () => {
+    const guard = new AccountGuard("5");
+    const { fetcher, sent } = slowAnswer(200, { account: "4" });
+    await settled(guardedFetch(guard, fetcher as unknown as (input: string, init: RequestInit) => Promise<Response>)("/preview/api/v1/library/7/assets/x/reading_order", {}));
+    lockedWhenSent(guard, sent);
+  });
+});

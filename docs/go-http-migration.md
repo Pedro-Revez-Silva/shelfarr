@@ -986,7 +986,8 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   clears at once against the moment the refused request was sent (any account's record confirmed before then, so another
   account's tab confirms again on its next check), then asks `auth/bootstrap` again to restore a still-valid session; a
   lock without such a moment (a role change seen in an answer) only asks again, and a refusal answered after the page is
-  already locked still clears; a sign-in also
+  already locked or has started recovering still clears; only an answer that names the session's end or another account
+  is a refusal, never a cancelled or unreadable one; a sign-in also
   asks again rather than using the login answer. An expired record is cleared against every question asked up to its
   own confirmation, and a later question's positive answer is newer truth about the session and is accepted with its own
   window. A confirmation answered while the clock was far ahead stays ahead of later questions until the corrected clock

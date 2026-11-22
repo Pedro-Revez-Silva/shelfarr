@@ -4,7 +4,7 @@ import { resetFirstPage } from "../src/components/PageHeading";
 import type { GoView } from "../src/contract";
 import { GoApp } from "../src/go/GoApp";
 import userEvent from "@testing-library/user-event";
-import { ACCOUNT, FakeServer, detail } from "./helpers";
+import { ACCOUNT, FakeServer, detail, session } from "./helpers";
 import { API, error, goBoot, libraryServer, signedIn, signedOut } from "./go-helpers";
 import { AccountGuard } from "../src/api/account-guard";
 import { OfflineProvider } from "../src/offline/context";
@@ -945,6 +945,45 @@ describe("fifth review regressions in the app", () => {
       expect(store.record).toMatchObject({ account: "5", confirmedAt: newer.confirmedAt });
     } finally {
       restore();
+    }
+  });
+});
+
+describe("refusals answered after the page moved on", () => {
+  test("a sign-out answered for a save after the page locked and started recovering still ends offline access", async () => {
+    let answer: ((response: Response) => void) | null = null;
+    const browser = asOfflineBrowser(epub);
+    globalThis.fetch = (async () => new Promise<Response>((resolve) => (answer = resolve))) as unknown as typeof fetch;
+    try {
+      const store = new MemoryOfflineStore();
+      store.record = { account: ACCOUNT, confirmedAt: Date.now() - DAY, validForMs: 30 * DAY };
+      store.saved.set(`${ACCOUNT}|8`, savedBook({ key: `${ACCOUNT}|8`, id: "8", title: "Earlier Saved Book" }));
+      let calls = 0;
+      let admin = false;
+      const server = libraryServer(() => {
+        calls += 1;
+        if (calls > 2) throw new TypeError("Failed to fetch");
+        return { ...signedIn(), offline_expires_in: 3600 };
+      })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }))
+        .on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ files: [{ id: EPUB_ID, filename: "Saved Book.epub", format: "epub", media_type: "application/epub+zip", size_bytes: SIZE, position: 0, page_count: null }] }) } }))
+        .on("GET", /\/api\/v1\/library\/7\/reader$/, () => readerFor(ACCOUNT));
+      renderOffline(server, store, "details", "/preview/library/7");
+      const save = await screen.findByRole("button", { name: "Save for offline reading" });
+      await act(async () => save.click());
+      await waitFor(() => expect(answer).not.toBeNull());
+      admin = true;
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      const recover = await screen.findByRole("button", { name: "Continue as the current account" });
+      await act(async () => recover.click());
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Continue as the current account" })).toBeNull());
+      expect(store.record).not.toBeNull();
+      await act(async () => answer!(new Response(JSON.stringify({ error: "signed_out" }), { status: 401, headers: { "content-type": "application/json" } })));
+      await waitFor(() => expect(store.record).toBeNull());
+    } finally {
+      browser.restore();
     }
   });
 });

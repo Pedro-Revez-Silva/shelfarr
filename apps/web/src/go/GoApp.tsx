@@ -248,22 +248,20 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
       ...(fetcher ? { fetcher } : {}),
     });
     const router = boot.view === "connect" || boot.view === "reader" || boot.view === "downloads" ? null : createAppRouter({ basepath: boot.mount });
+    guard.subscribeRefusals((refusedAt) => {
+      if (boot.offline) void store.release(refusedAt).catch(() => undefined);
+    });
     return { csrf, services, router };
   });
   const { csrf, services, router } = built;
 
-  useEffect(() => {
-    const stopRefusals = services.guard.subscribeRefusals((refusedAt) => {
-      if (boot.offline) void store.release(refusedAt).catch(() => undefined);
-    });
-    const stopLocks = services.guard.subscribe(() => {
-      void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
-    });
-    return () => {
-      stopRefusals();
-      stopLocks();
-    };
-  }, [services, boot, auth, store]);
+  useEffect(
+    () =>
+      services.guard.subscribe(() => {
+        void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+      }),
+    [services, boot, auth, store],
+  );
 
   const [offline] = useState<Offline | null>(() =>
     boot.offline

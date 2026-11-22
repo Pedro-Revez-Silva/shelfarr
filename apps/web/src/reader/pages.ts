@@ -47,6 +47,15 @@ type Fetcher = (input: string, init: RequestInit) => Promise<Response>;
 
 const accountedSchema = z.looseObject({ account: z.string() });
 
+async function readAnswer(response: Response, signal: AbortSignal | null | undefined): Promise<unknown> {
+  try {
+    return await response.clone().json();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
 export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, init) => fetch(input, init)): Fetcher {
   return async (input, init) => {
     guard.assertActive();
@@ -65,9 +74,9 @@ export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, ini
       }
     }
     if (response.ok && !headers.has("Range")) {
-      const answered = accountedSchema.safeParse(await response.clone().json().catch(() => null));
+      const answered = accountedSchema.safeParse(await readAnswer(response, init.signal));
       if (!answered.success || answered.data.account !== guard.account) {
-        guard.lock("account_changed", askedAt);
+        guard.lock("account_changed", answered.success ? askedAt : null);
         throw new PageError("Sign in again to keep reading.", "signin");
       }
     }
