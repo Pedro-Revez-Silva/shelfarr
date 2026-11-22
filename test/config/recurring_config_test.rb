@@ -3,6 +3,8 @@
 require "test_helper"
 
 class RecurringConfigTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   test "schedules book metadata backfill daily" do
     config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
 
@@ -54,26 +56,26 @@ class RecurringConfigTest < ActiveSupport::TestCase
     assert_equal "every 5 minutes", recovery_job["schedule"]
   end
 
-  test "checks whether configured health monitoring is due every minute" do
+  test "does not statically tick health checks or library sync every minute" do
     config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
 
-    health_check_job = config.fetch("default").fetch("health_check")
-
-    assert_equal "HealthCheckJob", health_check_job["class"]
-    assert_equal "default", health_check_job["queue"]
-    assert_equal [ { "scheduled" => true } ], health_check_job["args"]
-    assert_equal "every minute", health_check_job["schedule"]
+    %w[default production].each do |env_name|
+      jobs = config.fetch(env_name)
+      assert_nil jobs["health_check"]
+      assert_nil jobs["audiobookshelf_library_sync"]
+    end
   end
 
-  test "checks whether library inventory sync is due every minute" do
-    config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
+  test "scheduler startup enqueues a due health check" do
+    SolidQueue::Record.establish_connection(:queue)
+    SystemHealth.delete_all
+    scheduler = SolidQueue::Scheduler.new(recurring_tasks: [])
 
-    sync_job = config.fetch("default").fetch("audiobookshelf_library_sync")
-
-    assert_equal "AudiobookshelfLibrarySyncJob", sync_job["class"]
-    assert_equal "default", sync_job["queue"]
-    assert_equal [ { "scheduled" => true } ], sync_job["args"]
-    assert_equal "every minute", sync_job["schedule"]
+    assert_enqueued_with(job: HealthCheckJob, args: [ { scheduled: true } ]) do
+      scheduler.send(:run_start_hooks)
+    end
+  ensure
+    scheduler&.send(:run_stop_hooks)
   end
 
   test "schedules the download monitor class and has no command entry" do

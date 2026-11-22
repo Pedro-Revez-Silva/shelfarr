@@ -65,11 +65,10 @@ class HealthCheckJobTest < ActiveJob::TestCase
         )
       end
 
-      job = HealthCheckJob.new
-      assert_not job.send(:scheduled_health_check_due?)
+      assert_not HealthCheckJob.scheduled_due?
 
       SystemHealth.update_all(last_check_at: 10.minutes.ago)
-      assert job.send(:scheduled_health_check_due?)
+      assert HealthCheckJob.scheduled_due?
     end
   end
 
@@ -79,7 +78,7 @@ class HealthCheckJobTest < ActiveJob::TestCase
     end
     SystemHealth.find_by!(service: "hardcover").update_column(:last_check_at, nil)
 
-    assert HealthCheckJob.new.send(:scheduled_health_check_due?)
+    assert HealthCheckJob.scheduled_due?
   end
 
   test "checks only the specified service when service param is given" do
