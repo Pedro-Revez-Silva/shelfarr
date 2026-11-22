@@ -184,6 +184,26 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal ids.uniq, ids
   end
 
+  test "every setting the classic page offered as a fixed list of choices is a choice here, with the same values" do
+    fields = fields_of(settings_json).index_by { |field| field.fetch("key") }
+    {
+      "indexer_provider" => %w[none prowlarr jackett newznab],
+      "indexer_search_scope" => SettingsService::INDEXER_SEARCH_SCOPES,
+      "library_platform" => SettingsService::LIBRARY_PLATFORMS,
+      "completed_download_import_mode" => SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES,
+      "default_request_format" => SettingsService::DEFAULT_REQUEST_FORMATS,
+      "metadata_source" => %w[auto hardcover google_books openlibrary comic_vine],
+      "oidc_default_role" => %w[user admin],
+      "telegram_update_mode" => %w[polling webhook]
+    }.each do |key, values|
+      assert_equal "choice", fields.fetch(key).fetch("input"), key
+      assert_equal values, fields.fetch(key).fetch("options").map { |option| option.fetch("value") }, key
+    end
+    fields.each_value do |field|
+      assert_includes %w[choice order events], field.fetch("input"), field.fetch("key") if field.key?("options")
+    end
+  end
+
   test "every probe and health service a card names exists" do
     WebPreview::AdminSettingsLayout.groups.each do |group|
       group.fetch(:probes, []).each { |entry| assert_includes ServerSettings::Probe::NAMES, entry[:id], group[:id] }

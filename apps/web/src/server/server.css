@@ -211,10 +211,10 @@
   color: var(--danger);
   font-size: 0.9rem;
 }
-.setting-toggle {
+.check-field.setting-toggle {
   align-items: start;
 }
-.setting-toggle label {
+.check-field.setting-toggle label {
   padding-block: 0;
   line-height: 24px;
 }
@@ -223,7 +223,7 @@
   display: grid;
   gap: 4px;
 }
-.setting-toggle-text .field-hint {
+.check-field .setting-toggle-text .field-hint {
   grid-column: auto;
 }
 

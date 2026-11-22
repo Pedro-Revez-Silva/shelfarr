@@ -15,7 +15,9 @@ module WebPreview
       ],
       oidc_default_role: [ [ "user", "User", nil ], [ "admin", "Admin", nil ] ],
       metadata_source: [ [ "auto", "All enabled sources", nil ], [ "hardcover", "Hardcover only", nil ], [ "google_books", "Google Books only", nil ], [ "openlibrary", "Open Library only", nil ], [ "comic_vine", "Comic Vine only", nil ] ],
-      telegram_update_mode: [ [ "polling", "Polling", "Works for local installs." ], [ "webhook", "Webhook", "For public HTTPS addresses." ] ]
+      telegram_update_mode: [ [ "polling", "Polling", "Works for local installs." ], [ "webhook", "Webhook", "For public HTTPS addresses." ] ],
+      default_request_format: SettingsService::DEFAULT_REQUEST_FORMAT_OPTIONS.map { |label, value| [ value, label, nil ] },
+      indexer_search_scope: SettingsService::INDEXER_SEARCH_SCOPES.map { |scope| [ scope, *SettingsService::INDEXER_SEARCH_SCOPE_OPTIONS.fetch(scope).values_at(:label, :description) ] }
     }.freeze
     EVENT_KEYS = %i[webhook_events discord_events telegram_notification_events].freeze
     URL_LIST_KEYS = %i[anna_archive_url zlibrary_url].freeze
@@ -225,7 +227,6 @@ module WebPreview
     def options(key)
       return CHOICES[key].map { |value, label, hint| { value: value, label: label, description: hint }.compact } if CHOICES.key?(key)
       return SettingsService.download_type_options.map { |option| { value: option[:value], label: option[:label], description: option[:description] } } if key == :preferred_download_types
-      return SettingsService.indexer_search_scope_options.map { |option| { value: option[:value], label: option[:label], description: option[:description] } } if key == :indexer_search_scope
 
       if EVENT_KEYS.include?(key)
         known = OutboundNotifications::WebhookDelivery::EVENTS
