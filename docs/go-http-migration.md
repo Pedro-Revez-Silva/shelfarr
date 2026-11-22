@@ -1079,7 +1079,13 @@ earlier copy kept); activity-time places; and the Go app's offline fallback, den
 option, reconnection races, expiry while open, failed removal, Downloads, details and the reader's saved-copy control. Real Chrome (the owner's, through Browse,
 on a task-owned loopback origin with synthetic Rails fixtures and two synthetic accounts) for save, server down, open,
 turn, reload and reopen, return online without remote writes, interrupted and retried saves, removal, worker update,
-sign-out, a second account, expiry, a moved-back clock and Back/Forward.
+sign-out, a second account, expiry, a moved-back clock and Back/Forward. For sending places: the open offline page sends
+the last offline place with its original `observed_at` once only the server comes back (no `online` event, no click),
+and a second signed-in client in its own session resumes there; a later place written by another client is kept (`409`,
+superseded); an earlier one is rebased and replaced (`409` then `200`); a place left pending when the page closed is sent
+when the Library next opens; opening, reloading, text size, resizing and reconnecting with nothing pending write nothing.
+Bun tests cover both time orders, undated, implausible and other-file places, uncertain and refused answers, a late
+answer racing a newer offline move, two tabs sending the same request, a held lock, account changes and unchanged places.
 
 Not proven: Safari, Firefox, real devices, screen readers, eviction by a browser under storage pressure, a real
 `QuotaExceededError` (only the estimate check and the unit tests), very large books, and offline audiobooks, PDFs and
