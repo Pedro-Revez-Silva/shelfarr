@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 class TitleKey
-  # Zeros of every Unicode decimal-digit block. The next nine code points are
-  # digits 1-9, and the blocks do not overlap.
+  # Zeros of every Unicode decimal-digit block NFKC leaves in place. The next
+  # nine code points are digits 1-9, and the blocks do not overlap.
   DECIMAL_DIGIT_ZERO = [
     0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6,
     0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0,
@@ -11,8 +11,8 @@ class TitleKey
     0xA9D0, 0xA9F0, 0xAA50, 0xABF0, 0xFF10, 0x104A0, 0x10D30, 0x11066,
     0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650,
     0x116C0, 0x11730, 0x118E0, 0x11950, 0x11C50, 0x11D50, 0x11DA0,
-    0x11F50, 0x16A60, 0x16AC0, 0x16B50, 0x1D7CE, 0x1D7D8, 0x1D7E2,
-    0x1D7EC, 0x1D7F6, 0x1E140, 0x1E2F0, 0x1E4F0, 0x1E950, 0x1FBF0
+    0x11F50, 0x16A60, 0x16AC0, 0x16B50, 0x1E140, 0x1E2F0, 0x1E4F0,
+    0x1E950, 0x1FBF0
   ].freeze
 
   ROMAN_NUMBER_TOKENS = {
@@ -93,7 +93,7 @@ class TitleKey
   # Casefold maps final sigma ("ς") onto "σ". Decimal digits from other
   # scripts ("٢", "２") become ASCII before anything classifies a numeral.
   def self.fold(text)
-    normalize_decimal_digits(text).gsub(/[^\x00-\x7F]/) { |char|
+    normalize_decimal_digits(text).tr("ёЁ", "еЕ").gsub(/[^\x00-\x7F]/) { |char|
       transliterated = ActiveSupport::Inflector.transliterate(char)
       transliterated == "?" ? char : transliterated
     }.downcase(:fold)

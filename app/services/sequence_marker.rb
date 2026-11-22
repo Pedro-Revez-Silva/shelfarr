@@ -123,8 +123,9 @@ class SequenceMarker
   # "cd" is a disc label, and it is also the Roman numeral 400.
   NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
   GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
+  ONE_FILE_COUNT = ReleaseParserService::ONE_FILE_COUNT_PATTERN
   private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
-    :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX
+    :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX, :ONE_FILE_COUNT
 
   class << self
     def separate_marker_punctuation(text)
@@ -185,11 +186,12 @@ class SequenceMarker
     # title is another book ("三体 Ⅱ" folds to "三体 2"). Digits, Roman
     # numerals, and 第N部/卷 count. A publication year does not. A bitrate
     # number followed by its unit token ("128" "kbps") does not either.
-    def leading_sequel_numeral?(tokens)
+    def leading_sequel_numeral?(tokens, after_phrase:)
       words = drop_leading_bitrate(Array(tokens))
       return false if words.empty?
 
-      numeric_sequel_token?(words.first) || cjk_volume_prefix?(words)
+      numeric_sequel_token?(words.first) || cjk_volume_prefix?(words) ||
+        (!explicit_volume?(Array(after_phrase)) && later_volume?(words))
     end
 
     # Bracketed years and spaced bitrates are release metadata. Unicode
@@ -202,7 +204,7 @@ class SequenceMarker
       prepared = prepared.gsub(BRACKETED_YEAR) { |year|
         kept_years.include?(year[/\d{4}/]) ? year : " "
       }
-      prepared.gsub(SPACED_BITRATE, " ")
+      without_one_file_count(prepared.gsub(SPACED_BITRATE, " "), preserve_title)
     end
 
     # Canonical tokens only. "Ⅱ:The" stays "2 the" here; the punctuationless
@@ -439,6 +441,24 @@ class SequenceMarker
       }
     end
 
+    def without_one_file_count(text, preserve_title)
+      return text if TitleKey.normalize_decimal_digits(preserve_title.to_s).match?(ONE_FILE_COUNT)
+
+      text.gsub(ONE_FILE_COUNT, " ")
+    end
+
+    def explicit_volume?(tokens)
+      tokens.each_cons(2).any? { |word, number| neutral_volume?(word, number) }
+    end
+
+    def later_volume?(tokens)
+      neutral_volume?(tokens[0], tokens[1]) && tokens[1].to_i > 1
+    end
+
+    def neutral_volume?(word, number)
+      word == NEUTRAL_MARKER && number.to_s.match?(/\A\d+\z/)
+    end
+
     def drop_leading_bitrate(tokens)
       words = tokens.map(&:to_s)
       while words.length >= 2 &&
@@ -464,7 +484,7 @@ class SequenceMarker
       }
       return false if hits.empty?
 
-      hits.all? { |start| leading_sequel_numeral?(host[(start + phrase.length)..]) }
+      hits.all? { |start| leading_sequel_numeral?(host[(start + phrase.length)..], after_phrase: phrase) }
     end
 
     def bare_trailing_sequence_conflict?(left, right)

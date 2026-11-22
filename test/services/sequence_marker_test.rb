@@ -246,6 +246,14 @@ class SequenceMarkerTest < ActiveSupport::TestCase
     end
   end
 
+  test "treats a later explicit volume after an unnumbered title as a sequel" do
+    assert SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 2")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune Part 2 Frank Herbert")
+    assert_not SequenceMarker.sequel_conflict?("Рыцари Сорока Островов", "Рыцари Сорока Островов Том 1")
+    assert_not SequenceMarker.sequel_conflict?("Dune Book 2", "Dune Book 2 Part 2")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune 1 file Frank Herbert M4B")
+  end
+
   test "strips an author whose apostrophe is a modifier letter" do
     releases = [
       "Wise Blood - Flannery OConnor English EPUB",

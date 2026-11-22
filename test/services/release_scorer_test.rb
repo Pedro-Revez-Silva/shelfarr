@@ -363,6 +363,108 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     assert tagged.breakdown[:auto_select_allowed]
   end
 
+  test "does not auto-select a later explicit volume of an unnumbered title" do
+    @book.update!(title: "Рыцари Сорока Островов", author: "Сергей Лукьяненко", book_type: :audiobook)
+    @request.update!(language: "ru")
+
+    [
+      "Сергей Лукьяненко - Рыцари Сорока Островов Том 2 [RUS] M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов Книга II [RUS] M4B",
+      "Сергей Лукьяненко - Рыцари Сорока Островов Volume 2 [RUS] M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
+
+      assert_equal 0, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert_not score.breakdown[:auto_select_allowed], release_title
+      assert_not score.high_confidence?, "#{release_title} #{score.total}"
+    end
+
+    first = ReleaseScorer.score(
+      @request.search_results.new(title: "Сергей Лукьяненко - Рыцари Сорока Островов Том 1 [RUS] M4B", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, first.breakdown[:title], first.breakdown.inspect
+  end
+
+  test "keeps a first explicit volume of an unnumbered latin title" do
+    @book.update!(title: "The Way of Kings", author: "Brandon Sanderson", book_type: :audiobook)
+
+    first = ReleaseScorer.score(
+      @request.search_results.new(title: "The Way of Kings Book 1 - Brandon Sanderson English M4B", seeders: 50),
+      @request
+    )
+    second = ReleaseScorer.score(
+      @request.search_results.new(title: "The Way of Kings Book 2 - Brandon Sanderson English M4B", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, first.breakdown[:title], first.breakdown.inspect
+    assert first.breakdown[:auto_select_allowed], first.breakdown.inspect
+    assert_equal 0, second.breakdown[:title], second.breakdown.inspect
+    assert_not second.breakdown[:auto_select_allowed]
+  end
+
+  test "reads a one file audiobook qualifier as structure, not a sequel" do
+    SettingsService.set(:audiobook_prefer_single_file, true)
+    @book.update!(title: "Dune", author: "Frank Herbert", book_type: :audiobook)
+
+    [
+      "Dune 1 file - Frank Herbert - English M4B",
+      "Dune 1-file - Frank Herbert - English M4B",
+      "Dune 1file - Frank Herbert - English M4B"
+    ].each do |release_title|
+      score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
+
+      assert_equal 100, score.breakdown[:title], "#{release_title} #{score.breakdown.inspect}"
+      assert_equal :single_file, score.breakdown[:audiobook_structure], release_title
+      assert score.breakdown[:auto_select_allowed], release_title
+      assert score.high_confidence?, "#{release_title} #{score.total}"
+    end
+  end
+
+  test "keeps a one file phrase that belongs to the title" do
+    @book.update!(title: "Case 1 File", author: "Ada Lovelace", book_type: :audiobook)
+
+    same = ReleaseScorer.score(
+      @request.search_results.new(title: "Case 1 File - Ada Lovelace English M4B", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, same.breakdown[:title], same.breakdown.inspect
+    assert same.breakdown[:auto_select_allowed], same.breakdown.inspect
+  end
+
+  test "matches cyrillic titles that differ only by yo and ye" do
+    assert_equal TitleKey.new("Ёжик в тумане").canonical, TitleKey.new("Ежик в тумане").canonical
+    assert_equal TitleKey.new("ребёнок").canonical, TitleKey.new("ребенок").canonical
+    assert_equal TitleKey.new("ребёнок").canonical, TitleKey.new("ребе\u0308нок").canonical
+
+    @book.update!(title: "Ёжик в тумане", author: "Сергей Козлов", book_type: :ebook)
+    @request.update!(language: "ru")
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "Сергей Козлов - Ежик в тумане [FB2, RUS]", seeders: 50),
+      @request
+    )
+
+    assert_equal 100, score.breakdown[:title], score.breakdown.inspect
+    assert score.breakdown[:auto_select_allowed]
+  end
+
+  test "leaves a numbered edition of an unnumbered title to manual review" do
+    @book.update!(title: "Тайная опора", author: "Людмила Петрановская", book_type: :ebook)
+    @request.update!(language: "ru")
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "Петрановская Л.В. - Тайная опора 2 изд. [PDF, RUS]", seeders: 50),
+      @request
+    )
+
+    assert_equal 0, score.breakdown[:title], score.breakdown.inspect
+    assert_not score.breakdown[:auto_select_allowed]
+  end
+
   test "scores an author-first cjk release of a short title" do
     @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
     @request.update!(language: "zh")

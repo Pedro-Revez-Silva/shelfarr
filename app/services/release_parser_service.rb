@@ -214,10 +214,12 @@ class ReleaseParserService
     "cbr" => /\bcbr\b/i
   }.freeze
 
+  ONE_FILE_COUNT_PATTERN = /\b1[\s\-_]?file\b/i
+
   AUDIOBOOK_SINGLE_FILE_PATTERNS = [
     /\bsingle[\s\-_]?file\b/i,
     /\bone[\s\-_]?file\b/i,
-    /\b1[\s\-_]?file\b/i,
+    ONE_FILE_COUNT_PATTERN,
     /\bm4b\b/i,
     /\bm4a\b/i
   ].freeze

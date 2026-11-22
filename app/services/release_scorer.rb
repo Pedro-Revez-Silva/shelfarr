@@ -171,7 +171,7 @@ class ReleaseScorer
     phrase_endings(release_title, book_title).any? do |ending|
       next false unless acceptable_phrase_position?(release_title, book_title, ending, short_title: short_title)
 
-      !SequenceMarker.leading_sequel_numeral?(release_title[ending..].to_s.split)
+      !SequenceMarker.leading_sequel_numeral?(release_title[ending..].to_s.split, after_phrase: book_title.split)
     end
   end
 
