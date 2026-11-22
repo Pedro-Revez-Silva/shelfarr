@@ -4,11 +4,11 @@ import type { BookFormat, BookRequestResult, RequestOptions } from "../contract"
 
 export type RequestFormat = RequestChoice["format"];
 export type PlannedRequest = { format: RequestFormat; accent: boolean };
-export type RequestExtras = { language: string; notes: string };
+export type RequestExtras = { language: string | null; notes: string };
 
 type FormatState = Pick<BookFormat, "book_type" | "state">;
 
-export const FALLBACK_OPTIONS: RequestOptions = { default_format: "ebook", default_language: "", languages: [], note_limit: 0 };
+export const FALLBACK_OPTIONS: RequestOptions = { formats: ["ebook"], default_format: "ebook", default_language: "", languages: [], note_limit: 0 };
 
 const NOUNS: Record<BookFormat["book_type"], string> = { ebook: "ebook", audiobook: "audiobook" };
 
@@ -16,8 +16,13 @@ export function requestLabel(format: RequestFormat): string {
   return format === "both" ? "Request ebook and audiobook" : `Request ${NOUNS[format]}`;
 }
 
-export function requestPlan(formats: readonly FormatState[], defaultFormat: RequestOptions["default_format"]): PlannedRequest[] {
-  const open = formats.filter((format) => format.state === "requestable").map((format) => format.book_type);
+export function offered(format: FormatState, options: RequestOptions): boolean {
+  return format.state === "requestable" && options.formats.includes(format.book_type);
+}
+
+export function requestPlan(formats: readonly FormatState[], options: RequestOptions): PlannedRequest[] {
+  const defaultFormat = options.default_format;
+  const open = formats.filter((format) => offered(format, options)).map((format) => format.book_type);
   if (open.length === 0) return [];
   if (open.length > 1 && defaultFormat === "both") return [{ format: "both", accent: true }];
   if (defaultFormat === "ebook" || defaultFormat === "audiobook") {
@@ -26,15 +31,13 @@ export function requestPlan(formats: readonly FormatState[], defaultFormat: Requ
   return open.map((format) => ({ format, accent: defaultFormat === "both" }));
 }
 
-export function initialExtras(options: RequestOptions): RequestExtras {
-  return { language: options.default_language, notes: "" };
-}
+export const NO_EXTRAS: RequestExtras = { language: null, notes: "" };
 
 export function choiceFor(format: RequestFormat, extras: RequestExtras, options: RequestOptions): RequestChoice {
   const notes = extras.notes.trim();
   return {
     format,
-    language: extras.language !== options.default_language && options.languages.some((language) => language.code === extras.language) ? extras.language : undefined,
+    language: extras.language !== null && extras.language !== options.default_language && options.languages.some((language) => language.code === extras.language) ? extras.language : undefined,
     notes: notes === "" || options.note_limit === 0 ? undefined : notes,
   };
 }
@@ -56,7 +59,7 @@ export function RequestExtrasFields({ options, extras, onChange, disabled }: { o
         {language ? (
           <div className="field">
             <label htmlFor={languageId}>Language</label>
-            <select id={languageId} name="language" value={extras.language} disabled={disabled} onChange={(event) => onChange({ ...extras, language: event.target.value })}>
+            <select id={languageId} name="language" value={extras.language ?? options.default_language} disabled={disabled} onChange={(event) => onChange({ ...extras, language: event.target.value })}>
               {options.languages.map((choice) => (
                 <option key={choice.code} value={choice.code}>
                   {choice.code === options.default_language ? `${choice.name} (server default)` : choice.name}
@@ -92,11 +95,14 @@ export function rejectedFormats(results: readonly BookRequestResult[] | undefine
   return (results ?? []).filter((result) => result.outcome === "rejected");
 }
 
-export function createdSentence(results: readonly BookRequestResult[] | undefined): string {
+export function outcomeSentence(results: readonly BookRequestResult[] | undefined, formats: readonly FormatState[]): string {
   const created = (results ?? []).filter((result) => result.outcome === "created").map((result) => NOUNS[result.book_type]);
-  if (created.length === 0) return "Already requested.";
-  const names = created.join(" and ");
-  return `${names.charAt(0).toUpperCase()}${names.slice(1)} requested.`;
+  if (created.length > 0) {
+    const names = created.join(" and ");
+    return `${names.charAt(0).toUpperCase()}${names.slice(1)} requested.`;
+  }
+  const existing = (results ?? []).map((result) => formats.find((format) => format.book_type === result.book_type)?.state);
+  return existing.length > 0 && existing.every((state) => state === "in_library") ? "Already in the library." : "Already requested.";
 }
 
 export function RejectedFormats({ results }: { results: readonly BookRequestResult[] | undefined }) {

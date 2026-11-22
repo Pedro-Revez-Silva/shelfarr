@@ -11,12 +11,12 @@ class WebPreview::BooksController < WebPreview::APIController
   end
 
   def create_request
-    choice = WebPreview::RequestOptions.choice(params)
-    return render_error("invalid_request", :unprocessable_entity) unless choice
-
     outcome = CREATION_LOCK.synchronize do
-      API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_formats(book_page, choice) }
+      API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_chosen_formats(book_page) }
     end
+    return render_error("invalid_request", :unprocessable_entity) if outcome == :invalid
+    return web_preview_signed_out unless Session.exists?(Current.session.id)
+    return web_preview_not_found unless WebPreview::Access.current.allows?(Current.session.user.reload)
     return render_error("request_rejected", :unprocessable_entity, message: outcome) if outcome.is_a?(String)
 
     render json: { account: web_preview_account_id, outcome: outcome.created ? :created : :existing, results: outcome.results, book: book_representation(book_page) },
@@ -24,6 +24,15 @@ class WebPreview::BooksController < WebPreview::APIController
   end
 
   private
+
+  def request_chosen_formats(page)
+    choice = request_options(page).choice(params)
+    choice ? request_formats(page, choice) : :invalid
+  end
+
+  def request_options(page)
+    WebPreview::RequestOptions.new(content_kind: ContentKinds.resolve(nil, source_work_ids: page.work_ids))
+  end
 
   def request_formats(page, choice)
     wanted = choice.book_types.select { |book_type| page.requestable?(book_type) }
@@ -59,7 +68,7 @@ class WebPreview::BooksController < WebPreview::APIController
   end
 
   def book_representation(page)
-    page.representation.merge(request_options: WebPreview::RequestOptions.representation)
+    page.representation.merge(request_options: request_options(page).representation)
   end
 
   def book_page

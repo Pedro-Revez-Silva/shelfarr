@@ -415,9 +415,10 @@ function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Pro
   });
 }
 
-export function withBookStates(answer: CatalogueAnswer, location: Pick<BookLocation, "source" | "id">, book: Book): CatalogueAnswer {
+export function withBookStates(answer: CatalogueAnswer, book: Book): CatalogueAnswer {
   const states = book.formats.map((format) => ({ book_type: format.book_type, state: format.state }));
-  return { ...answer, items: answer.items.map((item) => (item.book.source === location.source && item.book.id === location.id ? { ...item, formats: states } : item)) };
+  const works = new Set([book.id, ...book.also]);
+  return { ...answer, items: answer.items.map((item) => (works.has(`${item.book.source}:${item.book.id}`) ? { ...item, formats: states } : item)) };
 }
 
 export function useRequestBook(location: BookLocation) {
@@ -428,7 +429,10 @@ export function useRequestBook(location: BookLocation) {
     onSuccess: (answer) => {
       if (!guard.isActive()) return;
       client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), answer.book);
-      client.setQueriesData<CatalogueAnswer>({ queryKey: keys.catalogueAll }, (current) => (current ? withBookStates(current, location, answer.book) : current));
+      client.setQueriesData<CatalogueAnswer>({ queryKey: keys.catalogueAll }, (current) => (current ? withBookStates(current, answer.book) : current));
+    },
+    onError: (error) => {
+      if (guard.isActive() && unconfirmed(error)) void client.invalidateQueries({ queryKey: keys.catalogueAll });
     },
     onSettled: () => {
       if (!guard.isActive()) return;

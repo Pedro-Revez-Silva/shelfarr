@@ -4,7 +4,7 @@ import { ApiError, failureKind } from "../api/errors";
 import type { CatalogueAnswer, CatalogueItem, RequestOptions } from "../contract";
 import { useCatalogue, useRequestBook, useSession } from "../queries";
 import { actionFailure } from "./requestText";
-import { choiceFor, createdSentence, initialExtras, offersLanguage, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
+import { choiceFor, NO_EXTRAS, offersLanguage, outcomeSentence, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
 import { Cover } from "./Cover";
 import { FindTabs, YourRequests } from "./FindRequests";
 import { checkQuery, MAX_QUERY_CHARACTERS } from "./DiscoverPage";
@@ -215,9 +215,9 @@ function Result({ item, query, options }: { item: CatalogueItem; query: string; 
 function ResultRequest({ item, query, options }: { item: CatalogueItem; query: string; options: RequestOptions }) {
   const request = useRequestBook({ source: item.book.source, id: item.book.id, metadata: item.book.metadata ?? undefined });
   const [pressed, setPressed] = useState<RequestFormat | null>(null);
-  const [extras, setExtras] = useState(() => initialExtras(options));
+  const [extras, setExtras] = useState(NO_EXTRAS);
   const done = useRef<HTMLParagraphElement>(null);
-  const plan = requestPlan(item.formats, options.default_format);
+  const plan = requestPlan(item.formats, options);
   const succeeded = request.isSuccess;
   useEffect(() => {
     if (succeeded) done.current?.focus();
@@ -225,14 +225,14 @@ function ResultRequest({ item, query, options }: { item: CatalogueItem; query: s
   const send = (format: RequestFormat) => {
     if (request.isPending) return;
     setPressed(format);
-    request.mutate(choiceFor(format, extras, options));
+    request.mutate(choiceFor(format, extras, options), { onSuccess: () => setExtras((current) => ({ ...current, notes: "" })) });
   };
   if (plan.length === 0 && !request.isSuccess) return null;
   return (
     <div className="result-request">
       {request.isSuccess ? (
         <p ref={done} tabIndex={-1} className="result-request-done">
-          {createdSentence(request.data.results)}{" "}
+          {outcomeSentence(request.data.results, item.formats)}{" "}
           <Link to="/books/$source/$sourceId" params={{ source: item.book.source, sourceId: item.book.id }} search={{ q: query, ...(item.book.metadata ? { metadata: item.book.metadata } : {}) }}>
             Follow it on its page<span className="sr-only">: {item.title}</span>
           </Link>

@@ -10,7 +10,7 @@ import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { CopyTable } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
-import { choiceFor, FALLBACK_OPTIONS, initialExtras, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
+import { choiceFor, FALLBACK_OPTIONS, NO_EXTRAS, offered, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/books/$source/$sourceId");
@@ -142,11 +142,10 @@ function firstParagraph(text: string): string {
 
 function ServerCard({ book, location }: { book: Book; location: BookLocation }) {
   const options = book.request_options ?? FALLBACK_OPTIONS;
-  const offered = book.request_options ? book.formats : book.formats.filter((format) => format.book_type === "ebook");
-  const plan = requestPlan(offered, options.default_format);
+  const plan = requestPlan(book.formats, options);
   const request = useRequestBook(location);
   const [pressed, setPressed] = useState<RequestFormat | null>(null);
-  const [extras, setExtras] = useState(() => initialExtras(options));
+  const [extras, setExtras] = useState(NO_EXTRAS);
   const [focusTarget, setFocusTarget] = useState<string | null>(null);
   useEffect(() => {
     const target = focusTarget === null ? null : document.getElementById(focusTarget);
@@ -178,7 +177,7 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
             <span className="format-name">{FORMAT_NAMES[format.book_type]}</span>
             <FormatState format={format} />
             <span className="format-action">
-              {format.state === "requestable" && offered.includes(format) ? button(format.book_type, plan.some((entry) => entry.format === format.book_type && entry.accent)) : <FormatAction format={format} />}
+              {offered(format, options) ? button(format.book_type, plan.some((entry) => entry.format === format.book_type && entry.accent)) : <FormatAction format={format} />}
             </span>
           </li>
         ))}

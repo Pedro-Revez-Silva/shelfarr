@@ -62,7 +62,7 @@ class WebPreview::BookRequestOptionsTest < ActionDispatch::IntegrationTest
     SettingsService.set(:default_request_format, "both")
     SettingsService.set(:default_language, "nl")
     sign_in_as(@member)
-    expected = { "default_format" => "both", "default_language" => "nl", "note_limit" => 1_000,
+    expected = { "formats" => %w[audiobook ebook], "default_format" => "both", "default_language" => "nl", "note_limit" => 1_000,
       "languages" => [ [ "nl", "Dutch" ], [ "en", "English" ], [ "fr", "French" ], [ "de", "German" ] ].map { |code, name| { "code" => code, "name" => name } } }
     assert_equal expected, BookMetadataLookupService.stub(:call, DETAILS) { book_json }.fetch("request_options")
 
@@ -200,6 +200,44 @@ class WebPreview::BookRequestOptionsTest < ActionDispatch::IntegrationTest
     end
     assert_equal [ [ 200, "existing" ], [ 201, "created" ] ], answers.sort
     assert_equal [ [ @member, "audiobook", "en", nil, "web", "pending" ], [ @member, "ebook", "en", nil, "web", "pending" ] ], created_rows
+  end
+
+  test "a comic's Book page offers no book format, and asking for one anyway is refused" do
+    sign_in_as(@member)
+    found = BookMetadataLookupService.stub(:call, DETAILS) do
+      preview_get web_preview_api_book_path(source: "comic_vine", source_id: "4000-77"), user: @member
+      response.parsed_body.fetch("book")
+    end
+    assert_equal [], found.dig("request_options", "formats")
+    [ {}, { book_type: "ebook" }, { book_type: "audiobook" }, { book_type: "both" } ].each do |body|
+      BookMetadataLookupService.stub(:call, DETAILS) do
+        post web_preview_api_book_requests_path(source: "comic_vine", source_id: "4000-77"), params: body, headers: account_headers(@member), as: :json
+      end
+      assert_equal [ 422, { "error" => "invalid_request" } ], [ response.status, response.parsed_body ], body.inspect
+    end
+    assert_equal 0, Request.count - @requests_before
+  end
+
+  test "an administrator demoted while the request is made gets the member's answer, and a session ended meanwhile is told it is signed out" do
+    other = Book.create!(title: "Middlemarch", book_type: :ebook, open_library_work_id: "OL900W")
+    Request.create!(book: other, user: @member, status: :pending)
+    sign_in_as(@admin)
+    demoting = ->(*) { @admin.update!(role: :user); DETAILS }
+    answer = BookMetadataLookupService.stub(:call, demoting) do
+      post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "audiobook" }, headers: account_headers(@admin), as: :json
+      response.parsed_body
+    end
+    assert_response :created
+    assert_equal({ "book_type" => "ebook", "state" => "requested_by_someone", "publication" => nil, "request" => nil }, answer.fetch("book").fetch("formats").find { |entry| entry.fetch("book_type") == "ebook" })
+    assert_no_match(/#{Regexp.escape(@member.name.to_s)}/, response.body) if @member.name.present?
+
+    Request.where(user: @admin).destroy_all
+    session = Current.session
+    ending = ->(*) { session.destroy!; DETAILS }
+    BookMetadataLookupService.stub(:call, ending) do
+      post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "audiobook" }, headers: account_headers(@admin), as: :json
+    end
+    assert_equal [ 401, { "error" => "signed_out" } ], [ response.status, response.parsed_body ]
   end
 
   test "choosing a format still needs the page's account and CSRF token" do

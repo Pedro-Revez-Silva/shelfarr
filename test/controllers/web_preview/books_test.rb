@@ -109,7 +109,7 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     sign_in_as(@member)
     MetadataService.stub(:enabled_metadata_providers, []) do
       assert_equal({ "account" => @member.id.to_s, "query" => "middlemarch", "providers" => [], "unavailable" => [], "items" => [],
-        "request_options" => WebPreview::RequestOptions.representation.deep_stringify_keys }, discover("middlemarch", user: @member))
+        "request_options" => WebPreview::RequestOptions.new.representation.deep_stringify_keys }, discover("middlemarch", user: @member))
     end
     preview_get web_preview_api_discover_path(q: "a\u0007b"), user: @member
     assert_response :unprocessable_entity
@@ -125,7 +125,7 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
       "description" => "Lives in a provincial town.", "cover" => { "url" => nil, "style" => WebPreview::BookPage.cover_style(WORK) },
       "source" => { "name" => "Open Library", "url" => "https://openlibrary.org/works/OL900W" },
       "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "publication" => nil, "request" => nil } },
-      "request_options" => { "default_format" => "ask", "default_language" => "en", "languages" => [ { "code" => "en", "name" => "English" } ], "note_limit" => 1_000 } }, book)
+      "request_options" => { "formats" => %w[audiobook ebook], "default_format" => "ask", "default_language" => "en", "languages" => [ { "code" => "en", "name" => "English" } ], "note_limit" => 1_000 } }, book)
   end
 
   test "a hand-off without a description keeps its own details and takes only the missing ones from the catalogue" do

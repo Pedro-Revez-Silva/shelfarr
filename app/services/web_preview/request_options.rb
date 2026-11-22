@@ -6,16 +6,13 @@ module WebPreview
     BOTH = "both"
     Choice = Data.define(:book_types, :language, :notes)
 
-    def self.representation
-      new.representation
-    end
-
-    def self.choice(params)
-      new.choice(params)
+    def initialize(content_kind: ContentKinds::BOOK)
+      @content_kind = content_kind
     end
 
     def representation
       {
+        formats: formats.sort,
         default_format: SettingsService.get(:default_request_format),
         default_language: default_language,
         languages: languages.map { |code, name| { code: code, name: name } },
@@ -35,7 +32,7 @@ module WebPreview
     private
 
     def formats
-      RequestOptionPolicy.book_types_for(ContentKinds::BOOK) & BookPage::FORMATS
+      RequestOptionPolicy.book_types_for(@content_kind) & BookPage::FORMATS
     end
 
     def requested_book_types(value)

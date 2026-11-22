@@ -15,7 +15,7 @@ class WebPreview::DiscoverController < WebPreview::APIController
     return render_error("search_unavailable", :service_unavailable) if providers.any? && failed.size == providers.size
 
     render json: { account: web_preview_account_id, query: query.strip, providers: names(providers), unavailable: names(failed), items: annotate(results),
-      request_options: WebPreview::RequestOptions.representation }
+      request_options: WebPreview::RequestOptions.new.representation }
   rescue *CONNECTION_ERRORS
     render_error("search_unavailable", :service_unavailable)
   rescue *ANSWER_ERRORS

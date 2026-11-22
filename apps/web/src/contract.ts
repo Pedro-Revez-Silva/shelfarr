@@ -581,6 +581,7 @@ export type BookFormat = z.infer<typeof bookFormatSchema>;
 
 export const requestFormatChoices = ["ask", "ebook", "audiobook", "both"] as const;
 export const requestOptionsSchema = z.object({
+  formats: z.array(z.enum(bookFormatTypes)),
   default_format: z.enum(requestFormatChoices),
   default_language: z.string(),
   languages: z.array(z.object({ code: z.string().min(1), name: z.string().min(1) })),

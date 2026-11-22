@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Book, BookFormat, BookRequest, BookRequestResult, CatalogueAnswer, RequestOptions } from "../src/contract";
+import type { Book, BookFormat, BookRequest, BookRequestResult, CatalogueAnswer, CatalogueItem, RequestOptions } from "../src/contract";
 import { requestPlan } from "../src/components/RequestChoices";
 import { ACCOUNT, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
 
@@ -16,7 +16,7 @@ const LANGUAGES = [
 ];
 
 function options(overrides: Partial<RequestOptions> = {}): RequestOptions {
-  return { default_format: "ebook", default_language: "en", languages: LANGUAGES, note_limit: 1000, ...overrides };
+  return { formats: ["audiobook", "ebook"], default_format: "ebook", default_language: "en", languages: LANGUAGES, note_limit: 1000, ...overrides };
 }
 
 function request(overrides: Partial<BookRequest> = {}): BookRequest {
@@ -218,7 +218,7 @@ describe("choosing what to request on the Book page", () => {
   });
 });
 
-const ITEM = {
+const ITEM: CatalogueItem = {
   book: { source: "openlibrary" as const, id: "OL900W", metadata: HANDOFF },
   title: "Middlemarch",
   author: "George Eliot",
@@ -231,13 +231,88 @@ const ITEM = {
   ],
 };
 
-function catalogue(requestOptions: RequestOptions | undefined, items = [ITEM]): CatalogueAnswer {
+function catalogue(requestOptions: RequestOptions | undefined, items: CatalogueItem[] = [ITEM]): CatalogueAnswer {
   return { account: ACCOUNT, query: "middlemarch", providers: ["Open Library"], unavailable: [], items, ...(requestOptions ? { request_options: requestOptions } : {}) };
 }
 
 function findServer(answer: CatalogueAnswer): FakeServer {
   return standardServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session() })).on("GET", /\/api\/v1\/discover\?/, () => ({ body: answer }));
 }
+
+describe("what a press sends and shows after the answer", () => {
+  test("a Book page for a work with no book format offers no request", async () => {
+    renderApp({ server: bookServer(() => book([format("ebook"), format("audiobook")], options({ formats: [] }))), url: BOOK_URL });
+    expect(await screen.findByRole("heading", { level: 1, name: "Middlemarch" })).toBeTruthy();
+    expect(within(card()).queryAllByRole("button")).toEqual([]);
+    expect(within(card()).queryByText("Language and note")).toBeNull();
+  });
+
+  test("a new server default reaches a press made without opening the language choice", async () => {
+    let defaultLanguage = "en";
+    const server = findServer(catalogue(options())).on("POST", /\/requests/, () => outcome(book([requested("ebook", "41"), format("audiobook")]), [{ book_type: "ebook", outcome: "created" }]));
+    server.on("GET", /\/api\/v1\/discover\?/, () => ({ body: catalogue(options({ default_language: defaultLanguage })) }));
+    const { services } = renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    expect(await screen.findByRole("button", { name: "Request ebook of Middlemarch" })).toBeTruthy();
+    defaultLanguage = "fr";
+    await act(async () => services.queryClient.refetchQueries({ queryKey: services.keys.catalogueAll }));
+    await waitFor(() => expect((screen.getByLabelText("Language") as HTMLSelectElement).value).toBe("fr"));
+    await userEvent.click(screen.getByRole("button", { name: "Request ebook of Middlemarch" }));
+    await screen.findByText("Ebook requested.", { exact: false });
+    expect(server.called("POST", /\/requests/)[0]?.body).toEqual({ book_type: "ebook" });
+  });
+
+  test("a press the server did not confirm searches Find again so the row shows what was saved", async () => {
+    let saved = false;
+    const server = findServer(catalogue(options())).on("POST", /\/requests/, () => {
+      saved = true;
+      return { status: 500, body: { error: "server_error" } };
+    });
+    server.on("GET", /\/api\/v1\/discover\?/, () => ({ body: catalogue(options(), [{ ...ITEM, formats: [{ book_type: "ebook", state: saved ? "requested" : "requestable" }, ITEM.formats[1]!] }]) }));
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The server did not confirm this. The page now shows the current state; try again only if nothing changed.");
+    await waitFor(() => expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: requestedAudiobook: not in library"));
+    expect(server.called("GET", /discover\?/)).toHaveLength(2);
+  });
+
+  test("a refused press does not search Find again", async () => {
+    const server = findServer(catalogue(options())).on("POST", /\/requests/, () => ({ status: 422, body: { error: "request_rejected", message: "Not today" } }));
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Not today");
+    expect(server.called("GET", /discover\?/)).toHaveLength(1);
+  });
+
+  test("every Find result for the same work takes the answer's states, and a note is not sent twice", async () => {
+    const linked: CatalogueItem = { ...ITEM, book: { source: "google_books", id: "gb-77", metadata: null }, title: "Middlemarch (Google Books)" };
+    const unrelated = { ...ITEM, book: { ...ITEM.book, id: "OL901W" }, title: "Persuasion" };
+    const answered = { ...book([format("ebook"), requested("audiobook", "52")]), also: ["google_books:gb-77"] };
+    const server = findServer(catalogue(options({ default_format: "ask" }), [ITEM, linked, unrelated])).on("POST", /\/requests/, () => outcome(answered, [{ book_type: "audiobook", outcome: "created" }]));
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    const [first] = await screen.findAllByRole("article");
+    const user = userEvent.setup();
+    await user.click(within(first!).getByText("Language and note"));
+    await user.type(within(first!).getByLabelText("Note (optional)"), "Unabridged narrator");
+    await user.click(within(first!).getByRole("button", { name: "Request audiobook of Middlemarch" }));
+    await within(first!).findByText("Audiobook requested.", { exact: false });
+    const [, second, third] = screen.getAllByRole("article");
+    expect(within(second!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: requested");
+    expect(within(third!).getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: not in libraryAudiobook: not in library");
+    expect((within(first!).getByLabelText("Note (optional)") as HTMLTextAreaElement).value).toBe("");
+    await user.click(within(first!).getByRole("button", { name: "Request ebook of Middlemarch" }));
+    await waitFor(() => expect(server.called("POST", /\/requests/)).toHaveLength(2));
+    expect(server.called("POST", /\/requests/).map((sent) => sent.body)).toEqual([{ book_type: "audiobook", notes: "Unabridged narrator" }, { book_type: "ebook" }]);
+  });
+
+  test("a format that reached the library meanwhile is called that, not requested", async () => {
+    const shelved = book([format("ebook", { state: "in_library" }), format("audiobook")]);
+    const server = findServer(catalogue(options())).on("POST", /\/requests/, () => ({ body: { account: ACCOUNT, outcome: "existing", results: [{ book_type: "ebook", outcome: "existing" }], book: shelved } }));
+    renderApp({ server, url: "/sub/preview/find?q=middlemarch" });
+    await userEvent.click(await screen.findByRole("button", { name: "Request ebook of Middlemarch" }));
+    expect(await screen.findByText("Already in the library.", { exact: false })).toBeTruthy();
+    expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: in libraryAudiobook: not in library");
+  });
+});
 
 describe("requesting from a Find result", () => {
   test("one quiet action requests the default format in place, the row's states update and Find does not search again", async () => {
@@ -300,16 +375,18 @@ describe("the request plan", () => {
   const both = [format("ebook"), format("audiobook")];
   const onlyAudio = [format("ebook", { state: "in_library" }), format("audiobook")];
   test("follows the server's default and offers only formats that can be requested", () => {
-    expect(requestPlan(both, "ebook")).toEqual([{ format: "ebook", accent: true }]);
-    expect(requestPlan(both, "audiobook")).toEqual([{ format: "audiobook", accent: true }]);
-    expect(requestPlan(both, "both")).toEqual([{ format: "both", accent: true }]);
-    expect(requestPlan(both, "ask")).toEqual([
+    expect(requestPlan(both, options({ default_format: "ebook" }))).toEqual([{ format: "ebook", accent: true }]);
+    expect(requestPlan(both, options({ default_format: "audiobook" }))).toEqual([{ format: "audiobook", accent: true }]);
+    expect(requestPlan(both, options({ default_format: "both" }))).toEqual([{ format: "both", accent: true }]);
+    expect(requestPlan(both, options({ default_format: "ask" }))).toEqual([
       { format: "ebook", accent: false },
       { format: "audiobook", accent: false },
     ]);
-    expect(requestPlan(onlyAudio, "ebook")).toEqual([{ format: "audiobook", accent: false }]);
-    expect(requestPlan(onlyAudio, "both")).toEqual([{ format: "audiobook", accent: true }]);
-    expect(requestPlan(onlyAudio, "ask")).toEqual([{ format: "audiobook", accent: false }]);
-    expect(requestPlan([format("ebook", { state: "requested" }), format("audiobook", { state: "requested_by_someone" })], "both")).toEqual([]);
+    expect(requestPlan(onlyAudio, options({ default_format: "ebook" }))).toEqual([{ format: "audiobook", accent: false }]);
+    expect(requestPlan(onlyAudio, options({ default_format: "both" }))).toEqual([{ format: "audiobook", accent: true }]);
+    expect(requestPlan(onlyAudio, options({ default_format: "ask" }))).toEqual([{ format: "audiobook", accent: false }]);
+    expect(requestPlan([format("ebook", { state: "requested" }), format("audiobook", { state: "requested_by_someone" })], options({ default_format: "both" }))).toEqual([]);
+    expect(requestPlan(both, options({ formats: [], default_format: "both" }))).toEqual([]);
+    expect(requestPlan(both, options({ formats: ["ebook"], default_format: "both" }))).toEqual([{ format: "ebook", accent: true }]);
   });
 });
