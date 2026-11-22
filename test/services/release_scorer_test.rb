@@ -468,6 +468,7 @@ class ReleaseScorerTest < ActiveSupport::TestCase
 
     @book.update!(title: "Ёжик в тумане", author: "Сергей Козлов", book_type: :ebook)
     @request.update!(language: "ru")
+    SettingsService.set(:ebook_approved_formats, [ "fb2" ])
 
     score = ReleaseScorer.score(
       @request.search_results.new(title: "Сергей Козлов - Ежик в тумане [FB2, RUS]", seeders: 50),
@@ -489,6 +490,79 @@ class ReleaseScorerTest < ActiveSupport::TestCase
 
     assert_equal 0, score.breakdown[:title], score.breakdown.inspect
     assert_not score.breakdown[:auto_select_allowed]
+  end
+
+  test "keeps Hindi vowels distinct in titles and author credits" do
+    @book.update!(title: "काला", author: "मन्नू भंडारी")
+    @request.update!(language: "hi")
+
+    assert_equal "काला", TitleKey.new("काला").canonical
+    assert_equal "काली", TitleKey.new("काली").canonical
+    assert_empty TitleKey.new("\u0301").canonical
+
+    other_book = ReleaseScorer.score(
+      @request.search_results.new(title: "मन्नू भंडारी - काली [Hindi] M4B", seeders: 300), @request
+    )
+    exact = ReleaseScorer.score(
+      @request.search_results.new(title: "मन्नू भंडारी - काला [Hindi] M4B", seeders: 300), @request
+    )
+
+    assert_operator other_book.breakdown[:title], :<, 100
+    assert_not other_book.high_confidence?
+    assert_equal 100, exact.breakdown[:title]
+    assert_equal 100, exact.breakdown[:author]
+  end
+
+  test "keeps a bracketed year when it is the requested title" do
+    @book.update!(title: "1984", author: "George Orwell")
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "George Orwell - [1984] [English] M4B", seeders: 50), @request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+  end
+
+  test "a short title alias cannot veto an exact declared longer alias" do
+    title = "The Incredible Adventures of the Reluctant Space Travelers"
+    @book.update!(title: "#{title} / #{title} I", author: "Ada Lovelace")
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "Ada Lovelace - #{title} I [English] M4B", seeders: 50), @request
+    )
+
+    assert_equal 100, score.breakdown[:title]
+    assert_not score.breakdown[:auto_select_allowed]
+  end
+
+  test "rejects an explicit volume conflict when metadata uses fullwidth digits" do
+    title = "Гарри Поттер и Дары Смерти"
+    @book.update!(title: "#{title} Том ２", author: "Джоан Роулинг")
+    @request.update!(language: "ru")
+    SettingsService.set(:audiobook_preferred_formats, [ "m4b" ])
+    SettingsService.set(:audiobook_prefer_single_file, true)
+
+    score = ReleaseScorer.score(
+      @request.search_results.new(title: "Джоан Роулинг - #{title} Том 3 [RUS] M4B", seeders: 50), @request
+    )
+
+    assert_equal [ "2" ], SequenceMarker.numbers(@book.title)
+    assert_equal 0, score.breakdown[:title]
+    assert_not score.high_confidence?
+  end
+
+  test "rejects sequel numbers glued to a long title or following a language tag" do
+    title = "Невероятные приключения путешественника во времени"
+    @book.update!(title: title, author: "Сергей Козлов")
+    @request.update!(language: "ru")
+
+    [ "#{title}２ [RUS]", "#{title} [RUS] ２" ].each do |release_title|
+      score = ReleaseScorer.score(
+        @request.search_results.new(title: "Сергей Козлов - #{release_title} M4B", seeders: 50), @request
+      )
+
+      assert_equal 0, score.breakdown[:title], release_title
+      assert_not score.breakdown[:auto_select_allowed], release_title
+    end
   end
 
   test "scores an author-first cjk release of a short title" do

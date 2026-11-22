@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class TitleKey
+  WORD_PATTERN = /[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/
+
   DECIMAL_DIGIT_ZERO = [
     0x0030, 0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6,
     0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0,
@@ -68,12 +70,10 @@ class TitleKey
     canonical.length < 4
   end
 
-  def self.normalize_boundaries(text, preserve: "")
-    text.to_s.gsub(/[^\p{L}\p{N}]/) { |char| preserve.include?(char) ? char : " " }
-  end
-
   def self.normalize_marker_boundaries(text)
-    normalize_boundaries(text, preserve: "#{QUOTE_CHARACTERS}()[].")
+    punctuation = "#{QUOTE_CHARACTERS}()[]."
+    boundaries = text.to_s.gsub(/[^\p{L}\p{N}\p{M}]/) { |char| punctuation.include?(char) ? char : " " }
+    fold_decimal_digits(boundaries)
   end
 
   def self.fold(text)
@@ -84,13 +84,15 @@ class TitleKey
   end
 
   def self.normalize_decimal_digits(text)
-    text.to_s.unicode_normalize(:nfkc).gsub(/\p{Nd}/) { |char|
-      ascii_decimal_digit(char) || char
-    }
+    fold_decimal_digits(text.to_s.unicode_normalize(:nfkc))
   end
 
   def self.quote_character?(character)
     QUOTE_CHARACTERS.include?(character)
+  end
+
+  def self.fold_decimal_digits(text)
+    text.gsub(/\p{Nd}/) { |char| ascii_decimal_digit(char) || char }
   end
 
   def self.ascii_decimal_digit(char)
@@ -101,7 +103,7 @@ class TitleKey
     end
     nil
   end
-  private_class_method :ascii_decimal_digit
+  private_class_method :fold_decimal_digits, :ascii_decimal_digit
 
   private
 
@@ -116,11 +118,12 @@ class TitleKey
   end
 
   def tokenize(text)
-    self.class.normalize_boundaries(self.class.fold(text)).squish
+    self.class.fold(text).scan(WORD_PATTERN).join(" ")
   end
 
   def punctuationless(text)
-    self.class.fold(text).gsub(/[^\p{L}\p{N}\s]/, "").squish
+    folded = self.class.fold(text).gsub(/(?<![\p{L}\p{N}\p{M}])\p{M}+/, "")
+    folded.gsub(/[^\p{L}\p{N}\p{M}\s]/, "").squish
   end
 
   def number_tokens(text)

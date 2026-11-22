@@ -205,6 +205,7 @@ class ReleaseScorer
   end
 
   # The author credit is not part of the title, so initials cannot finish a
+  # marker ("The Red Book C. G. Jung").
   def prepared_release_title
     @prepared_release_title ||= without_audiobook_file_count(
       SequenceMarker.without_recognised_metadata(
@@ -231,11 +232,12 @@ class ReleaseScorer
   end
 
   def sequel_title_conflict?
+    return false if @comic_issue_match
     return @sequel_title_conflict if instance_variable_defined?(:@sequel_title_conflict)
 
-    @sequel_title_conflict = @comic_issue_match.nil? && comparable_titles.any? { |title|
-      SequenceMarker.sequel_conflict?(title, prepared_release_title)
-    }
+    conflicting, compatible = comparable_titles.partition { |title| SequenceMarker.sequel_conflict?(title, prepared_release_title) }
+    @sequel_title_conflict = comparable_titles.empty? ||
+      (conflicting.any? && compatible.none? { |title| exact_normalized_title_match?(title) })
   end
 
   def release_title_key

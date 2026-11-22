@@ -108,6 +108,7 @@ class SequenceMarker
   PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
   BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
   SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
+  RELEASE_METADATA = Regexp.union(BRACKETED_YEAR, SPACED_BITRATE)
   CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
   CJK_VOLUME_PREFIX = /
     \A第
@@ -117,7 +118,7 @@ class SequenceMarker
   NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
   GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
   ONE_FILE_COUNT = ReleaseParserService::ONE_FILE_COUNT_PATTERN
-  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :RELEASE_METADATA, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
     :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX, :ONE_FILE_COUNT
 
   class << self
@@ -176,35 +177,24 @@ class SequenceMarker
     end
 
     def leading_sequel_numeral?(tokens, after_phrase:)
-      words = drop_leading_bitrate(Array(tokens))
+      words = drop_leading_bitrate(Array(tokens)).drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
       return false if words.empty?
 
       numeric_sequel_token?(words.first) || cjk_volume_prefix?(words) ||
-        (!explicit_volume?(Array(after_phrase)) && explicit_volume_after_tags?(words))
+        (!explicit_volume?(Array(after_phrase)) && neutral_volume?(words[0], words[1]))
     end
 
     def without_recognised_metadata(text, preserve_title: nil)
-      prepared = TitleKey.normalize_decimal_digits(text.to_s)
-      kept_years = bracketed_years(preserve_title)
-      prepared = prepared.gsub(BRACKETED_YEAR) { |year|
-        kept_years.include?(year[/\d{4}/]) ? year : " "
-      }
-      prepared.gsub(SPACED_BITRATE, " ")
+      without_matches_outside_title(TitleKey.normalize_decimal_digits(text), RELEASE_METADATA, preserve_title)
     end
 
     def without_one_file_count(text, preserve_title: nil)
-      source = text.to_s
-      title_spans = phrase_spans(source, preserve_title)
-      source.gsub(ONE_FILE_COUNT) {
-        match = Regexp.last_match
-        span = match.begin(0)...match.end(0)
-        title_spans.any? { |title_span| spans_overlap?(span, title_span) } ? match[0] : " "
-      }
+      without_matches_outside_title(text.to_s, ONE_FILE_COUNT, preserve_title)
     end
 
     def sequel_conflict?(left, right)
-      left_tokens = classification_tokens(left)
-      right_tokens = classification_tokens(right)
+      left_tokens = classification_tokens(left, preserve_title: left)
+      right_tokens = classification_tokens(right, preserve_title: left)
       return false if left_tokens.empty? || right_tokens.empty?
 
       phrase_sequel_conflict?(left_tokens, right_tokens) ||
@@ -213,6 +203,17 @@ class SequenceMarker
     end
 
     private
+
+    def without_matches_outside_title(source, pattern, title)
+      return source unless pattern.match?(source)
+
+      title_spans = phrase_spans(source, title)
+      source.gsub(pattern) {
+        match = Regexp.last_match
+        span = match.begin(0)...match.end(0)
+        title_spans.any? { |title_span| spans_overlap?(span, title_span) } ? match[0] : " "
+      }
+    end
 
     # Exact phrases keep an apostrophe as its own token ("Shakespeare.s").
     # Marker words are compared after sequence normalization ("Band" / "Volume")
@@ -405,7 +406,7 @@ class SequenceMarker
       end
 
       tokens = []
-      folded.scan(/[\p{L}\p{N}]+/) do
+      folded.scan(TitleKey::WORD_PATTERN) do
         match = Regexp.last_match
         tokens << [
           TitleKey.new(match[0]).canonical,
@@ -422,19 +423,8 @@ class SequenceMarker
       cluster.each_char.all? { |char| TitleKey.quote_character?(char) }
     end
 
-    def bracketed_years(text)
-      TitleKey.normalize_decimal_digits(text.to_s).scan(BRACKETED_YEAR).filter_map { |year|
-        year[/\d{4}/]
-      }
-    end
-
     def explicit_volume?(tokens)
       tokens.each_cons(2).any? { |word, number| neutral_volume?(word, number) }
-    end
-
-    def explicit_volume_after_tags?(tokens)
-      words = tokens.drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
-      neutral_volume?(words[0], words[1])
     end
 
     def neutral_volume?(word, number)
@@ -451,20 +441,27 @@ class SequenceMarker
       words
     end
 
-    def classification_tokens(text)
-      TitleKey.new(neutralize(without_recognised_metadata(text))).canonical.split
+    def classification_tokens(text, preserve_title:)
+      TitleKey.new(neutralize(without_recognised_metadata(text, preserve_title:))).canonical.split
     end
 
     def phrase_sequel_conflict?(phrase, host)
       return false if phrase.empty? || phrase.length > host.length
 
       short = phrase.join(" ").length < 4
-      hits = (0..(host.length - phrase.length)).select { |start|
-        host[start, phrase.length] == phrase && (!short || start.zero?)
-      }
-      return false if hits.empty?
+      endings = (0..(host.length - phrase.length)).filter_map do |start|
+        next if short && !start.zero?
 
-      hits.all? { |start| leading_sequel_numeral?(host[(start + phrase.length)..], after_phrase: phrase) }
+        matched = host[start, phrase.length]
+        ending = start + phrase.length
+        next host[ending..] if matched == phrase
+        next unless matched[0...-1] == phrase[0...-1] && matched.last.start_with?(phrase.last)
+
+        glued = matched.last.delete_prefix(phrase.last)
+        [ glued, *host[ending..] ] if glued.match?(/\A\d+\z/)
+      end
+
+      endings.any? && endings.all? { |tail| leading_sequel_numeral?(tail, after_phrase: phrase) }
     end
 
     def bare_trailing_sequence_conflict?(left, right)
