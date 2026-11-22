@@ -38,6 +38,7 @@ class WebPreview::LibraryController < WebPreview::APIController
 
   def detail(book)
     json_for(book, Consumer::Publication.new(book, user: Current.user, routes: self, reader_formats: web_reader_formats).representation).detail
+      .merge(book_page: WebPreview::BookPage.path_for(book))
   end
 
   def json_for(book, representation)

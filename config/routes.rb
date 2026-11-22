@@ -204,12 +204,23 @@ Rails.application.routes.draw do
   get "preview", to: "web_preview/shell#index", as: :web_preview
   get "preview/library", to: "web_preview/shell#show", as: :web_preview_library
   get "preview/library/:id", to: "web_preview/shell#show", as: :web_preview_publication, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/discover", to: "web_preview/shell#show", as: :web_preview_discover
+  get "preview/books/:source/:source_id", to: "web_preview/shell#show", as: :web_preview_book,
+    constraints: { source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ }
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
     get "session", to: "sessions#show"
     get "continue", to: "library#continue"
     get "library", to: "library#index"
     get "library/:id", to: "library#show"
     put "library/:id/reading_status", to: "library#reading_status"
+    get "discover", to: "discover#index"
+    constraints source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ do
+      get "books/:source/:source_id", to: "books#show", as: :book
+      post "books/:source/:source_id/requests", to: "books#create_request", as: :book_requests
+    end
+    post "requests/:id/selection", to: "requests#selection", as: :request_selection
+    post "requests/:id/search", to: "requests#search", as: :request_search
+    post "requests/:id/cancel", to: "requests#cancel", as: :request_cancel
   end
 
   namespace :integrations, defaults: { format: :json } do

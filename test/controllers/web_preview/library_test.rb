@@ -169,7 +169,8 @@ class WebPreview::LibraryControllerTest < ActionDispatch::IntegrationTest
     asset = Consumer::LibraryAssets.new(@ebook, formats: Consumer::ReaderFormats::SUPPORTED).list.sole
     assert_equal [ { "id" => asset.id, "filename" => "A Book.epub", "format" => "epub", "media_type" => "application/epub+zip",
       "size_bytes" => File.size(@epub_path), "position" => 0, "page_count" => nil } ], publication.fetch("files")
-    assert_equal library_item(@ebook), publication.except("description", "files")
+    assert_nil publication.fetch("book_page")
+    assert_equal library_item(@ebook), publication.except("description", "files", "book_page")
   end
 
   test "a book that is gone, unacquired or not a number is not found" do

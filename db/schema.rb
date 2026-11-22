@@ -1,32 +1,44 @@
+# This file is auto-generated from the current state of the database. Instead
+# of editing this file, please use the migrations feature of Active Record to
+# incrementally modify your database, and then regenerate this schema definition.
+#
+# This file is the source Rails uses to define your schema when running `bin/rails
+# db:schema:load`. When creating a new database, `bin/rails db:schema:load` tends to
+# be faster and is potentially less error prone than running all of your
+# migrations from scratch. Old migrations may fail to apply correctly if those
+# migrations use external dependencies or application code.
+#
+# It's strongly recommended that you check this file into your version control system.
+
 ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   create_table "acquisition_providers", force: :cascade do |t|
-    t.boolean "allow_private_network", default: false, null: false
-    t.string "api_key"
-    t.datetime "created_at", null: false
-    t.boolean "enabled", default: true, null: false
     t.string "name", null: false
-    t.integer "priority", default: 0, null: false
-    t.boolean "supports_audiobooks", default: true, null: false
-    t.boolean "supports_comicbooks", default: false, null: false
-    t.boolean "supports_ebooks", default: true, null: false
-    t.integer "timeout_seconds", default: 30, null: false
-    t.datetime "updated_at", null: false
     t.string "url", null: false
+    t.string "api_key"
+    t.boolean "enabled", default: true, null: false
+    t.boolean "allow_private_network", default: false, null: false
+    t.boolean "supports_ebooks", default: true, null: false
+    t.boolean "supports_audiobooks", default: true, null: false
+    t.integer "priority", default: 0, null: false
+    t.integer "timeout_seconds", default: 30, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "supports_comicbooks", default: false, null: false
     t.index ["enabled"], name: "index_acquisition_providers_on_enabled"
     t.index ["name"], name: "index_acquisition_providers_on_name", unique: true
     t.index ["priority"], name: "index_acquisition_providers_on_priority"
   end
 
   create_table "activity_logs", force: :cascade do |t|
+    t.integer "user_id"
+    t.string "trackable_type"
+    t.integer "trackable_id"
     t.string "action", null: false
     t.string "controller"
-    t.datetime "created_at", null: false
-    t.json "details", default: {}
     t.string "ip_address"
-    t.integer "trackable_id"
-    t.string "trackable_type"
+    t.json "details", default: {}
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.integer "user_id"
     t.index ["action"], name: "index_activity_logs_on_action"
     t.index ["created_at"], name: "index_activity_logs_on_created_at"
     t.index ["trackable_type", "trackable_id"], name: "index_activity_logs_on_trackable"
@@ -35,16 +47,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "api_tokens", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.datetime "expires_at"
-    t.datetime "last_used_at"
+    t.integer "user_id"
     t.string "name", null: false
-    t.datetime "revoked_at"
-    t.text "scopes", default: "[]", null: false
     t.string "token_digest", null: false
     t.string "token_prefix", null: false
+    t.text "scopes", default: "[]", null: false
+    t.datetime "last_used_at"
+    t.datetime "expires_at"
+    t.datetime "revoked_at"
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.integer "user_id"
     t.string "issued_via"
     t.integer "replaces_api_token_id"
     t.string "connection_key"
@@ -56,36 +68,36 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "books", force: :cascade do |t|
-    t.integer "acquisition_reservation_owner_id"
-    t.string "acquisition_reservation_owner_type"
-    t.string "acquisition_reservation_token"
-    t.string "author"
-    t.integer "book_type", default: 0, null: false
-    t.string "comic_vine_id"
-    t.integer "content_kind", default: 0, null: false
-    t.string "cover_url"
-    t.datetime "created_at", null: false
-    t.text "description"
-    t.string "file_path"
-    t.string "google_books_id"
-    t.string "hardcover_id"
-    t.string "isbn"
-    t.string "issue_number"
-    t.string "language", default: "en"
-    t.datetime "metadata_backfill_checked_at"
-    t.string "metadata_source", default: "openlibrary"
-    t.string "narrator"
-    t.string "open_library_edition_id"
-    t.string "open_library_work_id"
-    t.string "publisher"
-    t.text "reference_target_roots"
-    t.date "release_date"
-    t.string "series"
-    t.string "series_position"
-    t.integer "series_start_year"
     t.string "title", null: false
-    t.datetime "updated_at", null: false
+    t.string "author"
+    t.text "description"
+    t.string "cover_url"
+    t.string "isbn"
+    t.string "open_library_work_id"
+    t.string "open_library_edition_id"
+    t.integer "book_type", default: 0, null: false
     t.integer "year"
+    t.string "publisher"
+    t.string "language", default: "en"
+    t.string "file_path"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "metadata_source", default: "openlibrary"
+    t.string "hardcover_id"
+    t.string "series"
+    t.string "narrator"
+    t.string "series_position"
+    t.string "google_books_id"
+    t.integer "content_kind", default: 0, null: false
+    t.string "comic_vine_id"
+    t.string "issue_number"
+    t.date "release_date"
+    t.string "acquisition_reservation_token"
+    t.string "acquisition_reservation_owner_type"
+    t.integer "acquisition_reservation_owner_id"
+    t.text "reference_target_roots"
+    t.integer "series_start_year"
+    t.datetime "metadata_backfill_checked_at"
     t.index "LOWER(COALESCE(title, '')), id", name: "index_books_on_consumer_title", where: "file_path IS NOT NULL AND TRIM(file_path) <> ''"
     t.index ["acquisition_reservation_token"], name: "index_books_on_acquisition_reservation_token", unique: true, where: "acquisition_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_books_on_book_type"
@@ -150,33 +162,33 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "download_clients", force: :cascade do |t|
-    t.string "api_key"
-    t.string "category"
-    t.string "client_type", null: false
-    t.datetime "created_at", null: false
-    t.string "download_path"
-    t.boolean "enabled", default: true, null: false
     t.string "name", null: false
-    t.string "password"
-    t.integer "priority", default: 0, null: false
-    t.integer "torrent_verification_max_attempts", default: 10, null: false
-    t.integer "torrent_verification_wait_time", default: 2, null: false
-    t.datetime "updated_at", null: false
+    t.string "client_type", null: false
     t.string "url", null: false
     t.string "username"
+    t.string "password"
+    t.string "api_key"
+    t.string "category"
+    t.integer "priority", default: 0, null: false
+    t.boolean "enabled", default: true, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "download_path"
+    t.integer "torrent_verification_max_attempts", default: 10, null: false
+    t.integer "torrent_verification_wait_time", default: 2, null: false
     t.index ["client_type", "priority"], name: "index_download_clients_on_client_type_and_priority"
     t.index ["enabled"], name: "index_download_clients_on_enabled"
     t.index ["name"], name: "index_download_clients_on_name", unique: true
   end
 
   create_table "download_routing_rules", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.integer "download_client_id", null: false
-    t.string "download_type", null: false
-    t.boolean "enabled", default: true, null: false
+    t.string "provider", null: false
     t.string "indexer_name", null: false
     t.string "normalized_indexer_name", null: false
-    t.string "provider", null: false
+    t.string "download_type", null: false
+    t.integer "download_client_id", null: false
+    t.boolean "enabled", default: true, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["download_client_id"], name: "index_download_routing_rules_on_download_client_id"
     t.index ["enabled"], name: "index_download_routing_rules_on_enabled"
@@ -184,38 +196,38 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "downloads", force: :cascade do |t|
-    t.boolean "configuration_failure", default: false, null: false
+    t.integer "request_id", null: false
+    t.string "download_client_id"
+    t.string "name"
+    t.integer "status", default: 0, null: false
+    t.integer "progress", default: 0
+    t.bigint "size_bytes"
+    t.string "download_path"
     t.datetime "created_at", null: false
-    t.string "direct_book_path"
-    t.text "direct_content_manifest"
-    t.string "direct_destination_path"
-    t.string "direct_output_root"
-    t.string "direct_output_root_device"
-    t.string "direct_output_root_inode"
-    t.string "direct_publication_kind"
+    t.datetime "updated_at", null: false
+    t.string "external_id"
+    t.string "download_type"
+    t.integer "not_found_count", default: 0, null: false
+    t.integer "search_result_id"
+    t.string "post_processing_job_id"
     t.string "direct_reservation_token"
+    t.string "direct_staging_path"
     t.string "direct_staging_device"
     t.string "direct_staging_inode"
     t.string "direct_staging_parent_device"
     t.string "direct_staging_parent_inode"
-    t.string "direct_staging_path"
-    t.string "download_client_id"
-    t.string "download_path"
-    t.string "download_type"
-    t.string "external_id"
-    t.datetime "external_id_released_at"
-    t.text "library_replacement_state"
-    t.string "name"
-    t.integer "not_found_count", default: 0, null: false
+    t.string "direct_destination_path"
+    t.string "direct_book_path"
+    t.string "direct_output_root"
+    t.string "direct_output_root_device"
+    t.string "direct_output_root_inode"
+    t.string "direct_publication_kind"
+    t.text "direct_content_manifest"
     t.text "post_processing_cleanup_state"
-    t.string "post_processing_job_id"
-    t.integer "progress", default: 0
-    t.integer "request_id", null: false
+    t.datetime "external_id_released_at"
+    t.boolean "configuration_failure", default: false, null: false
     t.boolean "replace_library_file", default: false, null: false
-    t.integer "search_result_id"
-    t.bigint "size_bytes"
-    t.integer "status", default: 0, null: false
-    t.datetime "updated_at", null: false
+    t.text "library_replacement_state"
     t.index ["direct_reservation_token"], name: "index_downloads_on_direct_reservation_token", unique: true, where: "direct_reservation_token IS NOT NULL"
     t.index ["direct_staging_path"], name: "index_downloads_on_direct_staging_path", where: "direct_staging_path IS NOT NULL"
     t.index ["download_client_id"], name: "index_downloads_on_download_client_id"
@@ -226,68 +238,68 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "hardcover_connections", force: :cascade do |t|
-    t.text "access_token", null: false
-    t.datetime "access_token_expires_at"
+    t.integer "user_id", null: false
     t.string "auth_method", null: false
-    t.datetime "created_at", null: false
+    t.text "access_token", null: false
+    t.text "refresh_token"
+    t.datetime "access_token_expires_at"
     t.string "granted_scopes"
     t.integer "hardcover_user_id", null: false
     t.string "hardcover_username"
+    t.string "status", default: "active", null: false
     t.string "last_error"
     t.datetime "last_verified_at"
-    t.integer "lock_version", default: 0, null: false
-    t.text "refresh_token"
     t.datetime "refreshed_at"
-    t.string "status", default: "active", null: false
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.integer "user_id", null: false
     t.index ["hardcover_user_id"], name: "index_hardcover_connections_on_hardcover_user_id"
     t.index ["user_id"], name: "index_hardcover_connections_on_user_id", unique: true
   end
 
   create_table "hardcover_request_budgets", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.datetime "updated_at", null: false
-    t.integer "used", default: 0, null: false
     t.integer "user_id", null: false
     t.datetime "window_started_at", null: false
+    t.integer "used", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.index ["user_id"], name: "index_hardcover_request_budgets_on_user_id", unique: true
   end
 
   create_table "hardcover_subscription_items", force: :cascade do |t|
-    t.integer "attempts", default: 0, null: false
-    t.string "author"
-    t.boolean "baseline", default: false, null: false
-    t.json "book_types", default: [], null: false
-    t.string "claim_token"
-    t.datetime "claimed_at"
-    t.string "cover_url"
-    t.datetime "created_at", null: false
-    t.text "description"
-    t.datetime "entry_added_at"
-    t.datetime "first_seen_at", null: false
-    t.integer "hardcover_book_id", null: false
     t.integer "hardcover_subscription_id", null: false
-    t.boolean "has_audiobook", default: false, null: false
-    t.boolean "has_ebook", default: false, null: false
-    t.datetime "last_attempt_at"
-    t.text "last_error"
-    t.datetime "last_seen_at"
-    t.datetime "next_attempt_at"
-    t.integer "position"
+    t.integer "hardcover_book_id", null: false
+    t.string "title", null: false
+    t.string "author"
+    t.string "cover_url"
+    t.text "description"
     t.date "release_date"
     t.integer "release_year"
-    t.json "request_ids", default: [], null: false
-    t.string "resolution"
-    t.datetime "resolved_at"
     t.string "series_name"
     t.string "series_position"
-    t.json "settled_book_types", default: [], null: false
-    t.string "state", null: false
-    t.string "title", null: false
-    t.datetime "updated_at", null: false
     t.integer "users_count"
+    t.boolean "has_audiobook", default: false, null: false
+    t.boolean "has_ebook", default: false, null: false
+    t.datetime "entry_added_at"
+    t.integer "position"
+    t.string "state", null: false
+    t.boolean "baseline", default: false, null: false
     t.boolean "wanted", default: false, null: false
+    t.json "book_types", default: [], null: false
+    t.json "request_ids", default: [], null: false
+    t.integer "attempts", default: 0, null: false
+    t.string "claim_token"
+    t.datetime "claimed_at"
+    t.datetime "last_attempt_at"
+    t.datetime "next_attempt_at"
+    t.text "last_error"
+    t.string "resolution"
+    t.datetime "first_seen_at", null: false
+    t.datetime "last_seen_at"
+    t.datetime "resolved_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.json "settled_book_types", default: [], null: false
     t.index ["hardcover_subscription_id", "hardcover_book_id"], name: "index_hardcover_items_on_subscription_and_book", unique: true
     t.index ["hardcover_subscription_id"], name: "idx_on_hardcover_subscription_id_c6db6b26d3"
     t.index ["state", "next_attempt_at"], name: "index_hardcover_items_on_state_and_next_attempt"
@@ -295,40 +307,40 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "hardcover_subscriptions", force: :cascade do |t|
-    t.boolean "automatic", default: false, null: false
-    t.datetime "automatic_enabled_at"
-    t.datetime "baseline_established_at"
-    t.json "book_types", default: [], null: false
-    t.bigint "catalog_cursor_id"
-    t.integer "consecutive_failures", default: 0, null: false
-    t.datetime "created_at", null: false
+    t.integer "user_id", null: false
+    t.string "kind", null: false
+    t.string "target_key", null: false
+    t.integer "hardcover_target_id"
+    t.string "title", null: false
+    t.string "slug"
     t.text "description"
+    t.string "image_url"
+    t.string "owner_username"
+    t.integer "hardcover_account_id"
+    t.boolean "personal", default: false, null: false
+    t.json "book_types", default: [], null: false
+    t.boolean "automatic", default: false, null: false
+    t.string "status", default: "draft", null: false
+    t.string "pause_reason"
+    t.string "snapshot_state", default: "pending", null: false
+    t.datetime "snapshot_completed_at"
     t.integer "entries_seen_count", default: 0, null: false
     t.boolean "entries_truncated", default: false, null: false
     t.json "exclusions", default: {}, null: false
-    t.integer "hardcover_account_id"
-    t.integer "hardcover_target_id"
-    t.string "image_url"
-    t.string "kind", null: false
-    t.text "last_error"
-    t.datetime "last_synced_at"
-    t.datetime "next_sync_at"
-    t.string "owner_username"
-    t.string "pause_reason"
-    t.boolean "personal", default: false, null: false
-    t.string "slug"
-    t.datetime "snapshot_completed_at"
-    t.string "snapshot_state", default: "pending", null: false
-    t.string "status", default: "draft", null: false
+    t.datetime "baseline_established_at"
     t.datetime "sync_cursor_at"
-    t.integer "sync_generation", default: 0, null: false
-    t.integer "sync_window_before_id"
     t.datetime "sync_window_since"
     t.datetime "sync_window_until"
-    t.string "target_key", null: false
-    t.string "title", null: false
+    t.integer "sync_window_before_id"
+    t.bigint "catalog_cursor_id"
+    t.integer "sync_generation", default: 0, null: false
+    t.datetime "last_synced_at"
+    t.datetime "next_sync_at"
+    t.text "last_error"
+    t.integer "consecutive_failures", default: 0, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
-    t.integer "user_id", null: false
+    t.datetime "automatic_enabled_at"
     t.index ["status", "next_sync_at"], name: "index_hardcover_subscriptions_on_status_and_next_sync_at"
     t.index ["user_id", "target_key"], name: "index_hardcover_subscriptions_on_user_id_and_target_key", unique: true
     t.index ["user_id"], name: "index_hardcover_subscriptions_on_user_id"
@@ -505,25 +517,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "library_items", force: :cascade do |t|
-    t.string "asin"
-    t.string "audiobookshelf_id", null: false
-    t.string "author"
-    t.datetime "created_at", null: false
-    t.text "description"
-    t.string "isbn"
-    t.string "language"
     t.string "library_id", null: false
-    t.string "library_platform", default: "audiobookshelf", null: false
-    t.boolean "missing", default: false, null: false
+    t.string "audiobookshelf_id", null: false
+    t.string "title"
+    t.string "author"
+    t.datetime "synced_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "subtitle"
     t.string "narrator"
-    t.integer "published_year"
-    t.string "publisher"
     t.string "series"
     t.string "series_position"
-    t.string "subtitle"
-    t.datetime "synced_at"
-    t.string "title"
-    t.datetime "updated_at", null: false
+    t.string "publisher"
+    t.string "language"
+    t.string "isbn"
+    t.string "asin"
+    t.integer "published_year"
+    t.text "description"
+    t.boolean "missing", default: false, null: false
+    t.string "library_platform", default: "audiobookshelf", null: false
     t.index ["isbn"], name: "index_library_items_on_isbn"
     t.index ["library_id"], name: "index_library_items_on_library_id"
     t.index ["library_platform", "library_id", "audiobookshelf_id"], name: "idx_on_library_platform_library_id_audiobookshelf_i_c1fd6c7905", unique: true
@@ -533,28 +545,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "metadata_provider_statuses", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.integer "failure_count", default: 0, null: false
-    t.string "last_error"
-    t.datetime "last_failure_at"
-    t.datetime "last_success_at"
     t.string "provider", null: false
-    t.datetime "rate_limited_until"
     t.string "status", default: "unknown", null: false
+    t.datetime "rate_limited_until"
+    t.string "last_error"
+    t.datetime "last_success_at"
+    t.datetime "last_failure_at"
+    t.integer "failure_count", default: 0, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["provider"], name: "index_metadata_provider_statuses_on_provider", unique: true
   end
 
   create_table "notifications", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.text "message"
-    t.integer "notifiable_id"
-    t.string "notifiable_type"
-    t.string "notification_type", null: false
-    t.datetime "read_at"
-    t.string "title", null: false
-    t.datetime "updated_at", null: false
     t.integer "user_id", null: false
+    t.string "notifiable_type"
+    t.integer "notifiable_id"
+    t.string "notification_type", null: false
+    t.string "title", null: false
+    t.text "message"
+    t.datetime "read_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.index ["notifiable_type", "notifiable_id"], name: "index_notifications_on_notifiable"
     t.index ["user_id", "created_at"], name: "index_notifications_on_user_id_and_created_at"
     t.index ["user_id", "read_at"], name: "index_notifications_on_user_id_and_read_at"
@@ -562,32 +574,32 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "owned_library_connections", force: :cascade do |t|
+    t.string "provider", null: false
+    t.string "name", null: false
+    t.string "url", null: false
+    t.text "bridge_token"
+    t.boolean "enabled", default: false, null: false
     t.boolean "allow_private_network", default: true, null: false
-    t.datetime "auth_expires_at"
-    t.text "auth_login_url"
+    t.integer "timeout_seconds", default: 30, null: false
+    t.string "sync_status", default: "idle", null: false
+    t.string "sync_job_id"
+    t.datetime "sync_started_at"
+    t.datetime "last_synced_at"
+    t.text "last_sync_error"
+    t.string "companion_version"
+    t.string "provider_version"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.text "auth_session_id"
+    t.text "auth_login_url"
+    t.datetime "auth_expires_at"
+    t.boolean "scheduled_sync_enabled", default: false, null: false
+    t.integer "scheduled_sync_interval_minutes", default: 1440, null: false
+    t.datetime "next_scheduled_sync_at"
     t.boolean "automatic_backup_enabled", default: false, null: false
     t.datetime "automatic_backup_enabled_at"
     t.integer "automatic_backup_user_id"
     t.datetime "backlog_backup_decided_at"
-    t.text "bridge_token"
-    t.string "companion_version"
-    t.datetime "created_at", null: false
-    t.boolean "enabled", default: false, null: false
-    t.text "last_sync_error"
-    t.datetime "last_synced_at"
-    t.string "name", null: false
-    t.datetime "next_scheduled_sync_at"
-    t.string "provider", null: false
-    t.string "provider_version"
-    t.boolean "scheduled_sync_enabled", default: false, null: false
-    t.integer "scheduled_sync_interval_minutes", default: 1440, null: false
-    t.string "sync_job_id"
-    t.datetime "sync_started_at"
-    t.string "sync_status", default: "idle", null: false
-    t.integer "timeout_seconds", default: 30, null: false
-    t.datetime "updated_at", null: false
-    t.string "url", null: false
     t.index ["automatic_backup_user_id"], name: "index_owned_library_connections_on_automatic_backup_user_id"
     t.index ["enabled"], name: "index_owned_library_connections_on_enabled"
     t.index ["provider"], name: "index_owned_library_connections_on_provider", unique: true
@@ -596,27 +608,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "owned_library_items", force: :cascade do |t|
-    t.datetime "absent_since"
-    t.boolean "active", default: true, null: false
-    t.json "authors", default: [], null: false
-    t.datetime "backed_up_at"
-    t.integer "book_id"
-    t.string "cover_url"
-    t.datetime "created_at", null: false
-    t.boolean "downloaded", default: false, null: false
-    t.integer "duration_seconds"
-    t.string "external_id", null: false
-    t.string "file_path"
-    t.string "language"
-    t.datetime "last_seen_at"
-    t.string "media_type", default: "audiobook", null: false
-    t.json "narrators", default: [], null: false
     t.integer "owned_library_connection_id", null: false
-    t.string "ownership_type", default: "unknown", null: false
-    t.json "provider_metadata", default: {}, null: false
-    t.datetime "purchased_at"
-    t.string "subtitle"
+    t.integer "book_id"
+    t.string "external_id", null: false
+    t.string "media_type", default: "audiobook", null: false
     t.string "title", null: false
+    t.string "subtitle"
+    t.json "authors", default: [], null: false
+    t.json "narrators", default: [], null: false
+    t.string "cover_url"
+    t.string "language"
+    t.integer "duration_seconds"
+    t.string "ownership_type", default: "unknown", null: false
+    t.datetime "purchased_at"
+    t.boolean "active", default: true, null: false
+    t.boolean "downloaded", default: false, null: false
+    t.datetime "backed_up_at"
+    t.string "file_path"
+    t.datetime "last_seen_at"
+    t.datetime "absent_since"
+    t.json "provider_metadata", default: {}, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["book_id"], name: "index_owned_library_items_on_book_id"
     t.index ["owned_library_connection_id", "active"], name: "idx_on_owned_library_connection_id_active_59d197ebba"
@@ -627,29 +639,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "owned_media_imports", force: :cascade do |t|
+    t.integer "owned_library_item_id", null: false
+    t.integer "request_id"
+    t.integer "upload_id"
+    t.bigint "requested_by_id"
+    t.string "status", default: "queued", null: false
+    t.string "external_job_id"
     t.string "artifact_path"
-    t.boolean "automatic", default: false, null: false
-    t.integer "companion_start_attempts", default: 0, null: false
+    t.text "error_message"
+    t.datetime "started_at"
     t.datetime "completed_at"
     t.datetime "created_at", null: false
-    t.integer "created_book_id"
-    t.string "destination_path"
-    t.datetime "dispatched_at"
-    t.text "error_message"
-    t.string "external_job_id"
-    t.string "library_path"
-    t.integer "owned_library_item_id", null: false
+    t.datetime "updated_at", null: false
     t.string "poll_token"
-    t.integer "request_id"
-    t.bigint "requested_by_id"
     t.boolean "separate_edition", default: false, null: false
+    t.boolean "automatic", default: false, null: false
+    t.datetime "dispatched_at"
+    t.integer "companion_start_attempts", default: 0, null: false
+    t.string "destination_path"
+    t.string "library_path"
+    t.integer "upload_recovery_attempts", default: 0, null: false
+    t.integer "created_book_id"
     t.string "staged_device"
     t.string "staged_inode"
-    t.datetime "started_at"
-    t.string "status", default: "queued", null: false
-    t.datetime "updated_at", null: false
-    t.integer "upload_id"
-    t.integer "upload_recovery_attempts", default: 0, null: false
     t.index ["created_book_id"], name: "index_owned_media_imports_on_created_book_id"
     t.index ["destination_path"], name: "index_owned_media_imports_on_active_destination", unique: true, where: "destination_path IS NOT NULL AND status != 'completed'"
     t.index ["external_job_id"], name: "index_owned_media_imports_on_external_job_id", unique: true, where: "external_job_id IS NOT NULL"
@@ -682,16 +694,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "request_events", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.json "details", default: {}
-    t.integer "download_id"
-    t.string "event_type", null: false
-    t.integer "level", default: 0, null: false
-    t.text "message"
     t.integer "request_id", null: false
+    t.integer "download_id"
+    t.integer "level", default: 0, null: false
+    t.string "event_type", null: false
     t.string "source", null: false
-    t.datetime "updated_at", null: false
+    t.text "message"
+    t.json "details", default: {}
     t.boolean "user_visible", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.index ["created_at"], name: "index_request_events_on_created_at"
     t.index ["download_id"], name: "index_request_events_on_download_id"
     t.index ["event_type"], name: "index_request_events_on_event_type"
@@ -700,28 +712,28 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "requests", force: :cascade do |t|
-    t.boolean "attention_needed", default: false
     t.integer "book_id", null: false
-    t.string "collection_id"
-    t.string "collection_source"
-    t.string "collection_title"
+    t.integer "user_id", null: false
+    t.integer "status", default: 0, null: false
+    t.text "notes"
+    t.integer "retry_count", default: 0
+    t.datetime "next_retry_at"
     t.datetime "completed_at"
+    t.boolean "attention_needed", default: false
+    t.text "issue_description"
     t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.string "language"
     t.string "created_via", default: "web", null: false
-    t.string "external_chat_id"
     t.string "external_source"
     t.string "external_user_id"
-    t.text "issue_description"
-    t.string "language"
-    t.datetime "next_retry_at"
-    t.text "notes"
+    t.string "external_chat_id"
     t.string "request_scope", default: "single", null: false
-    t.integer "retry_count", default: 0
-    t.datetime "search_claimed_at"
+    t.string "collection_source"
+    t.string "collection_id"
+    t.string "collection_title"
     t.bigint "search_generation", default: 0, null: false
-    t.integer "status", default: 0, null: false
-    t.datetime "updated_at", null: false
-    t.integer "user_id", null: false
+    t.datetime "search_claimed_at"
     t.index ["attention_needed"], name: "index_requests_on_attention_needed"
     t.index ["book_id"], name: "index_requests_on_book_id"
     t.index ["collection_source", "collection_id"], name: "index_requests_on_collection_source_and_collection_id"
@@ -736,30 +748,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "search_results", force: :cascade do |t|
-    t.integer "acquisition_provider_id"
-    t.string "blocklist_reason"
-    t.datetime "blocklisted_at"
-    t.integer "confidence_score"
-    t.datetime "created_at", null: false
-    t.string "detected_language"
-    t.string "download_url"
-    t.string "guid", null: false
-    t.string "indexer"
-    t.integer "indexer_id"
-    t.string "info_url"
-    t.integer "leechers"
-    t.string "magnet_url"
-    t.json "provider_payload", default: {}
-    t.string "provider_result_id"
-    t.datetime "published_at"
     t.integer "request_id", null: false
-    t.json "score_breakdown"
-    t.integer "seeders"
-    t.bigint "size_bytes"
-    t.string "source", default: "prowlarr"
-    t.integer "status", default: 0, null: false
+    t.string "guid", null: false
     t.string "title", null: false
+    t.string "indexer"
+    t.bigint "size_bytes"
+    t.integer "seeders"
+    t.integer "leechers"
+    t.string "download_url"
+    t.string "magnet_url"
+    t.string "info_url"
+    t.datetime "published_at"
+    t.integer "status", default: 0, null: false
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "detected_language"
+    t.integer "confidence_score"
+    t.json "score_breakdown"
+    t.string "source", default: "prowlarr"
+    t.integer "acquisition_provider_id"
+    t.string "provider_result_id"
+    t.json "provider_payload", default: {}
+    t.datetime "blocklisted_at"
+    t.string "blocklist_reason"
+    t.integer "indexer_id"
     t.index ["acquisition_provider_id", "provider_result_id"], name: "index_search_results_on_provider_result"
     t.index ["acquisition_provider_id"], name: "index_search_results_on_acquisition_provider_id"
     t.index ["request_id", "blocklisted_at"], name: "index_search_results_on_request_id_and_blocklisted_at"
@@ -769,46 +781,46 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "sessions", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.string "ip_address"
-    t.datetime "updated_at", null: false
-    t.string "user_agent"
     t.integer "user_id", null: false
+    t.string "ip_address"
+    t.string "user_agent"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.index ["user_id"], name: "index_sessions_on_user_id"
   end
 
   create_table "settings", force: :cascade do |t|
-    t.string "category", default: "general"
-    t.datetime "created_at", null: false
-    t.text "description"
     t.string "key", null: false
-    t.datetime "updated_at", null: false
     t.text "value"
     t.string "value_type", default: "string", null: false
+    t.string "category", default: "general"
+    t.text "description"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
     t.index ["category"], name: "index_settings_on_category"
     t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
   create_table "store_offers", force: :cascade do |t|
-    t.string "author"
-    t.string "checkout_url"
-    t.string "cover_url"
-    t.datetime "created_at", null: false
-    t.boolean "drm_free", default: true, null: false
-    t.string "drm_type"
+    t.integer "request_id", null: false
+    t.string "provider", null: false
     t.string "external_id", null: false
-    t.json "formats", default: [], null: false
+    t.string "title", null: false
+    t.string "author"
     t.json "isbns", default: [], null: false
     t.string "language"
-    t.string "localized_price"
+    t.json "formats", default: [], null: false
     t.string "market", null: false
+    t.boolean "drm_free", default: true, null: false
+    t.string "drm_type"
     t.decimal "price_amount", precision: 12, scale: 4
     t.string "price_currency"
-    t.string "provider", null: false
-    t.datetime "quoted_at"
-    t.integer "request_id", null: false
+    t.string "localized_price"
     t.string "storefront_url", null: false
-    t.string "title", null: false
+    t.string "checkout_url"
+    t.string "cover_url"
+    t.datetime "quoted_at"
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["provider"], name: "index_store_offers_on_provider"
     t.index ["request_id", "provider", "external_id"], name: "index_store_offers_on_request_provider_external_id", unique: true
@@ -816,29 +828,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "system_healths", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.datetime "last_check_at"
-    t.datetime "last_success_at"
-    t.text "message"
     t.string "service", null: false
     t.integer "status", default: 0, null: false
+    t.text "message"
+    t.datetime "last_check_at"
+    t.datetime "last_success_at"
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["service"], name: "index_system_healths_on_service", unique: true
     t.index ["status"], name: "index_system_healths_on_status"
   end
 
   create_table "telegram_chat_authorizations", force: :cascade do |t|
-    t.datetime "approved_at"
-    t.integer "approved_by_id"
     t.string "chat_id", null: false
     t.string "chat_title"
     t.string "code_digest"
     t.datetime "code_generated_at"
-    t.datetime "created_at", null: false
-    t.datetime "paused_at"
+    t.datetime "approved_at"
+    t.integer "approved_by_id"
     t.string "requested_by_telegram_user_id"
     t.string "requested_by_telegram_username"
+    t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.datetime "paused_at"
     t.index ["approved_at"], name: "index_telegram_chat_authorizations_on_approved_at"
     t.index ["approved_by_id"], name: "index_telegram_chat_authorizations_on_approved_by_id"
     t.index ["chat_id"], name: "index_telegram_chat_authorizations_on_chat_id", unique: true
@@ -847,43 +859,43 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "telegram_updates", force: :cascade do |t|
+    t.string "update_id", null: false
+    t.string "telegram_user_id"
     t.string "chat_id"
     t.string "command"
     t.datetime "created_at", null: false
-    t.string "telegram_user_id"
-    t.string "update_id", null: false
     t.datetime "updated_at", null: false
     t.index ["telegram_user_id", "created_at"], name: "index_telegram_updates_on_telegram_user_id_and_created_at"
     t.index ["update_id"], name: "index_telegram_updates_on_update_id", unique: true
   end
 
   create_table "uploads", force: :cascade do |t|
+    t.integer "user_id", null: false
     t.integer "book_id"
-    t.boolean "book_reservation_created_book", default: false, null: false
-    t.string "book_reservation_token"
-    t.integer "book_type"
-    t.string "cleanup_source_path"
-    t.string "content_sha256"
-    t.string "content_type"
-    t.datetime "created_at", null: false
-    t.string "destination_configured_root"
-    t.string "destination_path"
-    t.string "destination_root"
-    t.text "error_message"
-    t.string "file_path"
-    t.bigint "file_size"
-    t.string "library_path"
-    t.boolean "manual_match", default: false, null: false
-    t.boolean "manual_match_created_book", default: false, null: false
-    t.integer "match_confidence"
+    t.integer "status", default: 0, null: false
     t.string "original_filename"
-    t.string "parsed_author"
+    t.string "file_path"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "file_size"
+    t.string "content_type"
     t.string "parsed_title"
+    t.string "parsed_author"
+    t.integer "book_type"
+    t.integer "match_confidence"
+    t.text "error_message"
     t.datetime "processed_at"
     t.integer "request_id"
-    t.integer "status", default: 0, null: false
-    t.datetime "updated_at", null: false
-    t.integer "user_id", null: false
+    t.string "destination_path"
+    t.string "destination_root"
+    t.string "destination_configured_root"
+    t.string "library_path"
+    t.string "content_sha256"
+    t.string "cleanup_source_path"
+    t.string "book_reservation_token"
+    t.boolean "book_reservation_created_book", default: false, null: false
+    t.boolean "manual_match", default: false, null: false
+    t.boolean "manual_match_created_book", default: false, null: false
     t.index ["book_id"], name: "index_uploads_on_book_id"
     t.index ["book_reservation_token"], name: "index_uploads_on_book_reservation_token", unique: true, where: "book_reservation_token IS NOT NULL"
     t.index ["book_type"], name: "index_uploads_on_book_type"
@@ -896,26 +908,26 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
   end
 
   create_table "users", force: :cascade do |t|
-    t.text "backup_codes"
+    t.string "username", null: false
+    t.string "password_digest", null: false
     t.datetime "created_at", null: false
-    t.datetime "deleted_at"
+    t.datetime "updated_at", null: false
+    t.string "name", default: "", null: false
+    t.integer "role", default: 0, null: false
     t.integer "failed_login_count", default: 0, null: false
+    t.datetime "locked_until"
     t.datetime "last_failed_login_at"
     t.string "last_failed_login_ip"
-    t.datetime "locked_until"
-    t.string "name", default: "", null: false
-    t.string "oidc_provider"
-    t.string "oidc_uid"
-    t.boolean "otp_required", default: false, null: false
     t.string "otp_secret"
-    t.string "password_digest", null: false
-    t.integer "role", default: 0, null: false
-    t.datetime "telegram_link_token_created_at"
-    t.string "telegram_link_token_digest"
+    t.boolean "otp_required", default: false, null: false
+    t.text "backup_codes"
+    t.string "oidc_uid"
+    t.string "oidc_provider"
+    t.datetime "deleted_at"
     t.string "telegram_user_id"
     t.string "telegram_username"
-    t.datetime "updated_at", null: false
-    t.string "username", null: false
+    t.string "telegram_link_token_digest"
+    t.datetime "telegram_link_token_created_at"
     t.index ["deleted_at"], name: "index_users_on_deleted_at"
     t.index ["oidc_provider", "oidc_uid"], name: "index_users_on_oidc_provider_and_uid_unique", unique: true, where: "deleted_at IS NULL AND oidc_provider IS NOT NULL AND oidc_uid IS NOT NULL"
     t.index ["role"], name: "index_users_on_role"
