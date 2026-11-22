@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ControlProps } from "./SettingControl";
+import { sentences, type ControlProps } from "./SettingControl";
 
 export function SecretField({ field, value, onChange, error, scope }: ControlProps & { scope: string }) {
   const id = `${scope}-${field.key}`;
@@ -56,7 +56,7 @@ export function SecretField({ field, value, onChange, error, scope }: ControlPro
         </span>
       )}
       <p id={`${id}-hint`} className="field-hint">
-        {field.description} {hint}
+        {sentences(field.description, hint)}
       </p>
       {error ? (
         <p id={`${id}-error`} className="field-error">

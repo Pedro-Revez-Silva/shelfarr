@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { ServerSettings, SettingField, SettingGroup } from "../src/server/contract";
 import { serverSettingsSchema } from "../src/server/contract";
 import { changedKeys, initialDrafts, isVisible, submission } from "../src/server/draft";
+import { sentences } from "../src/server/primitives";
 import { ACCOUNT, FakeServer, renderApp, session, standardServer } from "./helpers";
 
 afterEach(cleanup);
@@ -187,6 +188,11 @@ describe("Server settings drafts", () => {
     expect([isVisible(prowlarr!, indexer, { ...drafts, indexer_provider: "jackett" }), isVisible(jackett!, indexer, { ...drafts, indexer_provider: "jackett" })]).toEqual([false, true]);
     const hardcover = sample.categories[1]!.groups[0]!;
     expect(isVisible(hardcover.fields[1]!, hardcover, { ...initialDrafts(hardcover), hardcover_enabled: false })).toBe(false);
+  });
+
+  test("server descriptions read as sentences when joined with the page's own hints", () => {
+    expect(sentences("Telegram webhook secret checked against X-Telegram-Bot-Api-Secret-Token", "Nothing is saved yet.", null, " ")).toBe("Telegram webhook secret checked against X-Telegram-Bot-Api-Secret-Token. Nothing is saved yet.");
+    expect(sentences("Base URL (for example, http://prowlarr:9696)", "60 to 100.")).toBe("Base URL (for example, http://prowlarr:9696) 60 to 100.");
   });
 
   test("the fixture matches the settings contract", () => {

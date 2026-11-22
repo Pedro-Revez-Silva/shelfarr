@@ -36,8 +36,16 @@ function defaultHint(field: SettingField): string | null {
   return `Default: ${option?.label ?? String(value)}.`;
 }
 
+export function sentences(...parts: (string | null | undefined)[]): string {
+  return parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .map((part) => (/[.!?)]$/.test(part) ? part : `${part}.`))
+    .join(" ");
+}
+
 function Hint({ id, field, extra }: { id: string; field: SettingField; extra?: ReactNode }) {
-  const parts = [field.description, rangeHint(field), defaultHint(field)].filter(Boolean).join(" ");
+  const parts = sentences(field.description, rangeHint(field), defaultHint(field));
   return (
     <p id={id} className="field-hint">
       {parts}
@@ -116,7 +124,7 @@ function ManagedField({ field, scope }: { field: SettingField; scope: string }) 
           <span aria-hidden="true">🔒 </span>Set by <code>{field.managed_by}</code> on the server. Change it there.
         </span>
       </p>
-      <p className="field-hint">{field.description}</p>
+      <p className="field-hint">{sentences(field.description)}</p>
     </div>
   );
 }

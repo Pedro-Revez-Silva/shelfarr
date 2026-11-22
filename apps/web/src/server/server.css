@@ -223,6 +223,9 @@
   display: grid;
   gap: 4px;
 }
+.setting-toggle-text .field-hint {
+  grid-column: auto;
+}
 
 .choice-field {
   min-width: 0;
