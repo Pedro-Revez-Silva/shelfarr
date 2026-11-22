@@ -208,7 +208,9 @@ deployment under a subpath uses `shelfarr-go-preview-offline|<subpath>/preview` 
 `shelfarr-go-preview-offline.v1@<subpath>/preview/library|<version>`, so two deployments on one origin never see or delete
 each other's copies. The Rails sign-in page (shown after every sign-out) releases this deployment's confirmed offline account,
 as it already does for `/read`, and so does the 404 page a signed-in account gets when the allowlist no longer names it;
-saved files stay, hidden, until that account confirms again. The
+saved files stay, hidden, until that account confirms again. A refusal the browser only learns from a media request, or
+one it cannot learn because the server is unreachable, leaves that account's own saved books readable on that browser until
+its offline window ends (at most the session's remaining life, at most 30 days). The
 `/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
 `/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
 server is unreachable, exactly as after a Go rollback.
