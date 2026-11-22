@@ -17,13 +17,14 @@ class DuplicateDetectionService
   SUBTITLE_SEPARATOR = /\s*(?::|;|\u2013|\u2014|\s-\s)\s*/
   AUTHOR_SEPARATOR = /\s*(?:&|\/)\s*|\s*;\s*|\s+\b(?:and|with)\b\s+/i
   NAME_SUFFIX = /\b(?:jr|sr|ii|iii|iv|ph\.?d|m\.?d)\b\.?/i
+  ORDINAL_ANNIVERSARY = /\b(\d+)(st|nd|rd|th)\s+anniversary\b/
   AuthorName = Data.define(:surname, :given_names)
   AcquiredCopy = Data.define(:book, :names, :ordinal)
   UNSEPARATED_NAME = /\A[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]+\z/
   INITIAL_LETTER = /\A[\p{Latin}\p{Cyrillic}\p{Greek}]\z/
   private_constant :EDITION_WORDS, :PARTICLES, :APOSTROPHE, :PARENTHETICAL,
-    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :AuthorName,
-    :AcquiredCopy, :UNSEPARATED_NAME, :INITIAL_LETTER
+    :SUBTITLE_SEPARATOR, :AUTHOR_SEPARATOR, :NAME_SUFFIX, :ORDINAL_ANNIVERSARY,
+    :AuthorName, :AcquiredCopy, :UNSEPARATED_NAME, :INITIAL_LETTER
 
   Result = Data.define(:status, :message, :existing_book, :existing_request) do
     def allow?
@@ -40,7 +41,7 @@ class DuplicateDetectionService
   end
 
   class << self
-    def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil, title: nil, author: nil)
+    def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil, title: nil, author: nil, acquired_title_cache: nil)
       book_type = book_type.to_s
       work_ids = [ work_id, *Array(source_work_ids) ].compact_blank.uniq
 
@@ -60,17 +61,18 @@ class DuplicateDetectionService
       # Work ids stay inside one metadata provider. An acquired Hardcover copy
       # therefore cannot block an Open Library or Google Books candidate until
       # the title and author are compared for this format alone.
-      existing_book ||= find_acquired_by_identity(
-        title: title,
-        author: author,
-        book_type: book_type,
-        existing_books_lookup: existing_books_lookup
-      )
-      if existing_book&.acquired?
+      acquired_book = if existing_book&.acquired?
+        existing_book
+      else
+        find_acquired_by_identity(
+          title:, author:, book_type:, cache: acquired_title_cache || acquired_book_cache(existing_books_lookup)
+        )
+      end
+      if acquired_book
         return Result.new(
           status: BLOCK,
           message: "This #{label_for(book_type)} is already in your library.",
-          existing_book: existing_book,
+          existing_book: acquired_book,
           existing_request: nil
         )
       end
@@ -137,10 +139,10 @@ class DuplicateDetectionService
     end
 
     def find_existing_book(work_ids, book_type:, existing_books_lookup: nil)
-      if existing_books_lookup.present?
-        Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
-      else
+      if existing_books_lookup.nil?
         Book.find_by_any_work_id(work_ids, book_type: book_type)
+      else
+        Book.find_in_lookup(existing_books_lookup, work_ids, book_type: book_type)
       end
     end
 
@@ -158,14 +160,14 @@ class DuplicateDetectionService
 
     private
 
-    def find_acquired_by_identity(title:, author:, book_type:, existing_books_lookup:)
+    def find_acquired_by_identity(title:, author:, book_type:, cache:)
       return if title.blank? || author.blank?
 
       forms = title_forms(title)
       names = author_names(author)
       return if forms.empty? || names.empty?
 
-      acquired_copies(book_type, existing_books_lookup, forms).each do |copy|
+      acquired_copies(book_type, cache, forms).each do |copy|
         next if SequenceMarker.conflict?(title, copy.book.title)
 
         return copy.book if same_author?(names, copy.names)
@@ -176,8 +178,8 @@ class DuplicateDetectionService
 
     # Search cards share a lookup. Index each acquired title once, then compare
     # authors and sequence markers only inside that normalized-title bucket.
-    def acquired_copies(book_type, lookup, forms)
-      index = acquired_title_index(book_type, lookup)
+    def acquired_copies(book_type, cache, forms)
+      index = acquired_title_index(book_type, cache)
       seen = {}
       matches = []
       forms.each do |form|
@@ -191,9 +193,8 @@ class DuplicateDetectionService
       matches.sort_by!(&:ordinal)
     end
 
-    def acquired_title_index(book_type, lookup)
+    def acquired_title_index(book_type, cache)
       key = book_type.to_s
-      cache = acquired_book_cache(lookup)
       return cache[key] if cache.key?(key)
 
       index = {}
@@ -227,11 +228,24 @@ class DuplicateDetectionService
     end
 
     def edition_suffix?(text)
-      words = normalized_title(text).split
+      words = normalized_title(text).gsub(ORDINAL_ANNIVERSARY) { ordinal_anniversary(Regexp.last_match) }.split
       return false if words.empty?
       return false if words.intersect?(%w[and or versus vs])
 
       words.all? { |word| EDITION_WORDS.include?(word) }
+    end
+
+    def ordinal_anniversary(match)
+      number = match[1].to_i
+      return match[0] unless number.positive? && match[2] == ordinal_suffix(number)
+
+      "anniversary"
+    end
+
+    def ordinal_suffix(number)
+      return "th" if (11..13).cover?(number % 100)
+
+      { 1 => "st", 2 => "nd", 3 => "rd" }.fetch(number % 10, "th")
     end
 
     def same_author?(left_names, right_names)
@@ -306,25 +320,28 @@ class DuplicateDetectionService
     end
 
     def author_name_for(person)
-      if person[:natural]
-        tokens = indexed_name_tokens(person[:name])
-        return if tokens.empty?
+      surname_tokens = person[:natural] ? nil : name_tokens(person[:surname])
+      name = person[:natural] ? person[:name] : "#{person[:given]} #{person[:surname]}"
+      tokens = indexed_name_tokens(name, surname_tokens: surname_tokens)
+      return if tokens.empty?
 
-        AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
-      else
-        surname = surname_token(name_tokens(person[:surname]))
-        return if surname.blank?
-
-        AuthorName.new(surname: surname, given_names: given_name_tokens(name_tokens(person[:given])))
-      end
+      AuthorName.new(surname: tokens.last, given_names: tokens[0...-1])
     end
 
-    def indexed_name_tokens(value)
+    def indexed_name_tokens(value, surname_tokens: nil)
       tokens = family_name_last(name_tokens(value))
       return tokens if tokens.empty?
 
-      surname_index = tokens.rindex { |token| !PARTICLES.include?(token) } || (tokens.length - 1)
+      surname_index = if particle_only?(surname_tokens)
+        tokens.length - 1
+      else
+        tokens.rindex { |token| !PARTICLES.include?(token) } || (tokens.length - 1)
+      end
       [ *given_name_tokens(tokens[0...surname_index]), tokens[surname_index] ]
+    end
+
+    def particle_only?(tokens)
+      tokens.present? && tokens.all? { |token| PARTICLES.include?(token) }
     end
 
     # "刘慈欣" has no space, and the family name is the first character.
@@ -335,10 +352,6 @@ class DuplicateDetectionService
       return tokens unless token.length >= 2 && token.match?(UNSEPARATED_NAME)
 
       [ token[1..], token[0] ]
-    end
-
-    def surname_token(tokens)
-      tokens.reject { |token| PARTICLES.include?(token) }.last || tokens.last
     end
 
     def given_name_tokens(tokens)
