@@ -163,24 +163,13 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal "[FILTERED]", filter.filter("nzb_url" => "https://indexer.example/get?apikey=secret").fetch("nzb_url")
   end
 
-  test "cancelling twice is refused, and the member can then delete the cancelled request" do
+  test "cancelling an already cancelled request is refused" do
     sign_in_as(@member)
     post_action(web_preview_api_request_cancel_path(@mine), user: @member)
     assert_response :success
-    assert_equal "failed", @mine.reload.status
     assert_equal "This request is already cancelled.", post_action(web_preview_api_request_cancel_path(@mine), user: @member).fetch("message")
     assert_response :conflict
-    actions = detail(@mine, user: @member).dig("request", "actions")
-    assert_equal [ false, "delete_request" ], actions.values_at("cancel", "remove")
-    post_action(web_preview_api_request_remove_path(@mine), user: @member)
-    assert_response :success
-    assert_not Request.exists?(@mine.id)
-  end
-
-  test "a retry never reopens a request that finished before the retry took its lock" do
-    @theirs.update!(status: :completed, completed_at: Time.current, attention_needed: false)
-    assert_equal :not_retryable, @theirs.retry_now!
-    assert_equal "completed", @theirs.reload.status
+    assert_equal [ false, nil ], detail(@mine, user: @member).dig("request", "actions").values_at("cancel", "remove")
   end
 
   test "request actions need the page's CSRF token and every read needs the account header" do

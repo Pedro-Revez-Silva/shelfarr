@@ -328,7 +328,6 @@ export function SingleSignOnCard({ settings }: { settings: AccountSettings }) {
   const oidc = settings.oidc;
   const { api } = useServices();
   const unlink = useProfileChange((password: string) => api.unlinkSingleSignOn(password), (profile) => profile);
-  const [token] = useState(() => readCsrfToken(document));
   if (!oidc.configured) return null;
   const provider = oidc.provider ?? "single sign-on";
   return (
@@ -346,36 +345,13 @@ export function SingleSignOnCard({ settings }: { settings: AccountSettings }) {
             </div>
           )}
         </>
-      ) : oidc.linkable ? (
-        <LinkSingleSignOn provider={provider} token={token} />
+      ) : oidc.link_page ? (
+        <p>
+          <a href={oidc.link_page}>Link {provider} on the classic account page</a>
+          <span className="muted"> · linking still happens there while it moves here</span>
+        </p>
       ) : null}
     </Card>
-  );
-}
-
-function LinkSingleSignOn({ provider, token }: { provider: string; token: string | null }) {
-  const { api } = useServices();
-  const form = useRef<HTMLFormElement>(null);
-  const [target, setTarget] = useState<string | null>(null);
-  const start = useMutation({ mutationFn: () => api.startSingleSignOnLink(), onSuccess: setTarget });
-  useEffect(() => {
-    if (target) form.current?.submit();
-  }, [target]);
-  return (
-    <>
-      <p className="muted">You will go to {provider} to confirm, then come back to Shelfarr.</p>
-      <div className="form-actions">
-        <button type="button" className="button" aria-disabled={start.isPending || target ? true : undefined} onClick={() => (start.isPending || target ? undefined : start.mutate())}>
-          {start.isPending || target ? `Opening ${provider}…` : `Link ${provider}`}
-        </button>
-      </div>
-      {start.isError ? <Problem error={start.error} fallback={`${provider} could not be opened. Nothing was changed; try again.`} /> : null}
-      {target ? (
-        <form ref={form} method="post" action={target} hidden>
-          {token ? <input type="hidden" name="authenticity_token" value={token} /> : null}
-        </form>
-      ) : null}
-    </>
   );
 }
 

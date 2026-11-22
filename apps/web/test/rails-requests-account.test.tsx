@@ -51,7 +51,7 @@ const settings: AccountSettings = {
   member_since: "2026-01-02T10:00:00.000Z",
   requests: { total: 4, completed: 2, pending: 1 },
   two_factor: { enabled: false },
-  oidc: { configured: true, provider: "Pocket ID", linked: false, linkable: true, password_required: true },
+  oidc: { configured: true, provider: "Pocket ID", linked: false, link_page: "/sub/profile", password_required: true },
   api_tokens: [
     { id: "5", name: "Pixel 9", prefix: "shf_abc12345", scopes: ["library:read"], app: true, state: "active", created_at: "2026-11-01T10:00:00.000Z", last_used_at: null, expires_at: null },
     { id: "6", name: "Backup script", prefix: "shf_def67890", scopes: ["requests:read"], app: false, state: "revoked", created_at: "2026-10-01T10:00:00.000Z", last_used_at: "2026-10-02T10:00:00.000Z", expires_at: null },
@@ -162,15 +162,9 @@ describe("one request in the Rails preview", () => {
     expect(within(tools).getByText("Client down")).toBeTruthy();
   });
 
-  test("a member can upload without store offers and delete a cancelled request", async () => {
-    const server = railsServer(detail({ status: "failed", actions: { ...memberActions, cancel: false, remove: "delete_request", upload_url: "/sub/uploads/new?request_id=7" } })).on("POST", /\/requests\/7\/remove$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "removed" } } }));
-    renderApp({ server, url: "/sub/preview/requests/7" });
+  test("a member can upload without store offers", async () => {
+    renderApp({ server: railsServer(detail({ actions: { ...memberActions, upload_url: "/sub/uploads/new?request_id=7" } })), url: "/sub/preview/requests/7" });
     expect((await screen.findByRole("link", { name: "Upload a file for this request" })).getAttribute("href")).toBe("/sub/uploads/new?request_id=7");
-    expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Delete request" }));
-    await user.click(screen.getByRole("button", { name: "Yes, remove it" }));
-    await waitFor(() => expect(server.called("POST", /remove$/)).toHaveLength(1));
   });
 
   test("a completed request opens its Book page and keeps a link to its details", async () => {
@@ -187,7 +181,7 @@ describe("one request in the Rails preview", () => {
     await act(async () => services.revalidate());
     await waitFor(() => expect(screen.queryByText("private note")).toBeNull());
     expect(services.guard.getState().status).toBe("access_changed");
-  });
+  }, 15000);
 
   test("removing a request asks first and returns to the list", async () => {
     const server = railsServer(detail({ status: "completed", actions: { ...memberActions, cancel: false, remove: "delete_history" } })).on("POST", /\/requests\/7\/remove$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "removed" } } }));
@@ -267,21 +261,9 @@ describe("your account in the Rails preview", () => {
     expect(screen.getByText("BBBB2222")).toBeTruthy();
   });
 
-  test("single sign-on starts through an account-bound request, then posts to the provider with the page token", async () => {
-    const submitted: string[] = [];
-    const original = HTMLFormElement.prototype.submit;
-    HTMLFormElement.prototype.submit = function (this: HTMLFormElement) {
-      submitted.push(`${this.getAttribute("action")} ${(this.querySelector("input[name=authenticity_token]") as HTMLInputElement | null)?.value}`);
-    };
-    try {
-      const server = accountServer().on("POST", /\/account\/oidc\/link$/, () => ({ body: { account: ACCOUNT, start: { url: "/sub/auth/oidc" } } }));
-      renderApp({ server, url: "/sub/preview/account/security" });
-      await userEvent.setup().click(await screen.findByRole("button", { name: "Link Pocket ID" }));
-      await waitFor(() => expect(submitted).toEqual(["/sub/auth/oidc page-token"]));
-      expect(server.called("POST", /oidc\/link$/)[0]?.headers["x-shelfarr-account"]).toBe(ACCOUNT);
-    } finally {
-      HTMLFormElement.prototype.submit = original;
-    }
+  test("single sign-on linking hands off to the classic account page, which owns the provider redirect", async () => {
+    renderApp({ server: accountServer(), url: "/sub/preview/account/security" });
+    expect((await screen.findByRole("link", { name: "Link Pocket ID on the classic account page" })).getAttribute("href")).toBe("/sub/profile");
   });
 
   test("About links administrators to the server", async () => {

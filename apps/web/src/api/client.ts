@@ -20,7 +20,7 @@ import { serverOverviewSchema, type ServerOverview } from "../contract";
 import { bookEnvelopeSchema, bookRequestOutcomeSchema, catalogueSchema, requestActionSchema, type Book, type BookAddress, type BookRequestOutcome, type CatalogueAnswer } from "../contract";
 import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema, type MetadataChange, type MetadataRejection, type MetadataSettings } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
-import { backupCodesSchema, createdTokenSchema, singleSignOnStartSchema, twoFactorSetupSchema, type CreatedToken, type RequestActionAnswer, type TwoFactorSetup } from "../contract";
+import { backupCodesSchema, createdTokenSchema, twoFactorSetupSchema, type CreatedToken, type RequestActionAnswer, type TwoFactorSetup } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
   progressConflictSchema,
@@ -109,8 +109,6 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   two_factor_disabled: "conflict",
   two_factor_not_started: "conflict",
   oidc_not_linked: "conflict",
-  oidc_linked: "conflict",
-  oidc_unavailable: "conflict",
 };
 
 export class ApiClient {
@@ -343,11 +341,6 @@ export class ApiClient {
 
   revokeApiToken(id: string, signal?: AbortSignal): Promise<Profile> {
     return this.profileAction(`/account/api_tokens/${encodeURIComponent(id)}/revoke`, {}, signal);
-  }
-
-  async startSingleSignOnLink(signal?: AbortSignal): Promise<string> {
-    const answer = await this.request({ path: "/account/oidc/link", schema: singleSignOnStartSchema, method: "POST", body: {}, signal, account: (value) => value.account });
-    return answer.start.url;
   }
 
   unlinkSingleSignOn(currentPassword: string, signal?: AbortSignal): Promise<Profile> {

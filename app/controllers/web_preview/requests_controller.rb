@@ -72,10 +72,7 @@ class WebPreview::RequestsController < WebPreview::APIController
     request = Request.find(identifier(params[:id]))
     return render_error("cannot_retry", :conflict, message: NOT_RETRYABLE) unless request.can_retry?
 
-    outcome = request.retry_now!
-    return render_error("cannot_retry", :conflict, message: NOT_RETRYABLE) if outcome == :not_retryable
-
-    message = RETRY_MESSAGES[outcome]
+    message = RETRY_MESSAGES[request.retry_now!]
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: request.reload.status }, message: message }.compact
   end
 
@@ -85,10 +82,8 @@ class WebPreview::RequestsController < WebPreview::APIController
       remove_as_admin(request)
     elsif request.completed?
       remove_own_history(request)
-    elsif request.failed?
-      remove_own_cancelled(request)
     else
-      return render_error("cannot_remove", :conflict, message: "Cancel this request before deleting it.")
+      return render_error("cannot_remove", :conflict, message: "Only finished requests can be deleted.")
     end
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: "removed" } }
   rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
@@ -145,14 +140,6 @@ class WebPreview::RequestsController < WebPreview::APIController
     request.remove_as_admin!
     ActivityTracker.track(completed ? "request.deleted" : "request.cancelled", trackable: request)
     book.destroy if book.requests.reload.empty? && !book.acquisition_blocked?
-  end
-
-  def remove_own_cancelled(request)
-    request.claim_destructive_cancellation!
-    book = request.book
-    request.destroy!
-    ActivityTracker.track("request.cancelled", trackable: request)
-    book.destroy if book.requests.empty? && !book.acquisition_blocked?
   end
 
   def remove_own_history(request)

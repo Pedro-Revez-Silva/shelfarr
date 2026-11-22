@@ -96,7 +96,6 @@ module WebPreview
     def removal
       return "admin_remove" if admin?
       return "delete_history" if own? && @request.can_delete_completed_history?
-      return "delete_request" if own? && @request.failed? && @request.can_be_cancelled?
 
       nil
     end

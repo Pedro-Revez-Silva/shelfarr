@@ -68,7 +68,7 @@ module WebPreview
         configured: configured,
         provider: configured ? SettingsService.get(:oidc_provider_name, default: "SSO").to_s : nil,
         linked: configured && @user.oidc_user?,
-        linkable: configured && !@user.oidc_user?,
+        link_page: configured && !@user.oidc_user? ? @routes.profile_path : nil,
         password_required: !SettingsService.auth_disabled?
       }
     end

@@ -130,7 +130,7 @@ export const accountSettingsSchema = z.object({
   member_since: timestamp,
   requests: z.object({ total: z.number().int().nonnegative(), completed: z.number().int().nonnegative(), pending: z.number().int().nonnegative() }),
   two_factor: z.object({ enabled: z.boolean() }),
-  oidc: z.object({ configured: z.boolean(), provider: z.string().nullable(), linked: z.boolean(), linkable: z.boolean(), password_required: z.boolean() }),
+  oidc: z.object({ configured: z.boolean(), provider: z.string().nullable(), linked: z.boolean(), link_page: sitePath.nullable(), password_required: z.boolean() }),
   api_tokens: z.array(apiTokenSchema),
   token_scopes: z.array(z.object({ scope: z.string(), label: z.string() })),
   links: z.object({
@@ -319,7 +319,7 @@ export type BookCopy = z.infer<typeof bookCopySchema>;
 
 export const requestActionsSchema = z.object({
   cancel: z.boolean(),
-  remove: z.enum(["admin_remove", "delete_history", "delete_request"]).nullable(),
+  remove: z.enum(["admin_remove", "delete_history"]).nullable(),
   retry: z.boolean(),
   search_again: z.boolean(),
   manual_download: z.boolean(),
@@ -601,7 +601,6 @@ export type RequestActionAnswer = z.infer<typeof requestActionSchema>;
 
 export const twoFactorSetupSchema = z.object({ account: identifier, setup: z.object({ secret: z.string().min(1), uri: z.string().startsWith("otpauth://"), qr_svg: z.string().nullable() }) });
 export type TwoFactorSetup = z.infer<typeof twoFactorSetupSchema>["setup"];
-export const singleSignOnStartSchema = z.object({ account: identifier, start: z.object({ url: sitePath }) });
 export const backupCodesSchema = z.object({ account: identifier, backup_codes: z.array(z.string().min(1)).min(1) });
 export const createdTokenSchema = z.object({ account: identifier, token: apiTokenSchema, secret: z.string().min(1) });
 export type CreatedToken = z.infer<typeof createdTokenSchema>;

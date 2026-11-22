@@ -23,7 +23,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
   const retry = useRetryRequest(request.id);
   const search = useSearchRequestAgain(request.id);
   const memberUpload = !admin && actions.upload_url !== null && (request.store_offers ?? []).length === 0;
-  const memberRemoval = !admin && (actions.remove === "delete_history" || actions.remove === "delete_request") ? actions.remove : null;
+  const memberRemoval = !admin && actions.remove === "delete_history" ? actions.remove : null;
   const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || actions.search_again));
   if (!shown) return null;
   return (
@@ -101,7 +101,7 @@ function CancelTracked({ request }: { request: RequestDetail }) {
   const cancel = useCancelTrackedRequest(request.id);
   return (
     <>
-      <Confirm ask="Cancel request" question="Cancel this request?" confirm="Yes, cancel it" busy="Cancelling…" state={cancel} onConfirm={() => cancel.mutate(undefined)} />
+      <Confirm ask="Cancel request" question={request.status === "downloading" ? "Cancel this request? Its download is stopped and removed from the download client." : "Cancel this request?"} confirm="Yes, cancel it" busy="Cancelling…" state={cancel} onConfirm={() => cancel.mutate(undefined)} />
       {cancel.isError ? <Failure error={cancel.error} fallback="The request could not be cancelled. Nothing was changed." /> : null}
     </>
   );
@@ -111,12 +111,8 @@ function RemoveRequest({ request, mode }: { request: RequestDetail; mode: NonNul
   const remove = useRemoveRequest(request.id);
   const navigate = useNavigate();
   const finished = request.status === "completed";
-  const label = finished ? "Delete request history" : mode === "delete_request" ? "Delete request" : "Remove request";
-  const question = finished
-    ? "Delete this request's history? Library files are kept."
-    : mode === "delete_request"
-      ? "Delete this cancelled request? You can request the book again afterwards."
-      : "Remove this request? Its download is stopped in the download client; files outside the library are kept.";
+  const label = finished ? "Delete request history" : "Remove request";
+  const question = finished ? "Delete this request's history? Library files are kept." : "Remove this request? Its download is stopped in the download client; files outside the library are kept.";
   return (
     <>
       <Confirm

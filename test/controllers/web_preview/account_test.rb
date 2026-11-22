@@ -128,23 +128,12 @@ class WebPreview::AccountTest < ActionDispatch::IntegrationTest
     assert_includes account(@member).dig("profile", "settings", "api_tokens").map { |token| token.fetch("id") }, phone.id.to_s
   end
 
-  test "an OIDC link starts only for the account the page was built for" do
-    SettingsService.stub(:oidc_configured?, true) do
-      sign_in_as(@member)
-      post web_preview_api_account_oidc_link_path, headers: account_headers(@admin), as: :json
-      assert_response :unauthorized
-      assert_nil session[:pending_oidc_link_user_id]
-      assert_equal "/auth/oidc", send_json(:post, web_preview_api_account_oidc_link_path, user: @member).dig("start", "url")
-      assert_equal @member.id, session[:pending_oidc_link_user_id]
-      assert account(@member).dig("profile", "settings", "oidc", "linkable")
-    end
-  end
-
   test "an OIDC link is removed only with the current password" do
     SettingsService.stub(:oidc_configured?, true) do
       @member.update!(oidc_provider: "oidc", oidc_uid: "abc")
       sign_in_as(@member)
       assert account(@member).dig("profile", "settings", "oidc", "linked")
+      assert_nil account(@member).dig("profile", "settings", "oidc", "link_page")
       send_json(:post, web_preview_api_account_oidc_unlink_path, user: @member, current_password: "wrong")
       assert_response :unprocessable_entity
       assert @member.reload.oidc_user?
