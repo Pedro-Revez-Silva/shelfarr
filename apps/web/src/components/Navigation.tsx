@@ -52,7 +52,13 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
           <>
             <HandoffLink href={session.links.requests} label="Requests" />
             <HandoffLink href={session.links.account} label="Account" />
-            {session.admin ? <HandoffLink href={session.admin.url} label="Admin" /> : null}
+            {session.admin ? (
+              <li>
+                <Link to="/server" className="nav-link">
+                  Server
+                </Link>
+              </li>
+            ) : null}
           </>
         ) : null}
       </ul>

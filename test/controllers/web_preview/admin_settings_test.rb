@@ -411,6 +411,7 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     output = body.fetch("services").find { |entry| entry["service"] == "output_paths" }
     assert_equal({ "service" => "output_paths", "label" => "Output paths", "status" => "down", "message" => "Missing /ebooks", "fix" => { "category" => "library", "group" => "folders", "label" => "Folder settings" } },
       output.except("checked_at"))
+    assert_nil body.fetch("services").find { |entry| entry["service"] == "hardcover" }.fetch("checked_at")
     assert_equal({ "users" => User.active.count, "books" => Book.count, "active_requests" => Request.active.count, "attention_requests" => Request.needs_attention.count }, body.fetch("counts"))
     assert_equal Consumer::ServerInfo.server_version, body.dig("release", "build")
 

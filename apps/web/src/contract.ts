@@ -108,6 +108,9 @@ export const sessionSchema = z.object({
     account: sitePath,
   }),
   admin: z.object({ url: sitePath }).optional(),
+  capabilities: z
+    .object({ administrator: z.boolean(), can_upload: z.boolean(), single_sign_on: z.boolean(), hardcover_personal_access: z.boolean() })
+    .optional(),
 });
 export type Session = z.infer<typeof sessionSchema>;
 
@@ -418,7 +421,14 @@ export type HealthStatus = (typeof healthStatuses)[number];
 
 const tally = z.number().int().nonnegative();
 
-export const serviceHealthSchema = z.object({ service: z.enum(healthServices), status: z.enum(healthStatuses).nullable(), checked_at: timestamp.nullable() });
+export const serviceHealthSchema = z.object({
+  service: z.enum(healthServices),
+  status: z.enum(healthStatuses).nullable(),
+  checked_at: timestamp.nullable(),
+  label: z.string().optional(),
+  message: z.string().optional(),
+  fix: z.object({ category: z.string(), group: z.string(), label: z.string() }).optional(),
+});
 export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 
 export const serverOverviewSchema = z
@@ -426,6 +436,23 @@ export const serverOverviewSchema = z
     account: identifier,
     counts: z.object({ users: tally, books: tally, active_requests: tally, attention_requests: tally }),
     services: z.array(serviceHealthSchema),
+    release: z
+      .object({
+        build: z.string(),
+        channel: z.string(),
+        beta: z.boolean(),
+        series: z.string(),
+        image: z.string(),
+        image_tag: z.string(),
+        guide_url: z.string().url(),
+        latest: z.object({
+          state: z.enum(["unchecked", "available", "current", "failed"]),
+          version: z.string().optional(),
+          release_url: z.string().nullable().optional(),
+          message: z.string().optional(),
+        }),
+      })
+      .optional(),
   })
   .refine((overview) => overview.services.length === healthServices.length && overview.services.every((entry, index) => entry.service === healthServices[index]), "Every health service must be listed once, in order");
 export type ServerOverview = z.infer<typeof serverOverviewSchema>;

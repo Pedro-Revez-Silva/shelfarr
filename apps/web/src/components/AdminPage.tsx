@@ -1,6 +1,7 @@
-import { Link } from "@tanstack/react-router";
-import { useState, useSyncExternalStore } from "react";
+import { Link, Navigate } from "@tanstack/react-router";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { failureKind } from "../api/errors";
+import { OverviewActions, OverviewOutcome, ReleaseCard, RunHealthCheck, ServerOverviewShell, useOverviewOutcome } from "../server/OverviewParts";
 import type { HealthService, HealthStatus, ServerOverview, ServiceHealth } from "../contract";
 import { useServerOverview, useSession } from "../queries";
 import { useServices } from "../services";
@@ -30,7 +31,13 @@ const PROBLEMS = new Set<HealthStatus | null>(["degraded", "down"]);
 
 export function AdminPage() {
   const { mode } = useServices();
-  if (mode !== "go") {
+  if (mode !== "go") return <Navigate to="/server" replace />;
+  return <Overview />;
+}
+
+export function ServerHomePage() {
+  const { mode } = useServices();
+  if (mode !== "rails") {
     return (
       <EmptyState title="That page is not part of this preview">
         <p>Use the navigation to return to your library.</p>
@@ -50,13 +57,40 @@ function AdminsOnly() {
 
 function Overview() {
   usePageTitle("Server overview");
-  const { guard, queryClient, keys } = useServices();
+  const { guard, queryClient, keys, mode } = useServices();
+  const rails = mode === "rails";
+  const outcome = useOverviewOutcome();
   const [cachedAtEntry] = useState(() => queryClient.getQueryState(keys.serverOverview)?.dataUpdatedAt ?? 0);
   const session = useSession();
   const overview = useServerOverview();
   const trust = useSyncExternalStore(guard.subscribeTrust, guard.getTrust, guard.getTrust);
   const admin = session.data?.admin !== undefined;
   const current = trust === "trusted" && overview.dataUpdatedAt > cachedAtEntry ? overview.data : undefined;
+
+  const body = session.isError && !session.data ? (
+    <ErrorPanel error={session.error} onRetry={() => void session.refetch()} />
+  ) : !session.data ? (
+    <Loading label="Loading the server overview…" />
+  ) : !admin || (overview.isError && failureKind(overview.error) === "not_found") ? (
+    <AdminsOnly />
+  ) : overview.isError ? (
+    <ErrorPanel error={overview.error} onRetry={() => void overview.refetch()} />
+  ) : current ? (
+    <OverviewBody overview={current} rails={rails} actions={rails ? <RunHealthCheck say={outcome.say} /> : null} />
+  ) : (
+    <Loading label="Loading the server overview…" />
+  );
+
+  if (rails) {
+    return (
+      <ServerOverviewShell>
+        {session.data && admin && current ? <OverviewActions build={current.release?.build ?? session.data.server.version} /> : null}
+        <OverviewOutcome outcome={outcome.outcome} />
+        {body}
+        {current?.release ? <ReleaseCard release={current.release} say={outcome.say} /> : null}
+      </ServerOverviewShell>
+    );
+  }
 
   return (
     <section className="overview" aria-labelledby="overview-heading">
@@ -78,28 +112,16 @@ function Overview() {
           </>
         ) : null}
       </header>
-      {session.isError && !session.data ? (
-        <ErrorPanel error={session.error} onRetry={() => void session.refetch()} />
-      ) : !session.data ? (
-        <Loading label="Loading the server overview…" />
-      ) : !admin || (overview.isError && failureKind(overview.error) === "not_found") ? (
-        <AdminsOnly />
-      ) : overview.isError ? (
-        <ErrorPanel error={overview.error} onRetry={() => void overview.refetch()} />
-      ) : current ? (
-        <OverviewBody overview={current} />
-      ) : (
-        <Loading label="Loading the server overview…" />
-      )}
+      {body}
     </section>
   );
 }
 
-function OverviewBody({ overview }: { overview: ServerOverview }) {
+function OverviewBody({ overview, rails, actions }: { overview: ServerOverview; rails: boolean; actions: ReactNode }) {
   const { counts } = overview;
   return (
     <>
-      <Attention overview={overview} />
+      <Attention overview={overview} rails={rails} />
       <dl className="overview-counts">
         <Tally label="Users" value={counts.users} />
         <Tally label="Books" value={counts.books} />
@@ -109,9 +131,10 @@ function OverviewBody({ overview }: { overview: ServerOverview }) {
       <section className="overview-card" aria-labelledby="health-heading">
         <h2 id="health-heading">System health</h2>
         <p className="overview-note">Saved results from the last health check. Opening this page does not run a check.</p>
+        {actions}
         <ul className="health-list">
           {overview.services.map((entry) => (
-            <HealthRow key={entry.service} entry={entry} />
+            <HealthRow key={entry.service} entry={entry} rails={rails} />
           ))}
         </ul>
       </section>
@@ -128,7 +151,7 @@ function Tally({ label, value, alert = false }: { label: string; value: number; 
   );
 }
 
-function Attention({ overview }: { overview: ServerOverview }) {
+function Attention({ overview, rails }: { overview: ServerOverview; rails: boolean }) {
   const problems = overview.services.filter((entry) => PROBLEMS.has(entry.status));
   const waiting = overview.counts.attention_requests;
   const calm = problems.length === 0 && waiting === 0;
@@ -139,12 +162,23 @@ function Attention({ overview }: { overview: ServerOverview }) {
         <p className="overview-note">Nothing needs attention in the saved results.</p>
       ) : (
         <ul className="attention-list">
-          {problems.map((entry) => (
-            <li key={entry.service}>
-              <span aria-hidden="true">⚠ </span>
-              {SERVICE_LABELS[entry.service]} is {entry.status === "down" ? "down" : "degraded"}
-            </li>
-          ))}
+          {problems.map((entry) =>
+            rails ? (
+              <li key={entry.service} className="attention-requests">
+                <span>
+                  <span aria-hidden="true">⚠ </span>
+                  {SERVICE_LABELS[entry.service]} is {entry.status === "down" ? "down" : "degraded"}
+                  {entry.message ? <span className="attention-message">{entry.message}</span> : null}
+                </span>
+                <FixLink entry={entry} prefix="Open" />
+              </li>
+            ) : (
+              <li key={entry.service}>
+                <span aria-hidden="true">⚠ </span>
+                {SERVICE_LABELS[entry.service]} is {entry.status === "down" ? "down" : "degraded"}
+              </li>
+            ),
+          )}
           {waiting > 0 ? (
             <li className="attention-requests">
               <span>
@@ -162,7 +196,16 @@ function Attention({ overview }: { overview: ServerOverview }) {
   );
 }
 
-function HealthRow({ entry }: { entry: ServiceHealth }) {
+function FixLink({ entry, prefix }: { entry: ServiceHealth; prefix?: string }) {
+  if (!entry.fix) return null;
+  return (
+    <Link to="/server/$category" params={{ category: entry.fix.category }} hash={entry.fix.group} className={prefix ? "button" : "health-fix"}>
+      {prefix ? `${prefix} ${entry.fix.label.toLowerCase()}` : entry.fix.label}
+    </Link>
+  );
+}
+
+function HealthRow({ entry, rails }: { entry: ServiceHealth; rails: boolean }) {
   const status = entry.status;
   return (
     <li className="health-row">
@@ -182,6 +225,8 @@ function HealthRow({ entry }: { entry: ServiceHealth }) {
           )}
         </span>
       ) : null}
+      {rails && entry.message ? <span className="health-message">{entry.message}</span> : null}
+      {rails ? <FixLink entry={entry} /> : null}
     </li>
   );
 }

@@ -53,7 +53,7 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
       message: WebPreview::SecretRedaction.call(health&.message.presence),
       checked_at: health&.last_check_at&.iso8601,
       fix: FIXES[service]
-    }.compact.merge(status: health&.status)
+    }.compact.merge(status: health&.status, checked_at: health&.last_check_at&.iso8601)
   end
 
   def release_json(check)
