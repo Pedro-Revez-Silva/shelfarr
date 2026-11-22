@@ -1,6 +1,6 @@
 import type { ReaderAsset, ReaderPublication, StoredProgress } from "../src/contract";
 import { confirmedState, releasedState } from "../src/offline/store";
-import { ACCOUNT_LIMIT_BYTES, bookKey, usable, type Attempt, type CommitOutcome, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook, type UpdateOutcome } from "../src/offline/model";
+import { ACCOUNT_LIMIT_BYTES, bookKey, mergeSaved, usable, type Attempt, type CommitOutcome, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook, type UpdateOutcome } from "../src/offline/model";
 
 export const EPUB_ID = "e".repeat(64);
 export const NEWER_ID = "f".repeat(64);
@@ -49,7 +49,7 @@ export class MemoryOfflineStore implements OfflineStore {
     if (!usable(this.record, account, now)) {
       if (ownedSince !== null) {
         this.record = null;
-        this.clearedAt = Math.max(this.clearedAt, ownedSince);
+        this.clearedAt = Math.max(this.clearedAt, ownedSince, now);
       }
       return false;
     }
@@ -88,7 +88,7 @@ export class MemoryOfflineStore implements OfflineStore {
     const others = [...this.saved.values()].filter((other) => other.account === book.account && other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
     if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";
     this.files.set(book.key, { assetId: book.asset.id, blob });
-    this.saved.set(book.key, book);
+    this.saved.set(book.key, mergeSaved(this.saved.get(book.key) ?? null, book));
     this.attemptRecords.delete(book.key);
     return "saved";
   }

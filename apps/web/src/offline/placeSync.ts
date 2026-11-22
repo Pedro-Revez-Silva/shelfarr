@@ -34,7 +34,7 @@ export function createPlaceSync({ boot, auth, store, guard, fetcher }: PlaceSync
       return { kind: "stop" };
     }
     const confirmation = confirmationFrom(answer.account, answer.offline_expires_in, askedAt);
-    if (!confirmation) return { kind: "stop" };
+    if (answer.account !== account || !confirmation) return { kind: "stop" };
     await store.confirm(confirmation);
     if (!usable((await store.accountState()).record, account, Date.now())) return { kind: "stop" };
     return { kind: "verified", csrf: answer.csrf_token };

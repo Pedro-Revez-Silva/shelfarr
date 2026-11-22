@@ -141,7 +141,7 @@ function OfflineView({ boot, connected, onConnected }: { boot: GoBoot; connected
     <>
       {connected ? (
         <p className="notice offline-reconnected" role="status">
-          You're connected again. Places you reached offline are being sent to your account.{" "}
+          You're connected again.{" "}
           <button type="button" className="button" onClick={onConnected}>
             Continue online
           </button>

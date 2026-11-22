@@ -95,7 +95,16 @@ export function deviceIsLater(device: DevicePlace, account: Pick<AccountPlace, "
 export function laterDevicePlace(book: SavedBook): DevicePlace | null {
   const device = book.devicePlace;
   if (!device || device.asset_id !== book.asset.id) return null;
-  return deviceIsLater(device, book.accountPlace) ? device : null;
+  switch (device.upload?.state) {
+    case "pending":
+    case "held":
+      return device;
+    case "synced":
+    case "superseded":
+      return null;
+    case undefined:
+      return deviceIsLater(device, book.accountPlace) ? device : null;
+  }
 }
 
 export function openingLocator(book: SavedBook): Locator | null {
@@ -117,8 +126,14 @@ export const pendingUpload = (): PendingUpload => ({ state: "pending", request: 
 
 export function unsentPlace(book: SavedBook): (DevicePlace & { upload: PendingUpload }) | null {
   const device = book.devicePlace;
-  if (!device || device.asset_id !== book.asset.id) return null;
-  if (device.upload?.state === "pending") return { ...device, upload: device.upload };
-  if (device.upload === undefined && laterDevicePlace(book)) return { ...device, upload: pendingUpload() };
+  if (device?.upload?.state === "pending") return { ...device, upload: device.upload };
+  if (device && device.upload === undefined && laterDevicePlace(book)) return { ...device, upload: pendingUpload() };
   return null;
+}
+
+export function mergeSaved(current: SavedBook | null, fresh: SavedBook): SavedBook {
+  if (!current) return fresh;
+  const known = current.accountPlace;
+  const accountPlace = !fresh.accountPlace || (known && known.version >= fresh.accountPlace.version) ? known : fresh.accountPlace;
+  return { ...fresh, accountPlace, devicePlace: current.devicePlace ?? fresh.devicePlace };
 }

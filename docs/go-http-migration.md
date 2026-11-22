@@ -982,12 +982,14 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
 * Answers are ordered by when their question was asked, whichever tab asked and whenever the answer arrives: a
   confirmation is stored only if it was asked after the latest clearing and is not older than the stored one; a
   signed-out or refused answer clears any record confirmed by an earlier question and is itself ignored for one confirmed
-  by a later question; signing out or a page lock clears against everything asked until then. So a slow answer, a stale
+  by a later question; signing out clears against everything asked until then. A sign-in and a page lock each ask
+  `auth/bootstrap` again rather than using the login answer or the moment of the lock, and an expired record is cleared
+  against everything asked until the moment it was found expired. So a slow answer, a stale
   save or another tab can neither restore an account that was signed out or replaced, nor erase a newer confirmation, and
   of two pages answering for different accounts the later question wins. A window is measured from when the server was
-  asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap or sign-in once the browser has the
+  asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap once the browser has the
   worker; it is deleted by sign-out, a signed-out bootstrap, any `4xx` bootstrap answer (allowlist removal, preview off,
-  a gateway refusal) and a page lock for that account, and replaced when another account signs in. Books are keyed by
+  a gateway refusal), and replaced when another account signs in. Books are keyed by
   account, so another account sees only a count and size of them, never titles or places, and can remove them.
 * An offline page re-reads the record on focus, visibility, at the moment it expires and every 30 s, hides itself on
   `pagehide` (also replacing the book title in the tab), reloads itself when restored from the back/forward cache (so a restored page goes through the whole check
@@ -1005,18 +1007,23 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
 ### Sending places reached offline
 
 Each deliberate move offline marks the saved book's `devicePlace` as `upload: {state:"pending", request:null}` in the same
-IndexedDB write; a place stored by the earlier candidate without `upload` is treated as pending when it is later than the
-account place. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
+IndexedDB write, unless the stored place has a later activity time (another tab's newer move is never replaced by an older
+one); a place stored by the earlier candidate without `upload` is treated as pending when it is later than the account
+place. Saving the copy again keeps the stored device place and the higher account version, read inside the commit's own
+transaction. A pending or held device place is where the saved copy opens offline and is offered online; a sent or
+superseded one is not. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
 
 * **When.** A page runs one sender at a time (a Web Lock `shelfarr-go-preview-offline-sync|<account>` across tabs; no
   service worker or Background Sync): on the initial verified load of any Go page with `-web-offline`, on focus,
   visibility and `online`, after the offline page's 20 s reachability check finds the same account again, after each
   offline move once connected, and after an uncertain answer at 2, 5, 15, 30 and then every 60 s. The `online` event is
   only a hint: nothing is sent until a real `auth/bootstrap` answer arrives. With nothing pending it makes no request.
-* **Who.** Before sending, the sender asks `auth/bootstrap` again; it sends only for the same signed-in account, with that
-  answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
+* **Who.** Before every single request (each book and each rebase), the sender asks `auth/bootstrap` again; it sends only
+  when that answer itself names the same signed-in account, with that answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
   `PUT /preview/api/v1/library/:id/progress` at `priority: "low"`. A signed-out, refused, other-account or option-off
-  answer, a page lock or an expired record stops it; the pending place stays.
+  answer, a page lock or an expired record stops it; the pending place stays. A matching `expected_version` means this
+  browser's knowledge of the account place is current, so the server accepts the offline move as the newer reading action
+  even when that place is undated or in another file of the book, exactly as an online page turn would be.
 * **What.** `{asset_id, locator, observed_at: the original activity time, expected_version: the last account version
   this browser learned (0 if none), client_mutation_id}`, stored before it is sent, so an uncertain answer (network
   failure, `5xx`, refused token) resends the identical request later, also after a reload. A place equal to the known

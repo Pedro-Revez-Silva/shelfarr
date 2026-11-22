@@ -49,11 +49,9 @@ export async function syncPlaces(deps: SyncDeps): Promise<SyncResult> {
   const uuid = deps.uuid ?? newUuid;
   const waiting = (await store.books(account)).filter((book) => unsentPlace(book));
   if (waiting.length === 0) return { kind: "idle" };
-  const verified = await deps.verify();
-  if (verified.kind !== "verified") return verified;
   let transient = false;
   for (const listed of waiting) {
-    const outcome = await syncBook(deps, listed.id, verified.csrf, now, uuid);
+    const outcome = await syncBook(deps, listed.id, now, uuid);
     if (outcome === "stop") return { kind: "stop" };
     if (outcome === "retry") transient = true;
   }
@@ -79,7 +77,7 @@ async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () =
         expected_version: known?.version ?? 0,
         client_mutation_id: uuid(),
       };
-      prepared.value = { request, rebases: device.upload.rebases, assetId: book.asset.id };
+      prepared.value = { request, rebases: device.upload.rebases, assetId: device.asset_id };
       return device.upload.request ? null : { ...book, devicePlace: { ...device, upload: { state: "pending", request, rebases: device.upload.rebases } } };
     },
     now(),
@@ -114,14 +112,16 @@ async function rebase(deps: SyncDeps, id: string, request: ProgressRequest, remo
   );
 }
 
-async function syncBook(deps: SyncDeps, id: string, csrf: string, now: () => number, uuid: () => string): Promise<"done" | "retry" | "stop"> {
+async function syncBook(deps: SyncDeps, id: string, now: () => number, uuid: () => string): Promise<"done" | "retry" | "stop"> {
   for (;;) {
     const prepared = await prepare(deps, id, now, uuid);
     if (!prepared) return "done";
     const { request, rebases, assetId } = prepared;
+    const verified = await deps.verify();
+    if (verified.kind !== "verified") return verified.kind;
     let answer: ProgressAnswer;
     try {
-      answer = await deps.write(id, request, csrf);
+      answer = await deps.write(id, request, verified.csrf);
     } catch (error) {
       if (isApiError(error) && (error.kind === "signed_out" || error.kind === "account_changed")) return "stop";
       if (isApiError(error) && (error.kind === "invalid" || error.kind === "not_found")) {

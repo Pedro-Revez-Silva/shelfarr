@@ -51,6 +51,19 @@ async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmatio
   if ((await hasWorker(boot.offline)) || (await store.accountState()).record) await store.confirm(confirmation);
 }
 
+async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore): Promise<void> {
+  if (!boot.offline) return;
+  const askedAt = Date.now();
+  let answer: Bootstrap;
+  try {
+    answer = await auth.bootstrap();
+  } catch (error) {
+    if (definitiveRefusal(error)) await store.release(askedAt);
+    return;
+  }
+  await keepOfflineAccount(boot, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
+}
+
 async function retireOffline(store: OfflineStore): Promise<void> {
   await store.forget().catch(() => undefined);
   await retireWorker(RETIRED_WORKER);
@@ -105,10 +118,10 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
       markPageNavigated();
       setEpoch((value) => value + 1);
       const confirmation = confirmationFrom(result.account, result.offline_expires_in, Date.now());
-      void keepOfflineAccount(boot, store, confirmation, Date.now()).catch(() => undefined);
+      void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
       setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in, confirmation });
     },
-    [boot, store],
+    [boot, auth, store],
   );
 
   switch (state.kind) {
@@ -242,9 +255,9 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   useEffect(
     () =>
       services.guard.subscribe(() => {
-        void store.forget(account).catch(() => undefined);
+        void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
       }),
-    [services, account, store],
+    [services, boot, auth, store],
   );
 
   const [offline] = useState<Offline | null>(() =>

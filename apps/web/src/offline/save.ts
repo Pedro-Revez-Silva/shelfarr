@@ -7,7 +7,6 @@ import {
   RESERVE_BYTES,
   accountPlaceOf,
   bookKey,
-  rememberAccountPlace,
   savedEpub,
   type ConfirmedAccount,
   type FailureKind,
@@ -64,8 +63,9 @@ async function centralNames(blob: Blob, start: number, size: number, entries: nu
     const next = offset + CENTRAL_RECORD_BYTES + nameLength + directory.getUint16(offset + 30, true) + directory.getUint16(offset + 32, true);
     const local = directory.getUint32(offset + 42, true);
     if (nameLength === 0 || next > size || local + LOCAL_RECORD_BYTES > start) return null;
-    const header = await bytesOf(blob, local, local + 4);
-    if (header.getUint32(0, true) !== LOCAL_HEADER) return null;
+    const header = await bytesOf(blob, local, local + LOCAL_RECORD_BYTES);
+    if (header.byteLength !== LOCAL_RECORD_BYTES || header.getUint32(0, true) !== LOCAL_HEADER || header.getUint16(26, true) !== nameLength) return null;
+    if (local + LOCAL_RECORD_BYTES + nameLength + header.getUint16(28, true) > start) return null;
     names.push(decoder.decode(new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength)));
     offset = next;
   }
@@ -158,8 +158,7 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
   try {
     const blob = await download(asset.url, asset.id, asset.size_bytes, inputs);
     guard.assertActive();
-    const previous = await store.book(account, publication.id);
-    const fresh: SavedBook = {
+    const book: SavedBook = {
       key,
       account,
       id: publication.id,
@@ -168,9 +167,8 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
       asset: { id: asset.id, filename: asset.filename, media_type: asset.media_type, size_bytes: asset.size_bytes },
       savedAt: now(),
       accountPlace: accountPlaceOf(publication.progress, now()),
-      devicePlace: previous?.devicePlace ?? null,
+      devicePlace: null,
     };
-    const book = previous?.accountPlace ? rememberAccountPlace({ ...fresh, accountPlace: previous.accountPlace }, publication.progress, now()) : fresh;
     const outcome = await store.commit(book, blob, token, now());
     if (outcome !== "saved") throw new SaveFailure(outcome === "account" ? "signed_out" : outcome);
   } catch (error) {

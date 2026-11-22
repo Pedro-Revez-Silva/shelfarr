@@ -1,6 +1,7 @@
 import {
   ACCOUNT_LIMIT_BYTES,
   bookKey,
+  mergeSaved,
   usable,
   type AccountState,
   type Attempt,
@@ -97,7 +98,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
       const record = current.record;
       const ownedSince = record?.account === account ? record.confirmedAt : null;
       if (!usable(record, account, now)) {
-        if (ownedSince !== null) await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, ownedSince) });
+        if (ownedSince !== null) await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, ownedSince, now) });
         return false;
       }
       if (now > (record.seenAt ?? 0)) await writeAccount(stores, { record: { ...record, seenAt: now }, clearedAt: current.clearedAt });
@@ -153,8 +154,9 @@ export class IndexedDbOfflineStore implements OfflineStore {
       const saved = await completed<SavedBook[]>(stores.books.index("account").getAll(book.account));
       const others = saved.filter((other) => other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
       if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";
+      const current = await completed<SavedBook | undefined>(stores.books.get(book.key));
       await completed(stores.files.put({ key: book.key, account: book.account, assetId: book.asset.id, blob } satisfies StoredFile));
-      await completed(stores.books.put(book));
+      await completed(stores.books.put(mergeSaved(current ?? null, book)));
       await completed(stores.attempts.delete(book.key));
       return "saved";
     });

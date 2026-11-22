@@ -28,7 +28,7 @@ export function uploadText(upload: Upload | undefined): string {
     case "pending":
       return "Your place is saved on this device and will be sent to your account as soon as Shelfarr can be reached.";
     case "synced":
-      return "Your place was sent to your account.";
+      return "Your place is saved to your account.";
     case "superseded":
       return "Your account already has a later place from another device, so this device's place wasn't sent. It is kept here.";
     case "held":

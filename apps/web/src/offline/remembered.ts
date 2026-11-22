@@ -12,6 +12,7 @@ export function offeredDevicePlace(book: SavedBook, server: StoredProgress | nul
   const device = book.devicePlace;
   if (!device || device.asset_id !== book.asset.id) return null;
   if (server && server.asset_id === device.asset_id && samePlace({ asset_id: device.asset_id, locator: device.locator }, server)) return null;
+  if (device.upload) return device.upload.state === "pending" || device.upload.state === "held" ? device : null;
   const learnedAt = book.accountPlace && server && book.accountPlace.version === server.version ? book.accountPlace.learnedAt : now;
   return deviceIsLater(device, server ? { observedAt: server.observed_at, learnedAt } : null) ? device : null;
 }

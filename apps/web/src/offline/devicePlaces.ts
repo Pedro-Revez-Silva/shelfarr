@@ -59,28 +59,30 @@ export class DevicePlaces {
     this.writing = this.writing.then(async () => {
       if (this.stopped) return;
       try {
+        const edition = { replaced: false };
         const outcome = await this.store.updateBook(
           this.account,
           this.id,
-          (book) =>
-            book.asset.id === next.place.asset_id
-              ? {
-                  ...book,
-                  devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now(), upload: pendingUpload() },
-                }
-              : null,
+          (book) => {
+            edition.replaced = book.asset.id !== next.place.asset_id;
+            const stored = book.devicePlace;
+            if (edition.replaced || (stored?.asset_id === next.place.asset_id && Date.parse(stored.observedAt) >= observedAt)) return null;
+            return {
+              ...book,
+              devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now(), upload: pendingUpload() },
+            };
+          },
           this.now(),
         );
-        if (outcome === "updated") {
-          this.set({ kind: "kept" });
-          this.onKept();
-        }
-        else if (outcome === "unchanged") {
+        if (outcome === "refused") {
+          this.stop();
+          this.onRefused();
+        } else if (edition.replaced) {
           this.stop();
           this.set({ kind: "replaced" });
         } else {
-          this.stop();
-          this.onRefused();
+          this.set({ kind: "kept" });
+          if (outcome === "updated") this.onKept();
         }
       } catch {
         this.set({ kind: "failed" });

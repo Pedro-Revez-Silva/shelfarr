@@ -460,11 +460,11 @@ describe("the online reader with a saved copy", () => {
 });
 
 function withRegisteredWorker(caches: object = { keys: async () => [] }) {
-  const targets: [object, string][] = [[window, "isSecureContext"], [navigator, "serviceWorker"], [globalThis, "caches"], [globalThis, "indexedDB"]];
+  const targets: [object, string][] = [[window, "isSecureContext"], [globalThis, "isSecureContext"], [navigator, "serviceWorker"], [globalThis, "caches"], [globalThis, "indexedDB"]];
   const saved = targets.map(([target, key]) => Object.getOwnPropertyDescriptor(target, key));
   const scope = new URL(OFFLINE.scope, window.location.href).href;
   const registration = { scope, active: { scriptURL: new URL(OFFLINE.worker, window.location.href).href }, unregister: async () => true };
-  const values = [true, { getRegistration: async () => registration, register: async () => registration }, caches, {}];
+  const values = [true, true, { getRegistration: async () => registration, register: async () => registration }, caches, {}];
   targets.forEach(([target, key], index) => Object.defineProperty(target, key, { value: values[index], configurable: true }));
   return () =>
     targets.forEach(([target, key], index) => {
@@ -706,6 +706,87 @@ describe("sending offline places automatically", () => {
       expect(server.called("PUT", /progress$/)).toEqual([]);
       expect(store.saved.get("5|7")?.devicePlace?.upload?.state).toBe("pending");
       view.unmount();
+    }
+  });
+});
+
+describe("third review regressions in the app", () => {
+  const OFFLINE_AT = "2026-11-20T11:00:00.000Z";
+  const place = { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { cfi: "epubcfi(/6/4!/4/2/1:0)", progression: 0.5, totalProgression: 0.75 } };
+
+  test("an answer for another account never lets a waiting place be sent, even when this account was confirmed again meanwhile", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5");
+      const book = store.saved.get("5|7")!;
+      store.saved.set("5|7", { ...book, devicePlace: { asset_id: EPUB_ID, locator: place, observedAt: OFFLINE_AT, recordedAt: Date.now() - 1000, upload: { state: "pending", request: null, rebases: 0 } } });
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          if (calls === 1) return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+          void store.confirm({ account: "5", confirmedAt: Date.now() + 1_000, validForMs: DAY });
+          return { body: { ...signedIn("4"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("PUT", /\/progress$/, () => ({ body: { account: "5", progress: null } }));
+      renderOffline(server, store, "library", "/preview/library");
+      await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(server.called("PUT", /\/progress$/)).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a page that loses its session asks again instead of clearing a newer confirmation from another tab", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5");
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } }))
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, () => {
+          void store.confirm({ account: "5", confirmedAt: Date.now() + 1_000, validForMs: DAY });
+          return error(401, "signed_out");
+        });
+      renderOffline(server, store, "library", "/preview/library");
+      await screen.findByRole("heading", { name: "Your session ended" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(store.record?.account).toBe("5");
+    } finally {
+      restore();
+    }
+  });
+
+  test("a sign-in answer that arrives after a later sign-out elsewhere does not restore offline access", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5", Date.now() - DAY);
+      const login = later<unknown>();
+      let signedOutElsewhere = false;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => ({ body: signedOutElsewhere ? signedOut() : signedOut("login-token") }))
+        .on("POST", /\/auth\/login$/, () => login.promise as never)
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, () => ({ body: { account: "5", items: [], next_cursor: null } }));
+      renderOffline(server, store, "library", "/preview/library");
+      const user = userEvent.setup();
+      await user.type(await screen.findByLabelText("Username"), "reader");
+      await user.type(screen.getByLabelText("Password"), "synthetic-password");
+      await user.click(screen.getByRole("button", { name: "Sign in" }));
+      await store.release(Date.now());
+      signedOutElsewhere = true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await act(async () => {
+        login.resolve({ body: { ...signedIn("5"), offline_expires_in: 3600 } });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect(store.record).toBeNull();
+    } finally {
+      restore();
     }
   });
 });

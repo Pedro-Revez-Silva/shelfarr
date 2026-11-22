@@ -5,7 +5,8 @@ import type { ProgressAnswer } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import type { ProgressRequest, StoredProgress } from "../src/contract";
 import { DevicePlaces } from "../src/offline/devicePlaces";
-import { type ConfirmedAccount, type SavedBook } from "../src/offline/model";
+import { openingLocator, type ConfirmedAccount, type SavedBook } from "../src/offline/model";
+import { offeredDevicePlace } from "../src/offline/remembered";
 import { IndexedDbOfflineStore } from "../src/offline/store";
 import { createSyncRunner, reconcileOffline, syncPlaces, type SyncDeps, type Verification } from "../src/offline/sync";
 import { DAY, EPUB_ID, NEWER_ID, epubBytes, savedBook, serverProgress } from "./offline-helpers";
@@ -311,5 +312,71 @@ describe("the sync runner", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(run.writes).toEqual([]);
     runner.stop();
+  });
+});
+
+describe("third review regressions", () => {
+  test("the account is confirmed again before every write, and a refusal between writes stops the next one", async () => {
+    const store = await storeWith(offlineBook());
+    const earlier = serverProgress({ version: 6, observed_at: "2026-11-20T10:30:00.000Z", client_mutation_id: "other-device" });
+    const run = harness(store, [conflict(earlier), saved(7)]);
+    const answers: Verification[] = [
+      { kind: "verified", csrf: "first" },
+      { kind: "verified", csrf: "second" },
+    ];
+    run.deps.verify = async () => answers.shift() ?? { kind: "stop" };
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => write.csrf)).toEqual(["first", "second"]);
+
+    globalThis.indexedDB = new IDBFactory();
+    const stopped = await storeWith(offlineBook());
+    const second = harness(stopped, [conflict(earlier)]);
+    const once: Verification[] = [{ kind: "verified", csrf: "first" }];
+    second.deps.verify = async () => once.shift() ?? { kind: "stop" };
+    expect(await syncPlaces(second.deps)).toEqual({ kind: "stop" });
+    expect(second.writes).toHaveLength(1);
+  });
+
+  test("an older turn saved late by another tab never replaces a newer pending place", async () => {
+    const store = await storeWith(offlineBook({ devicePlace: null }));
+    const newer = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
+    const older = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
+    newer.record({ asset_id: EPUB_ID, locator: locator("newer") }, Date.parse("2026-11-20T11:20:00.000Z"));
+    await newer.flush();
+    older.record({ asset_id: EPUB_ID, locator: locator("older") }, Date.parse("2026-11-20T11:10:00.000Z"));
+    await older.flush();
+    expect((await store.book("5", "7"))?.devicePlace?.locator).toEqual(locator("newer"));
+    expect(older.getState()).toEqual({ kind: "kept" });
+    const run = harness(store, [saved(4)]);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => write.body.locator)).toEqual([locator("newer")]);
+  });
+
+  test("saving a copy again keeps the newer account place and the pending place learned meanwhile", async () => {
+    const store = await storeWith(offlineBook());
+    await store.begin({ key: "5|7", account: "5", id: "7", title: "Saved Book", assetId: NEWER_ID, token: "update", startedAt: 2, failure: null });
+    const stale = savedBook({ asset: { ...savedBook().asset, id: NEWER_ID }, accountPlace: { asset_id: NEWER_ID, locator: locator("old"), version: 2, observedAt: null, learnedAt: 1 }, devicePlace: null });
+    expect(await store.commit(stale, new Blob([epubBytes()]), "update", NOW)).toBe("saved");
+    const book = await store.book("5", "7");
+    expect(book?.asset.id).toBe(NEWER_ID);
+    expect(book?.accountPlace?.version).toBe(3);
+    expect(book?.devicePlace?.locator).toEqual(locator("device"));
+  });
+
+  test("an expired record cannot be revived by an answer asked before it expired", async () => {
+    const store = await storeWith(offlineBook(), { account: "5", confirmedAt: NOW - 30 * DAY, validForMs: 30 * DAY + 5 });
+    expect(await store.touch("5", NOW + 10)).toBe(false);
+    expect(await store.confirm({ account: "5", confirmedAt: NOW, validForMs: DAY })).toBe(false);
+  });
+
+  test("a place held for a choice is offered online and opens offline even after the account place is learned", async () => {
+    const held = offlineBook({
+      accountPlace: { asset_id: EPUB_ID, locator: locator("account"), version: 6, observedAt: null, learnedAt: NOW },
+      devicePlace: { ...offlineBook().devicePlace!, upload: { state: "held", reason: "conflict", message: null } },
+    });
+    expect(openingLocator(held)).toEqual(locator("device"));
+    expect(offeredDevicePlace(held, serverProgress({ version: 6, observed_at: null, locator: locator("account") }), NOW)?.locator).toEqual(locator("device"));
+    const superseded = offlineBook({ devicePlace: { ...offlineBook().devicePlace!, upload: { state: "superseded", version: 6 } } });
+    expect(openingLocator(superseded)).toEqual(locator("account"));
   });
 });

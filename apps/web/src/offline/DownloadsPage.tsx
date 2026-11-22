@@ -20,8 +20,9 @@ async function list(offline: Offline, account: string): Promise<Listing> {
 }
 
 function placeText(book: SavedBook): string {
-  const device = laterDevicePlace(book);
-  if (device && device.upload?.state !== "synced") return `On this device: ${describeLocator(device.locator)} (${formatMoment(device.recordedAt)}). ${uploadText(device.upload)}`;
+  const own = book.devicePlace?.asset_id === book.asset.id ? book.devicePlace : null;
+  const device = own?.upload && own.upload.state !== "synced" ? own : laterDevicePlace(book);
+  if (device) return `On this device: ${describeLocator(device.locator)} (${formatMoment(device.recordedAt)}). ${uploadText(device.upload)}`;
   if (book.accountPlace?.asset_id === book.asset.id) return `Opens at your account's place when this device last connected: ${describeLocator(book.accountPlace.locator)}.`;
   return "Opens at the beginning.";
 }
