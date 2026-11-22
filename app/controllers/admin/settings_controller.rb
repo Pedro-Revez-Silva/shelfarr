@@ -4,7 +4,7 @@ module Admin
 
     def index
       @settings_by_category = SettingsService.all_by_category
-      libraries = fetch_audiobookshelf_libraries
+      libraries = ServerSettings::LibraryInventory.platform_libraries
       @audiobookshelf_libraries = case libraries
       when RemoteResult::Failed
         []
@@ -23,12 +23,12 @@ module Admin
         return
       end
 
-      value = normalize_setting_value(key, params[:setting][:value])
+      value = ServerSettings::Change.normalize(key, params[:setting][:value])
 
-      unless preserve_blank_secret?(key, value)
+      unless ServerSettings::Change.preserve_blank_secret?(key, value)
         validate_setting_value!(key, value)
         SettingsService.set(key, value)
-        handle_settings_side_effects([ key.to_s ])
+        ServerSettings::FollowUp.call([ key.to_s ])
       end
 
       respond_to do |format|
@@ -40,44 +40,25 @@ module Admin
     end
 
     def bulk_update
-      errors = []
-      changed_keys = []
       validate_submitted_setting_keys!
       validate_autosave_setting_keys!
       validate_manual_setting_keys!
 
-      entries = []
+      candidates = []
       params[:settings]&.each do |key, value|
         next if SettingsService.env_managed?(key)
         # A named list is the fields this autosave may write. An empty list is not a manifest.
         next if autosave? && autosave_key_list.any? && !autosave_key_list.include?(key.to_s)
         next if autosave? && SettingsService.manual_save_setting_key?(key)
-        next if unchanged_secret?(key, value)
+        next if ServerSettings::Change.unchanged_secret?(key, value)
         next if skip_unlisted_manual_setting?(key)
 
-        value = normalize_setting_value(key, value)
-        error = validate_setting_value(key, value)
-        next if error.nil? && !stored_setting_changed?(key, value)
-
-        errors << "#{SettingsService.label_for(key)}: #{error}" if error
-        entries << {
-          key: key,
-          value: value,
-          error: error
-        }
+        candidates << [ key, value ]
       end
 
-      unless errors.any?
-        Setting.transaction do
-          entries.each do |entry|
-            key = entry[:key]
-            SettingsService.set(key, entry[:value])
-            changed_keys << key.to_s
-          end
-        end
-      end
-
-      side_effect_error = handle_settings_side_effects(changed_keys)
+      result = setting_change.apply(candidates)
+      errors = result.rejections.map(&:text)
+      side_effect_error = result.follow_up_error
 
       respond_to do |format|
         if errors.any?
@@ -115,306 +96,25 @@ module Admin
       end
     end
 
-    def test_indexer
-      provider = probe_indexer_provider
-      name = indexer_probe_name(provider)
-      url, api_key = indexer_probe_credentials(provider)
-      health = probe_health("indexer", saved: saved_indexer_probe?(provider, url, api_key))
-
-      unless url.present? && api_key.present?
-        health&.mark_not_configured!
-        respond_with_flash(alert: "#{name} is not configured. Select a provider and enter connection details first.")
-        return
-      end
-
-      if RemoteResult.succeeded?(ConnectionProbe.indexer(provider: provider, url: url, api_key: api_key))
-        health&.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "#{name} connection successful!")
-      else
-        health&.check_failed!(message: "Failed to connect to #{name}")
-        respond_with_flash(alert: "#{name} connection failed.")
-      end
-    rescue IndexerClients::Base::Error => e
-      health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "#{name} error: #{e.message}")
+    ServerSettings::Probe::NAMES.excluding("telegram_webhook").each do |name|
+      define_method("test_#{name}") { run_probe(name) }
     end
 
     def test_prowlarr
-      test_indexer
-    end
-
-    def test_audiobookshelf
-      platform = probe_library_platform
-      name = LibraryPlatformClient.display_name(platform)
-      url, api_key = library_probe_credentials(platform)
-      health = probe_health("audiobookshelf", saved: saved_library_probe?(platform, url, api_key))
-
-      unless library_probe_configured?(platform, url, api_key)
-        health&.mark_not_configured!
-        respond_with_flash(alert: "#{name} is not configured. Enter connection details first.")
-        return
-      end
-
-      connected = if platform == "audiobookshelf"
-        ConnectionProbe.audiobookshelf(url: url, api_key: api_key)
-      else
-        LibraryPlatformClient.test_connection(platform: platform)
-      end
-
-      if RemoteResult.succeeded?(connected)
-        health&.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "#{name} connection successful!")
-      else
-        health&.check_failed!(message: "Failed to connect to #{name}")
-        respond_with_flash(alert: "#{name} connection failed.")
-      end
-    rescue LibraryPlatformClient::Error, AudiobookshelfClient::Error => e
-      health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "#{name} error: #{e.message}")
+      run_probe("indexer")
     end
 
     def sync_audiobookshelf_library
-      unless LibraryPlatformClient.configured?
+      unless ServerSettings::LibraryInventory.start_sync
         redirect_to admin_settings_path, alert: "#{LibraryPlatformClient.display_name} is not configured. Enter connection details first."
         return
       end
 
-      AudiobookshelfLibrarySyncJob.perform_later
       redirect_to admin_settings_path, notice: "#{LibraryPlatformClient.display_name} library sync started."
     end
 
-    # FlareSolverr is not tracked in SystemHealth::SERVICES, so no SystemHealth sync here
-    def test_flaresolverr
-      unless FlaresolverrClient.configured?
-        respond_with_flash(alert: "FlareSolverr URL is not configured.")
-        return
-      end
-
-      if RemoteResult.succeeded?(FlaresolverrClient.test_connection)
-        respond_with_flash(notice: "FlareSolverr connection successful!")
-      else
-        respond_with_flash(alert: "FlareSolverr connection failed.")
-      end
-    rescue FlaresolverrClient::Error => e
-      respond_with_flash(alert: "FlareSolverr error: #{e.message}")
-    end
-
-    def test_hardcover
-      health = SystemHealth.for_service("hardcover")
-
-      unless HardcoverClient.configured?
-        health.mark_not_configured!
-        respond_with_flash(alert: "Hardcover is not configured. Enter API token first.")
-        return
-      end
-
-      if RemoteResult.succeeded?(HardcoverClient.test_connection)
-        MetadataProviderStatus.for_provider("hardcover").record_success!
-        health.check_succeeded!(message: "Connection successful")
-        respond_with_flash(notice: "Hardcover connection successful!")
-      else
-        health.check_failed!(message: "Failed to connect to Hardcover")
-        respond_with_flash(alert: "Hardcover connection failed.")
-      end
-    rescue HardcoverClient::RateLimitError => e
-      MetadataProviderStatus.for_provider("hardcover").record_failure!(e)
-      health&.check_failed!(message: e.message, degraded: true)
-      respond_with_flash(alert: "Hardcover is rate limited. #{e.message}")
-    rescue HardcoverClient::Error => e
-      health&.check_failed!(message: e.message)
-      respond_with_flash(alert: "Hardcover error: #{e.message}")
-    end
-
-    def test_google_books
-      unless GoogleBooksClient.configured?
-        respond_with_flash(alert: "Google Books is not enabled.")
-        return
-      end
-
-      if RemoteResult.succeeded?(GoogleBooksClient.test_connection)
-        MetadataProviderStatus.for_provider("google_books").record_success!
-        respond_with_flash(notice: "Google Books connection successful!")
-      else
-        respond_with_flash(alert: "Google Books connection failed.")
-      end
-    rescue GoogleBooksClient::Error => e
-      respond_with_flash(alert: "Google Books error: #{e.message}")
-    end
-
-    def test_open_library
-      unless OpenLibraryClient.configured?
-        respond_with_flash(alert: "Open Library is not enabled.")
-        return
-      end
-
-      if RemoteResult.succeeded?(OpenLibraryClient.test_connection)
-        MetadataProviderStatus.for_provider("openlibrary").record_success!
-        respond_with_flash(notice: "Open Library connection successful!")
-      else
-        respond_with_flash(alert: "Open Library connection failed.")
-      end
-    rescue OpenLibraryClient::Error => e
-      respond_with_flash(alert: "Open Library error: #{e.message}")
-    end
-
-    def test_comic_vine
-      unless ComicVineClient.configured?
-        respond_with_flash(alert: "Comic Vine is not configured. Enable it and enter an API key first.")
-        return
-      end
-
-      if RemoteResult.succeeded?(ComicVineClient.test_connection)
-        MetadataProviderStatus.for_provider("comic_vine").record_success!
-        respond_with_flash(notice: "Comic Vine connection successful!")
-      else
-        respond_with_flash(alert: "Comic Vine connection failed.")
-      end
-    rescue ComicVineClient::Error => e
-      respond_with_flash(alert: "Comic Vine error: #{e.message}")
-    end
-
-    def test_zlibrary
-      unless ZLibraryClient.configured?
-        respond_with_flash(alert: "Z-Library is not configured. Enable it and enter your account credentials first.")
-        return
-      end
-
-      if ZLibraryClient.test_connection!
-        respond_with_flash(notice: "Z-Library connection successful!")
-      else
-        respond_with_flash(alert: "Z-Library connection failed.")
-      end
-    rescue ZLibraryClient::Error => e
-      respond_with_flash(alert: "Z-Library error: #{e.message}")
-    end
-
-    def test_librivox
-      unless LibrivoxClient.configured?
-        respond_with_flash(alert: "LibriVox is not enabled.")
-        return
-      end
-
-      if RemoteResult.succeeded?(LibrivoxClient.test_connection)
-        respond_with_flash(notice: "LibriVox connection successful!")
-      else
-        respond_with_flash(alert: "LibriVox connection failed.")
-      end
-    end
-
-    def test_gutenberg
-      unless GutenbergClient.configured?
-        respond_with_flash(alert: "Project Gutenberg is not enabled.")
-        return
-      end
-
-      if RemoteResult.succeeded?(GutenbergClient.test_connection)
-        respond_with_flash(notice: "Project Gutenberg connection successful!")
-      else
-        respond_with_flash(alert: "Project Gutenberg connection failed.")
-      end
-    end
-
-    def test_ebooks_com
-      unless EbooksComClient.configured?
-        respond_with_flash(alert: "Enable eBooks.com and enter a valid two-letter buyer country code first.")
-        return
-      end
-
-      if RemoteResult.succeeded?(EbooksComClient.test_connection)
-        respond_with_flash(notice: "eBooks.com catalog connection successful!")
-      else
-        respond_with_flash(alert: "eBooks.com catalog connection failed.")
-      end
-    end
-
-    def test_oidc
-      unless SettingsService.get(:oidc_enabled, default: false)
-        respond_with_flash(alert: "OIDC is not enabled. Enable it first.")
-        return
-      end
-
-      issuer = SettingsService.get(:oidc_issuer).to_s.strip
-      if issuer.blank?
-        respond_with_flash(alert: "OIDC issuer URL is not configured.")
-        return
-      end
-
-      # Try to fetch the OIDC discovery document
-      discovery_url = "#{issuer.chomp('/')}/.well-known/openid-configuration"
-      response = Faraday.get(discovery_url)
-
-      if response.status == 200
-        config = JSON.parse(response.body)
-        if config["issuer"].present? && config["authorization_endpoint"].present?
-          respond_with_flash(notice: "OIDC configuration valid! Provider: #{config['issuer']}")
-        else
-          respond_with_flash(alert: "OIDC discovery document is incomplete.")
-        end
-      else
-        respond_with_flash(alert: "Failed to fetch OIDC discovery document (HTTP #{response.status}).")
-      end
-    rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError => e
-      respond_with_flash(alert: "Could not connect to OIDC provider: #{e.message}")
-    rescue JSON::ParserError
-      respond_with_flash(alert: "Invalid OIDC discovery document (not valid JSON).")
-    rescue StandardError => e
-      respond_with_flash(alert: "OIDC test error: #{e.message}")
-    end
-
-    def test_webhook
-      payload = OutboundNotifications::WebhookDelivery.test_payload
-      OutboundNotifications::WebhookDelivery.deliver!(
-        event: payload[:event],
-        title: payload[:title],
-        message: payload[:message]
-      )
-
-      respond_with_flash(notice: "Webhook test sent successfully!")
-    rescue OutboundNotifications::WebhookDelivery::ConfigurationError => e
-      respond_with_flash(alert: e.message)
-    rescue OutboundNotifications::WebhookDelivery::DeliveryError => e
-      respond_with_flash(alert: e.message)
-    end
-
-    def test_discord
-      OutboundNotifications::DiscordDelivery.deliver!(
-        event: OutboundNotifications::DiscordDelivery::TEST_EVENT,
-        title: "Shelfarr Test",
-        message: "Test notification from Shelfarr"
-      )
-
-      respond_with_flash(notice: "Discord test sent successfully!")
-    rescue OutboundNotifications::DiscordDelivery::ConfigurationError => e
-      respond_with_flash(alert: e.message)
-    rescue OutboundNotifications::DiscordDelivery::DeliveryError => e
-      respond_with_flash(alert: e.message)
-    end
-
-    def test_telegram
-      unless Integrations::Telegram::Configuration.configured?
-        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
-        return
-      end
-
-      response = Integrations::Telegram::Client.get_me
-      username = response.dig("result", "username") || "bot"
-      respond_with_flash(notice: "Telegram connection successful: @#{username}")
-    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
-      respond_with_flash(alert: e.message)
-    end
-
     def setup_telegram_webhook
-      unless SettingsService.get(:telegram_enabled, default: false) && Integrations::Telegram::Configuration.bot_token.present? && Integrations::Telegram::Configuration.webhook_secret.present?
-        respond_with_flash(alert: "Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
-        return
-      end
-
-      SettingsService.set(:telegram_update_mode, "webhook")
-      TelegramPollingJob.clear_schedule!
-      Integrations::Telegram::Client.set_webhook!(url: integrations_telegram_webhook_url)
-      respond_with_flash(notice: "Telegram webhook configured: #{integrations_telegram_webhook_url}")
-    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
-      respond_with_flash(alert: e.message)
+      run_probe("telegram_webhook")
     end
 
     def approve_telegram_chat
@@ -519,314 +219,18 @@ module Admin
       @telegram_chat_authorizations = TelegramChatAuthorization.order(approved_at: :desc, updated_at: :desc)
     end
 
-    def run_service_health_check(service_name)
-      HealthCheckJob.perform_later(service: service_name)
-    rescue => e
-      Rails.logger.warn "[SettingsController] Failed to enqueue health check for #{service_name}: #{e.message}"
+    def run_probe(name)
+      outcome = ServerSettings::Probe.new(posted: params[:settings] || {}, telegram_webhook_url: integrations_telegram_webhook_url).call(name)
+      respond_with_flash(outcome.tone => outcome.message)
     end
 
-    def run_service_health_check_now(service_name)
-      HealthCheckJob.perform_now(service: service_name)
-    rescue => e
-      Rails.logger.warn "[SettingsController] Failed to run health check for #{service_name}: #{e.message}"
+    def setting_change
+      @setting_change ||= ServerSettings::Change.new(lookup: method(:setting_value_for_validation))
     end
-
-    def handle_settings_side_effects(changed_keys)
-      return if changed_keys.blank?
-
-      if changed_keys.any? { |k| library_platform_setting_key?(k) }
-        LibraryPlatformClient.reset_connections!
-        AudiobookshelfLibrarySyncJob.perform_later if LibraryPlatformClient.configured?
-        run_service_health_check("audiobookshelf")
-      end
-      if changed_keys.any? { |k| indexer_setting_key?(k) }
-        run_service_health_check("indexer")
-      end
-      if changed_keys.any? { |k| k == "flaresolverr_url" }
-        FlaresolverrClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("anna_archive") }
-        AnnaArchiveClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("zlibrary") }
-        ZLibraryClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("gutenberg") }
-        GutenbergClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("librivox") }
-        LibrivoxClient.reset_connection!
-      end
-      if changed_keys.any? { |k| metadata_provider_setting?(k) }
-        MetadataProviderStatus.clear_after_credential_change_for_settings!(changed_keys)
-      end
-      if changed_keys.any? { |k| k.start_with?("hardcover") }
-        HardcoverClient.reset_connection!
-        run_service_health_check("hardcover")
-      end
-      if changed_keys.any? { |k| k.start_with?("google_books") }
-        GoogleBooksClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("open_library") }
-        OpenLibraryClient.reset_connection!
-      end
-      if changed_keys.any? { |k| k.start_with?("telegram") }
-        sync_telegram_transport
-      end
-      if changed_keys.any? { |k| k.start_with?("audiobook_output_path") || k.start_with?("ebook_output_path") }
-        run_service_health_check_now("output_paths")
-      end
-      if changed_keys.any? { |k| k.start_with?("download_local_path") || k.start_with?("download_remote_path") }
-        run_service_health_check_now("download_paths")
-      end
-      nil
-    rescue StandardError => e
-      Rails.logger.error("[SettingsController] Settings saved but a follow-up action failed: #{e.class}: #{e.message}")
-      e
-    end
-
-    PATH_TEMPLATE_SETTINGS = %w[audiobook_path_template ebook_path_template].freeze
-    FILENAME_TEMPLATE_SETTINGS = %w[audiobook_filename_template ebook_filename_template].freeze
-    INDEXER_URL_PROVIDERS = {
-      "prowlarr_url" => IndexerClients::Prowlarr,
-      "jackett_url" => IndexerClients::Jackett,
-      "newznab_url" => IndexerClients::Newznab
-    }.freeze
 
     def validate_setting_value!(key, value)
-      error = validate_setting_value(key, value)
+      error = setting_change.error_for(key, value)
       raise ArgumentError, "#{SettingsService.label_for(key)}: #{error}" if error
-    end
-
-    def validate_setting_value(key, value)
-      validate_setting_type(key, value) ||
-        validate_completed_download_import_mode(key, value) ||
-        validate_library_import_mode(key, value) ||
-        validate_default_request_format(key, value) ||
-        validate_path_template(key, value) ||
-        validate_indexer_url(key, value) ||
-        validate_ebooks_com_setting(key, value) ||
-        validate_auto_select_confidence_threshold(key, value) ||
-        validate_file_size_setting(key, value)
-    end
-
-    def validate_auto_select_confidence_threshold(key, value)
-      return nil unless key.to_s == "auto_select_confidence_threshold"
-
-      parsed = Integer(value.to_s, 10, exception: false)
-      return nil if parsed&.between?(0, 100)
-
-      "must be an integer from 0 to 100"
-    end
-
-    def validate_file_size_setting(key, value)
-      return nil unless SettingsService.file_size_limit_key?(key)
-
-      normalized = SettingsService.canonical_file_size_setting(value)
-      if normalized.present? && SettingsService.parse_file_size_bytes(normalized).nil?
-        return "must be a file size such as 200 KB, 50 MB, or 1.5 GB. A number alone means megabytes."
-      end
-
-      pair = SettingsService::FILE_SIZE_LIMIT_PAIRS.find { |min_key, max_key| [ min_key, max_key ].include?(key.to_sym) }
-      return nil unless pair
-
-      min_key, max_key = pair
-      min_bytes = SettingsService.parse_file_size_bytes(file_size_text_for_validation(min_key, key, normalized))
-      max_bytes = SettingsService.parse_file_size_bytes(file_size_text_for_validation(max_key, key, normalized))
-      return nil if min_bytes.nil? || max_bytes.nil? || min_bytes <= max_bytes
-
-      if key.to_sym == min_key
-        "must be less than or equal to #{SettingsService.label_for(max_key)}"
-      else
-        "must be greater than or equal to #{SettingsService.label_for(min_key)}"
-      end
-    end
-
-    def file_size_text_for_validation(limit_key, current_key, current_value)
-      raw = limit_key.to_sym == current_key.to_sym ? current_value : setting_value_for_validation(limit_key)
-      SettingsService.canonical_file_size_setting(raw)
-    end
-
-    def validate_setting_type(key, value)
-      type = SettingsService::DEFINITIONS.dig(key.to_sym, :type)
-      case type
-      when "boolean"
-        return nil if [ true, false, 1, 0, "1", "0", "true", "false" ].include?(value)
-
-        "must be true or false"
-      when "integer"
-        "must be an integer" unless Integer(value.to_s, 10, exception: false)
-      when "string"
-        "must be a scalar value" if value.is_a?(Array) || value.is_a?(Hash) || value.is_a?(ActionController::Parameters)
-      when "json"
-        "must be a scalar or list" if value.is_a?(Hash) || value.is_a?(ActionController::Parameters)
-      end
-    end
-
-    def validate_completed_download_import_mode(key, value)
-      return nil unless key.to_s == "completed_download_import_mode"
-      return nil if SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.include?(value.to_s)
-
-      "must be one of: #{SettingsService::COMPLETED_DOWNLOAD_IMPORT_MODES.join(', ')}"
-    end
-
-    def validate_library_import_mode(key, value)
-      return nil unless SettingsService::LIBRARY_IMPORT_PERMISSION_KEYS.include?(key.to_sym)
-
-      text = value.to_s.strip
-      return nil if text.empty? || SettingsService.library_import_mode_acceptable?(key, text)
-
-      SettingsService.library_import_mode_requirement(key)
-    end
-
-    def validate_default_request_format(key, value)
-      return nil unless key.to_s == "default_request_format"
-      return nil if SettingsService::DEFAULT_REQUEST_FORMATS.include?(value.to_s)
-
-      "must be one of: #{SettingsService::DEFAULT_REQUEST_FORMATS.join(', ')}"
-    end
-
-    def validate_path_template(key, value)
-      mode =
-        if PATH_TEMPLATE_SETTINGS.include?(key.to_s)
-          :path
-        elsif FILENAME_TEMPLATE_SETTINGS.include?(key.to_s)
-          :filename
-        end
-
-      return nil unless mode
-
-      valid, error = PathTemplateService.validate_template(value, mode: mode)
-      valid ? nil : error
-    end
-
-    def validate_indexer_url(key, value)
-      provider = INDEXER_URL_PROVIDERS[key.to_s]
-      return nil unless provider
-      return nil if value.blank?
-
-      provider.validate_url!(value)
-      nil
-    rescue IndexerClients::Base::InvalidUrlError => e
-      indexer_url_validation_message(e)
-    end
-
-    def validate_ebooks_com_setting(key, value)
-      case key.to_s
-      when "ebooks_com_enabled"
-        return nil unless ActiveModel::Type::Boolean.new.cast(value)
-        return nil if EbooksComClient.valid_country_code?(ebooks_com_country_for_validation)
-
-        "requires a valid ISO 3166-1 Buyer Country Code"
-      when "ebooks_com_country_code"
-        country_code = value.to_s.strip
-        return nil if country_code.blank? && !ebooks_com_enabled_for_validation?
-        return nil if EbooksComClient.valid_country_code?(country_code)
-
-        "must be a valid ISO 3166-1 country code (for example US, GB, or PT)"
-      when "ebooks_com_search_limit"
-        parsed_value = Integer(value.to_s, 10, exception: false)
-        return nil if parsed_value&.between?(1, EbooksComClient::MAX_RESULTS)
-
-        "must be between 1 and #{EbooksComClient::MAX_RESULTS}"
-      end
-    end
-
-    def ebooks_com_enabled_for_validation?
-      ActiveModel::Type::Boolean.new.cast(setting_value_for_validation(:ebooks_com_enabled))
-    end
-
-    def ebooks_com_country_for_validation
-      setting_value_for_validation(:ebooks_com_country_code).to_s.strip
-    end
-
-    INDEXER_PROBE_KEYS = {
-      "prowlarr" => [ :prowlarr_url, :prowlarr_api_key ],
-      "jackett" => [ :jackett_url, :jackett_api_key ],
-      "newznab" => [ :newznab_url, :newznab_api_key ]
-    }.freeze
-
-    def probe_indexer_provider
-      if settings_param_posted?(:indexer_provider)
-        posted = params[:settings][:indexer_provider].to_s.strip
-        return posted if %w[none prowlarr jackett newznab].include?(posted)
-      end
-
-      SettingsService.active_indexer_provider
-    end
-
-    def indexer_probe_name(provider)
-      IndexerClient::PROVIDERS[provider]&.display_name || "Indexer"
-    end
-
-    def indexer_probe_credentials(provider)
-      url_key, secret_key = INDEXER_PROBE_KEYS[provider]
-      return [ "", "" ] unless url_key
-
-      [ posted_or_saved_setting(url_key).to_s.strip, posted_or_saved_secret(secret_key).to_s ]
-    end
-
-    def probe_library_platform
-      if settings_param_posted?(:library_platform)
-        posted = params[:settings][:library_platform].to_s.strip
-        return posted if posted.present?
-      end
-
-      LibraryPlatformClient.active_platform
-    end
-
-    def library_probe_credentials(platform)
-      return [ nil, nil ] unless platform == "audiobookshelf"
-
-      [
-        posted_or_saved_setting(:audiobookshelf_url).to_s.strip,
-        posted_or_saved_secret(:audiobookshelf_api_key).to_s
-      ]
-    end
-
-    def library_probe_configured?(platform, url, api_key)
-      return url.present? && api_key.present? if platform == "audiobookshelf"
-
-      LibraryPlatformClient.configured?(platform: platform)
-    end
-
-    # Unsaved form values must not overwrite the dashboard's record of the saved connection.
-    def probe_health(service, saved:)
-      SystemHealth.for_service(service) if saved
-    end
-
-    def saved_indexer_probe?(provider, url, api_key)
-      url_key, secret_key = INDEXER_PROBE_KEYS[provider]
-      return provider == SettingsService.active_indexer_provider if url_key.nil?
-
-      provider == SettingsService.active_indexer_provider &&
-        url == SettingsService.get(url_key).to_s.strip &&
-        api_key == SettingsService.get(secret_key).to_s
-    end
-
-    def saved_library_probe?(platform, url, api_key)
-      return false unless platform == LibraryPlatformClient.active_platform
-      return true unless platform == "audiobookshelf"
-
-      url == SettingsService.get(:audiobookshelf_url).to_s.strip &&
-        api_key == SettingsService.get(:audiobookshelf_api_key).to_s
-    end
-
-    def settings_param_posted?(key)
-      params[:settings].respond_to?(:key?) && params[:settings].key?(key.to_s)
-    end
-
-    def posted_or_saved_setting(key)
-      return params[:settings][key.to_s] if settings_param_posted?(key)
-
-      SettingsService.get(key)
-    end
-
-    def posted_or_saved_secret(key)
-      value = posted_or_saved_setting(key)
-      return SettingsService.get(key) if value.blank?
-
-      value
     end
 
     def setting_value_for_validation(key)
@@ -836,115 +240,25 @@ module Admin
       submitted ? settings[key.to_s] : SettingsService.get(key)
     end
 
-    def stored_setting_changed?(key, normalized_value)
-      definition = SettingsService::DEFINITIONS[key.to_sym]
-      return true unless definition
-
-      posted = Setting.new(value_type: definition[:type])
-      posted.typed_value = normalized_value
-      stored = Setting.find_by(key: key.to_s)
-      if stored
-        # "1" and "true" are one boolean row, so a matching typed value is not a write.
-        posted.value != stored.value && posted.typed_value != stored.typed_value
-      else
-        default_setting = Setting.new(value_type: definition[:type])
-        default_setting.typed_value = definition[:default]
-        posted.value != default_setting.value && posted.typed_value != default_setting.typed_value
-      end
-    end
-
-    def indexer_url_validation_message(error)
-      detail = error.message.to_s
-      if (match = detail.match(/\AInvalid .+ URL: (.+)\z/))
-        "must be a valid HTTP or HTTPS URL (#{match[1]})"
-      else
-        "must be a valid HTTP or HTTPS URL (include http:// or https://)"
-      end
-    end
-
-    def normalize_setting_value(key, value)
-      return SettingsService.canonical_file_size_setting(value) if SettingsService.file_size_limit_key?(key)
-
-      case key.to_s
-      when "ebooks_com_country_code"
-        value.to_s.strip.upcase
-      when /\Aaudiobookshelf_.*_scan_library_ids\z/
-        Array(value).flat_map { |v| v.to_s.split(",").map(&:strip) }.reject(&:blank?).join(",")
-      else
-        INDEXER_URL_PROVIDERS.key?(key.to_s) ? value.to_s.strip : value
-      end
-    end
-
-    def fetch_audiobookshelf_libraries
-      return [] unless LibraryPlatformClient.configured?
-
-      LibraryPlatformClient.libraries
-    rescue LibraryPlatformClient::Error => e
-      Rails.logger.warn "[SettingsController] Failed to fetch #{LibraryPlatformClient.display_name} libraries: #{e.message}"
-      RemoteResult::Failed.new(e)
-    end
-
-    def sync_telegram_transport
-      if Integrations::Telegram::Configuration.polling?
-        TelegramPollingJob.clear_schedule!
-        if Integrations::Telegram::Configuration.configured?
-          begin
-            Integrations::Telegram::Client.delete_webhook!(drop_pending_updates: false)
-          rescue => e
-            Rails.logger.warn "[SettingsController] Failed to clear Telegram webhook for polling mode: #{e.message}"
-          end
-          TelegramPollingJob.ensure_running!
-        end
-      else
-        TelegramPollingJob.clear_schedule!
-      end
-    end
-
     def load_audiobookshelf_cache_summary
-      active_library_items = LibraryItem.for_active_platform
-      @audiobookshelf_library_items = active_library_items.by_synced_at_desc.limit(50)
-      @audiobookshelf_library_items_count = active_library_items.count
-      @audiobookshelf_available_library_items_count = LibraryItem.available_for_matching.count
-      @audiobookshelf_missing_library_items_count = active_library_items.where(missing: true).count
-      @audiobookshelf_library_items_last_synced_at = @audiobookshelf_library_items.maximum(:synced_at)
+      inventory = ServerSettings::LibraryInventory.new
+      @audiobookshelf_library_items = inventory.recent_items
+      @audiobookshelf_library_items_count = inventory.count
+      @audiobookshelf_available_library_items_count = inventory.available_count
+      @audiobookshelf_missing_library_items_count = inventory.missing_count
+      @audiobookshelf_library_items_last_synced_at = inventory.last_synced_at
     end
 
     def ensure_settings_seeded
       SettingsService.seed_defaults!
     end
 
-    def indexer_setting_key?(key)
-      key.start_with?("indexer_") || key.start_with?("prowlarr") || key.start_with?("jackett") || key.start_with?("newznab")
-    end
-
-    def metadata_provider_setting?(key)
-      MetadataProviderStatus.provider_for_setting(key).present?
-    end
-
-    def library_platform_setting_key?(key)
-      key.start_with?("audiobookshelf") || key.start_with?("bookorbit") || key.start_with?("grimmory") || key == "library_platform"
-    end
-
-    def preserve_blank_secret?(key, value)
-      secret_setting_key?(key) && value.blank? && SettingsService.get(key).present?
-    end
-
-    def unchanged_secret?(key, value)
-      return false unless secret_setting_key?(key)
-
-      value.blank? || value.to_s == SettingsService.get(key).to_s
-    end
-
     def skip_unlisted_manual_setting?(key)
       return false unless manual_setting_manifest?
       return false unless SettingsService.manual_save_setting_key?(key)
-      return false if secret_setting_key?(key)
+      return false if SettingsService.secret_setting_key?(key)
 
       !manual_setting_keys.include?(key.to_s)
-    end
-
-    def secret_setting_key?(key)
-      SettingsService.secret_setting_key?(key)
     end
   end
 end
