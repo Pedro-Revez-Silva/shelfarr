@@ -296,6 +296,22 @@ class UploadsControllerTest < ActionDispatch::IntegrationTest
     assert upload.ebook_file?
   end
 
+  test "create rejects an FB2 upload whose XML root is not FictionBook" do
+    SettingsService.set(:allow_user_uploads, true)
+    sign_in_as(@user)
+    content = StringIO.new("<document><FictionBook/></document>")
+    file = Rack::Test::UploadedFile.new(content, "application/x-fictionbook+xml", original_filename: "invalid.fb2")
+
+    assert_no_difference "Upload.count" do
+      assert_no_enqueued_jobs(only: UploadProcessingJob) do
+        post uploads_url, params: { file: file }
+      end
+    end
+
+    assert_redirected_to new_upload_path
+    assert_equal "Uploaded FB2 file is not a valid FictionBook ebook", flash[:alert]
+  end
+
   test "new offers fb2 in the ebook file picker" do
     SettingsService.set(:allow_user_uploads, true)
     sign_in_as(@user)

@@ -48,7 +48,7 @@ class SequenceMarker
   # Release words after an abbreviated roman marker ("T V FR", "T V Partie").
   # Language tokens come from the release parser, so codes and names stay one list.
   FORMAT_WORDS = %w[
-    epub pdf mobi azw azw3 ebook audiobook m4b mp3 flac cbr cbz retail multi
+    epub pdf mobi azw azw3 fb2 ebook audiobook m4b mp3 flac cbr cbz retail multi
   ].freeze
   FOLLOWER_WORDS = (MARKER_WORDS + ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
   FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.map { |word|

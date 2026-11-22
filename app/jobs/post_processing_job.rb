@@ -1092,8 +1092,6 @@ class PostProcessingJob < ApplicationJob
       if allowed_ebook_import_file?(path, extension: extension)
         supported_ebook_found ||= EBOOK_FILE_EXTENSIONS.include?(extension)
       elsif extension == "fb2"
-        # .fb2 was ignored before FictionBook became an import format. A file
-        # we still cannot identify must not discard an EPUB or PDF beside it.
         unrecognized_fb2 ||= path
       else
         raise "Unsupported ebook import file type: #{File.basename(path)}"
@@ -1136,7 +1134,8 @@ class PostProcessingJob < ApplicationJob
       stat = file.stat
       return false unless stat.file? && stat.size.positive?
 
-      head = file.read([ 512, stat.size ].min)
+      signature_size = extension == "fb2" ? FictionBookSignature::MAX_BYTES : 512
+      head = file.read([ signature_size, stat.size ].min)
     end
     return false if executable_file_signature?(head)
 
@@ -1152,7 +1151,7 @@ class PostProcessingJob < ApplicationJob
     when "djvu"
       head.start_with?("AT&TFORM") && %w[DJVU DJVM].include?(head.byteslice(12, 4))
     when "fb2"
-      fictionbook_content?(head)
+      FictionBookSignature.matches?(head)
     when "jpg", "jpeg"
       head.start_with?("\xFF\xD8\xFF".b)
     when "png"
@@ -1164,28 +1163,6 @@ class PostProcessingJob < ApplicationJob
     end
   rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP, Errno::ENXIO, Errno::ENODEV, Errno::ENOTDIR => error
     RemoteResult::Failed.new(error)
-  end
-
-  # FictionBook is XML. UTF-8, with an optional BOM, and ASCII-compatible
-  # encodings such as windows-1251 keep "<FictionBook" in the raw bytes.
-  # UTF-16 LE/BE files start with a BOM and store that marker as wide characters.
-  def fictionbook_content?(head)
-    bytes = head.b
-    marker = utf16_fictionbook_marker(bytes)
-    return bytes.byteslice(2, bytes.bytesize - 2).to_s.include?(marker) if marker
-
-    bytes.delete_prefix("\xEF\xBB\xBF".b).include?("<FictionBook")
-  end
-
-  def utf16_fictionbook_marker(bytes)
-    encoding = if bytes.start_with?("\xFF\xFE".b)
-      Encoding::UTF_16LE
-    elsif bytes.start_with?("\xFE\xFF".b)
-      Encoding::UTF_16BE
-    end
-    return unless encoding
-
-    "<FictionBook".encode(encoding).b
   end
 
   def executable_file_signature?(head)
