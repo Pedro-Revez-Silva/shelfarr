@@ -54,9 +54,10 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
         <>
           {settings.isError ? (
             <RefreshProblem
-              onRetry={() =>
+              onRetry={(button) =>
                 void settings.refetch().then((result) => {
-                  if (!result.isError) document.getElementById(headingId)?.focus();
+                  const active = document.activeElement;
+                  if (!result.isError && (active === button || active === document.body || active === null)) document.getElementById(headingId)?.focus();
                 })
               }
             />
@@ -72,11 +73,11 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
   );
 }
 
-function RefreshProblem({ onRetry }: { onRetry: () => void }) {
+function RefreshProblem({ onRetry }: { onRetry: (button: HTMLButtonElement) => void }) {
   return (
     <p className="refresh-problem" role="alert">
       <span aria-hidden="true">⚠ </span>The latest settings could not be loaded. The page shows what was last read; your unsaved changes are kept.{" "}
-      <button type="button" className="button button--subtle" onClick={onRetry}>
+      <button type="button" className="button button--subtle" onClick={(event) => onRetry(event.currentTarget)}>
         Try again
       </button>
     </p>

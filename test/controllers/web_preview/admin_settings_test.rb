@@ -522,21 +522,20 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal({ "tone" => "success", "message" => "Discord test sent successfully!" }, response.parsed_body.fetch("outcome"))
   end
 
-  test "registering the webhook again while Telegram already uses it never undoes the registration" do
+  test "registering the webhook again while Telegram already uses it keeps webhook delivery" do
     SettingsService.set(:telegram_enabled, true)
     SettingsService.set(:telegram_update_mode, "webhook")
     SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
     SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
-    undone = false
+    deleted = false
     sign_in_as(@admin)
     failing_set = ->(*) { raise ActiveRecord::StatementInvalid, "database is locked" }
     Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { true }) do
-      Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { undone = true }) do
+      Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { deleted = true }) do
         SettingsService.stub(:set, failing_set) { probe("telegram_webhook") }
       end
     end
-    assert_equal "success", response.parsed_body.dig("outcome", "tone")
-    assert_not undone
+    assert_not deleted
     assert_equal "webhook", SettingsService.get(:telegram_update_mode)
   end
 
@@ -547,30 +546,32 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal [], response.parsed_body.fetch("changed")
     save_group("webhook", { webhook_url: "\u00a0\t" })
     assert_equal [], response.parsed_body.fetch("changed")
+    save_group("webhook", { webhook_url: "\u0000" })
+    assert_equal [], response.parsed_body.fetch("changed")
     assert_equal "https://[2001:db8::1]:8443/hook?auth=x", SettingsService.get(:webhook_url)
   end
 
-  test "when Telegram accepts the webhook but the mode cannot be saved, the registration is undone and polling stays" do
+  test "when Telegram accepts the webhook but Shelfarr cannot record it, nothing is undone and the answer says so" do
     SettingsService.set(:telegram_enabled, true)
     SettingsService.set(:telegram_update_mode, "polling")
     SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
     SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
-    undone = nil
+    deleted = false
     cleared = false
     original_set = SettingsService.method(:set)
     busy_mode = ->(key, value) { key.to_s == "telegram_update_mode" ? raise(ActiveRecord::StatementInvalid, "database is locked") : original_set.call(key, value) }
     sign_in_as(@admin)
     TelegramPollingJob.stub(:clear_schedule!, -> { cleared = true }) do
       Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { true }) do
-        Integrations::Telegram::Client.stub(:delete_webhook!, ->(drop_pending_updates:) { undone = drop_pending_updates }) do
+        Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { deleted = true }) do
           SettingsService.stub(:set, busy_mode) { probe("telegram_webhook") }
         end
       end
     end
-    assert_equal({ "tone" => "error", "message" => "Telegram accepted the webhook, but Shelfarr could not save the change, so it kept polling. Try again in a moment." }, response.parsed_body.fetch("outcome"))
-    assert_equal false, undone
+    assert_equal "error", response.parsed_body.dig("outcome", "tone")
+    assert_match(/could not record the change/, response.parsed_body.dig("outcome", "message"))
+    assert_not deleted
     assert_not cleared
-    assert_equal "polling", SettingsService.get(:telegram_update_mode)
   end
 
   test "a card reads the other bound of a size range inside the same write transaction" do

@@ -110,7 +110,7 @@ module WebPreview
     end
 
     def kept_address?(key, value)
-      WRITE_ONLY_ADDRESSES.include?(key.to_sym) && value.is_a?(String) && value.match?(/\A[[:space:]]*\z/)
+      WRITE_ONLY_ADDRESSES.include?(key.to_sym) && value.is_a?(String) && value.gsub(/[[:space:]\u0000]/, "").empty?
     end
 
     def managed_by(key)
