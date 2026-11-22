@@ -6138,10 +6138,11 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_includes @download.reload.library_replacement_state.to_s, existing
   end
 
-  test "a flat ebook replacement keeps the output directory and attaches a sibling file" do
+  test "a flat ebook replacement ignores an unrecognized FB2 and attaches a sibling file" do
     FileUtils.rm_rf(@temp_source)
     FileUtils.mkdir_p(@temp_source)
     write_valid_ebook_file(File.join(@temp_source, "Dune.epub"))
+    File.binwrite(File.join(@temp_source, "Dune.fb2"), "Unrecognized ebook")
     @book.update!(title: "Dune", author: "Frank Herbert", book_type: :ebook)
     SettingsService.set(:audiobookshelf_url, "")
     SettingsService.set(:ebook_output_path, @temp_dest_base)

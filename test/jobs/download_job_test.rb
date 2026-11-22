@@ -1461,6 +1461,7 @@ class DownloadJobTest < ActiveJob::TestCase
 
   {
     "URL extension" => [ "book.fb2", "Custom Provider Book" ],
+    "URL format parameter" => [ "book?format=fb2", "Custom Provider Book" ],
     "format hint" => [ "book", "Custom Provider Book [FB2]" ]
   }.each do |source, (filename, title)|
     test "custom provider downloads a FictionBook ebook using the #{source}" do

@@ -627,6 +627,7 @@ class DownloadJob < ApplicationJob
 
     normalized_url = url.to_s.downcase
 
+    return "fb2" if normalized_url.match?(/[?&](?:format|extension)=fb2(?:[&#]|\z)/)
     return "epub" if normalized_url.include?("epub")
     return "pdf" if normalized_url.include?("pdf")
     if normalized_url.include?("mobi") || normalized_url.include?("kf8") || normalized_url.match?(/\.kindle(\.|[?#]|\z)/)

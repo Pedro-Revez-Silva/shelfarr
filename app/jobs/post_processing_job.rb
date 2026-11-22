@@ -2091,8 +2091,7 @@ class PostProcessingJob < ApplicationJob
   def multiple_incoming_media_files?(source_path)
     count = 0
     ebook_directory_files(source_path).each do |path|
-      next if File.symlink?(path)
-      next unless ebook_file?(path)
+      next unless replacement_ebook_file?(path)
 
       count += 1
       return true if count > 1
@@ -2100,6 +2099,12 @@ class PostProcessingJob < ApplicationJob
     false
   rescue SystemCallError => error
     RemoteResult::Failed.new(error)
+  end
+
+  def replacement_ebook_file?(path)
+    return false if File.symlink?(path) || !ebook_file?(path)
+
+    path_extension(path) != "fb2" || allowed_ebook_import_file?(path, extension: "fb2")
   end
 
   def directory_source?(path)
@@ -2114,11 +2119,7 @@ class PostProcessingJob < ApplicationJob
     return File.extname(source_path).presence unless directory
 
     ebook_directory_files(source_path).each do |path|
-      next if File.symlink?(path)
-
-      extension = File.extname(path)
-      normalized = extension.delete_prefix(".").downcase
-      return extension if EBOOK_FILE_EXTENSIONS.include?(normalized)
+      return File.extname(path) if replacement_ebook_file?(path)
     end
     nil
   rescue SystemCallError => error
