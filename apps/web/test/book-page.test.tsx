@@ -120,6 +120,14 @@ describe("the Book page", () => {
     expect(bookRefreshInterval(book({ formats: [ebook] }))).toBe(60_000);
   });
 
+  test("a download that stopped shows no progress bar, and another account's request is checked again later", async () => {
+    const ebook = format("ebook", { state: "requested", request: request({ status: "downloading", stage: "downloading", attention_needed: true }) });
+    renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });
+    expect(await screen.findByText(/stopped working on this request/)).toBeTruthy();
+    expect(document.querySelector("progress")).toBeNull();
+    expect(bookRefreshInterval(book({ formats: [format("ebook", { state: "requested_by_someone" }), format("audiobook")] }))).toBe(60_000);
+  });
+
   test("a request that stopped for attention says so instead of promising an automatic download", async () => {
     const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", attention_needed: true }) });
     renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });

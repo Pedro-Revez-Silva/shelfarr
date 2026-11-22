@@ -413,7 +413,7 @@ function RequestPanel({ request, location, admin, session }: { request: BookRequ
             </>
           ) : null}
         </p>
-        {request.stage === "downloading" ? request.download_percent === null ? <progress aria-label="Download progress" /> : <progress max={100} value={request.download_percent} aria-label="Download progress" /> : null}
+        {request.stage === "downloading" && !stalled(request) ? request.download_percent === null ? <progress aria-label="Download progress" /> : <progress max={100} value={request.download_percent} aria-label="Download progress" /> : null}
       </div>
       {admin && request.requested_by !== undefined ? <p className="request-meta">Requested by {request.own ? "you" : request.requested_by || "an account without a name"}</p> : null}
       {admin && request.issue ? <p className="request-meta">{request.issue}</p> : null}

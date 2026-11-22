@@ -370,6 +370,7 @@ export function bookRefreshInterval(book: Book | undefined): number | false {
   if (requests.some((request) => TRANSFERRING_STAGES.has(request.stage) && !request.attention_needed)) return BOOK_TRANSFER_MS;
   if (requests.some((request) => WAITING_STAGES.has(request.stage) && !request.attention_needed)) return BOOK_WAITING_MS;
   if (requests.some((request) => request.attention_needed || (request.stage === "not_found" && request.next_retry_at !== null))) return BOOK_RETRY_MS;
+  if ((book?.formats ?? []).some((format) => format.state === "requested_by_someone")) return BOOK_RETRY_MS;
   return false;
 }
 

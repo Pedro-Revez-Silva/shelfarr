@@ -7,7 +7,7 @@ module WebPreview
     SOURCE_ID = /\A[A-Za-z0-9_-]{1,64}\z/
     WORK_ID = /\A(?<source>#{SOURCES.join("|")}):(?<id>[A-Za-z0-9_-]{1,64})\z/
     MAX_LINKS = 9
-    ACTIVE_STATUSES = [ *Request::OPEN_STATUSES, "not_found" ].freeze
+    ID_COLUMNS = { "hardcover" => :hardcover_id, "google_books" => :google_books_id, "comic_vine" => :comic_vine_id, "openlibrary" => :open_library_work_id }.freeze
     COPY_STATUSES = %w[searching not_found].freeze
     ACTIVE_DOWNLOADS = %i[queued downloading paused].freeze
     COVER_STYLES = %w[clay moss slate oat plum stone].freeze
@@ -29,6 +29,16 @@ module WebPreview
       { source: match[:source], id: match[:id] } if match
     end
 
+    def self.matching_books(ids)
+      conditions = ids.map { |id| Book.parse_work_id(id) }.group_by(&:first).filter_map do |source, pairs|
+        column = ID_COLUMNS[source]
+        Book.where(column => pairs.map(&:last)) if column
+      end
+      return [] if conditions.empty?
+
+      conditions.reduce(:or).includes(:requests).order(:id).to_a
+    end
+
     def self.choosing_allowed?(request)
       COPY_STATUSES.include?(request.status) && !request.downloads.where(status: ACTIVE_DOWNLOADS).exists?
     end
@@ -43,7 +53,7 @@ module WebPreview
 
     def work_ids
       @work_ids ||= begin
-        linked = stored_books(Book.preload_by_work_ids(@seeds)).flat_map { |book| Book.work_ids_for(book) }
+        linked = self.class.matching_books(@seeds).flat_map { |book| Book.work_ids_for(book) }
         [ *@seeds, *linked.select { |value| value.match?(WORK_ID) } ].uniq.first(MAX_LINKS)
       end
     end
@@ -66,16 +76,12 @@ module WebPreview
 
     private
 
-    def lookup
-      @lookup ||= Book.preload_by_work_ids(work_ids)
-    end
-
-    def stored_books(found)
-      found.values.flat_map(&:values).uniq
+    def stored_books
+      @stored_books ||= self.class.matching_books(work_ids)
     end
 
     def books_of(book_type)
-      stored_books(lookup).select { |book| book.book_type == book_type }.sort_by(&:id)
+      stored_books.select { |book| book.book_type == book_type }
     end
 
     def book_for(book_type)
@@ -84,7 +90,12 @@ module WebPreview
     end
 
     def active_request(book)
-      book&.requests&.select { |request| ACTIVE_STATUSES.include?(request.status) }&.max_by { |request| [ request.created_at, request.id ] }
+      requests = book&.requests.to_a
+      latest(requests.select(&:open?)) || latest(requests.select(&:not_found?))
+    end
+
+    def latest(requests)
+      requests.max_by { |request| [ request.created_at, request.id ] }
     end
 
     def state(book_type)
@@ -109,7 +120,7 @@ module WebPreview
     end
 
     def local_metadata
-      book = stored_books(lookup).select { |found| FORMATS.include?(found.book_type) }.min_by { |found| [ found.acquired? ? 0 : 1, found.id ] }
+      book = stored_books.select { |found| FORMATS.include?(found.book_type) }.min_by { |found| [ found.acquired? ? 0 : 1, found.id ] }
       return unless book
 
       { origin: "library", title: book.title, author: book.author.presence, year: book.year, description: book.description.presence, cover_url: book.cover_url }

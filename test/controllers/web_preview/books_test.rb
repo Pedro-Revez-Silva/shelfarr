@@ -346,6 +346,23 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_no_difference("Request.count") { post web_preview_api_book_requests_path(source: "hardcover", source_id: "77"), headers: account_headers(@member), as: :json }
   end
 
+  test "an acquired ebook is found even when a newer record shares the same provider id" do
+    @ebook.update!(hardcover_id: "77")
+    newer = Book.create!(title: "Middlemarch", book_type: :ebook, hardcover_id: "77", open_library_work_id: "OL900W")
+    Request.create!(book: newer, user: @member, status: :searching)
+    sign_in_as(@member)
+    ebook = format_of(book_json(user: @member, source: "hardcover", id: "77"), "ebook")
+    assert_equal [ "in_library", @ebook.id.to_s ], [ ebook.fetch("state"), ebook.dig("publication", "id") ]
+  end
+
+  test "a request that is working again wins over a newer request that found nothing" do
+    request, = requested_middlemarch(status: :searching)
+    Request.create!(book: request.book, user: @admin, status: :not_found, next_retry_at: 1.hour.from_now)
+    sign_in_as(@member)
+    ebook = format_of(book_json(user: @member), "ebook")
+    assert_equal [ "requested", request.id.to_s, true ], [ ebook.fetch("state"), ebook.dig("request", "id"), ebook.dig("request", "own") ]
+  end
+
   test "an acquired ebook whose file is gone is still on the shelf but cannot be opened" do
     @ebook.update!(open_library_work_id: "OL900W")
     File.unlink(@epub_path)
