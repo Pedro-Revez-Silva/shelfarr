@@ -41,17 +41,11 @@ class DownloadMonitorJob < ApplicationJob
     end
 
     def monitoring_required?
-      return true if DownloadClient.enabled.exists?
-      return true if Download.active.where(download_type: [ "direct", "dispatching" ]).exists?
-
-      Download.active
-        .where(download_type: [ nil, "" ])
-        .includes(:search_result)
-        .any? { |download| download.search_result&.direct_download? }
+      Download.active.exists?
     end
 
     def clear_schedule!
-      Rails.cache.delete(SCHEDULE_CACHE_KEY)
+      Rails.cache.delete(SCHEDULE_CACHE_KEY) if Rails.cache.exist?(SCHEDULE_CACHE_KEY)
     end
 
     def monitor_job_pending?(excluding_active_job_id: nil)

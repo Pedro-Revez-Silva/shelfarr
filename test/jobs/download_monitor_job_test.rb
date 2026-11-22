@@ -51,9 +51,10 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
   end
 
   test "does not reschedule when monitoring is not required" do
-    DownloadClient.destroy_all
+    @download.update!(status: :completed)
     clear_enqueued_jobs
 
+    assert @qbittorrent.enabled?
     assert_not DownloadMonitorJob.monitoring_required?
     DownloadMonitorJob.perform_later
 
@@ -61,6 +62,51 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
       DownloadMonitorJob.perform_now
     end
     assert_equal 0, enqueued.size
+  end
+
+  test "an idle scheduled tick with an enabled client does not scan or write the clock" do
+    @download.update!(status: :completed)
+    assert @qbittorrent.enabled?
+    assert_not Download.active.exists?
+    Rails.cache.write(DownloadMonitorJob::SCHEDULE_CACHE_KEY, Time.current)
+    stub_request(:any, /.*/).to_raise(StandardError.new("idle tick made a network call"))
+
+    job = DownloadMonitorJob.new
+    job.stub(:monitor_active_downloads, -> { flunk "idle tick scanned downloads" }) do
+      job.perform(scheduled: true)
+    end
+    assert_not Rails.cache.exist?(DownloadMonitorJob::SCHEDULE_CACHE_KEY)
+
+    scans = 0
+    cache_deletes = []
+    cache_writes = []
+    sql_writes = []
+    record_cache = lambda do |name, _start, _finish, _id, payload|
+      key = payload[:key].to_s
+      case name
+      when "cache_write.active_support"
+        cache_writes << key
+      when "cache_delete.active_support", "cache_delete_multi.active_support"
+        cache_deletes << key
+      end
+    end
+    record_sql = lambda do |_name, _start, _finish, _id, payload|
+      sql = payload[:sql].to_s.lstrip
+      sql_writes << sql if sql.match?(/\A(?:INSERT|UPDATE|DELETE|REPLACE)\b/i)
+    end
+
+    ActiveSupport::Notifications.subscribed(record_cache, /\Acache_(?:write|delete|delete_multi)\.active_support\z/) do
+      ActiveSupport::Notifications.subscribed(record_sql, "sql.active_record") do
+        job.stub(:monitor_active_downloads, -> { scans += 1 }) do
+          job.perform(scheduled: true)
+        end
+      end
+    end
+
+    assert_equal 0, scans
+    assert_empty cache_writes
+    assert_empty cache_deletes
+    assert_empty sql_writes
   end
 
   test "does not enqueue another monitor after checking" do
@@ -1338,6 +1384,10 @@ end
 class DownloadMonitorReadyLeaseTest < ActiveJob::TestCase
   self.use_transactional_tests = false
 
+  def run
+    Request.suppressing_turbo_broadcasts { super }
+  end
+
   setup do
     @original_cache = Rails.cache
     Rails.cache = ActiveSupport::Cache::MemoryStore.new
@@ -1353,11 +1403,19 @@ class DownloadMonitorReadyLeaseTest < ActiveJob::TestCase
       priority: 0,
       enabled: true
     )
+    @download = requests(:pending_request).downloads.create!(
+      name: "Ready lease download",
+      status: :downloading,
+      external_id: "ready-lease",
+      download_type: "torrent",
+      download_client: @client
+    )
   end
 
   teardown do
     DownloadMonitorJob.clear_schedule!
     Rails.cache = @original_cache
+    @download&.destroy
     @client&.destroy
   end
 
