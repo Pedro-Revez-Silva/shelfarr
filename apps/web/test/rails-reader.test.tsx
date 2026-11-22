@@ -233,6 +233,17 @@ describe("offline copies from the Rails library", () => {
     }
   });
 
+  test("Keep going in the Rails library resumes in the shared reader and player", async () => {
+    const items = [
+      summary({ id: "7", progress_label: "12% read", reading_status: "in_progress" }),
+      summary({ id: "8", title: "Spoken", action: "listen", book_type: "audiobook", format_label: "Audiobook", progress_label: "Resume at 0:17", reading_status: "in_progress", reader_url: "/sub/read/8" }),
+    ];
+    const server = libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 })).on("GET", /\/api\/v1\/continue/, () => ({ body: { account: ACCOUNT, items } }));
+    renderRails(server, `${MOUNT}/library`);
+    const shelf = await screen.findByRole("region", { name: "Keep going" });
+    await waitFor(() => expect([...shelf.querySelectorAll("a.resume-link")].map((link) => link.getAttribute("href"))).toEqual([`${MOUNT}/library/7/read`, `${MOUNT}/library/8/read`]));
+  });
+
   test("a Rails library without the reader keeps the web reader links and asks nothing about offline", async () => {
     const server = libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 }));
     renderRails(server, `${MOUNT}/library/7`, new MemoryOfflineStore(), boot);
