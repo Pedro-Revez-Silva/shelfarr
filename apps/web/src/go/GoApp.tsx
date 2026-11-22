@@ -13,6 +13,18 @@ import { AuthFrame } from "./AuthFrame";
 import { ConnectPage } from "./ConnectPage";
 import { GoSessionProvider, type GoSession } from "./session";
 import { SignInPage, type LoginToken } from "./SignInPage";
+import { LockedScreen } from "../components/LockedScreen";
+import { confirmationFrom, OfflineProvider, type Offline } from "../offline/context";
+import { DownloadsPage } from "../offline/DownloadsPage";
+import type { ConfirmedAccount, OfflineStore } from "../offline/model";
+import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
+import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
+import { SaveFailure } from "../offline/save";
+import { createPlaceSync } from "../offline/placeSync";
+import { offlineStore } from "../offline/store";
+import { hasWorker, retireWorker } from "../offline/worker";
+import { useAccountRevalidation } from "../revalidation";
+import { useGuardState } from "../services";
 
 const SESSION_ENDED = "Your session ended. Sign in to continue.";
 const SIGNED_OUT = "You are signed out.";
@@ -21,9 +33,49 @@ type AuthState =
   | { kind: "loading" }
   | { kind: "unavailable"; message: string; retry: boolean }
   | { kind: "signed_out"; token: LoginToken; availability: { available: boolean; reason: string | null }; notice: string | null; focus: boolean }
-  | { kind: "signed_in"; account: string; token: string; expiresIn: number };
+  | { kind: "signed_in"; account: string; token: string; expiresIn: number; confirmation: ConfirmedAccount | null }
+  | { kind: "offline"; record: ConfirmedAccount }
+  | { kind: "offline_unavailable" };
 
 type Load = { notice?: string; focus?: boolean };
+
+const RETIRED_WORKER = { scope: "/preview/library/", worker: "/preview/offline-worker.js" };
+const SAVED_VIEWS: readonly GoBoot["view"][] = ["reader", "downloads"];
+
+async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null, askedAt: number): Promise<void> {
+  if (!boot.offline) return;
+  if (!confirmation) {
+    await store.release(askedAt);
+    return;
+  }
+  if ((await hasWorker(boot.offline)) || (await store.accountState()).record) await store.confirm(confirmation);
+}
+
+async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore): Promise<void> {
+  if (!boot.offline) return;
+  const askedAt = Date.now();
+  let answer: Bootstrap;
+  try {
+    answer = await auth.bootstrap();
+  } catch (error) {
+    if (definitiveRefusal(error)) await store.release(askedAt);
+    return;
+  }
+  await keepOfflineAccount(boot, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
+}
+
+async function retireOffline(store: OfflineStore): Promise<void> {
+  await store.forget().catch(() => undefined);
+  await retireWorker(RETIRED_WORKER);
+}
+
+async function offlineFallback(boot: GoBoot, store: OfflineStore, error: unknown): Promise<AuthState | null> {
+  if (!boot.offline || !SAVED_VIEWS.includes(boot.view) || !serverUnreachable(error)) return null;
+  const { record } = await store.accountState().catch(() => ({ record: null }));
+  if (!record) return { kind: "offline_unavailable" };
+  const kept = await store.touch(record.account, Date.now()).catch(() => false);
+  return kept ? { kind: "offline", record } : { kind: "offline_unavailable" };
+}
 
 function describeUnavailable(error: unknown): { message: string; retry: boolean } {
   if (error instanceof ApiError && error.kind === "not_found") return { message: "These screens are not switched on for this server or account.", retry: false };
@@ -31,7 +83,7 @@ function describeUnavailable(error: unknown): { message: string; retry: boolean 
   return { message: "The server answered with something these screens do not understand. Reload the page to try again.", retry: true };
 }
 
-export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch }) {
+export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
   const auth = useMemo(() => new AuthClient(boot.api, fetcher), [boot.api, fetcher]);
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [epoch, setEpoch] = useState(0);
@@ -39,26 +91,38 @@ export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch 
   const load = useCallback(
     async (options: Load = {}) => {
       setState({ kind: "loading" });
+      if (!boot.offline) void retireOffline(store).catch(() => undefined);
+      const sentAt = Date.now();
       try {
         const result = await auth.bootstrap();
         setEpoch((value) => value + 1);
-        setState(fromBootstrap(result, options));
+        const next = fromBootstrap(result, options, sentAt);
+        void keepOfflineAccount(boot, store, next.kind === "signed_in" ? next.confirmation : null, sentAt).catch(() => undefined);
+        setState(next);
       } catch (error) {
-        setState({ kind: "unavailable", ...describeUnavailable(error) });
+        if (definitiveRefusal(error)) await store.release(sentAt).catch(() => undefined);
+        const fallback = await offlineFallback(boot, store, error);
+        if (fallback) setEpoch((value) => value + 1);
+        setState(fallback ?? { kind: "unavailable", ...describeUnavailable(error) });
       }
     },
-    [auth],
+    [auth, boot, store],
   );
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const signedIn = useCallback((result: LoginResult) => {
-    markPageNavigated();
-    setEpoch((value) => value + 1);
-    setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in });
-  }, []);
+  const signedIn = useCallback(
+    (result: LoginResult) => {
+      markPageNavigated();
+      setEpoch((value) => value + 1);
+      const confirmation = confirmationFrom(result.account, result.offline_expires_in, Date.now());
+      void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+      setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in, confirmation });
+    },
+    [boot, auth, store],
+  );
 
   switch (state.kind) {
     case "loading":
@@ -87,7 +151,24 @@ export function GoApp({ boot, fetcher }: { boot: GoBoot; fetcher?: typeof fetch 
         />
       );
     case "signed_in":
-      return <SignedIn key={epoch} boot={boot} auth={auth} account={state.account} token={state.token} expiresIn={state.expiresIn} fetcher={fetcher} onEnded={(options) => void load(options)} />;
+      return (
+        <SignedIn
+          key={epoch}
+          boot={boot}
+          auth={auth}
+          account={state.account}
+          token={state.token}
+          expiresIn={state.expiresIn}
+          confirmation={state.confirmation}
+          store={store}
+          fetcher={fetcher}
+          onEnded={(options) => void load(options)}
+        />
+      );
+    case "offline":
+      return boot.offline ? <OfflineApp key={epoch} boot={{ ...boot, offline: boot.offline }} auth={auth} store={store} record={state.record} fetcher={fetcher} onConnected={() => void load()} /> : null;
+    case "offline_unavailable":
+      return <OfflineUnavailable onRetry={() => void load()} />;
   }
 }
 
@@ -102,10 +183,16 @@ function introFor(view: GoBoot["view"]): string {
   return "Sign in to browse your library.";
 }
 
-function fromBootstrap(result: Bootstrap, options: Load): AuthState {
+function fromBootstrap(result: Bootstrap, options: Load, sentAt: number): AuthState {
   if (result.authenticated) {
     if (options.focus) markPageNavigated();
-    return { kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in };
+    return {
+      kind: "signed_in",
+      account: result.account,
+      token: result.csrf_token,
+      expiresIn: result.expires_in,
+      confirmation: confirmationFrom(result.account, result.offline_expires_in, sentAt),
+    };
   }
   return {
     kind: "signed_out",
@@ -143,11 +230,13 @@ type SignedInProps = {
   account: string;
   token: string;
   expiresIn: number;
+  confirmation: ConfirmedAccount | null;
+  store: OfflineStore;
   fetcher: typeof fetch | undefined;
   onEnded: (options: Load) => void;
 };
 
-function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: SignedInProps) {
+function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, fetcher, onEnded }: SignedInProps) {
   const [built] = useState(() => {
     const guard = new AccountGuard(account);
     const csrf = new CsrfSession(auth, guard, token, expiresIn);
@@ -158,10 +247,79 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
       mutations: csrf.lifecycle,
       ...(fetcher ? { fetcher } : {}),
     });
-    const router = boot.view === "connect" || boot.view === "reader" ? null : createAppRouter({ basepath: boot.mount });
+    const router = boot.view === "connect" || boot.view === "reader" || boot.view === "downloads" ? null : createAppRouter({ basepath: boot.mount });
+    guard.subscribeRefusals((refusedAt) => {
+      if (boot.offline) void store.release(refusedAt).catch(() => undefined);
+    });
     return { csrf, services, router };
   });
   const { csrf, services, router } = built;
+
+  useEffect(
+    () =>
+      services.guard.subscribe(() => {
+        void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+      }),
+    [services, boot, auth, store],
+  );
+
+  const [offline] = useState<Offline | null>(() =>
+    boot.offline
+      ? {
+          boot: boot.offline,
+          store,
+          confirmation,
+          connected: true,
+          confirm: async () => {
+            await store.prepare();
+            const sentAt = Date.now();
+            let answer: Bootstrap;
+            try {
+              answer = await auth.bootstrap();
+            } catch (error) {
+              if (definitiveRefusal(error)) {
+                await store.release(sentAt);
+                throw new SaveFailure("signed_out");
+              }
+              throw new SaveFailure("network");
+            }
+            if (!answer.authenticated) {
+              await store.release(sentAt);
+              services.guard.lock("signed_out", sentAt);
+              throw new SaveFailure("signed_out");
+            }
+            if (answer.account !== account) {
+              services.guard.lock("account_changed", sentAt);
+              throw new SaveFailure("signed_out");
+            }
+            const fresh = confirmationFrom(answer.account, answer.offline_expires_in, sentAt);
+            if (!fresh) throw new SaveFailure("unsupported");
+            if (!(await store.confirm(fresh))) throw new SaveFailure("signed_out");
+            return fresh;
+          },
+          sync: createPlaceSync({ boot, auth, store, guard: services.guard, fetcher }),
+        }
+      : null,
+  );
+
+  useEffect(() => {
+    const sync = offline?.sync;
+    if (!sync) return;
+    const request = () => sync.request();
+    const visible = () => document.visibilityState === "visible" && request();
+    const stop = services.guard.subscribe(() => sync.stop());
+    request();
+    window.addEventListener("focus", request);
+    window.addEventListener("online", request);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      stop();
+      sync.stop();
+      window.removeEventListener("focus", request);
+      window.removeEventListener("online", request);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [offline, services]);
 
   useEffect(() => {
     const queryClient = services.queryClient;
@@ -186,22 +344,34 @@ function SignedIn({ boot, auth, account, token, expiresIn, fetcher, onEnded }: S
             return false;
           }
         }
+        await store.forget().catch(() => undefined);
         onEnded({ notice: SIGNED_OUT, focus: true });
         services.guard.lock("signed_out");
         return true;
       },
       recover: (reason) => onEnded({ ...(reason === "signed_out" ? { notice: SESSION_ENDED } : {}), focus: true }),
     }),
-    [account, auth, csrf, onEnded, services],
+    [account, auth, csrf, onEnded, services, store],
   );
 
   return (
     <GoSessionProvider value={session}>
-      {router ? (
-        <App services={services} router={router} />
-      ) : (
-        <ServicesProvider services={services}>{boot.view === "reader" ? <ReaderApp engine={boot.reader_engine} pageEngine={boot.page_engine} /> : <ConnectPage />}</ServicesProvider>
-      )}
+      <OfflineProvider value={offline}>
+        {router ? (
+          <App services={services} router={router} />
+        ) : (
+          <ServicesProvider services={services}>
+            {boot.view === "reader" ? <ReaderApp engine={boot.reader_engine} pageEngine={boot.page_engine} /> : boot.view === "downloads" ? <OnlineDownloads /> : <ConnectPage />}
+          </ServicesProvider>
+        )}
+      </OfflineProvider>
     </GoSessionProvider>
   );
+}
+
+function OnlineDownloads() {
+  const guard = useGuardState();
+  useAccountRevalidation();
+  if (guard.status !== "active") return <LockedScreen reason={guard.status} classicLibrary={null} />;
+  return <DownloadsPage />;
 }

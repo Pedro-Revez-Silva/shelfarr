@@ -15,6 +15,7 @@ export async function fetchBook(address: string, guard: AccountGuard, signal: Ab
   if (url.origin !== window.location.origin) throw new ReaderFailure("The book must come from this server.");
   guard.assertActive();
   let response: Response;
+  const askedAt = Date.now();
   try {
     response = await fetch(url.pathname, { credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", signal });
   } catch (error) {
@@ -24,7 +25,7 @@ export async function fetchBook(address: string, guard: AccountGuard, signal: Ab
   if (!response.ok) {
     const envelope = errorEnvelopeSchema.safeParse(await response.json().catch(() => null));
     const code = envelope.success ? envelope.data.error : null;
-    if (code === "signed_out" || code === "account_changed") guard.lock(code);
+    if (code === "signed_out" || code === "account_changed") guard.lock(code, askedAt);
     throw new ReaderFailure((code && MESSAGES[code]) ?? `The server could not send this book (${response.status}).`);
   }
   const body = await response.arrayBuffer();

@@ -8,7 +8,13 @@ import { ApiError, type FailureKind } from "../api/errors";
 const CSRF_HEADER = "X-CSRF-Token";
 const REFRESH_MARGIN_MS = 60_000;
 
-const loginResultSchema = z.object({ authenticated: z.literal(true), account: z.string().regex(/^[1-9]\d{0,18}$/), csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative() });
+const loginResultSchema = z.object({
+  authenticated: z.literal(true),
+  account: z.string().regex(/^[1-9]\d{0,18}$/),
+  csrf_token: z.string().min(1),
+  expires_in: z.number().int().nonnegative(),
+  offline_expires_in: z.number().int().nonnegative().optional(),
+});
 export type LoginResult = z.infer<typeof loginResultSchema>;
 
 const KIND_BY_CODE: Record<string, FailureKind> = {
@@ -131,6 +137,7 @@ export class CsrfSession {
 
   private async fetchFresh(signal?: AbortSignal): Promise<void> {
     let state: Bootstrap;
+    const askedAt = Date.now();
     try {
       state = await this.auth.bootstrap(signal);
     } catch (error) {
@@ -139,11 +146,11 @@ export class CsrfSession {
     }
     if (!this.guard.isActive()) return;
     if (!state.authenticated) {
-      this.guard.lock("signed_out");
+      this.guard.lock("signed_out", askedAt);
       return;
     }
     if (state.account !== this.guard.account) {
-      this.guard.lock("account_changed");
+      this.guard.lock("account_changed", askedAt);
       return;
     }
     this.value = state.csrf_token;

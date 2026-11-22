@@ -1,0 +1,208 @@
+import type { AccountGuard } from "../api/account-guard";
+import { isApiError } from "../api/errors";
+import { errorEnvelopeSchema, type OfflineBoot, type ReaderPublication } from "../contract";
+import {
+  ACCOUNT_LIMIT_BYTES,
+  BOOK_LIMIT_BYTES,
+  RESERVE_BYTES,
+  accountPlaceOf,
+  bookKey,
+  savedEpub,
+  type ConfirmedAccount,
+  type FailureKind,
+  type OfflineStore,
+  type SavedBook,
+} from "./model";
+import { WorkerFailure } from "./worker";
+
+export class SaveFailure extends Error {
+  readonly kind: FailureKind;
+
+  constructor(kind: FailureKind) {
+    super(kind);
+    this.kind = kind;
+  }
+}
+
+export type SaveInputs = {
+  publication: ReaderPublication;
+  account: string;
+  confirm: () => Promise<ConfirmedAccount>;
+  offline: OfflineBoot;
+  store: OfflineStore;
+  guard: AccountGuard;
+  ensureWorker: (offline: OfflineBoot) => Promise<void>;
+  estimate: () => Promise<{ quota?: number | undefined; usage?: number | undefined }>;
+  locks: Pick<LockManager, "request"> | undefined;
+  fetcher?: typeof fetch;
+  now?: () => number;
+  onProgress?: (received: number, total: number) => void;
+};
+
+const LOCAL_HEADER = 0x04034b50;
+const CENTRAL_HEADER = 0x02014b50;
+const END_OF_DIRECTORY = 0x06054b50;
+const END_RECORD_BYTES = 22;
+const CENTRAL_RECORD_BYTES = 46;
+const LOCAL_RECORD_BYTES = 30;
+const LONGEST_END = END_RECORD_BYTES + 0xffff;
+const CONTAINER = "META-INF/container.xml";
+
+async function bytesOf(blob: Blob, start: number, end: number): Promise<DataView> {
+  return new DataView(await blob.slice(start, end).arrayBuffer());
+}
+
+async function centralNames(blob: Blob, start: number, size: number, entries: number): Promise<string[] | null> {
+  const directory = await bytesOf(blob, start, start + size);
+  const decoder = new TextDecoder();
+  const names: string[] = [];
+  let offset = 0;
+  for (let entry = 0; entry < entries; entry += 1) {
+    if (offset + CENTRAL_RECORD_BYTES > size || directory.getUint32(offset, true) !== CENTRAL_HEADER) return null;
+    const nameLength = directory.getUint16(offset + 28, true);
+    const next = offset + CENTRAL_RECORD_BYTES + nameLength + directory.getUint16(offset + 30, true) + directory.getUint16(offset + 32, true);
+    const local = directory.getUint32(offset + 42, true);
+    if (nameLength === 0 || next > size || local + LOCAL_RECORD_BYTES > start) return null;
+    const header = await bytesOf(blob, local, local + LOCAL_RECORD_BYTES);
+    if (header.byteLength !== LOCAL_RECORD_BYTES || header.getUint32(0, true) !== LOCAL_HEADER || header.getUint16(26, true) !== nameLength) return null;
+    if (local + LOCAL_RECORD_BYTES + nameLength + header.getUint16(28, true) > start) return null;
+    const localName = new Uint8Array(await blob.slice(local + LOCAL_RECORD_BYTES, local + LOCAL_RECORD_BYTES + nameLength).arrayBuffer());
+    const centralName = new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength);
+    if (localName.some((byte, index) => byte !== centralName[index])) return null;
+    names.push(decoder.decode(new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength)));
+    offset = next;
+  }
+  return offset === size ? names : null;
+}
+
+export async function completeZip(blob: Blob): Promise<boolean> {
+  if (blob.size < END_RECORD_BYTES + LOCAL_RECORD_BYTES) return false;
+  if ((await bytesOf(blob, 0, 4)).getUint32(0, true) !== LOCAL_HEADER) return false;
+  const tailStart = Math.max(0, blob.size - LONGEST_END);
+  const tail = await bytesOf(blob, tailStart, blob.size);
+  for (let offset = tail.byteLength - END_RECORD_BYTES; offset >= 0; offset -= 1) {
+    if (tail.getUint32(offset, true) !== END_OF_DIRECTORY) continue;
+    const entries = tail.getUint16(offset + 10, true);
+    const size = tail.getUint32(offset + 12, true);
+    const start = tail.getUint32(offset + 16, true);
+    if (entries === 0 || offset + END_RECORD_BYTES + tail.getUint16(offset + 20, true) !== tail.byteLength || start + size !== tailStart + offset) return false;
+    const names = await centralNames(blob, start, size, entries);
+    return names !== null && names.includes(CONTAINER);
+  }
+  return false;
+}
+
+export const saveLockName = (account: string, id: string): string => `shelfarr-go-preview-offline|${bookKey(account, id)}`;
+
+function classify(error: unknown): FailureKind {
+  if (error instanceof SaveFailure) return error.kind;
+  if (error instanceof WorkerFailure) return "worker";
+  if (isApiError(error)) return error.kind === "signed_out" || error.kind === "account_changed" ? "signed_out" : "network";
+  if (error instanceof DOMException && error.name === "QuotaExceededError") return "space";
+  if (error instanceof TypeError || (error instanceof DOMException && error.name === "AbortError")) return "network";
+  return "storage";
+}
+
+async function refusal(response: Response, guard: AccountGuard, askedAt: number): Promise<FailureKind> {
+  const envelope = errorEnvelopeSchema.safeParse(await response.json().catch(() => null));
+  const code = envelope.success ? envelope.data.error : null;
+  if (code === "signed_out" || code === "account_changed") {
+    guard.lock(code, askedAt);
+    return "signed_out";
+  }
+  if (response.status === 404) return "missing";
+  if (response.status >= 500) return "network";
+  return "changed";
+}
+
+async function download(url: string, assetId: string, size: number, inputs: SaveInputs): Promise<Blob> {
+  const askedAt = Date.now();
+  const response = await (inputs.fetcher ?? fetch)(url, { credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
+  if (response.status !== 200) throw new SaveFailure(await refusal(response, inputs.guard, askedAt));
+  const length = response.headers.get("Content-Length");
+  if (response.headers.get("ETag") !== `"${assetId}"` || (length !== null && Number(length) !== size) || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new SaveFailure("changed");
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > size) {
+      await reader.cancel().catch(() => undefined);
+      throw new SaveFailure("changed");
+    }
+    chunks.push(value);
+    inputs.onProgress?.(received, size);
+  }
+  const blob = new Blob(chunks, { type: "application/epub+zip" });
+  if (received !== size || !(await completeZip(blob))) throw new SaveFailure("changed");
+  return blob;
+}
+
+async function checkSpace(inputs: SaveInputs, account: string, id: string, size: number): Promise<void> {
+  const others = (await inputs.store.books(account)).filter((book) => book.id !== id).reduce((sum, book) => sum + book.asset.size_bytes, 0);
+  if (others + size > ACCOUNT_LIMIT_BYTES) throw new SaveFailure("space");
+  const { quota, usage } = await inputs.estimate().catch(() => ({ quota: undefined, usage: undefined }));
+  if (typeof quota === "number" && typeof usage === "number" && quota - usage < size + RESERVE_BYTES) throw new SaveFailure("space");
+}
+
+async function transfer(inputs: SaveInputs, account: string): Promise<void> {
+  const { publication, store, guard } = inputs;
+  const now = inputs.now ?? Date.now;
+  const asset = savedEpub(publication);
+  if (!asset) throw new SaveFailure("unsupported");
+  const key = bookKey(account, publication.id);
+  const token = crypto.randomUUID();
+  await checkSpace(inputs, account, publication.id, asset.size_bytes);
+  await store.begin({ key, account, id: publication.id, title: publication.title, assetId: asset.id, token, startedAt: now(), failure: null });
+  try {
+    const blob = await download(asset.url, asset.id, asset.size_bytes, inputs);
+    guard.assertActive();
+    const book: SavedBook = {
+      key,
+      account,
+      id: publication.id,
+      title: publication.title,
+      author: publication.author,
+      asset: { id: asset.id, filename: asset.filename, media_type: asset.media_type, size_bytes: asset.size_bytes },
+      savedAt: now(),
+      accountPlace: accountPlaceOf(publication.progress, now()),
+      devicePlace: null,
+    };
+    const outcome = await store.commit(book, blob, token, now());
+    if (outcome !== "saved") throw new SaveFailure(outcome === "account" ? "signed_out" : outcome);
+  } catch (error) {
+    const kind = classify(error);
+    await store.fail(account, publication.id, kind).catch(() => undefined);
+    throw new SaveFailure(kind);
+  }
+}
+
+export async function saveCopy(inputs: SaveInputs): Promise<void> {
+  const { publication, account, guard } = inputs;
+  try {
+    const asset = savedEpub(publication);
+    if (!asset) throw new SaveFailure("unsupported");
+    if (asset.size_bytes > BOOK_LIMIT_BYTES) throw new SaveFailure("too_large");
+    guard.assertActive();
+    if (guard.account !== account) throw new SaveFailure("signed_out");
+    await inputs.ensureWorker(inputs.offline);
+    guard.assertActive();
+    const confirmed = await inputs.confirm();
+    if (confirmed.account !== account) throw new SaveFailure("signed_out");
+  } catch (error) {
+    throw new SaveFailure(classify(error));
+  }
+  const work = () => transfer(inputs, account);
+  if (!inputs.locks) return work();
+  const ran = await inputs.locks.request(saveLockName(account, publication.id), { ifAvailable: true }, (lock) => (lock ? work().then(() => true) : false));
+  if (!ran) throw new SaveFailure("busy");
+}
+
+export async function keepStorage(): Promise<void> {
+  await navigator.storage?.persist?.().catch(() => false);
+}

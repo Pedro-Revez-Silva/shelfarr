@@ -24,6 +24,7 @@ export type ProgressSessionOptions = {
   guard: AccountGuard;
   assets: ReadonlySet<string>;
   saved: StoredProgress | null;
+  confirmed?: (progress: StoredProgress) => void;
   now?: () => number;
   uuid?: () => string;
   delayMs?: number;
@@ -49,7 +50,8 @@ function placeOf(source: ProgressPlace | ProgressRequest | StoredProgress): Prog
 export class ProgressSession {
   private state: SaveState = { kind: "idle" };
   private readonly listeners = new Set<() => void>();
-  private readonly options: Required<Omit<ProgressSessionOptions, "saved">>;
+  private readonly options: Required<Omit<ProgressSessionOptions, "saved" | "confirmed">>;
+  private readonly confirmed: ((progress: StoredProgress) => void) | undefined;
   private queued: Observation | null = null;
   private inflight: ProgressRequest | null = null;
   private held: ProgressRequest | null = null;
@@ -69,6 +71,7 @@ export class ProgressSession {
       delayMs: options.delayMs ?? SEND_DELAY_MS,
     };
     this.version = options.saved?.version ?? 0;
+    this.confirmed = options.confirmed;
   }
 
   getState = (): SaveState => this.state;
@@ -192,11 +195,13 @@ export class ProgressSession {
   private accepted(progress: StoredProgress): void {
     this.version = Math.max(this.version, progress.version);
     this.rebases = 0;
+    this.confirmed?.(progress);
     this.set({ kind: "saved" });
     this.continueQueue();
   }
 
   private reconcile(request: ProgressRequest, remote: StoredProgress | null): void {
+    if (remote) this.confirmed?.(remote);
     const now = this.options.now();
     const localTime = plausibleObservedAt(request.observed_at, now);
     const remoteTime = remote ? plausibleObservedAt(remote.observed_at, now) : null;

@@ -111,6 +111,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
   const verify = async (generation: number): Promise<void> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), validationTimeoutMs);
+    const sentAt = Date.now();
     try {
       const session = await api.session(controller.signal, true);
       if (generation === guard.generation) keepsRole(session);
@@ -121,7 +122,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       guard.finishCheck(generation, true);
     } catch (error) {
       const lost = sessionLost(error);
-      if (lost && generation === guard.generation) guard.lock(lost);
+      if (lost && generation === guard.generation) guard.lock(lost, sentAt);
       else {
         if (generation === guard.generation) forgetRequests();
         guard.finishCheck(generation, false);

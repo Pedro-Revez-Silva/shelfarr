@@ -3,6 +3,7 @@ package gohttp
 import (
 	"encoding/json"
 	"html"
+	"maps"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,16 +31,17 @@ const (
 type webView string
 
 const (
-	viewLibrary  webView = "library"
-	viewDetails  webView = "details"
-	viewConnect  webView = "connect"
-	viewReader   webView = "reader"
-	viewAccount  webView = "account"
-	viewDiscover webView = "discover"
-	viewRequests webView = "requests"
-	viewRequest  webView = "request"
-	viewAdmin    webView = "admin"
-	viewSettings webView = "server_settings"
+	viewLibrary   webView = "library"
+	viewDetails   webView = "details"
+	viewConnect   webView = "connect"
+	viewReader    webView = "reader"
+	viewAccount   webView = "account"
+	viewDiscover  webView = "discover"
+	viewRequests  webView = "requests"
+	viewRequest   webView = "request"
+	viewAdmin     webView = "admin"
+	viewSettings  webView = "server_settings"
+	viewDownloads webView = "downloads"
 )
 
 var webTitles = map[webView]string{
@@ -58,6 +60,7 @@ var webTitles = map[webView]string{
 type webUI struct {
 	bundle *webassets.Bundle
 	shells map[webView][]byte
+	worker []byte
 }
 
 type webBoot struct {
@@ -69,6 +72,7 @@ type webBoot struct {
 	ReaderEngine  string          `json:"reader_engine,omitempty"`
 	ReaderFormats []string        `json:"reader_formats,omitempty"`
 	PageEngine    *pageEngineBoot `json:"page_engine,omitempty"`
+	Offline       *offlineBoot    `json:"offline,omitempty"`
 }
 
 type pageEngineBoot struct {
@@ -88,8 +92,17 @@ func describePageEngine(engine *webassets.PageEngine) *pageEngineBoot {
 	return &pageEngineBoot{Engine: webAssetsPrefix + engine.Engine, Worker: webAssetsPrefix + engine.Worker, Files: files}
 }
 
-func newWebUI(bundle *webassets.Bundle) (*webUI, error) {
+func newWebUI(bundle *webassets.Bundle, offline bool) (*webUI, error) {
 	ui := &webUI{bundle: bundle, shells: map[webView][]byte{}}
+	if offline && bundle.ReaderEngine() == "" {
+		return nil, ErrConfig
+	}
+	titles := maps.Clone(webTitles)
+	var described *offlineBoot
+	if offline {
+		titles[viewDownloads] = "Downloads · Shelfarr"
+		described = &offlineBoot{Worker: offlineWorkerPath, Scope: offlineScope, Downloads: webDownloadsPath}
+	}
 	formats := []string(nil)
 	if bundle.ReaderEngine() != "" {
 		formats = textReaderFormats
@@ -97,22 +110,29 @@ func newWebUI(bundle *webassets.Bundle) (*webUI, error) {
 			formats = pageReaderFormats
 		}
 	}
-	for view, title := range webTitles {
-		described := webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI, ReaderFormats: formats}
+	for view, title := range titles {
+		boot := webBoot{Version: webBootVersion, Runtime: "go", View: string(view), Mount: webMount, API: webAPI, ReaderFormats: formats, Offline: described}
 		if view == viewReader {
 			if bundle.ReaderEngine() == "" {
 				continue
 			}
-			described.ReaderEngine = webAssetsPrefix + bundle.ReaderEngine()
+			boot.ReaderEngine = webAssetsPrefix + bundle.ReaderEngine()
 			if engine := bundle.PageEngine(); engine != nil {
-				described.PageEngine = describePageEngine(engine)
+				boot.PageEngine = describePageEngine(engine)
 			}
 		}
-		boot, err := json.Marshal(described)
+		encoded, err := json.Marshal(boot)
 		if err != nil {
 			return nil, err
 		}
-		ui.shells[view] = []byte(shellDocument(title, bundle, string(boot)))
+		ui.shells[view] = []byte(shellDocument(title, bundle, string(encoded)))
+	}
+	if offline {
+		worker, err := offlineWorker(ui)
+		if err != nil {
+			return nil, err
+		}
+		ui.worker = worker
 	}
 	return ui, nil
 }
@@ -140,6 +160,10 @@ func classifyWeb(method, path string) (route, bool) {
 		found = route{kind: routeWebIndex, name: "web_index"}
 	case path == webLibraryPath:
 		found = route{kind: routeWebShell, name: "web_library", id: string(viewLibrary)}
+	case path == webDownloadsPath:
+		found = route{kind: routeWebShell, name: "web_downloads", id: string(viewDownloads)}
+	case path == offlineWorkerPath:
+		found = route{kind: routeWebWorker, name: "web_offline_worker"}
 	case strings.HasPrefix(path, webLibraryPath+"/") && bookID.MatchString(strings.TrimPrefix(path, webLibraryPath+"/")):
 		found = route{kind: routeWebShell, name: "web_details", id: string(viewDetails)}
 	case strings.HasPrefix(path, webLibraryPath+"/") && strings.HasSuffix(path, readerSuffix) && bookID.MatchString(strings.TrimSuffix(strings.TrimPrefix(path, webLibraryPath+"/"), readerSuffix)):
@@ -185,6 +209,8 @@ func (a *App) serveWeb(w http.ResponseWriter, r *http.Request, found route, resu
 	case routeWebAsset:
 		result.set(http.StatusOK, "")
 		a.web.bundle.Serve(w, r, found.id)
+	case routeWebWorker:
+		a.serveOfflineWorker(w, r, result)
 	case routeWebShell:
 		w.Header().Set("Cache-Control", "private, no-store")
 		if _, served := a.web.shells[webView(found.id)]; !served {
@@ -197,16 +223,8 @@ func (a *App) serveWeb(w http.ResponseWriter, r *http.Request, found route, resu
 
 func (a *App) writeShell(w http.ResponseWriter, r *http.Request, view webView, result *outcome) {
 	header := w.Header()
-	header.Set("Content-Type", "text/html; charset=utf-8")
-	policy := webContentPolicy
-	if view == viewReader {
-		policy = readerPolicy
-	}
-	header.Set("Content-Security-Policy", policy)
-	header.Set("Cross-Origin-Opener-Policy", "same-origin")
-	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
-	if view == viewConnect {
-		header.Set("Referrer-Policy", "no-referrer")
+	for name, value := range shellHeaders(view) {
+		header.Set(name, value)
 	}
 	body := a.web.shells[view]
 	header.Set("Content-Length", strconv.Itoa(len(body)))

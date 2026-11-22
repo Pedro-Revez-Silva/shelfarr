@@ -38,8 +38,9 @@ const (
 var sessionIDPattern = regexp.MustCompile(`^[1-9][0-9]{0,18}$`)
 
 type browserSession struct {
-	row  live.SessionRow
-	user live.BrowserUser
+	row     live.SessionRow
+	user    live.BrowserUser
+	expires time.Time
 }
 
 func (s browserSession) account() string { return strconv.FormatInt(s.user.ID, 10) }
@@ -96,7 +97,7 @@ func (a *App) resume(ctx context.Context, w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return nil, nil
 	}
-	payload, ok := a.cookies.VerifiedMessage(token, sessionPurpose, a.now())
+	payload, cookieExpires, ok := a.cookies.VerifiedMessageUntil(token, sessionPurpose, a.now())
 	if !ok {
 		return nil, nil
 	}
@@ -129,7 +130,11 @@ func (a *App) resume(ctx context.Context, w http.ResponseWriter, r *http.Request
 		a.clearSession(w)
 		return nil, nil
 	}
-	return &browserSession{row: *row, user: *user}, nil
+	expires := row.CreatedAt.Add(time.Duration(days) * 24 * time.Hour)
+	if !cookieExpires.IsZero() && cookieExpires.Before(expires) {
+		expires = cookieExpires
+	}
+	return &browserSession{row: *row, user: *user, expires: expires}, nil
 }
 
 func (a *App) security(event string, userID int64) {
@@ -231,8 +236,12 @@ func (a *App) bootstrap(w http.ResponseWriter, r *http.Request, result *outcome)
 			return
 		}
 		token, expires := a.sessionToken(*session)
+		answer := map[string]any{"authenticated": true, "account": session.account(), "csrf_token": token, "expires_in": int(expires.Sub(now).Seconds())}
+		if a.offlineEnabled() {
+			answer["offline_expires_in"] = offlineWindow(session.expires, now)
+		}
 		result.set(http.StatusOK, "")
-		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "account": session.account(), "csrf_token": token, "expires_in": int(expires.Sub(now).Seconds())})
+		writeJSON(w, http.StatusOK, answer)
 		return
 	}
 	reason, err := a.signInRefusal(r.Context())
@@ -481,8 +490,12 @@ func (a *App) complete(w http.ResponseWriter, r *http.Request, credentials live.
 	user := browserSession{row: created.Session, user: live.BrowserUser{ID: credentials.ID}}
 	token, until := a.sessionToken(user)
 	a.security("login.success", credentials.ID)
+	answer := map[string]any{"authenticated": true, "account": user.account(), "csrf_token": token, "expires_in": int(until.Sub(a.now()).Seconds())}
+	if a.offlineEnabled() {
+		answer["offline_expires_in"] = offlineWindow(expires, a.now())
+	}
 	result.set(http.StatusOK, "")
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "account": user.account(), "csrf_token": token, "expires_in": int(until.Sub(a.now()).Seconds())})
+	writeJSON(w, http.StatusOK, answer)
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request, result *outcome) {

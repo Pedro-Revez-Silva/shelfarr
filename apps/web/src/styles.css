@@ -2007,3 +2007,126 @@ thead th {
   border-radius: 12px;
   background: var(--sunken);
 }
+
+.button--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--surface);
+}
+
+.offline-copy {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.offline-copy-status:focus {
+  outline: none;
+}
+.offline-copy-status:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.offline-copy-heading {
+  margin: 0;
+  font-size: 1rem;
+}
+.offline-copy-status p,
+.offline-copy-confirm p,
+.offline-copy-bytes {
+  margin: 0;
+  color: var(--muted);
+}
+.offline-copy-transfer {
+  display: grid;
+  gap: 4px;
+}
+.offline-copy-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.offline-copy-actions,
+.offline-copy-confirm,
+.downloads-actions,
+.downloads-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.offline-copy--compact {
+  margin-bottom: 0;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+}
+.offline-copy--compact .button {
+  min-height: 44px;
+  padding-inline: 14px;
+}
+.reader-tools {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+.reader-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.reader-offer p {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+
+.downloads {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 32px var(--gutter) 48px;
+}
+.downloads-header h1 {
+  font-size: min(2.5rem, 12vw);
+}
+.downloads-header h1:focus {
+  outline: none;
+}
+.downloads-list {
+  display: grid;
+  gap: 16px;
+  margin: 0 0 32px;
+  padding: 0;
+  list-style: none;
+}
+.downloads-item {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.downloads-title {
+  margin: 0;
+  font-size: 1.125rem;
+}
+.downloads-author,
+.downloads-meta,
+.downloads-place {
+  margin: 0;
+  color: var(--muted);
+}
+.downloads-storage p {
+  color: var(--muted);
+}
+.offline-reconnected {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 8px var(--gutter);
+}
+[data-offline-check="pending"] #root {
+  visibility: hidden;
+}

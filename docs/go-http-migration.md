@@ -903,6 +903,226 @@ then the real Rails verifier on the PDF and CBZ rows Go wrote.
 Not proven: Safari, Firefox, real devices, screen readers, password-protected or very large PDFs, PDFs that need JPX or
 JBIG2 decoders or CMaps (shipped, but no fixture uses them), comic archives larger than the synthetic ones, and offline use.
 
+## Offline EPUB reading (opt-in)
+
+Status: **experimental, default-off, one browser, one account at a time.** With the reader switched on and one more
+explicit option, an allowlisted account can save an EPUB in its browser from the book's details or the reader, open
+it from **Downloads** while the server cannot be reached, turn pages and come back to the place it reached. The place
+reached offline is sent to the account automatically, with its original activity time, as soon as Shelfarr answers again,
+while the page is open or the next time the app opens.
+
+### Switching it on, and what it needs
+
+`-web-offline`, together with `-web-assets-dir` naming a build that carries the reader engine. `-web-offline` without
+`-web-assets-dir` is `refused: config`; with a build that has no reader engine it is `refused: web-offline` (exit
+`2`), and nothing listens. Without the option every route and answer below is exactly as before (JSON `404`, no
+`offline` key, no `offline_expires_in`). The browser must be a secure context (HTTPS, or `localhost`/loopback) with
+service workers, Cache Storage and IndexedDB; otherwise saving says the browser can't keep books and nothing changes.
+
+### What is served
+
+| Route or field | Answer |
+| --- | --- |
+| `GET`, `HEAD /preview/library/downloads` | The Downloads shell (Library policy, `private, no-store`, the same static document for every visitor). |
+| `GET`, `HEAD /preview/offline-worker.js` | The service worker: `self.SHELFARR_GO_OFFLINE = {version, library, downloads, assets:[{path, sha256}], shells:{downloads, reader}}` followed by the source embedded in the binary (`internal/gohttp/offline_worker.js`). `text/javascript`, `Cache-Control: no-cache`, `Content-Security-Policy: default-src 'none'; connect-src 'self'`, `nosniff`, `Cross-Origin-Resource-Policy: same-origin`. Identical for every visitor; it carries no account, cookie, token or per-user HTML. `version` is the first 24 hex of SHA-256 over the configuration and the source, so it changes with every asset build. |
+| Go boot block (every view) | Adds `"offline":{"worker":"/preview/offline-worker.js","scope":"/preview/library/","downloads":"/preview/library/downloads"}`. |
+| `GET /preview/api/v1/auth/bootstrap` (signed in), `POST /preview/api/v1/auth/login` | Add `offline_expires_in`: the seconds left in the session, which ends at the earlier of `created_at` + `session_max_age_days` and the expiry signed into the `session_id` cookie, at most 30 days. |
+
+The worker is registered only when someone chooses **Save for offline reading**, with scope `/preview/library/`. It
+never answers anything but:
+
+* navigations to `/preview/library/downloads` and `/preview/library/{id}/read`: network first, unchanged; only when the
+  network fails or answers `502`/`503`/`504` does it answer the static shell embedded in its configuration, with that
+  shell's own headers and policy. `401`, `403`, `404`, `5xx` and every other answer pass through, so a refused or
+  signed-out account never falls through to saved data;
+* the files the asset manifest lists (`/preview/assets/...`, no query): precached at install with
+  `credentials: "omit"`, each checked against its manifest SHA-256 before it is stored (a mismatch or non-`200` fails the
+  install), then answered from that cache.
+
+Everything else, including `/preview/api/*`, media and other routes, goes to the network untouched; no response is ever
+cached on the fly. Its cache is `shelfarr-go-preview-offline.v1|<version>`; a failed install deletes its own partial cache,
+and activation deletes only older caches with that prefix. A new version never skips waiting or claims open pages: it
+takes over once no `/preview/library/` tab is open, so a page always gets the shell and assets of one version.
+
+### What the browser keeps
+
+One IndexedDB database, `shelfarr-go-preview-offline` (version 1), created on the first save:
+
+| Store | Key | Holds |
+| --- | --- | --- |
+| `account` | `"current"` | `{record, clearedAt}`: `record` is `{account, confirmedAt, validForMs, seenAt}` (the account id the server last confirmed, when that question was asked, for how long, and the latest moment this browser saw while it was valid) or `null`; `clearedAt` is when the latest question that ended offline access was asked. No token, cookie or credential. |
+| `books` | `<account>\|<publication id>` | Title, author, the saved asset (`id`, `filename`, `media_type`, `size_bytes`), `savedAt`, `accountPlace` (the last server place this browser learned: locator, version, when learned) and `devicePlace` (the last place reached while offline: locator, activity time, when recorded). |
+| `files` | same key | The EPUB `Blob` and its asset id. |
+| `attempts` | same key | A save in progress or the reason the last one failed. Never bytes. |
+
+A save downloads the EPUB from the existing account-bound media route (`/preview/api/v1/accounts/{account}/library/{id}/assets/{asset}`),
+requires `200`, `ETag` equal to the asset id, the announced size, exactly that many bytes and a structurally complete
+EPUB container (a local header at the start, an end-of-directory record pointing at a central directory that ends where
+it begins, every central entry well formed and pointing at a local header, and a `META-INF/container.xml` entry; entry
+contents are not decompressed, so a file the server itself serves damaged is saved as served and the reader then says it
+can't open it, exactly as online), and then writes the book and its file **in one transaction that also re-reads the confirmed account, checks that
+this save's attempt record, identified by a random token, is still there (a removal in another tab wins) and re-adds the account's saved bytes**;
+anything else stores nothing and leaves an earlier copy as it was. Right before downloading, the save asks the server
+again (`auth/bootstrap`) and records that confirmation only if the account record has not changed since it was read.
+Limits: 32 MiB per book (the reader's limit), 256 MiB per account per browser (enforced at commit, so two tabs cannot
+exceed it), and at least the book plus 32 MiB free in the browser's estimate; a browser that refuses the write
+(`QuotaExceededError`) stores nothing. One save per book at a time across tabs (Web Locks). The reader reads a book's
+details and its file in one transaction. The browser is asked to keep
+the data after a save (`navigator.storage.persist()`); it may decline, and Downloads says so.
+
+The edition is the asset id, the same identity Rails and the native apps use. A book whose server asset id changed shows
+**Update saved copy**; the saved copy keeps opening until the new one is fully stored.
+
+### Account rules
+
+* Offline mode starts only when the bootstrap call cannot reach the server (network failure, `502`, `503`, `504`), on
+  the Downloads or reader screen, and only for a confirmed account that is still valid: `max(confirmedAt, seenAt) - 5 min
+  <= now < confirmedAt + validForMs`. An expired, clock-rewound or missing record shows "Shelfarr can't be reached" and no
+  saved book, and an expired or rewound record is deleted, so setting the clock back later cannot revive it.
+* Answers are ordered by when their question was asked, whichever tab asked and whenever the answer arrives: a
+  confirmation is stored only if it was asked after the latest clearing and is not older than the stored one; a
+  signed-out or refused answer clears any record confirmed by an earlier question and is itself ignored for one confirmed
+  by a later question; signing out clears against everything asked until then. A page lock caused by a server refusal is such an answer: it
+  clears at once against the moment the refused request was sent (any account's record confirmed before then, so another
+  account's tab confirms again on its next check), then asks `auth/bootstrap` again to restore a still-valid session; a
+  lock without such a moment (a role change seen in an answer) only asks again, and a refusal answered after the page is
+  already locked or has started recovering still clears; only an answer that names the session's end or another account
+  is a refusal, never a cancelled or unreadable one; a sign-in also
+  asks again rather than using the login answer. An expired record is cleared against every question asked up to its
+  own confirmation, and a later question's positive answer is newer truth about the session and is accepted with its own
+  window. A confirmation answered while the clock was far ahead stays ahead of later questions until the corrected clock
+  passes it, so for that long offline access cannot be renewed (a limit, below). So a slow answer, a stale
+  save or another tab can neither restore an account that was signed out or replaced, nor erase a newer confirmation, and
+  of two pages answering for different accounts the later question wins. A window is measured from when the server was
+  asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap once the browser has the
+  worker; it is deleted by sign-out, a signed-out bootstrap, any `4xx` bootstrap answer (allowlist removal, preview off,
+  a gateway refusal), and replaced when another account signs in. Books are keyed by
+  account, so another account sees only a count and size of them, never titles or places, and can remove them.
+* An offline page re-reads the record on focus, visibility, at the moment it expires and every 30 s, hides itself on
+  `pagehide` (also replacing the book title in the tab), reloads itself when restored from the back/forward cache (so a restored page goes through the whole check
+  again before showing anything), and locks if the account changed or the window ended. It also asks the server every
+  20 s and on `online`: the same account renews the window and offers **Continue online**; another account, signed out or
+  a refusal forgets or replaces the record and locks.
+* Places reached offline are written only to `books.devicePlace`, after each deliberate move (as online), never on open,
+  reload, reflow, resize or text size, and only while the saved copy is still the edition the page opened (a page left
+  open on a replaced edition stops recording). The place with the later activity time wins: the account's `observed_at`
+  when it has one, otherwise when each place reached this browser. Back online, the reader opens at the account's place
+  and offers **Go to the place on this device** while that place is later and different; showing it writes nothing, and
+  the next deliberate move is saved through the ordinary compare-and-set. Every place the server confirms or answers with
+  while reading online is remembered as the saved copy's account place.
+
+### Sending places reached offline
+
+Each deliberate move offline marks the saved book's `devicePlace` as `upload: {state:"pending", request:null}` and records
+`basedOn`, the account version this browser had learned strictly before that moment (0 when the only one it knows was
+learned in the same millisecond or later; a base found to be learned no earlier than the move is not used when sending), in the same IndexedDB write, unless the stored place has a
+later activity time (another tab's newer move is never replaced by an older
+one); a place stored by the earlier candidate without `upload` is treated as pending when it is later than the account
+place. Saving the copy again keeps the stored device place and the higher account version, read inside the commit's own
+transaction. A pending or held device place is where the saved copy opens offline and is offered online, also when it is in
+another file of the book than the account's place (the reader offers to open that file at it); a sent or superseded one is
+never offered and never overrides an account place in the saved file, and only a sent one is used when the account's place
+is in another file. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
+
+* **When.** A page runs one sender at a time (a Web Lock `shelfarr-go-preview-offline-sync|<account>` across tabs; no
+  service worker or Background Sync): on the initial verified load of any Go page with `-web-offline`, on focus,
+  visibility and `online`, after the offline page's 20 s reachability check finds the same account again, after each
+  offline move once connected, and after an uncertain answer at 2, 5, 15, 30 and then every 60 s. The `online` event is
+  only a hint: nothing is sent until a real `auth/bootstrap` answer arrives. With nothing pending it makes no request.
+* **Who.** Before every single request (each book and each rebase), the sender asks `auth/bootstrap` again and applies that
+  answer to the account record first (another account replaces it, signed out or option off clears it); only then does it
+  build the request from the place stored at that moment, and it sends only when the answer itself names the same
+  signed-in account, with that answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
+  `PUT /preview/api/v1/library/:id/progress` at `priority: "low"`. A signed-out, refused, other-account or option-off
+  answer, a page lock or an expired record stops it; the pending place stays. Because `expected_version` is the version the
+  move was based on, any account change made after the move, dated or not, returns a conflict instead of being replaced; a
+  matching version means nothing changed since the move, so the server accepts it as the newer reading action, exactly as
+  an online page turn would be.
+* **What.** Only for the saved edition (a place pending in an edition that was since replaced is never sent).
+  `{asset_id, locator, observed_at: the original activity time, expected_version: basedOn, client_mutation_id}`, stored before it is sent, so an uncertain answer (network
+  failure, `5xx`, refused token) resends the identical request later, also after a reload. Every deliberate move is
+  sent, also one back to the account place this browser last knew, because only the server knows where the account is
+  now; a request stored by an earlier candidate without `basedOn` is resent with its own mutation id and time on version 0
+  until the server's answer rebases it.
+* **Answers** (the Rails outbox rules, with the server's own compare-and-set and chronology checks; `resolve_conflict` is
+  never sent): `200` → `synced` and the account place becomes it; `409` naming this request's own mutation id →
+  `synced`; `409` with an earlier, plausibly dated place in the same edition (or no row) → rebased on that version with a
+  new mutation id and the same `observed_at`, at most five times; `409` with a later or identical place → `superseded`
+  (this device's place is kept, the account keeps its later place); an undated, implausible or other-file place → `held`
+  until the reader chooses online; `422 invalid_progress` or `404` → `held` with the server's message; `401` stops. Only
+  the record whose mutation id was answered is changed, so a late answer never clears a newer offline move, which is then
+  sent on the version just learned. Two tabs sending the same stored request are settled by the server's replay of that
+  mutation id.
+* **Shown.** The offline reader and Downloads say whether the place is waiting to be sent, was sent, was kept because the
+  account has a later place, or was not sent and why; the online reader offers the device place only while it is later and
+  different.
+
+### Contract before and after
+
+```
+GET /preview/library/downloads                       before 404 JSON   after 200 Downloads shell (with -web-offline)
+GET /preview/offline-worker.js                       before 404 JSON   after 200 worker script   (with -web-offline)
+Go boot block                                        after adds "offline":{"worker","scope","downloads"} (with -web-offline)
+GET /preview/api/v1/auth/bootstrap  (signed in)      before {"authenticated":true,"account":"5","csrf_token":"…","expires_in":7200}
+                                                     after  {..., "offline_expires_in":2591990}          (with -web-offline)
+POST /preview/api/v1/auth/login                      same addition                                        (with -web-offline)
+```
+
+Unchanged: every other route and answer, the media, reader and progress routes, cookies, CSRF, schema, stored rows.
+Clients that do not know `offline` or `offline_expires_in` ignore them. Rows written: a save only reads media; sending a
+place reached offline writes the ordinary `consumer_progresses` row through the existing compare-and-set, exactly as an
+online page turn does, and Rails and the native apps read it.
+
+### Rollback and coexistence with Rails
+
+Stop passing `-web-offline`: the two routes answer `404` again, boot blocks and bootstrap lose the new keys, and the next
+Go page an affected browser opens (whether or not its bootstrap succeeds) unregisters the worker whose scope is
+`/preview/library/` and whose script is `/preview/offline-worker.js`, deletes the `shelfarr-go-preview-offline.v1|*` caches
+and forgets the confirmed account. Saved books stay in the browser, hidden,
+until the option is on again or the site's data is cleared. A previous binary refuses nothing new: the asset build is
+unchanged. Under Rails, a browser that saved books keeps a dormant worker; online it never changes an answer, and
+offline it can still open Downloads and the reader for an account confirmed in the last 30 days.
+
+Nothing here touches the Rails offline reader: its `/read` scope and `/read-offline-worker.js`, its manifest and install
+identity, the `shelfarr-offline` database, the `shelfarr-offline-shell.v1|*` and `shelfarr-offline-media.v1|*` caches and
+its outbox are neither read, adopted, moved nor deleted. Downloads made in one are not visible in the other; a place
+reached offline in the Go preview reaches the account through the Go progress route, after which every client, Rails
+included, resumes there.
+
+### Verification and limits
+
+Go tests: the routes and their absence without the option, the worker's headers, configuration, listed assets and
+digests, static shells identical to the served ones, no account state, version per build, the offline window and its
+cap, the start refusals. Bun tests: the worker evaluated with fake caches and network (verified precache, no partial
+cache after a failed install, own-prefix cleanup, no take-over, fallback only for unreachable answers, everything else
+untouched); the IndexedDB store itself on `fake-indexeddb` (expiry and clock high-water,
+answers ordered by question time, commit refusing a removed attempt, a changed account and the account cap, book and file read together, another
+account's books kept apart); the save rules (complete archive, verified bytes, limits, refusals, a fresh server check,
+earlier copy kept); activity-time places; and the Go app's offline fallback, denial on `4xx`, retirement without the
+option, reconnection races, expiry while open, failed removal, Downloads, details and the reader's saved-copy control. Real Chrome (the owner's, through Browse,
+on a task-owned loopback origin with synthetic Rails fixtures and two synthetic accounts) for save, server down, open,
+turn, reload and reopen, return online without remote writes, interrupted and retried saves, removal, worker update,
+sign-out, a second account, expiry, a moved-back clock and Back/Forward. For sending places: the open offline page sends
+the last offline place with its original `observed_at` once only the server comes back (no `online` event, no click),
+and a second signed-in client in its own session resumes there; a later place written by another client is kept (`409`,
+superseded); an earlier one is rebased and replaced (`409` then `200`); a place left pending when the page closed is sent
+when the Library next opens; opening, reloading, text size, resizing and reconnecting with nothing pending write nothing.
+Bun tests cover both time orders, undated, implausible and other-file places, uncertain and refused answers, a late
+answer racing a newer offline move, two tabs sending the same request, a held lock, account changes and unchanged places,
+an account place learned after the move, a deliberate return to the last known place, a page lock whose check gets no
+answer, a late sign-out answer racing a newer confirmation, a base learned in the same millisecond, an account change in
+another account's tab and a delayed session check.
+
+Not proven: Safari, Firefox, real devices, screen readers, eviction by a browser under storage pressure, a real
+`QuotaExceededError` (only the estimate check and the unit tests), very large books, and offline audiobooks, PDFs and
+comics, which this slice does not offer. Known limit: device places from two tabs are ordered by this device's wall clock,
+so after the clock is set back a new tab's move dated before the stored one is not kept until the clock catches up; a
+confirmation answered while the clock was far ahead blocks renewing offline access until the corrected clock passes it;
+removing the saved copy from the online reader leaves that page's offer of the device place until it reloads (opening it
+writes nothing); questions are ordered by millisecond, so a refusal and another tab's confirmation asked in the same
+millisecond resolve toward clearing (that tab confirms again on its next check); a move stored by an unreleased
+intermediate build of this branch with a base learned in the same millisecond as a repeated turn is not detected.
+
 ## Account: display name and password (opt-in)
 
 Status: **experimental, default-off**, behind the same switches as the browser screens. A signed-in account on the

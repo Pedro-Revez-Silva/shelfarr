@@ -10,7 +10,8 @@ import { EpubSession } from "../src/reader/epub";
 import { pageKey, playKey } from "../src/reader/keys";
 import { goReaderLink, goSummaryReaderLink } from "../src/reader/links";
 import { ProgressSession, type SaveState } from "../src/reader/progress";
-import { backTarget, readerPublicationId } from "../src/reader/ReaderApp";
+import { readerPublicationId } from "../src/reader/ReaderApp";
+import { backTarget } from "../src/reader/ReaderFrame";
 import { ACCOUNT, boot, deferred, detail, FakeServer, summary } from "./helpers";
 
 const ASSET = "a".repeat(64);
@@ -27,6 +28,7 @@ type Call = { body: ProgressRequest; keepalive: boolean };
 function harness(answers: ((body: ProgressRequest) => Promise<ProgressAnswer>)[], saved: StoredProgress | null = null) {
   const guard = new AccountGuard(ACCOUNT);
   const calls: Call[] = [];
+  const confirmed: StoredProgress[] = [];
   let clock = NOW;
   let id = 0;
   const session = new ProgressSession({
@@ -39,13 +41,14 @@ function harness(answers: ((body: ProgressRequest) => Promise<ProgressAnswer>)[]
     guard,
     assets: new Set([ASSET]),
     saved,
+    confirmed: (progress) => confirmed.push(progress),
     now: () => clock,
     uuid: () => `mutation-${++id}`,
     delayMs: 5,
   });
   const states: SaveState["kind"][] = [];
   session.subscribe(() => states.push(session.getState().kind));
-  return { guard, calls, session, states, tick: (ms: number) => (clock += ms) };
+  return { guard, calls, session, states, confirmed, tick: (ms: number) => (clock += ms) };
 }
 
 const savedAnswer = (version: number) => async (body: ProgressRequest): Promise<ProgressAnswer> => ({ kind: "saved", progress: stored({ ...body, locator: body.locator ?? null, version, client_mutation_id: body.client_mutation_id, observed_at: body.observed_at }) });
@@ -53,7 +56,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
 
 describe("saving a reading place", () => {
   test("a deliberate move is sent once, after a short wait, with the time of the move and the known version", async () => {
-    const { calls, session, states, tick } = harness([savedAnswer(4)], stored({ version: 3 }));
+    const { calls, session, states, confirmed, tick } = harness([savedAnswer(4)], stored({ version: 3 }));
     session.record(place(0.2));
     tick(1000);
     session.record(place(0.3));
@@ -61,6 +64,7 @@ describe("saving a reading place", () => {
     await settle();
     expect(calls).toEqual([{ body: { ...place(0.3), observed_at: "2026-11-15T12:00:01.000Z", expected_version: 3, client_mutation_id: "mutation-1" }, keepalive: false }]);
     expect(states).toEqual(["saving", "saved"]);
+    expect(confirmed.map((progress) => [progress.version, progress.locator])).toEqual([[4, place(0.3).locator]]);
   });
 
   test("an uncertain answer is never resent by itself; Retry sends the identical request and later places follow it", async () => {
@@ -108,11 +112,12 @@ describe("saving a reading place", () => {
     const earlier = stored({ version: 6, observed_at: "2026-11-15T11:59:00.000Z" });
     const undated = stored({ version: 8, observed_at: null });
     const conflict = (remote: StoredProgress) => async (): Promise<ProgressAnswer> => ({ kind: "conflict", progress: remote });
-    const { calls, session } = harness([conflict(later), conflict(earlier), savedAnswer(7), conflict(undated), savedAnswer(9)], stored({ version: 4 }));
+    const { calls, session, confirmed } = harness([conflict(later), conflict(earlier), savedAnswer(7), conflict(undated), savedAnswer(9)], stored({ version: 4 }));
     session.record(place(0.2));
     await settle();
     expect(session.getState()).toEqual({ kind: "remote", remote: later });
     expect(calls).toHaveLength(1);
+    expect(confirmed).toEqual([later]);
     expect(session.useRemote()).toEqual(later);
     session.record(place(0.3));
     await settle();
@@ -129,6 +134,7 @@ describe("saving a reading place", () => {
     await settle();
     expect(calls[4]?.body).toEqual({ ...place(0.5), observed_at: "2026-11-15T12:00:00.003Z", expected_version: 8, client_mutation_id: "mutation-5", resolve_conflict: true });
     expect(session.getState().kind).toBe("saved");
+    expect(confirmed.map((progress) => progress.version)).toEqual([5, 6, 7, 8, 9]);
   });
 
   test("nothing is recorded or sent once the account guard locks or the session stops, even when an answer arrives late", async () => {

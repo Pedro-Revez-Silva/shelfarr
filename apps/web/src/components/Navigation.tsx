@@ -1,9 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import type { Session } from "../contract";
+import { useOffline } from "../offline/context";
 import { useServices } from "../services";
 
 export function PrimaryNavigation({ session }: { session: Session | undefined }) {
   const { mode } = useServices();
+  const offline = useOffline();
   const handoffs = mode === "rails";
   return (
     <nav className="primary-nav" aria-label="Primary" aria-busy={session || !handoffs ? undefined : "true"}>
@@ -25,6 +27,13 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
                 Requests
               </Link>
             </li>
+            {offline ? (
+              <li>
+                <a className="nav-link" href={offline.boot.downloads}>
+                  Downloads
+                </a>
+              </li>
+            ) : null}
             <li>
               <Link to="/account" className="nav-link">
                 Account

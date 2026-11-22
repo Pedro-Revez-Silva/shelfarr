@@ -1,5 +1,5 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Locator, PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
 import { LockedScreen } from "../components/LockedScreen";
 import { ErrorPanel, Loading } from "../components/States";
@@ -11,7 +11,12 @@ import { EpubReader } from "./EpubReader";
 import { isPageFormat } from "./pages";
 import { PagesReader } from "./PagesReader";
 import { ProgressSession } from "./progress";
+import { ReaderFrame } from "./ReaderFrame";
 import { SaveStatus } from "./SaveStatus";
+import { useOffline } from "../offline/context";
+import { savedEpub } from "../offline/model";
+import { useRememberedPlace } from "../offline/remembered";
+import { SaveForOffline } from "../offline/SaveForOffline";
 
 const READER_PATH = /^\/library\/([1-9]\d{0,18})\/read$/;
 
@@ -78,55 +83,7 @@ function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
   return <OpenReader key={reader.data.id} publication={reader.data} engine={engine} pageEngine={pageEngine} />;
 }
 
-export type BackTarget = { href: string; label: string; returns: boolean };
-
-export function backTarget(referrer: string, id: string, mount: string, origin: string): BackTarget {
-  const details = `${mount}/library/${id}`;
-  let from: URL | null = null;
-  try {
-    from = referrer ? new URL(referrer) : null;
-  } catch {
-    from = null;
-  }
-  if (from && from.origin === origin && from.pathname === `${mount}/library`) return { href: `${mount}/library${from.search}`, label: "Back to the library", returns: true };
-  return { href: details, label: "Back to the book", returns: from !== null && from.origin === origin && from.pathname === details };
-}
-
 const LEAVE_WAIT_MS = 4000;
-
-async function goBack(event: MouseEvent<HTMLAnchorElement>, target: BackTarget, beforeLeave: (() => Promise<void>) | undefined) {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault();
-  await beforeLeave?.();
-  if (target.returns && window.history.length > 1) window.history.back();
-  else window.location.assign(target.href);
-}
-
-type FrameProps = { id: string; title: string; author: string | null; kind?: string; children: ReactNode; footer?: ReactNode; beforeLeave?: () => Promise<void> };
-
-function ReaderFrame({ id, title, author, kind, children, footer, beforeLeave }: FrameProps) {
-  const { boot } = useServices();
-  const [target] = useState(() => backTarget(document.referrer, id, boot.mount, window.location.origin));
-  return (
-    <div className="reader">
-      <header className="reader-header">
-        <a className="back-link reader-back" href={target.href} onClick={(event) => void goBack(event, target, beforeLeave)}>
-          <span aria-hidden="true">←</span>
-          {target.label}
-        </a>
-        <div className="reader-title">
-          {kind ? <p className="eyebrow">{kind}</p> : null}
-          <h1 id="reader-heading">{title}</h1>
-          {author ? <p className="reader-author">{author}</p> : null}
-        </div>
-      </header>
-      <main id="main" className="reader-main" aria-labelledby="reader-heading">
-        {children}
-      </main>
-      {footer ? <footer className="reader-footer">{footer}</footer> : null}
-    </div>
-  );
-}
 
 const OPENING_ORDER: Record<ReaderPublication["content_kind"], readonly string[]> = { graphic: ["cbz", "pdf", "epub"], book: ["epub", "pdf", "cbz"] };
 
@@ -162,6 +119,8 @@ const REMOTE_UNAVAILABLE = "The other device's place is in a file this reader do
 
 function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPublication } & Engines) {
   const { api, guard } = useServices();
+  const offline = useOffline();
+  const savedCopy = useRememberedPlace(offline, guard.account, publication);
   const [session] = useState(
     () =>
       new ProgressSession({
@@ -169,6 +128,7 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
         guard,
         assets: new Set(publication.assets.map((asset) => asset.id)),
         saved: publication.progress,
+        confirmed: (progress) => savedCopy.remember(progress),
       }),
   );
   const showPlace = useRef<((progress: StoredProgress) => void) | null>(null);
@@ -233,16 +193,40 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
     ) : asset && isPageAsset(asset) ? (
       <PagesReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} pageEngine={pageEngine} record={record} registerPlace={registerPlace} />
     ) : asset?.format === "epub" ? (
-      <EpubReader key={asset.id} asset={asset} start={opening.start} savedElsewhere={opening.savedElsewhere} engine={engine} record={record} registerPlace={registerPlace} />
+      <EpubReader
+        key={asset.id}
+        asset={asset}
+        start={opening.start}
+        savedElsewhere={opening.savedElsewhere}
+        engine={engine}
+        record={record}
+        registerPlace={registerPlace}
+        offer={savedCopy.offer(asset.id)}
+      />
     ) : (
       <Unreadable publication={publication} />
     );
+  const epub = savedEpub(publication);
+  const tools = epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub.id} load={async () => publication} compact /> : null;
+  const elsewhere = listening ? null : savedCopy.elsewhere(asset?.id ?? null);
+  const openElsewhere = () => {
+    const target = publication.assets.find((candidate) => candidate.id === elsewhere?.assetId);
+    if (target && elsewhere) setOpening({ asset: target, start: elsewhere.locator, savedElsewhere: false });
+  };
   return (
-    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} beforeLeave={beforeLeave}>
+    <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} tools={tools} beforeLeave={beforeLeave}>
       {remoteNote ? (
         <p className="notice reader-notice" role="status">
           {remoteNote}
         </p>
+      ) : null}
+      {elsewhere ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>{elsewhere.text}</p>
+          <button type="button" className="button" onClick={openElsewhere}>
+            {elsewhere.action}
+          </button>
+        </div>
       ) : null}
       {body}
     </ReaderFrame>

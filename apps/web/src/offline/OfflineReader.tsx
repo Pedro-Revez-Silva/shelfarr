@@ -1,0 +1,153 @@
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { ReaderAsset } from "../contract";
+import { Loading } from "../components/States";
+import { EpubReader } from "../reader/EpubReader";
+import { readerPublicationId } from "../reader/ReaderApp";
+import { ReaderFrame } from "../reader/ReaderFrame";
+import { useServices } from "../services";
+import { useDocumentTitle } from "../title";
+import { useOffline, type Offline } from "./context";
+import { DevicePlaces, type DeviceSaveState } from "./devicePlaces";
+import { openingLocator, type SavedBook, type Upload } from "./model";
+import { uploadText } from "./text";
+
+type Opened = { kind: "loading" } | { kind: "missing" } | { kind: "ready"; book: SavedBook; blob: Blob };
+
+const NO_PLACE = () => undefined;
+
+function placeMessage(state: DeviceSaveState, upload: Upload | undefined | null): string {
+  switch (state.kind) {
+    case "idle":
+      return upload === null ? "You're reading the copy saved on this device. Places you reach are sent to your account once Shelfarr can be reached." : uploadText(upload);
+    case "kept":
+      return uploadText(upload ?? undefined);
+    case "failed":
+      return "Couldn't keep your place on this device. Turn the page again to retry.";
+    case "stopped":
+      return "Stopped keeping places because offline access for this account ended.";
+    case "replaced":
+      return "This saved copy was replaced by another edition in another tab, so places from this page are no longer kept. Reopen the book from Downloads.";
+  }
+}
+
+export function OfflineReader({ engine }: { engine: string | undefined }) {
+  const offline = useOffline();
+  const { boot, guard } = useServices();
+  const id = readerPublicationId(window.location.pathname, boot.mount);
+  const [opened, setOpened] = useState<Opened>({ kind: "loading" });
+  useDocumentTitle(opened.kind === "ready" ? opened.book.title : opened.kind === "missing" ? "Not saved on this device" : "Opening saved book");
+
+  const store = offline?.store;
+  useEffect(() => {
+    if (!store || !id) {
+      setOpened({ kind: "missing" });
+      return;
+    }
+    let current = true;
+    store
+      .open(guard.account, id)
+      .then((saved) => {
+        if (current) setOpened(saved && guard.isActive() ? { kind: "ready", book: saved.book, blob: saved.blob } : { kind: "missing" });
+      })
+      .catch(() => current && setOpened({ kind: "missing" }));
+    return () => {
+      current = false;
+    };
+  }, [store, id, guard]);
+
+  const downloads = offline?.boot.downloads ?? `${boot.mount}/library`;
+  const back = { href: downloads, label: "Back to downloads", returns: false };
+  if (opened.kind === "loading") {
+    return (
+      <ReaderFrame id={id ?? ""} title="Opening saved book" author={null} back={back}>
+        <Loading label="Opening the copy saved on this device…" />
+      </ReaderFrame>
+    );
+  }
+  if (opened.kind === "missing" || !engine || !offline) {
+    return (
+      <ReaderFrame id={id ?? ""} title="This book isn't saved on this device" author={null} back={back}>
+        <div className="state state--empty" role="alert">
+          <h2>It can't be opened without a connection</h2>
+          <p>Only books saved in this browser for the signed-in account open while the server can't be reached.</p>
+          <p className="state-actions">
+            <a className="button button--primary" href={downloads}>
+              See saved books
+            </a>
+          </p>
+        </div>
+      </ReaderFrame>
+    );
+  }
+  return <SavedCopyReader key={opened.book.asset.id} offline={offline} book={opened.book} blob={opened.blob} engine={engine} back={back} />;
+}
+
+function SavedCopyReader({ offline, book, blob, engine, back }: { offline: Offline; book: SavedBook; blob: Blob; engine: string; back: { href: string; label: string; returns: boolean } }) {
+  const { guard } = useServices();
+  const latest = useRef(offline);
+  useEffect(() => {
+    latest.current = offline;
+  }, [offline]);
+  const [places] = useState(
+    () =>
+      new DevicePlaces(
+        offline.store,
+        book.account,
+        book.id,
+        () => guard.lock("signed_out"),
+        Date.now,
+        () => {
+          if (latest.current.connected) latest.current.sync?.request();
+        },
+      ),
+  );
+  const state = useSyncExternalStore(places.subscribe, places.getState, places.getState);
+  const [upload, setUpload] = useState<Upload | undefined | null>(() => (book.devicePlace?.asset_id === book.asset.id ? book.devicePlace.upload : null));
+  const store = offline.store;
+  const sync = offline.sync;
+
+  useEffect(() => {
+    let current = true;
+    const refresh = () =>
+      void store
+        .book(book.account, book.id)
+        .then((stored) => {
+          if (current && stored?.devicePlace?.asset_id === book.asset.id) setUpload(stored.devicePlace.upload);
+        })
+        .catch(() => undefined);
+    const stopPlaces = places.subscribe(refresh);
+    const stopSync = sync?.subscribe(refresh);
+    return () => {
+      current = false;
+      stopPlaces();
+      stopSync?.();
+    };
+  }, [store, sync, places, book.account, book.id, book.asset.id]);
+  const [start] = useState(() => openingLocator(book));
+  const [source] = useState(() => () => blob.arrayBuffer());
+  const asset: ReaderAsset = { id: book.asset.id, filename: book.asset.filename, format: "epub", media_type: book.asset.media_type, size_bytes: book.asset.size_bytes, position: 0, url: back.href };
+
+  useEffect(() => {
+    const leave = () => void places.flush();
+    window.addEventListener("pagehide", leave);
+    const stop = guard.subscribe(() => places.stop());
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      stop();
+      void places.flush();
+    };
+  }, [places, guard]);
+
+  const footer = (
+    <div className={`save-status${(state.kind === "kept" || state.kind === "idle") && upload?.state !== "held" ? "" : " save-status--attention"}`} data-state={state.kind}>
+      <p role={state.kind === "failed" || state.kind === "replaced" ? "alert" : "status"} className="save-status-text">
+        {placeMessage(state, upload)}
+      </p>
+    </div>
+  );
+  return (
+    <ReaderFrame id={book.id} title={book.title} author={book.author} kind="Reading offline" footer={footer} back={back} beforeLeave={() => places.flush()}>
+      <EpubReader asset={asset} start={start} savedElsewhere={false} engine={engine} record={places.record} registerPlace={NO_PLACE} source={source} />
+    </ReaderFrame>
+  );
+}
