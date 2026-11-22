@@ -122,6 +122,17 @@ describe("sending places reached offline", () => {
     expect(none.verifications()).toBe(0);
   });
 
+  test("a move made offline is offered to the server even when the account place it knew is dated later", async () => {
+    const store = await storeWith(offlineBook({ devicePlace: null, accountPlace: { asset_id: EPUB_ID, locator: locator("account"), version: 3, observedAt: "2026-11-20T11:30:00.000Z", learnedAt: NOW - DAY } }));
+    const places = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
+    places.record({ asset_id: EPUB_ID, locator: locator("moved") }, Date.parse(OFFLINE_AT));
+    await places.flush();
+    const run = harness(store, [conflict(serverProgress({ version: 3, observed_at: "2026-11-20T11:30:00.000Z", client_mutation_id: "other" }))]);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => write.body.locator)).toEqual([locator("moved")]);
+    expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "superseded", version: 3 });
+  });
+
   test("an unchanged place is marked sent without writing", async () => {
     const store = await storeWith(offlineBook({ devicePlace: { ...offlineBook().devicePlace!, locator: locator("account") } }));
     const run = harness(store, []);
