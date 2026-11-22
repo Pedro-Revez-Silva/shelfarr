@@ -98,14 +98,15 @@ class SearchResult < ApplicationRecord
   end
 
   def dispatched_magnet_info_hash
-    return nil unless from_indexer? || source == SOURCE_MANUAL_MAGNET
+    return nil unless dispatches_own_torrent_link?
 
     hash = MagnetLink.info_hash(magnet_url)
     hash if hash.is_a?(String)
   end
 
   def torrent_info_hash
-    [ magnet_url, info_hash, download_url ].each do |candidate|
+    candidates = dispatches_own_torrent_link? ? [ magnet_url, info_hash, download_url ] : [ info_hash ]
+    candidates.each do |candidate|
       hash = MagnetLink.normalize_info_hash(candidate)
       return hash if hash.is_a?(String)
     end
@@ -287,6 +288,10 @@ class SearchResult < ApplicationRecord
 
   def from_indexer?
     from_prowlarr? || from_jackett? || from_newznab?
+  end
+
+  def dispatches_own_torrent_link?
+    from_indexer? || source == SOURCE_MANUAL_MAGNET
   end
 
   def from_anna_archive?

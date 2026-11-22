@@ -1587,6 +1587,40 @@ class SearchJobTest < ActiveJob::TestCase
     assert_not request.search_results.find_by!(guid: "other-guid").blocklisted?
   end
 
+  test "a repeat search refreshes the opaque download link of a blocklisted release" do
+    book = Book.create!(title: "Fresh Link", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    blocked = request.search_results.create!(
+      guid: "expiring-guid",
+      title: "Fresh Link Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      download_url: "http://prowlarr.example/1/download?token=expired",
+      info_hash: "b" * 40,
+      status: :rejected,
+      source: "prowlarr"
+    )
+    blocked.blocklist!("Download not found in client")
+    refreshed = IndexerClients::Result.new(
+      guid: "expiring-guid",
+      title: blocked.title,
+      indexer: "ProwlarrIndexer",
+      size_bytes: 2048,
+      seeders: 30,
+      leechers: 0,
+      download_url: "http://prowlarr.example/1/download?token=fresh",
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil,
+      info_hash: "a" * 40
+    )
+
+    SearchJob.new.send(:save_indexer_result, request, refreshed, "prowlarr")
+
+    assert_equal "http://prowlarr.example/1/download?token=fresh", blocked.reload.download_url
+    assert_equal "b" * 40, blocked.torrent_info_hash
+    assert blocked.blocklisted?
+  end
+
   test "preliminary scoring uses a known file size before a result counts as a strong match" do
     SettingsService.set(:indexer_search_scope, "strict")
     SettingsService.set(:min_match_confidence, 80)

@@ -28,7 +28,6 @@ module DownloadClients
     LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
     LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
     DUPLICATE_TORRENT_PATTERN = /already in session|already being added/i
-    UNPROCESSED_REQUEST_STATUSES = [ 408, 425, 429, 503 ].freeze
     UNDELIVERED_REQUEST_ERRORS = [
       Errno::ECONNREFUSED,
       Errno::EHOSTUNREACH,
@@ -150,7 +149,7 @@ module DownloadClients
         raise Base::AuthenticationError, "Deluge authentication failed: #{response.status}"
       end
 
-      if response.status >= 500 && !UNPROCESSED_REQUEST_STATUSES.include?(response.status)
+      if transient_http_status?(response.status) || response.status.between?(201, 299)
         raise UnconfirmedReplyError, "Deluge API error: #{response.status}"
       end
 

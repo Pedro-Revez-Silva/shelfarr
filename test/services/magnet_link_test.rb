@@ -42,12 +42,16 @@ class MagnetLinkTest < ActiveSupport::TestCase
     assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{real}&xt=urn:btih:#{decoy}")
   end
 
-  test "reads the exact topic from the query and not the fragment" do
+  test "a topic hidden behind a fragment still counts, so conflicting readings give no hash" do
     hash = "ab" * 20
+    other = "cd" * 20
 
     assert_equal hash, MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}#section")
     assert_equal hash, MagnetLink.info_hash("magnet:?%78t=urn:btih:#{hash}&dn=Book")
-    assert_nil MagnetLink.info_hash("magnet:?dn=Book#section&xt=urn:btih:#{hash}")
+    assert_equal hash, MagnetLink.info_hash("magnet:?dn=Book#section&xt=urn:btih:#{hash}")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}&dn=Book#section&xt=urn:btih:#{other}")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}#xt=urn:btih:#{other}&dn=Book")
+    assert_nil MagnetLink.info_hash("magnet:?%78t=urn:btih:#{hash}&xt=urn:btih:#{other}")
     assert_equal hash, MagnetLink.info_hash("magnet:?%ZZ=1&xt=urn:btih:#{hash}")
   end
 

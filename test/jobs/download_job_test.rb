@@ -3634,7 +3634,7 @@ class DownloadJobTest < ActiveJob::TestCase
       status: :pending
     )
 
-    [ { status: 200, result: nil }, { status: 502, result: nil } ].each_with_index do |reply, index|
+    [ { status: 200, result: nil }, { status: 502, result: nil }, { status: 503, result: nil }, { status: 204, result: nil } ].each_with_index do |reply, index|
       Thread.current[:deluge_sessions] = {}
       download = index.zero? ? @download : @request.downloads.create!(name: @selected_result.title, search_result: @selected_result, status: :queued)
 

@@ -618,12 +618,14 @@ class SearchJob < ApplicationJob
       published_at: result.published_at,
       source: source
     )
-    unless search_result.blocklisted?
+    if !search_result.blocklisted?
       search_result.assign_attributes(
         download_url: result.download_url,
         magnet_url: result.magnet_url,
         info_hash: result.info_hash.presence || search_result.info_hash
       )
+    elsif result.download_url.present? && [ search_result.download_url, result.download_url ].none? { |url| url.to_s.start_with?("magnet:") }
+      search_result.download_url = result.download_url
     end
     search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
     search_result.save!

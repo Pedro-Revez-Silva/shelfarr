@@ -20,7 +20,7 @@ class MagnetLink
     query = magnet_query(url.to_s.strip)
     return nil unless query
 
-    hashes = query.split("&").filter_map { |param| exact_topic_hash(param) }.uniq
+    hashes = query.split(/[&#]/).filter_map { |param| exact_topic_hash(param) }.uniq
     hashes.first if hashes.one?
   rescue ArgumentError => error
     RemoteResult::Failed.new(error)
@@ -28,7 +28,7 @@ class MagnetLink
 
   def self.magnet_query(url)
     url = URI.decode_www_form_component(url) if url.match?(/\Amagnet%3A/i)
-    url.sub(/\Amagnet:\?/i, "").split("#", 2).first.to_s if url.match?(/\Amagnet:\?/i)
+    url.sub(/\Amagnet:\?/i, "") if url.match?(/\Amagnet:\?/i)
   end
   private_class_method :magnet_query
 

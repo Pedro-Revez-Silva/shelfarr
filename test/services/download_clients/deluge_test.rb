@@ -1183,40 +1183,16 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent raises ConnectionError for transient API HTTP statuses" do
-    VCR.turned_off do
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"auth.login"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
-          body: { result: true, error: nil, id: 1 }.to_json
-        )
-
-      [ 408, 429, 503 ].each do |status|
-        stub_request(:post, "http://localhost:8112/json")
-          .with(body: /"core.add_torrent_magnet"/)
-          .to_return(
-            status: status,
-            headers: { "Content-Type" => "application/json" },
-            body: { error: "unavailable" }.to_json
-          )
-
-        error = assert_raises(DownloadClients::Base::ConnectionError) do
-          @client.add_torrent("magnet:?xt=urn:btih:abcdef")
-        end
-        assert_instance_of DownloadClients::Base::ConnectionError, error
-        assert_equal "Deluge API error: #{status}", error.message
-      end
-    end
-  end
-
   test "add_torrent reports an add whose reply cannot be read as needing a check in Deluge" do
     VCR.turned_off do
       stub_deluge_login
       [
         { status: 200, body: "not a hash".to_json },
         { status: 200, body: { result: nil, error: nil, id: 1 }.to_json },
+        { status: 204, body: "" },
+        { status: 408, body: { error: "unavailable" }.to_json },
+        { status: 429, body: { error: "unavailable" }.to_json },
+        { status: 503, body: { error: "unavailable" }.to_json },
         { status: 500, body: {}.to_json },
         { status: 502, body: {}.to_json },
         { status: 504, body: {}.to_json }
