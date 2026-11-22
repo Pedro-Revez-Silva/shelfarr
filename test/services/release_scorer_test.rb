@@ -577,6 +577,8 @@ class ReleaseScorerTest < ActiveSupport::TestCase
         "Frank Herbert - Dune [MP3 320]",
         "Frank Herbert - Dune MP3 2 CDs",
         "Frank Herbert - Dune M4B 64",
+        "Frank Herbert - Dune English 64 M4B",
+        "Frank Herbert - Dune English 320 MP3",
         "Frank Herbert - Dune English 12 hours M4B"
       ],
       ebook: [

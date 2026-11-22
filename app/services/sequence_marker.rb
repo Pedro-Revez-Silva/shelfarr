@@ -48,9 +48,8 @@ class SequenceMarker
   ANY_NUMBER = "#{NUMERIC_NUMBER}|#{NUMBER_WORD}"
   # Release words after an abbreviated roman marker ("T V FR", "T V Partie").
   # Language tokens come from the release parser, so codes and names stay one list.
-  FORMAT_WORDS = %w[
-    epub pdf mobi azw azw3 fb2 ebook audiobook m4b mp3 flac cbr cbz retail multi
-  ].freeze
+  AUDIO_FORMAT_WORDS = %w[m4a m4b mp3 flac].freeze
+  FORMAT_WORDS = (%w[epub pdf mobi azw azw3 fb2 ebook audiobook cbr cbz retail multi] + AUDIO_FORMAT_WORDS).freeze
   LANGUAGE_TAG_WORDS = (ReleaseParserService.language_tokens - FORMAT_WORDS).freeze
   RELEASE_TAG_WORDS = (LANGUAGE_TAG_WORDS + FORMAT_WORDS).freeze
   FOLLOWER_WORDS = (MARKER_WORDS + RELEASE_TAG_WORDS).uniq.freeze
@@ -59,7 +58,8 @@ class SequenceMarker
   }.join("|").freeze
   GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :LANGUAGE_TAG_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :AUDIO_FORMAT_WORDS, :FORMAT_WORDS,
+    :LANGUAGE_TAG_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
     :FOLLOWER_ALTERNATION,
     :GLUED_VOLUME_PATTERN
 
@@ -109,6 +109,7 @@ class SequenceMarker
   PUBLICATION_YEAR = /\A(?:1[89]\d{2}|20\d{2})\z/
   BRACKETED_YEAR = /[\(\[]\s*\d{4}\s*[\)\]]/
   SPACED_BITRATE = /(?<![\p{L}\p{N}])\d{2,3}\s+kbps\b/i
+  BARE_AUDIO_BITRATES = %w[32 48 56 64 80 96 112 128 160 192 224 256 320].freeze
   RELEASE_METADATA = Regexp.union(BRACKETED_YEAR, SPACED_BITRATE)
   CHINESE_NUMERALS = "〇零一二三四五六七八九十百千万兩两"
   CJK_VOLUME_PREFIX = /
@@ -119,7 +120,8 @@ class SequenceMarker
   NON_SEQUEL_ROMAN_TOKENS = %w[cd].freeze
   GLUED_NUMERAL_SUFFIX = /\A(?:st|nd|rd|th|kbps)\z/i
   ONE_FILE_COUNT = ReleaseParserService::ONE_FILE_COUNT_PATTERN
-  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :RELEASE_METADATA, :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
+  private_constant :PUBLICATION_YEAR, :BRACKETED_YEAR, :SPACED_BITRATE, :BARE_AUDIO_BITRATES, :RELEASE_METADATA,
+    :CHINESE_NUMERALS, :CJK_VOLUME_PREFIX,
     :NON_SEQUEL_ROMAN_TOKENS, :GLUED_NUMERAL_SUFFIX, :ONE_FILE_COUNT
 
   class << self
@@ -438,6 +440,8 @@ class SequenceMarker
       return false unless LANGUAGE_TAG_WORDS.include?(words.first)
 
       number, *tags = words.drop_while { |word| LANGUAGE_TAG_WORDS.include?(word) }
+      return false if BARE_AUDIO_BITRATES.include?(number) && AUDIO_FORMAT_WORDS.include?(tags.first)
+
       whole_sequel_numeral?(number) && tags.all? { |tag| RELEASE_TAG_WORDS.include?(tag) }
     end
 

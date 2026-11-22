@@ -258,10 +258,15 @@ class SequenceMarkerTest < ActiveSupport::TestCase
   test "distinguishes bare sequel numbers after language tags from release metadata" do
     assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2")
     assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2 EPUB")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 2 M4B")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English 64 EPUB")
+    assert SequenceMarker.sequel_conflict?("Dune", "Dune English Volume 64 M4B")
     assert SequenceMarker.sequel_conflict?("Dune", "Dune EPUB English Book 2")
     assert_not SequenceMarker.sequel_conflict?("Dune", "Dune EPUB 2 files")
     assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 2 files EPUB")
     assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 12hours M4B")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 64 M4B")
+    assert_not SequenceMarker.sequel_conflict?("Dune", "Dune English 128 M4A")
   end
 
   test "removes a one file qualifier unless the title contains it" do
