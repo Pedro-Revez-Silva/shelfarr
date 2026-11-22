@@ -5,7 +5,7 @@ import type { ProgressAnswer } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import type { ProgressRequest, StoredProgress } from "../src/contract";
 import { DevicePlaces } from "../src/offline/devicePlaces";
-import { openingLocator, type ConfirmedAccount, type SavedBook } from "../src/offline/model";
+import { openingLocator, rememberAccountPlace, type ConfirmedAccount, type SavedBook } from "../src/offline/model";
 import { offeredDevicePlace } from "../src/offline/remembered";
 import { IndexedDbOfflineStore } from "../src/offline/store";
 import { createSyncRunner, reconcileOffline, syncPlaces, type SyncDeps, type Verification } from "../src/offline/sync";
@@ -134,12 +134,16 @@ describe("sending places reached offline", () => {
     expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "superseded", version: 3 });
   });
 
-  test("an unchanged place is marked sent without writing", async () => {
+  test("a deliberate return to the account's last known place is still sent, so the server decides", async () => {
     const store = await storeWith(offlineBook({ devicePlace: { ...offlineBook().devicePlace!, locator: locator("account") } }));
-    const run = harness(store, []);
+    const elsewhere = serverProgress({ version: 4, locator: locator("elsewhere"), observed_at: "2026-11-20T10:30:00.000Z", client_mutation_id: "other-device" });
+    const run = harness(store, [conflict(elsewhere), saved(5)]);
     expect(await syncPlaces(run.deps)).toEqual({ kind: "settled" });
-    expect(run.writes).toEqual([]);
-    expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "synced", version: 3 });
+    expect(run.writes.map((write) => [write.body.expected_version, write.body.locator, write.body.observed_at])).toEqual([
+      [3, locator("account"), OFFLINE_AT],
+      [4, locator("account"), OFFLINE_AT],
+    ]);
+    expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "synced", version: 5 });
   });
 
   test("a later offline place wins over an earlier server place by rebasing with the same activity time", async () => {
@@ -431,5 +435,47 @@ describe("third review regressions", () => {
     expect(offeredDevicePlace(held, serverProgress({ version: 6, observed_at: null, locator: locator("account") }), NOW)?.locator).toEqual(locator("device"));
     const superseded = offlineBook({ devicePlace: { ...offlineBook().devicePlace!, upload: { state: "superseded", version: 6 } } });
     expect(openingLocator(superseded)).toEqual(locator("account"));
+  });
+});
+
+describe("fifth review regressions", () => {
+  test("a move is based only on the account place known before it, so a checkpoint learned afterwards is never overwritten", async () => {
+    const store = await storeWith(offlineBook({ devicePlace: null }));
+    let clock = NOW;
+    const places = new DevicePlaces(store, "5", "7", () => undefined, () => clock);
+    places.record({ asset_id: EPUB_ID, locator: locator("device") }, NOW);
+    clock = NOW + 100;
+    const checkpoint = serverProgress({ version: 4, locator: locator("checkpoint"), observed_at: null, client_mutation_id: "other-device" });
+    await store.updateBook("5", "7", (book) => rememberAccountPlace(book, checkpoint, clock), clock);
+    await places.flush();
+    expect((await store.book("5", "7"))?.devicePlace?.basedOn).toBe(0);
+    const run = harness(store, [conflict(checkpoint)]);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => write.body.expected_version)).toEqual([0]);
+    expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "held", reason: "conflict", message: null });
+  });
+
+  test("a move made after the account place was learned is based on it", async () => {
+    const store = await storeWith(offlineBook({ devicePlace: null }));
+    const places = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
+    places.record({ asset_id: EPUB_ID, locator: locator("device") }, NOW);
+    await places.flush();
+    expect((await store.book("5", "7"))?.devicePlace?.basedOn).toBe(3);
+  });
+
+  test("a request stored without the version it was based on is sent on version 0 with its own identity and time", async () => {
+    const request: ProgressRequest = { asset_id: EPUB_ID, locator: locator("device"), observed_at: OFFLINE_AT, expected_version: 4, client_mutation_id: "stored-earlier" };
+    const store = await storeWith(offlineBook({ devicePlace: { asset_id: EPUB_ID, locator: locator("device"), observedAt: OFFLINE_AT, recordedAt: NOW - 1000, upload: { state: "pending", request, rebases: 0 } } }));
+    const run = harness(store, [saved(5)]);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => [write.body.expected_version, write.body.client_mutation_id, write.body.observed_at])).toEqual([[0, "stored-earlier", OFFLINE_AT]]);
+  });
+
+  test("an answer that rules out only one account releases only that account's record, and only up to when it was asked", async () => {
+    const store = await storeWith(offlineBook());
+    expect(await store.release(NOW, "4")).toBe(false);
+    expect((await store.accountState()).record?.account).toBe("5");
+    expect(await store.release(NOW - 2 * DAY, "5")).toBe(false);
+    expect(await store.release(NOW, "5")).toBe(true);
   });
 });

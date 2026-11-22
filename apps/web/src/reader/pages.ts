@@ -54,19 +54,20 @@ export function guardedFetch(guard: AccountGuard, fetcher: Fetcher = (input, ini
     if (url.origin !== window.location.origin) throw new PageError("Pages must come from this server.");
     const headers = new Headers(init.headers);
     headers.set(ACCOUNT_HEADER, guard.account);
+    const askedAt = Date.now();
     const response = await fetcher(`${url.pathname}${url.search}`, { ...init, headers, credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
     if (response.status === 401) {
       const envelope = errorEnvelopeSchema.safeParse(await response.clone().json().catch(() => null));
       const code = envelope.success ? envelope.data.error : null;
       if (code === "signed_out" || code === "account_changed") {
-        guard.lock(code);
+        guard.lock(code, askedAt);
         throw new PageError("Sign in again to keep reading.", "signin");
       }
     }
     if (response.ok && !headers.has("Range")) {
       const answered = accountedSchema.safeParse(await response.clone().json().catch(() => null));
       if (!answered.success || answered.data.account !== guard.account) {
-        guard.lock("account_changed");
+        guard.lock("account_changed", askedAt);
         throw new PageError("Sign in again to keep reading.", "signin");
       }
     }

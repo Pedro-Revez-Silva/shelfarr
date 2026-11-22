@@ -11,6 +11,7 @@ export class AccountGuard {
   private state: GuardState = { status: "active" };
   private trustState: Trust = "trusted";
   private currentGeneration = 0;
+  private askedAt: number | null = null;
   private readonly listeners = new Set<Listener>();
   private readonly trustListeners = new Set<Listener>();
   private readonly settleWaiters = new Set<() => void>();
@@ -49,9 +50,14 @@ export class AccountGuard {
     return this.currentGeneration;
   }
 
-  lock(reason: LockReason): void {
+  get lockAskedAt(): number | null {
+    return this.askedAt;
+  }
+
+  lock(reason: LockReason, askedAt: number = Date.now()): void {
     if (!this.isActive()) return;
     this.state = { status: reason };
+    this.askedAt = askedAt;
     this.releaseWaiters();
     for (const listener of [...this.listeners]) listener();
   }

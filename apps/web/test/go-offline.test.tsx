@@ -864,3 +864,61 @@ describe("fourth review regressions in the app", () => {
     }
   });
 });
+
+describe("fifth review regressions in the app", () => {
+  test("a lost session ends offline access at once, even while the check that follows gets no answer", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5", Date.now() - DAY);
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          if (calls > 1) return new Promise<never>(() => undefined);
+          return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, () => error(401, "signed_out"));
+      renderOffline(server, store, "library", "/preview/library");
+      await screen.findByRole("heading", { name: "Your session ended" });
+      await waitFor(() => expect(store.record).toBeNull());
+      expect(calls).toBeGreaterThanOrEqual(2);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a late sign-out answer cannot erase a confirmation from a question asked after it", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5", Date.now() - DAY);
+      const answers: (() => void)[] = [];
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          if (calls > 1) throw new TypeError("Failed to fetch");
+          return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, () => new Promise((resolve) => answers.push(() => resolve(error(401, "signed_out")))));
+      renderOffline(server, store, "library", "/preview/library");
+      await waitFor(() => expect(answers.length).toBeGreaterThan(0));
+      await waitFor(() => expect(store.confirms.length).toBeGreaterThan(0));
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const newer = { account: "5", confirmedAt: Date.now(), validForMs: 30 * DAY };
+      expect(await store.confirm(newer)).toBe(true);
+      await act(async () => {
+        for (const answer of answers) answer();
+      });
+      await screen.findByRole("heading", { name: "Your session ended" });
+      await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 20)));
+      expect(store.record).toMatchObject({ account: "5", confirmedAt: newer.confirmedAt });
+    } finally {
+      restore();
+    }
+  });
+});

@@ -51,7 +51,7 @@ async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmatio
   if ((await hasWorker(boot.offline)) || (await store.accountState()).record) await store.confirm(confirmation);
 }
 
-async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore, refusedAt: number | null = null): Promise<void> {
+async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore): Promise<void> {
   if (!boot.offline) return;
   const askedAt = Date.now();
   let answer: Bootstrap;
@@ -59,7 +59,6 @@ async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: Offl
     answer = await auth.bootstrap();
   } catch (error) {
     if (definitiveRefusal(error)) await store.release(askedAt);
-    else if (refusedAt !== null) await store.release(refusedAt);
     return;
   }
   await keepOfflineAccount(boot, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
@@ -256,7 +255,12 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   useEffect(
     () =>
       services.guard.subscribe(() => {
-        void refreshOfflineAccount(boot, auth, store, Date.now()).catch(() => undefined);
+        const refusedAt = services.guard.lockAskedAt ?? Date.now();
+        const everyone = services.guard.getState().status === "signed_out";
+        void (async () => {
+          if (boot.offline) await store.release(refusedAt, everyone ? undefined : account);
+          await refreshOfflineAccount(boot, auth, store);
+        })().catch(() => undefined);
       }),
     [services, boot, auth, store],
   );
@@ -283,11 +287,11 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
             }
             if (!answer.authenticated) {
               await store.release(sentAt);
-              services.guard.lock("signed_out");
+              services.guard.lock("signed_out", sentAt);
               throw new SaveFailure("signed_out");
             }
             if (answer.account !== account) {
-              services.guard.lock("account_changed");
+              services.guard.lock("account_changed", sentAt);
               throw new SaveFailure("signed_out");
             }
             const fresh = confirmationFrom(answer.account, answer.offline_expires_in, sentAt);

@@ -66,19 +66,16 @@ async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () =
     (book) => {
       const device = unsentPlace(book);
       if (!device) return null;
-      const known = book.accountPlace;
-      const basedOn = device.basedOn ?? 0;
-      const unchanged = known && known.version === basedOn && known.asset_id === device.asset_id && samePlace({ asset_id: device.asset_id, locator: device.locator }, { asset_id: known.asset_id, locator: known.locator });
-      if (!device.upload.request && unchanged) return { ...book, devicePlace: { ...device, upload: { state: "synced", version: known.version } } };
-      const request: ProgressRequest = device.upload.request ?? {
+      const stored = device.upload.request;
+      const request: ProgressRequest = stored ? (device.basedOn === undefined ? { ...stored, expected_version: 0 } : stored) : {
         asset_id: device.asset_id,
         locator: device.locator,
         observed_at: device.observedAt,
-        expected_version: basedOn,
+        expected_version: device.basedOn ?? 0,
         client_mutation_id: uuid(),
       };
       prepared.value = { request, rebases: device.upload.rebases, assetId: device.asset_id };
-      return device.upload.request ? null : { ...book, devicePlace: { ...device, upload: { state: "pending", request, rebases: device.upload.rebases } } };
+      return stored ? null : { ...book, devicePlace: { ...device, upload: { state: "pending", request, rebases: device.upload.rebases } } };
     },
     now(),
   );

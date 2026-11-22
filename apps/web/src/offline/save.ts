@@ -103,11 +103,11 @@ function classify(error: unknown): FailureKind {
   return "storage";
 }
 
-async function refusal(response: Response, guard: AccountGuard): Promise<FailureKind> {
+async function refusal(response: Response, guard: AccountGuard, askedAt: number): Promise<FailureKind> {
   const envelope = errorEnvelopeSchema.safeParse(await response.json().catch(() => null));
   const code = envelope.success ? envelope.data.error : null;
   if (code === "signed_out" || code === "account_changed") {
-    guard.lock(code);
+    guard.lock(code, askedAt);
     return "signed_out";
   }
   if (response.status === 404) return "missing";
@@ -116,8 +116,9 @@ async function refusal(response: Response, guard: AccountGuard): Promise<Failure
 }
 
 async function download(url: string, assetId: string, size: number, inputs: SaveInputs): Promise<Blob> {
+  const askedAt = Date.now();
   const response = await (inputs.fetcher ?? fetch)(url, { credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer" });
-  if (response.status !== 200) throw new SaveFailure(await refusal(response, inputs.guard));
+  if (response.status !== 200) throw new SaveFailure(await refusal(response, inputs.guard, askedAt));
   const length = response.headers.get("Content-Length");
   if (response.headers.get("ETag") !== `"${assetId}"` || (length !== null && Number(length) !== size) || !response.body) {
     await response.body?.cancel().catch(() => undefined);

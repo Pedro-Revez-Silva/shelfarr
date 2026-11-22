@@ -137,6 +137,7 @@ export class CsrfSession {
 
   private async fetchFresh(signal?: AbortSignal): Promise<void> {
     let state: Bootstrap;
+    const askedAt = Date.now();
     try {
       state = await this.auth.bootstrap(signal);
     } catch (error) {
@@ -145,11 +146,11 @@ export class CsrfSession {
     }
     if (!this.guard.isActive()) return;
     if (!state.authenticated) {
-      this.guard.lock("signed_out");
+      this.guard.lock("signed_out", askedAt);
       return;
     }
     if (state.account !== this.guard.account) {
-      this.guard.lock("account_changed");
+      this.guard.lock("account_changed", askedAt);
       return;
     }
     this.value = state.csrf_token;
