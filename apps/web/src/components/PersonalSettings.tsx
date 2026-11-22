@@ -553,7 +553,7 @@ export function AboutSection({ settings }: { settings: AccountSettings }) {
       {settings.server.beta ? <p className="muted">Beta builds are ready to use, but some screens may still change before Shelfarr {settings.server.series} is final. Your administrator decides when the server is updated and keeps its backups.</p> : null}
       {settings.links.admin ? (
         <p>
-          <a href={settings.links.admin}>Release, updates and backups</a>
+          <Link to="/server">Release, updates and backups</Link>
         </p>
       ) : null}
     </Card>

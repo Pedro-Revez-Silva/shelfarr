@@ -1,7 +1,7 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
 import { bookSearchSchema, discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema } from "./contract";
 import { AccountPage, AccountSectionPage } from "./components/AccountPage";
-import { AdminPage } from "./components/AdminPage";
+import { AdminPage, ServerHomePage } from "./components/AdminPage";
 import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
 import { DiscoverPage, FindPage } from "./components/DiscoverPage";
@@ -9,6 +9,7 @@ import { LibraryPage } from "./components/LibraryPage";
 import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
 import { ServerSettingsPage } from "./components/ServerSettingsPage";
+import { ServerCategoryPage } from "./server/ServerCategoryPage";
 import { Shell } from "./components/Shell";
 import { EmptyState } from "./components/States";
 
@@ -113,7 +114,19 @@ const serverSettingsRoute = createRoute({
   component: ServerSettingsPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
+const serverRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server",
+  component: ServerHomePage,
+});
+
+const serverCategoryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server/$category",
+  component: ServerCategoryPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverCategoryRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

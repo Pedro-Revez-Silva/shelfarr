@@ -243,6 +243,27 @@ Rails.application.routes.draw do
     post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
   end
 
+  get "preview/admin", to: "web_preview/shell#show", as: :web_preview_admin
+  get "preview/admin/settings", to: "web_preview/shell#show", as: :web_preview_admin_settings
+  get "preview/server", to: "web_preview/shell#show", as: :web_preview_server
+  get "preview/server/:category", to: "web_preview/shell#show", as: :web_preview_server_category,
+    constraints: { category: /policy|sources|downloads|library|notifications|people|system/ }
+  scope "preview/api/v1/admin", module: "web_preview/admin", as: :web_preview_api_admin, defaults: { format: :json } do
+    get "overview", to: "overview#show"
+    post "overview/health_check", to: "overview#health_check", as: :health_check
+    post "overview/update_check", to: "overview#update_check", as: :update_check
+    get "settings", to: "settings#show"
+    put "settings/groups/:group", to: "settings#update", as: :settings_group, constraints: { group: /[a-z_]{1,40}/ }
+    post "settings/probes/:probe", to: "settings#probe", as: :settings_probe, constraints: { probe: /[a-z_]{1,40}/ }
+    get "settings/library", to: "library#show", as: :settings_library
+    post "settings/library/sync", to: "library#sync", as: :settings_library_sync
+    get "settings/telegram_chats", to: "telegram_chats#index", as: :telegram_chats
+    post "settings/telegram_chats", to: "telegram_chats#create"
+    post "settings/telegram_chats/:id/pause", to: "telegram_chats#pause", as: :telegram_chat_pause
+    post "settings/telegram_chats/:id/resume", to: "telegram_chats#resume", as: :telegram_chat_resume
+    delete "settings/telegram_chats/:id", to: "telegram_chats#destroy", as: :telegram_chat
+  end
+
   namespace :integrations, defaults: { format: :json } do
     post "telegram/webhook", to: "telegram_webhooks#create"
   end

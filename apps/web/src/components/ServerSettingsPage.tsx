@@ -7,6 +7,7 @@ import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import type { FormOutcome } from "./accountFields";
 import { PageHeading } from "./PageHeading";
+import { LegacySettingsRedirect } from "../server/LegacySettingsRedirect";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
 type Field = "enabled" | "search_limit";
@@ -14,13 +15,7 @@ type Problems = Partial<Record<Field, string>>;
 
 export function ServerSettingsPage() {
   const { mode } = useServices();
-  if (mode !== "go") {
-    return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
-      </EmptyState>
-    );
-  }
+  if (mode !== "go") return <LegacySettingsRedirect />;
   return <ServerSettings />;
 }
 

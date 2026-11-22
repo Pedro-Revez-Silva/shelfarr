@@ -92,7 +92,7 @@ describe("the Rails preview shell", () => {
     const bell = await screen.findByRole("link", { name: "Notifications, 3 unread" });
     expect(bell.getAttribute("href")).toBe("/sub/notifications");
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Find", "Account", "Server (opens the classic Shelfarr app)"]);
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Find", "Account", "Server"]);
   });
 
   test("the empty Find page lists the member's open requests and links to every request", async () => {
@@ -269,7 +269,7 @@ describe("your account in the Rails preview", () => {
 
   test("About links administrators to the server", async () => {
     renderApp({ server: accountServer(profile({ admin: true, links: { ...settings.links, admin: "/sub/admin" } })), url: "/sub/preview/account/about" });
-    expect((await screen.findByRole("link", { name: "Release, updates and backups" })).getAttribute("href")).toBe("/sub/admin");
+    expect((await screen.findByRole("link", { name: "Release, updates and backups" })).getAttribute("href")).toBe("/sub/preview/server");
     expect(screen.getByText(/Shelfarr 1.0 beta/)).toBeTruthy();
   });
 });

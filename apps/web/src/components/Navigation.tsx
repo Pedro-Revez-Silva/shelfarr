@@ -10,7 +10,7 @@ export function placeOf(pathname: string, basepath: string): Place {
   if (/^\/(?:library)(?:\/|$)/.test(path)) return "library";
   if (/^\/(?:find|discover|books|requests)(?:\/|$)/.test(path)) return "find";
   if (/^\/account(?:\/|$)/.test(path)) return "account";
-  if (/^\/admin(?:\/|$)/.test(path)) return "server";
+  if (/^\/(?:admin|server)(?:\/|$)/.test(path)) return "server";
   return null;
 }
 
@@ -51,16 +51,9 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
         </li>
         {session?.admin ? (
           <li>
-            {go ? (
-              <Link to="/admin" className="nav-link" aria-current={current(place, "server")} activeProps={{}}>
-                Server
-              </Link>
-            ) : (
-              <a className="nav-link nav-link--handoff" href={session.admin.url}>
-                Server
-                <span className="sr-only"> (opens the classic Shelfarr app)</span>
-              </a>
-            )}
+            <Link to={go ? "/admin" : "/server"} className="nav-link" aria-current={current(place, "server")} activeProps={{}}>
+              Server
+            </Link>
           </li>
         ) : null}
       </ul>

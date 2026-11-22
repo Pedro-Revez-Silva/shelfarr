@@ -10,6 +10,7 @@ class WebPreview::SessionsController < WebPreview::APIController
       notifications: { url: notifications_path, unread: user.notifications.unread.count }
     }
     value[:admin] = { url: admin_root_path } if user.admin?
+    value[:capabilities] = WebPreview::SessionCapabilities.for(user)
     render json: value
   end
 end

@@ -319,12 +319,16 @@ describe("the server overview", () => {
     expect(await screen.findByText("1,234")).toBeTruthy();
   }, 15_000);
 
-  test("the classic preview does not offer this page and keeps Server as a handoff", async () => {
+  test("the Rails preview sends the old overview address to Server and links Server in place of the classic Admin handoff", async () => {
     const server = adminServer();
-    renderApp({ server, url: "/sub/preview/admin" });
-    expect(await screen.findByRole("heading", { name: "That page is not part of this preview", level: 2 })).toBeTruthy();
-    expect(await screen.findByRole("link", { name: "Server (opens the classic Shelfarr app)" })).toBeTruthy();
-    expect(server.called("GET", OVERVIEW).length).toBe(0);
+    const { router } = renderApp({ server, url: "/sub/preview/admin" });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/server"));
+    expect(await screen.findByRole("heading", { name: "Server overview", level: 1 })).toBeTruthy();
+    const serverLink = await within(screen.getByRole("navigation", { name: "Primary" })).findByRole("link", { name: "Server" });
+    expect(serverLink.getAttribute("href")).toBe("/sub/preview/server");
+    expect(serverLink.getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("link", { name: "Admin (opens the classic Shelfarr app)" })).toBeNull();
+    await waitFor(() => expect(server.called("GET", OVERVIEW).length).toBe(1));
   });
 
   test("signing in from the overview's address explains where it returns", async () => {

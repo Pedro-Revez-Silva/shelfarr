@@ -43,11 +43,12 @@ describe("the library page", () => {
     expect(within(nav).queryByRole("link", { name: /Server|Admin/ })).toBeNull();
   });
 
-  test("an admin gets Server, still a handoff until its own pages exist", async () => {
+  test("an admin gets the Server link inside the preview instead of the classic Admin handoff", async () => {
     const server = libraryServer({ "": page([summary()]) }).on("GET", /session$/, () => ({ body: session({ admin: { url: "/sub/admin" } }) }));
     renderApp({ server });
-    const link = await screen.findByRole("link", { name: "Server (opens the classic Shelfarr app)" });
-    expect(link.getAttribute("href")).toBe("/sub/admin");
+    const link = await screen.findByRole("link", { name: "Server" });
+    expect(link.getAttribute("href")).toBe("/sub/preview/server");
+    expect(screen.queryByRole("link", { name: "Admin (opens the classic Shelfarr app)" })).toBeNull();
   });
 
   test("filters live in the address and drive the request", async () => {

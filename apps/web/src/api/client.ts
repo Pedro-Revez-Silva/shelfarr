@@ -55,7 +55,7 @@ type RequestOptions<T> = {
   path: string;
   schema: z.ZodType<T>;
   signal?: AbortSignal | undefined;
-  method?: "GET" | "PUT" | "POST";
+  method?: "GET" | "PUT" | "POST" | "DELETE";
   verifying?: boolean;
   body?: unknown;
   keepalive?: boolean;
@@ -365,12 +365,12 @@ export class ApiClient {
     return "profile" in answer ? { kind: "saved", profile: answer.profile } : { kind: "rejected", errors: answer.errors };
   }
 
-  private async request<T>(options: RequestOptions<T>): Promise<T> {
+  async request<T>(options: RequestOptions<T>): Promise<T> {
     const { boot, guard } = this.deps;
     guard.assertActive();
 
     const headers: Record<string, string> = { Accept: "application/json", [ACCOUNT_HEADER]: guard.account };
-    if (options.method === "PUT" || options.method === "POST") {
+    if (options.method === "PUT" || options.method === "POST" || options.method === "DELETE") {
       headers["Content-Type"] = "application/json";
       await this.deps.mutations?.prepare(options.signal);
       guard.assertActive();
