@@ -11,5 +11,5 @@
 <section class="auth-card" aria-labelledby="connect-result-heading" data-consumer-approval-result="<%= @allowed ? "allowed" : "denied" %>">
   <h1 id="connect-result-heading"><%= heading %></h1>
   <p class="lede"><%= message %></p>
-  <p class="muted">You can close this page.</p>
+  <p class="muted">You can close this page, or <%= link_to "manage connected apps in Account", profile_path, class: "entry-link" %>.</p>
 </section>

@@ -13,6 +13,8 @@
 .entry-app .entry-facts dt { color: var(--muted); font-size: 13px; }
 .entry-app .entry-facts dd { margin: 0; font-weight: 550; }
 .entry-app .entry-facts__wide { grid-column: 1 / -1; }
+.entry-app .entry-account { margin-inline-start: auto; color: var(--muted); font-size: 14px; }
+.entry-app .entry-account strong { color: var(--ink); font-weight: 600; }
 .entry-app .entry-details summary { cursor: pointer; color: var(--muted); padding-block: 10px; }
 .entry-app .entry-notes { white-space: pre-line; font-size: 14px; }
 .entry-app .entry-steps { display: grid; gap: 24px; list-style: none; padding: 0; margin: 8px 0 0; }

@@ -43,7 +43,6 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
   def assert_warm_page
     assert_select "body.web-preview.entry-app[data-turbo=false]"
     assert_select "link[rel=stylesheet][href*='web/preview']"
-    assert_select "link[rel=stylesheet][href*='entry']"
     assert_select "nav[aria-label=Main]", false
     assert_select "main#main .auth-card"
     assert_no_match RETIRED_WORDS, visible_text
@@ -95,7 +94,34 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     assert_classic_page
   end
 
-  test "a server whose web bundle was never built keeps the current sign-in page instead of failing" do
+  def with_precompiled_assets(manifest, files: [])
+    Dir.mktmpdir("warm-entry-assets", Rails.root.join("tmp")) do |directory|
+      output = Pathname(directory)
+      output.join(".manifest.json").write(JSON.generate(manifest))
+      files.each { |file| output.join(file).tap { |path| path.dirname.mkpath }.write("") }
+      resolver = Propshaft::Resolver::Static.new(manifest_path: output.join(".manifest.json"), prefix: "/assets")
+      Rails.application.assets.stub(:resolver, resolver) { yield }
+    end
+  end
+
+  test "a precompiled server whose web bundle was never built keeps the current sign-in page" do
+    with_precompiled_assets({ "tailwind.css" => "tailwind-1.css" }, files: [ "tailwind-1.css" ]) do
+      assert_not WarmEntry.stylesheet_built?
+    end
+  end
+
+  test "a precompiled bundle counts only when its compiled file is there to serve" do
+    manifest = { "web/preview.css" => { "digested_path" => "web/preview-1.css", "integrity" => nil } }
+
+    with_precompiled_assets(manifest, files: [ "web/preview-1.css" ]) do
+      assert WarmEntry.stylesheet_built?
+    end
+    with_precompiled_assets(manifest) do
+      assert_not WarmEntry.stylesheet_built?
+    end
+  end
+
+  test "without a servable bundle the current sign-in page renders instead of failing" do
     WarmEntry.stub(:stylesheet_built?, false) do
       with_warm_entry { get new_session_path }
     end
@@ -103,6 +129,40 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_classic_page
     assert_select "input[name=password]"
+  end
+
+  test "a frame request with the preview off keeps the frame layout it had" do
+    get new_session_path, headers: { "Turbo-Frame" => "modal" }
+
+    assert_response :success
+    assert_select "body.bg-gray-950", false
+    assert_select "nav[aria-label=Main]", false
+    assert_select "input[name=password]"
+  end
+
+  test "the warm sign-in page still ends a session the server has expired" do
+    sign_in_as(@member)
+    expired = Current.session
+    expired.update!(created_at: 2.days.ago)
+    SettingsService.set(:session_max_age_days, 1)
+
+    with_warm_entry { get new_session_path }
+
+    assert_response :success
+    assert_warm_page
+    assert_not Session.exists?(expired.id)
+    assert_empty cookies[:session_id].to_s
+    assert_select "[data-entry-account]", false
+  ensure
+    SettingsService.set(:session_max_age_days, 30)
+  end
+
+  test "a signed-in visitor sees which account the entry page acts for" do
+    sign_in_as(@member)
+
+    with_warm_entry { get consumer_connect_path }
+
+    assert_select "[data-entry-account]", "Signed in as #{@member.name}"
   end
 
   test "password sign-in posts to the same session endpoint with a CSRF token and returns to the page that asked" do
@@ -319,6 +379,7 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
         assert_response :success
         assert_warm_page
         assert_select "h1", "App connected"
+        assert_select "a[href='#{profile_path}']", "manage connected apps in Account"
         assert grant.reload.approved_at
         assert_equal @member, grant.user
       end
@@ -369,6 +430,12 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
       assert_select "[role=status]", /isn't ready on this server yet/
       assert_select "[data-android-admin-note]", false
       assert_equal "no-store", response.headers["Cache-Control"]
+
+      sign_in_as(@member)
+      get android_app_path
+      assert_select "[data-android-admin-note]", false
+      assert_not_includes response.body, "catalog_network"
+      sign_out
 
       sign_in_as(@admin)
       get android_app_path
@@ -421,7 +488,6 @@ class WarmEntrySubpathTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "body.entry-app"
     assert_select "link[rel=stylesheet][href^='#{BASE}/assets/web/preview-']"
-    assert_select "link[rel=stylesheet][href^='#{BASE}/assets/entry-']"
     assert_select "form.auth-form[action='http://www.example.com#{BASE}/session']"
     assert_select "[data-consumer-offline-signed-out-base-value='#{BASE}']"
     assert_select "a.wordmark[href='#{BASE}/']"

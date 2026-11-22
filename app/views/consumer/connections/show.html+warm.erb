@@ -22,7 +22,7 @@
       <p class="lede"><strong class="client-name"><%= @grant.client_name %></strong> is asking to connect as <strong><%= Current.user.name %></strong>.</p>
     <% end %>
     <p class="muted">Check that this code matches the one shown in the app you just opened:</p>
-    <p class="user-code" aria-label="Code <%= @user_code.upcase.chars.join(" ") %>"><%= @user_code.upcase %></p>
+    <p class="user-code"><%= @user_code.upcase %></p>
     <% if @grant.requesting? %>
       <div class="permissions" data-consumer-approval="requesting">
         <p class="permissions-title">If you allow it, the app can:</p>

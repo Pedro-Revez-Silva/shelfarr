@@ -11,7 +11,7 @@
     <%= csp_meta_tag %>
     <%= render "shared/web_app_head" %>
     <link rel="icon" href="<%= public_asset_path('icon.png') %>" type="image/png">
-    <%= stylesheet_link_tag "web/preview", "entry" %>
+    <%= stylesheet_link_tag "web/preview" %>
     <%= javascript_importmap_tags %>
     <%= yield :head %>
   </head>
@@ -24,6 +24,7 @@
           shelfarr
         <% end %>
         <% if release_channel.beta? %><span class="preview-badge" title="<%= release_channel.label %>" data-release-badge>Beta</span><% end %>
+        <% if authenticated? %><span class="entry-account" data-entry-account>Signed in as <strong><%= Current.user.name %></strong></span><% end %>
       </header>
       <main id="main" class="auth-main<%= " auth-main--wide" if content_for?(:wide) %>">
         <%= yield %>

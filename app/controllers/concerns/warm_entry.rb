@@ -11,7 +11,12 @@ module WarmEntry
   end
 
   def self.stylesheet_built?
-    Rails.application.assets.resolver.resolve(STYLESHEET).present?
+    resolver = Rails.application.assets.resolver
+    url = resolver.resolve(STYLESHEET)
+    return false if url.nil?
+    return true unless resolver.is_a?(Propshaft::Resolver::Static)
+
+    resolver.manifest_path.dirname.join(url.delete_prefix(resolver.prefix).delete_prefix("/")).file?
   end
 
   private
@@ -31,6 +36,6 @@ module WarmEntry
   end
 
   def entry_layout
-    warm_entry? ? "entry" : "application"
+    "entry" if warm_entry?
   end
 end
