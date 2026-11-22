@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.shelfarr.app.AppContainer
+import org.shelfarr.app.core.ActivityTime
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.DiscoverItem
@@ -132,6 +133,7 @@ class FindViewModel(
     private var searchJob: Job? = null
     private var trackJob: Job? = null
     private var listJob: Job? = null
+    private var openJob: Job? = null
 
     fun onShown() {
         viewModelScope.launch {
@@ -167,7 +169,10 @@ class FindViewModel(
         searchJob = viewModelScope.launch {
             try {
                 val items = backend.discover(query)
-                findState.update { it.copy(searching = false, searchedFor = query, results = items) }
+                findState.update { state ->
+                    val latest = state.requests.associateBy { it.id }
+                    state.copy(searching = false, searchedFor = query, results = items.map { it.following(latest) })
+                }
             } catch (error: ApiException) {
                 if (error is ApiException.Forbidden) lostPermission()
                 findState.update { it.copy(searching = false, searchedFor = query, results = emptyList(), searchError = error) }
@@ -318,8 +323,15 @@ class FindViewModel(
         open(id, onReady) { failure -> titleState.update { it.copy(opening = false, message = failure) } }
     }
 
+    fun stopOpening() {
+        openJob?.cancel()
+        openJob = null
+        trackState.update { it.copy(opening = false) }
+        titleState.update { it.copy(opening = false) }
+    }
+
     private fun open(id: String, onReady: (Publication) -> Unit, finished: (failure: String?) -> Unit) {
-        viewModelScope.launch {
+        openJob = viewModelScope.launch {
             val failure = try {
                 onReady(backend.publication(id))
                 null
@@ -347,15 +359,14 @@ class FindViewModel(
 
     private fun followInFormats(requests: List<RequestItem>) {
         val latest = requests.associateBy { it.id }
-        fun DiscoverItem.current() = copy(formats = formats.map { option -> option.request?.let { latest[it.id] }?.let(option::following) ?: option })
-        findState.update { state -> state.copy(results = state.results.map { it.current() }) }
-        titleState.update { state -> state.copy(item = state.item?.current()) }
+        findState.update { state -> state.copy(results = state.results.map { it.following(latest) }) }
+        titleState.update { state -> state.copy(item = state.item?.following(latest)) }
     }
 
-    private fun updateFormat(item: DiscoverItem, format: BookType, change: (org.shelfarr.app.core.FormatOption) -> org.shelfarr.app.core.FormatOption) {
-        val updated = item.copy(formats = item.formats.map { if (it.bookType == format) change(it) else it })
-        titleState.update { if (it.item?.id == item.id) it.copy(item = updated) else it }
-        findState.update { state -> state.copy(results = state.results.map { if (it.id == item.id) updated else it }) }
+    private fun updateFormat(item: DiscoverItem, format: BookType, change: (FormatOption) -> FormatOption) {
+        fun DiscoverItem.changed() = if (id == item.id) copy(formats = formats.map { if (it.bookType == format) change(it) else it }) else this
+        titleState.update { it.copy(item = it.item?.changed()) }
+        findState.update { state -> state.copy(results = state.results.map { it.changed() }) }
     }
 
     private fun replaceInList(request: RequestItem) {
@@ -369,11 +380,33 @@ sealed interface FindDestination {
     data class Request(val id: String) : FindDestination
 }
 
-internal fun FormatOption.following(request: RequestItem): FormatOption = when {
-    request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
-    request.stage == RequestStage.FAILED || request.stage == RequestStage.COMPLETED -> copy(state = FormatState.REQUESTABLE, request = null)
-    else -> copy(state = FormatState.REQUESTED, request = request)
+internal fun FormatOption.following(request: RequestItem): FormatOption {
+    val known = this.request
+    if (known?.id == request.id && request.isOlderThan(known)) return this
+    return when {
+        request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
+        request.stage in STAGES_HOLDING_THE_FORMAT -> copy(state = FormatState.REQUESTED, request = request)
+        else -> copy(state = FormatState.REQUESTABLE, request = request)
+    }
 }
+
+private val STAGES_HOLDING_THE_FORMAT = setOf(
+    RequestStage.QUEUED,
+    RequestStage.SEARCHING,
+    RequestStage.AWAITING_PURCHASE,
+    RequestStage.DOWNLOADING,
+    RequestStage.PROCESSING,
+    RequestStage.UNKNOWN,
+)
+
+private fun RequestItem.isOlderThan(other: RequestItem): Boolean {
+    val mine = ActivityTime.parse(updatedAt) ?: return false
+    val theirs = ActivityTime.parse(other.updatedAt) ?: return false
+    return mine < theirs
+}
+
+private fun DiscoverItem.following(latest: Map<String, RequestItem>): DiscoverItem =
+    copy(formats = formats.map { option -> option.request?.let { latest[it.id] }?.let(option::following) ?: option })
 
 internal val BookType.word: String get() = if (this == BookType.EBOOK) "ebook" else "audiobook"
 

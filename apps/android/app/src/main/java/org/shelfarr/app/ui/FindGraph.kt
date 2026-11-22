@@ -71,6 +71,9 @@ internal fun NavGraphBuilder.findScreens(
     }
     screen(FIND_TITLE) {
         val state by find.title.collectAsStateWithLifecycle()
+        LifecycleResumeEffect(find) {
+            onPauseOrDispose { find.stopOpening() }
+        }
         TitleScreen(
             state = state,
             onBack = navController::popBackStack,
@@ -87,7 +90,10 @@ internal fun NavGraphBuilder.findScreens(
         LifecycleResumeEffect(find, id) {
             find.followId(id)
             find.startTracking(id)
-            onPauseOrDispose { find.stopTracking() }
+            onPauseOrDispose {
+                find.stopTracking()
+                find.stopOpening()
+            }
         }
         RequestScreen(
             state = state,

@@ -139,7 +139,7 @@ class RequestFixtureApi(
             "in_library" -> return json(409, """{"error":"already_in_library","message":"Already in the library.","publication_id":"lib-1"}""")
             "requested_by_someone" -> return json(409, """{"error":"already_requested","message":"Someone on this server has already requested this audiobook."}""")
         }
-        requests.entries.firstOrNull { it.value["work"] == work && it.value["type"] == type && it.value["stage"] != "failed" }?.let {
+        requests.entries.firstOrNull { it.value["work"] == work && it.value["type"] == type && it.value["stage"] !in setOf("failed", "not_found") }?.let {
             return json(200, """{"request":${view(it.key)},"existing":true}""")
         }
         val id = "r${counter.incrementAndGet()}"
@@ -184,7 +184,7 @@ class RequestFixtureApi(
 
     private fun item(entry: Pair<String, String>): String {
         val formats = listOf("ebook", "audiobook").joinToString(",") { type ->
-            val mine = requests.entries.firstOrNull { it.value["work"] == entry.first && it.value["type"] == type && it.value["stage"] != "failed" }
+            val mine = requests.entries.firstOrNull { it.value["work"] == entry.first && it.value["type"] == type && it.value["stage"] !in setOf("failed", "not_found") }
             when {
                 mine != null && mine.value["stage"] == "available" -> """{"book_type":"$type","state":"in_library","publication_id":"${mine.value["publication"]}"}"""
                 mine != null -> """{"book_type":"$type","state":"requested","request":${view(mine.key)}}"""

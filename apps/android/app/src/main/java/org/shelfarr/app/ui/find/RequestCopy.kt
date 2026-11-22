@@ -32,7 +32,7 @@ fun RequestItem.stageCopy(): StageCopy = when (stage) {
 /** One line under a format's name on the title page. */
 fun FormatOption.summary(): String = when (state) {
     FormatState.REQUESTABLE -> if (bookType == BookType.EBOOK) "Read it in the app" else "Listen in the app"
-    FormatState.IN_LIBRARY -> "In your library"
+    FormatState.IN_LIBRARY -> "Already in your library"
     FormatState.REQUESTED -> request?.let { "You requested it · ${it.stageCopy().headline}" } ?: "You requested it"
     FormatState.REQUESTED_BY_SOMEONE -> "Already requested on this server. It will appear in the library."
     FormatState.UNKNOWN -> "Not available to request"

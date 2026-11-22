@@ -248,7 +248,7 @@ class FindFlowTest {
 
         compose.onNodeWithTag("result:fx:lighthouse").performClick()
         waitFor("the title page") { hasNode("Choose a format") }
-        compose.onNodeWithText("In your library").assertIsDisplayed()
+        compose.onNodeWithText("Already in your library").assertIsDisplayed()
         compose.onNodeWithText("Request audiobook").assertIsDisplayed()
         compose.onRoot().captureRoboImage("build/screenshots/32-find-title-owned.png")
         compose.onNodeWithTag("format-open:ebook").assertTextEquals("Read now").performClick()
