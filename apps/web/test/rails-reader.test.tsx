@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { App } from "../src/App";
 import { resetFirstPage } from "../src/components/PageHeading";
 import { readerEnvelopeSchema, type Boot, type GoBoot, type PublicationDetail } from "../src/contract";
@@ -77,7 +76,7 @@ describe("the reader served by Rails", () => {
     expect(server.called("PUT", /progress$/)).toEqual([]);
   });
 
-  test("a book with several files lets the reader switch between them, and a stored place with a null type is accepted", async () => {
+  test("a book with several files points to the web reader to choose another, and a stored place with a null type is accepted", async () => {
     const first = { id: "c".repeat(64), filename: "First.epub", format: "epub", media_type: "application/epub+zip", size_bytes: 10, position: 0, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"c".repeat(64)}` };
     const second = { ...first, id: "d".repeat(64), filename: "Second.epub", position: 1, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"d".repeat(64)}` };
     const progress = { asset_id: second.id, locator: { href: "OEBPS/one.xhtml", type: null, locations: { progression: 0.25 } }, position_seconds: null, version: 2, observed_at: null, updated_at: "2026-11-22T10:00:00.000Z", client_mutation_id: "m" };
@@ -85,11 +84,9 @@ describe("the reader served by Rails", () => {
     expect(readerEnvelopeSchema.safeParse({ account: ACCOUNT, publication }).success).toBe(true);
     const server = readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication);
     renderReader(server);
-    const choice = (await screen.findByRole("combobox", { name: "File" })) as HTMLSelectElement;
-    expect(choice.value).toBe(second.id);
-    expect([...choice.options].map((option) => option.textContent)).toEqual(["First.epub (EPUB)", "Second.epub (EPUB)"]);
-    await userEvent.selectOptions(choice, first.id);
-    expect(((await screen.findByRole("combobox", { name: "File" })) as HTMLSelectElement).value).toBe(first.id);
+    expect((await screen.findByRole("link", { name: "Choose a file" })).getAttribute("href")).toBe("/sub/read/8");
+    expect(screen.getByText("This book has 2 files and this reader opens one. To read another, choose it in the web reader.")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: "File" })).toBeNull();
     expect(server.called("PUT", /progress$/)).toEqual([]);
   });
 

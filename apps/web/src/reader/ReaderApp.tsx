@@ -7,7 +7,7 @@ import { useAccountRevalidation } from "../revalidation";
 import { useGuardState, useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { AudioPlayer } from "./AudioPlayer";
-import { EpubReader, WEB_EBOOK_LIMIT } from "./EpubReader";
+import { EpubReader } from "./EpubReader";
 import { isPageFormat } from "./pages";
 import { PagesReader } from "./PagesReader";
 import { ProgressSession } from "./progress";
@@ -87,35 +87,23 @@ const LEAVE_WAIT_MS = 4000;
 
 const OPENING_ORDER: Record<ReaderPublication["content_kind"], readonly string[]> = { graphic: ["cbz", "pdf", "epub"], book: ["epub", "pdf", "cbz"] };
 
-function openable(asset: ReaderAsset): boolean {
-  return asset.format !== "epub" || asset.size_bytes <= WEB_EBOOK_LIMIT;
-}
-
 export function chosenAsset(publication: ReaderPublication): ReaderAsset | null {
   const saved = publication.assets.find((asset) => asset.id === publication.progress?.asset_id);
   if (saved) return saved;
-  const preferred = OPENING_ORDER[publication.content_kind];
-  for (const usable of [openable, () => true]) {
-    for (const format of preferred) {
-      const found = publication.assets.find((asset) => asset.format === format && usable(asset));
-      if (found) return found;
-    }
+  for (const format of OPENING_ORDER[publication.content_kind]) {
+    const found = publication.assets.find((asset) => asset.format === format);
+    if (found) return found;
   }
   return null;
-}
-
-export function openingFor(publication: ReaderPublication, asset: ReaderAsset): Opening {
-  const saved = publication.progress;
-  const here = saved?.asset_id === asset.id;
-  return { asset, start: here ? (saved?.locator ?? null) : null, savedElsewhere: saved !== null && !here };
 }
 
 export type Opening = { asset: ReaderAsset | null; start: Locator | null; savedElsewhere: boolean };
 
 export function firstOpening(publication: ReaderPublication): Opening {
   const asset = chosenAsset(publication);
-  if (asset) return openingFor(publication, asset);
-  return { asset: null, start: null, savedElsewhere: publication.progress !== null };
+  const saved = publication.progress;
+  const here = asset !== null && saved?.asset_id === asset.id;
+  return { asset, start: here ? (saved?.locator ?? null) : null, savedElsewhere: saved !== null && !here };
 }
 
 export type RemoteOpening = { kind: "show" } | { kind: "open"; opening: Opening } | { kind: "unavailable" };
@@ -244,15 +232,13 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
           </a>
         </div>
       ) : null}
-      {!listening && publication.assets.length > 1 && asset ? (
-        <FileChoice
-          assets={publication.assets}
-          current={asset}
-          onChoose={(chosen) => {
-            setRemoteNote(null);
-            setOpening(openingFor(publication, chosen));
-          }}
-        />
+      {publication.classic_reader && !listening && publication.assets.length > 1 ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>{`This book has ${publication.assets.length} files and this reader opens one. To read another, choose it in the web reader.`}</p>
+          <a className="button" href={publication.classic_reader.url}>
+            Choose a file
+          </a>
+        </div>
       ) : null}
       {elsewhere ? (
         <div className="notice reader-notice reader-offer" role="note">
@@ -264,29 +250,6 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
       ) : null}
       {body}
     </ReaderFrame>
-  );
-}
-
-function FileChoice({ assets, current, onChoose }: { assets: ReaderAsset[]; current: ReaderAsset; onChoose: (asset: ReaderAsset) => void }) {
-  return (
-    <div className="reader-files">
-      <label className="reader-field">
-        <span>File</span>
-        <select
-          value={current.id}
-          onChange={(event) => {
-            const chosen = assets.find((candidate) => candidate.id === event.currentTarget.value);
-            if (chosen) onChoose(chosen);
-          }}
-        >
-          {assets.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {`${candidate.filename} (${candidate.format.toUpperCase()})`}
-            </option>
-          ))}
-        </select>
-      </label>
-    </div>
   );
 }
 

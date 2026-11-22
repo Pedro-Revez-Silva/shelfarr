@@ -7,6 +7,7 @@ pin "consumer_page_reader", preload: false
 pin "consumer_read_along", preload: false
 pin "consumer_pdf_engine", to: "consumer_pdf_engine.js", preload: false
 pin "web_preview_offline_release", preload: false
+pin "web_preview_access_refused", preload: false
 pin "settings_navigation_guard"
 pin "web_app_install"
 pin "@hotwired/turbo-rails", to: "turbo.min.js"

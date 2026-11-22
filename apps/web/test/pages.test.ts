@@ -506,17 +506,6 @@ describe("choosing what to open", () => {
     expect(chosenAsset(publication("book", []))).toBeNull();
   });
 
-  test("without a saved place an EPUB over the web reader's limit is passed over for another format, and opened only when nothing else exists", () => {
-    const oversized = (formats: string[]) => {
-      const book = publication("book", formats);
-      return { ...book, assets: book.assets.map((entry) => (entry.format === "epub" ? { ...entry, size_bytes: 32 * 1024 * 1024 + 1 } : entry)) };
-    };
-    expect(chosenAsset(oversized(["epub", "pdf"]))?.format).toBe("pdf");
-    expect(chosenAsset(oversized(["epub"]))?.format).toBe("epub");
-    const savedOnEpub = { ...oversized(["epub", "pdf"]), progress: publication("book", ["epub"], "0".repeat(64)).progress };
-    expect(chosenAsset(savedOnEpub)?.format).toBe("epub");
-  });
-
   test("another device's place opens in its own file when this reader lists it, and is reported when it does not", () => {
     const book = publication("book", ["epub", "pdf"], "1".repeat(64));
     const saved = book.progress;

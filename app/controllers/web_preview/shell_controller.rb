@@ -44,7 +44,10 @@ class WebPreview::ShellController < ApplicationController
   end
 
   def web_preview_not_found
-    render file: Rails.public_path.join("404.html"), status: :not_found, layout: false
+    return render(file: Rails.public_path.join("404.html"), status: :not_found, layout: false) unless Current.user
+
+    page = Rails.public_path.join("404.html").read.sub("</head>", "#{helpers.javascript_importmap_tags("web_preview_access_refused")}</head>")
+    render html: page.html_safe, status: :not_found
   end
 
   def web_preview_signed_out

@@ -564,4 +564,23 @@ describe("one origin, several deployments", () => {
     expect(await releasePreviewAccount("", NOW + 1)).toBe(false);
     expect((await root.accountState()).record?.confirmedAt).toBe(NOW + 2);
   });
+
+  test("a browser that cannot list its databases still has this deployment's account released, and nothing is created", async () => {
+    const factory = indexedDB as IDBFactory & { databases?: unknown };
+    const listing = factory.databases;
+    Object.defineProperty(factory, "databases", { value: undefined, configurable: true });
+    try {
+      expect(await releasePreviewAccount("", NOW)).toBe(false);
+      Object.defineProperty(factory, "databases", { value: listing, configurable: true });
+      expect((await indexedDB.databases()).map((database) => database.name)).toEqual([]);
+      const root = new IndexedDbOfflineStore(databaseNameFor("/preview"));
+      await root.prepare();
+      await root.confirm(confirmation());
+      Object.defineProperty(factory, "databases", { value: undefined, configurable: true });
+      expect(await releasePreviewAccount("", NOW + 1)).toBe(true);
+      expect((await root.accountState()).record).toBeNull();
+    } finally {
+      Object.defineProperty(factory, "databases", { value: listing, configurable: true });
+    }
+  });
 });

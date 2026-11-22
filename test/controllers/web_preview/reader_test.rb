@@ -392,6 +392,33 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     FileUtils.remove_entry(output) if output
   end
 
+  test "a signed-in account refused by the allowlist gets a 404 page that releases its offline access, while an unconfigured preview stays a plain 404" do
+    sign_in_as(users(:one))
+    with_preview_users(users(:two)) do
+      [ web_preview_library_path, web_preview_reader_path(id: @ebook.id), web_preview_downloads_path ].each do |path|
+        get path
+        assert_response :not_found, path
+        imports = JSON.parse(css_select("script[type=importmap]").sole.text).fetch("imports")
+        assert_match(%r{\A/assets/web_preview_access_refused-\h+\.js\z}, imports.fetch("web_preview_access_refused"))
+        assert_select "script[type=module]", text: /import "web_preview_access_refused"/
+        assert_not_includes response.body, "shelfarr-boot"
+      end
+    end
+    with_env(WebPreview::Access::VARIABLE => nil) do
+      get web_preview_downloads_path
+      assert_response :not_found
+      assert_equal Rails.public_path.join("404.html").read, response.body
+    end
+  end
+
+  test "the sign-in page can load the module that releases the preview's offline account" do
+    get new_session_path
+    assert_response :success
+    assert_select "[data-controller=consumer-offline-signed-out]"
+    imports = JSON.parse(css_select("script[type=importmap]").sole.text).fetch("imports")
+    assert_match(%r{\A/assets/web_preview_offline_release-\h+\.js\z}, imports.fetch("web_preview_offline_release"))
+  end
+
   def boot_reader_engine
     get web_preview_reader_path(id: @ebook.id)
     boot.fetch("reader_engine")

@@ -16,18 +16,32 @@ function completed(request) {
 
 function openExisting(factory, name) {
   return new Promise((resolve, reject) => {
+    let missing = false
     const request = factory.open(name)
-    request.onupgradeneeded = () => request.transaction.abort()
+    request.onupgradeneeded = () => {
+      missing = true
+      request.transaction.abort()
+    }
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error)
+    request.onerror = event => {
+      if (!missing) return reject(request.error)
+      event.preventDefault()
+      resolve(null)
+    }
   })
 }
 
+async function listed(factory, name) {
+  if (typeof factory.databases !== "function") return true
+  return (await factory.databases()).some(database => database.name === name)
+}
+
 export async function releasePreviewAccount(base, askedAt = Date.now(), factory = globalThis.indexedDB) {
-  if (typeof factory?.databases !== "function") return false
+  if (!factory) return false
   const name = previewDatabaseName(base)
-  if (!(await factory.databases()).some(database => database.name === name)) return false
+  if (!(await listed(factory, name))) return false
   const database = await openExisting(factory, name)
+  if (!database) return false
   try {
     const transaction = database.transaction("account", "readwrite")
     const accounts = transaction.objectStore("account")
