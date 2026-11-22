@@ -221,7 +221,7 @@ list. The reader still lives under
 ## Not in this slice
 
 Full frontend parity, Go authentication or write ownership, moving `/read` or the PWA identity,
-rewriting Discover/Requests/Admin, a service worker or offline use for the preview, progress
-writes from the preview, production rollout. Safari and real devices have not been exercised:
+rewriting Discover/Requests/Admin, production rollout. (A later slice added the preview's reader, progress writes and
+offline EPUBs; see "Rails-served reader and Downloads" above.) Safari and real devices have not been exercised:
 only Chromium ran. The patterns used (popover-free navigation, native form controls, CSS
 `:has`, grid, `dvh`) are Baseline, but that is not an acceptance claim.

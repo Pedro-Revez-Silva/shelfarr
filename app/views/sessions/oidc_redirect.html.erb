@@ -1,3 +1,4 @@
+<div hidden data-controller="consumer-offline-signed-out" data-consumer-offline-signed-out-base-value="<%= request.script_name %>"></div>
 <div class="mx-auto max-w-xl">
   <div class="rounded-2xl border border-gray-800 bg-gray-900 p-8 shadow-sm" data-controller="oidc-redirect">
     <h1 class="text-3xl font-bold text-white">Redirecting to <%= SettingsService.get(:oidc_provider_name, default: "SSO") %></h1>
