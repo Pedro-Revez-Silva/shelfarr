@@ -52,7 +52,15 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
         <AdministratorsOnly />
       ) : found && settings.data ? (
         <>
-          {settings.isError ? <RefreshProblem onRetry={() => void settings.refetch()} /> : null}
+          {settings.isError ? (
+            <RefreshProblem
+              onRetry={() =>
+                void settings.refetch().then((result) => {
+                  if (!result.isError) document.getElementById(headingId)?.focus();
+                })
+              }
+            />
+          ) : null}
           <CategoryCards category={found} settings={settings.data} />
         </>
       ) : settings.isError ? (

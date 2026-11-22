@@ -244,6 +244,8 @@ module ServerSettings
     end
 
     def save_webhook_mode!
+      return if SettingsService.get(:telegram_update_mode) == "webhook"
+
       SettingsService.set(:telegram_update_mode, "webhook")
     rescue ActiveRecord::ActiveRecordError => e
       Rails.logger.error("[SettingsController] Telegram accepted the webhook but the delivery mode could not be saved: #{e.class}")

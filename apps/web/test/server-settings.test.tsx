@@ -377,7 +377,7 @@ describe("Server in the Rails preview", () => {
     const server = adminServer()
       .on("GET", /\/api\/v1\/admin\/settings$/, () => {
         reads += 1;
-        return reads === 1 ? { body: settings } : { status: 503, body: { error: "server_busy" } };
+        return reads === 1 || reads > 4 ? { body: settings } : { status: 503, body: { error: "server_busy" } };
       })
       .on("PUT", /formats$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Settings saved." }, changed: ["ebook_preferred_formats"], group: settings.categories[0]!.groups[1]! } }));
     renderApp({ server, url: "/sub/preview/server/policy" });
@@ -391,7 +391,11 @@ describe("Server in the Rails preview", () => {
     expect(await screen.findByText(/The latest settings could not be loaded\./, undefined, { timeout: 8000 })).toBeTruthy();
     expect((within(card("New requests")).getByRole("radio", { name: "Ebook" }) as HTMLInputElement).checked).toBe(true);
     expect(within(card("New requests")).getByText("Unsaved changes")).toBeTruthy();
-  }, 15000);
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(screen.queryByText(/The latest settings could not be loaded\./)).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Request policy", level: 1 })));
+    expect((within(card("New requests")).getByRole("radio", { name: "Ebook" }) as HTMLInputElement).checked).toBe(true);
+  }, 20000);
 
   test("environment-managed settings are read-only and are never sent", async () => {
     const server = adminServer().on("PUT", /webhook$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Settings saved." }, changed: [], group: settingsFixture().categories[4]!.groups[0]! } }));

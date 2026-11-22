@@ -506,15 +506,46 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     SettingsService.set(:webhook_enabled, true)
     SettingsService.set(:webhook_url, address)
     sign_in_as(@admin)
-    failure = OutboundNotifications::WebhookDelivery::DeliveryError.new("401 from #{address}: bad auth=webhook-secret-7781")
+    failure = OutboundNotifications::WebhookDelivery::DeliveryError.new("401 for /shelf?auth=webhook-secret-7781 (path /shelf)")
     OutboundNotifications::WebhookDelivery.stub(:deliver!, ->(**) { raise failure }) { probe("webhook") }
-    assert_equal "401 from [hidden]: bad [hidden]", response.parsed_body.dig("outcome", "message")
+    assert_equal WebPreview::Admin::SettingsController::PRIVATE_ADDRESS_FAILURE.stringify_keys, response.parsed_body.fetch("outcome")
+    assert_not_includes response.body, "webhook-secret-7781"
+
+    SettingsService.set(:discord_enabled, true)
+    SettingsService.set(:discord_webhook_url, "https://discord.example/api/webhooks/1/discord-secret-5512")
+    echoed = OutboundNotifications::DiscordDelivery::DeliveryError.new("404 /api/webhooks/1/discord-secret-5512")
+    OutboundNotifications::DiscordDelivery.stub(:deliver!, ->(**) { raise echoed }) { probe("discord") }
+    assert_equal "error", response.parsed_body.dig("outcome", "tone")
+    assert_not_includes response.body, "discord-secret-5512"
+
+    OutboundNotifications::DiscordDelivery.stub(:deliver!, ->(**) { true }) { probe("discord") }
+    assert_equal({ "tone" => "success", "message" => "Discord test sent successfully!" }, response.parsed_body.fetch("outcome"))
+  end
+
+  test "registering the webhook again while Telegram already uses it never undoes the registration" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_update_mode, "webhook")
+    SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
+    SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
+    undone = false
+    sign_in_as(@admin)
+    failing_set = ->(*) { raise ActiveRecord::StatementInvalid, "database is locked" }
+    Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { true }) do
+      Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { undone = true }) do
+        SettingsService.stub(:set, failing_set) { probe("telegram_webhook") }
+      end
+    end
+    assert_equal "success", response.parsed_body.dig("outcome", "tone")
+    assert_not undone
+    assert_equal "webhook", SettingsService.get(:telegram_update_mode)
   end
 
   test "whitespace never replaces a write-only address, and an IPv6 address shows its whole host" do
     SettingsService.set(:webhook_url, "https://[2001:db8::1]:8443/hook?auth=x")
     assert_equal "https://[2001:db8::1]", field_json(settings_json, :webhook_url).fetch("shown")
     save_group("webhook", { webhook_url: "   " })
+    assert_equal [], response.parsed_body.fetch("changed")
+    save_group("webhook", { webhook_url: "\u00a0\t" })
     assert_equal [], response.parsed_body.fetch("changed")
     assert_equal "https://[2001:db8::1]:8443/hook?auth=x", SettingsService.get(:webhook_url)
   end

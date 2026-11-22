@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 class WebPreview::Admin::SettingsController < WebPreview::Admin::BaseController
+  PRIVATE_ADDRESS_PROBES = %w[webhook discord].freeze
+  PRIVATE_ADDRESS_FAILURE = { tone: "error", message: "The test message was not delivered. Check that sending is turned on, the address and token are right, and the receiving service is reachable. The service's reply is not shown because it can contain the address." }.freeze
+
   rescue_from WebPreview::AdminSettings::Unknown, with: ->(error) { render_error("invalid_request", :bad_request, message: error.message) }
 
   def show
@@ -30,10 +33,14 @@ class WebPreview::Admin::SettingsController < WebPreview::Admin::BaseController
     raise WebPreview::AdminSettings::Unknown, "Unknown connection check" unless ServerSettings::Probe::NAMES.include?(name)
 
     outcome = ServerSettings::Probe.new(posted: probe_values, telegram_webhook_url: integrations_telegram_webhook_url).call(name)
-    render json: { account: web_preview_account_id, outcome: outcome_json(outcome) }
+    render json: { account: web_preview_account_id, outcome: private_address_probe?(name, outcome) ? PRIVATE_ADDRESS_FAILURE : outcome_json(outcome) }
   end
 
   private
+
+  def private_address_probe?(name, outcome)
+    PRIVATE_ADDRESS_PROBES.include?(name) && !outcome.success?
+  end
 
   def presenter
     @presenter ||= WebPreview::AdminSettings.new(base_url: request.base_url)
