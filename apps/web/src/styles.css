@@ -2130,3 +2130,344 @@ thead th {
 [data-offline-check="pending"] #root {
   visibility: hidden;
 }
+
+.book-page {
+  max-width: 1200px;
+  margin-inline: auto;
+}
+.book-hero {
+  display: grid;
+  gap: 24px;
+  padding-bottom: 24px;
+}
+.book-hero .cover-slot--large {
+  width: min(40vw, 200px);
+  margin: 0;
+}
+.book-title-block h1 {
+  margin-bottom: 4px;
+}
+.book-author-line {
+  font-family: var(--serif);
+  font-size: clamp(1.25rem, 3vw, 1.75rem);
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+.book-source {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+.book-source a {
+  color: inherit;
+}
+.book-blurb {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 18px;
+  line-height: 1.5;
+  max-width: 34rem;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.server-card h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(1.4rem, 3vw, 2rem);
+  letter-spacing: -0.5px;
+  margin-bottom: 12px;
+}
+.format-rows {
+  border-top: 1px solid var(--line);
+}
+.format-row {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, auto) 1fr;
+  align-items: center;
+  gap: 4px 16px;
+  min-height: 72px;
+  padding-block: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.format-name {
+  font-family: var(--serif);
+  font-size: 20px;
+}
+.format-state--quiet {
+  color: var(--muted);
+}
+.format-state--attention,
+.format-state--progress {
+  color: var(--accent);
+}
+.format-state--done {
+  color: var(--ink);
+  font-weight: 550;
+}
+.format-action {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.format-action:empty {
+  display: none;
+}
+.request-ebook {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+.format-advisory {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 10px;
+}
+@media (min-width: 720px) {
+  .format-row {
+    grid-template-columns: 7rem 1fr auto;
+  }
+  .format-action {
+    grid-column: auto;
+    justify-content: end;
+  }
+}
+@media (min-width: 1000px) {
+  .book-hero {
+    grid-template-columns: 228px minmax(0, 1fr) minmax(0, 34rem);
+    gap: 40px;
+    align-items: start;
+  }
+  .book-hero .cover-slot--large {
+    width: 100%;
+  }
+  .server-card {
+    padding-inline-start: 32px;
+    border-inline-start: 1px solid var(--line);
+  }
+}
+@media (min-width: 720px) and (max-width: 999px) {
+  .book-hero {
+    grid-template-columns: 200px 1fr;
+    gap: 32px;
+  }
+  .server-card {
+    grid-column: 1 / -1;
+  }
+}
+
+.request-steps {
+  border-block: 1px solid var(--line);
+  padding-block: 16px;
+  margin-bottom: 24px;
+}
+.request-steps ol {
+  display: none;
+}
+.request-steps-summary {
+  font-weight: 550;
+}
+@media (min-width: 720px) {
+  .request-steps-summary {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .request-steps ol {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding-inline: 4%;
+  }
+}
+.step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 17px;
+}
+.step:not(:last-child)::after {
+  content: "";
+  inline-size: 3rem;
+  block-size: 1px;
+  margin-inline-start: 12px;
+  background: var(--line);
+}
+.step--done {
+  color: var(--ink);
+}
+.step--current {
+  color: var(--ink);
+  font-weight: 650;
+}
+.step-mark {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 1em;
+}
+.step--current .step-mark::before {
+  content: "";
+  inline-size: 0.75em;
+  block-size: 0.75em;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.step--stuck .step-mark::before {
+  background: transparent;
+  border: 2px solid var(--accent);
+}
+
+.copy-panel {
+  padding-bottom: 32px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 32px;
+}
+.copy-panel:focus {
+  outline: none;
+}
+.copy-panel h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: clamp(1.6rem, 3.5vw, 2.25rem);
+  letter-spacing: -0.5px;
+  margin-bottom: 12px;
+}
+.request-stage {
+  display: grid;
+  gap: 8px;
+  max-width: 44rem;
+  margin-bottom: 12px;
+}
+.request-stage progress {
+  inline-size: min(100%, 28rem);
+  accent-color: var(--accent);
+}
+.request-meta {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.copy-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 8px;
+}
+.copy-table-wrap {
+  overflow-x: auto;
+  container-type: inline-size;
+}
+.copy-table {
+  font-size: 17px;
+}
+.copy-table thead th {
+  font-size: 15px;
+  color: var(--muted);
+}
+.copy-table th,
+.copy-table td {
+  padding: 12px 16px 12px 0;
+  vertical-align: middle;
+}
+.copy-table input[type="radio"] {
+  inline-size: 22px;
+  block-size: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.copy-choice {
+  inline-size: 48px;
+}
+.copy-table label {
+  cursor: pointer;
+}
+.copy-flag {
+  color: var(--muted);
+  font-size: 13px;
+}
+@container (width < 600px) {
+  .copy-table,
+  .copy-table tbody,
+  .copy-table tr,
+  .copy-table td,
+  .copy-table th {
+    display: block;
+  }
+  .copy-table thead {
+    display: none;
+  }
+  .copy-table tr {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    padding-block: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .copy-table th,
+  .copy-table td {
+    border: 0;
+    padding: 0;
+  }
+  .copy-table .copy-choice {
+    grid-row: span 5;
+    padding-top: 2px;
+  }
+  .copy-table td[data-label] {
+    grid-column: 2;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  .copy-table td[data-label]::before {
+    content: attr(data-label) ": ";
+  }
+}
+.copy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-top: 8px;
+}
+.cancel-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.open-list {
+  display: grid;
+  gap: 12px;
+  max-width: 44rem;
+}
+.open-list li {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  gap: 12px;
+}
+.open-list li > span:first-child {
+  color: var(--muted);
+}
+.book-page-link {
+  margin-top: 16px;
+}
+.discover-formats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.format-chip--in_library {
+  color: var(--ink);
+  font-weight: 550;
+}
+.format-chip--requested,
+.format-chip--requested_by_someone {
+  color: var(--accent);
+}

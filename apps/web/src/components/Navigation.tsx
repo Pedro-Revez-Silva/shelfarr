@@ -15,13 +15,13 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
             Library
           </Link>
         </li>
+        <li>
+          <Link to="/discover" className="nav-link">
+            Discover
+          </Link>
+        </li>
         {handoffs ? null : (
           <>
-            <li>
-              <Link to="/discover" className="nav-link">
-                Discover
-              </Link>
-            </li>
             <li>
               <Link to="/requests" className="nav-link">
                 Requests
@@ -50,7 +50,6 @@ export function PrimaryNavigation({ session }: { session: Session | undefined })
         )}
         {session && handoffs ? (
           <>
-            <HandoffLink href={session.links.discover} label="Discover" />
             <HandoffLink href={session.links.requests} label="Requests" />
             <HandoffLink href={session.links.account} label="Account" />
             {session.admin ? <HandoffLink href={session.admin.url} label="Admin" /> : null}

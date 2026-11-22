@@ -445,12 +445,13 @@ describe("the Go Discover page", () => {
     expect(searches(server).map(queryOf)).toEqual(["dune"]);
   });
 
-  test("is not part of the Rails-served preview, which keeps its classic Discover handoff", async () => {
+  test("is not the Rails-served preview's Discover, which searches through Rails instead of Open Library", async () => {
     const server = discoverServer();
-    renderApp({ server, url: "/sub/preview/discover?q=dune" });
-    expect(await screen.findByRole("heading", { name: "That page is not part of this preview" })).toBeTruthy();
+    renderApp({ server, url: "/sub/preview/discover" });
+    expect(await screen.findByLabelText("Title or author")).toBeTruthy();
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await waitFor(() => expect(within(nav).getByRole("link", { name: /Discover/ }).getAttribute("href")).toBe("/sub/search"));
+    await waitFor(() => expect(within(nav).getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/sub/preview/discover"));
+    expect(screen.queryByText(/Open Library/)).toBeNull();
     expect(searches(server)).toEqual([]);
   });
 });

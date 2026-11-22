@@ -127,6 +127,14 @@ function Details({ publication }: { publication: PublicationDetail }) {
           {epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub} load={(signal) => api.reader(publication.id, signal)} /> : null}
 
           <ReadingStatusForm publication={publication} />
+
+          {mode === "rails" && publication.book_page ? (
+            <p className="book-page-link">
+              <Link to="/books/$source/$sourceId" params={{ source: publication.book_page.source, sourceId: publication.book_page.id }} search={publication.book_page.also.length > 0 ? { also: publication.book_page.also.join(",") } : {}}>
+                Formats and requests for this book
+              </Link>
+            </p>
+          ) : null}
         </div>
       </div>
 

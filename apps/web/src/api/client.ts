@@ -17,6 +17,7 @@ import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
 import { acquisitionSchema, requestCreationSchema, selectionEnvelopeSchema, type Acquisition, type RequestCreation, type Selection } from "../contract";
 import { serverOverviewSchema, type ServerOverview } from "../contract";
+import { bookEnvelopeSchema, bookRequestOutcomeSchema, catalogueSchema, requestActionSchema, type Book, type BookAddress, type BookRequestOutcome, type CatalogueAnswer } from "../contract";
 import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema, type MetadataChange, type MetadataRejection, type MetadataSettings } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
@@ -90,6 +91,10 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   work_not_offered: "invalid",
   not_selectable: "conflict",
   acquisition_busy: "conflict",
+  search_blocked: "conflict",
+  cannot_cancel: "conflict",
+  request_rejected: "invalid",
+  search_unavailable: "busy",
 };
 
 export class ApiClient {
@@ -216,6 +221,35 @@ export class ApiClient {
       account: (value) => value.account,
     });
     return envelope.selection;
+  }
+
+  catalogue(query: string, signal?: AbortSignal): Promise<CatalogueAnswer> {
+    return this.request({ path: `/discover${suffix(new URLSearchParams({ q: query }))}`, schema: catalogueSchema, signal, account: (value) => value.account });
+  }
+
+  async book(address: BookLocation, signal?: AbortSignal): Promise<Book> {
+    const envelope = await this.request({ path: `${bookPath(address)}${suffix(bookQuery(address))}`, schema: bookEnvelopeSchema, signal, account: (value) => value.account });
+    return envelope.book;
+  }
+
+  requestBookEbook(address: BookLocation, signal?: AbortSignal): Promise<BookRequestOutcome> {
+    return this.request({ path: `${bookPath(address)}/requests${suffix(bookQuery(address))}`, schema: bookRequestOutcomeSchema, method: "POST", body: {}, signal, account: (value) => value.account });
+  }
+
+  chooseCopy(requestId: string, resultId: string, signal?: AbortSignal): Promise<unknown> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/selection`, { result_id: resultId }, signal);
+  }
+
+  searchAgain(requestId: string, signal?: AbortSignal): Promise<unknown> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/search`, {}, signal);
+  }
+
+  cancelRequest(requestId: string, signal?: AbortSignal): Promise<unknown> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/cancel`, {}, signal);
+  }
+
+  private requestAction(path: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+    return this.request({ path, schema: requestActionSchema, method: "POST", body, signal, account: (value) => value.account });
   }
 
   serverOverview(signal?: AbortSignal): Promise<ServerOverview> {
@@ -359,6 +393,19 @@ async function readJson(response: Response): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+export type BookLocation = BookAddress & { metadata?: string | undefined };
+
+function bookPath(address: BookLocation): string {
+  return `/books/${encodeURIComponent(address.source)}/${encodeURIComponent(address.id)}`;
+}
+
+function bookQuery(address: BookLocation): URLSearchParams {
+  const query = new URLSearchParams();
+  if (address.also.length > 0) query.set("also", address.also.join(","));
+  if (address.metadata) query.set("metadata", address.metadata);
+  return query;
 }
 
 function suffix(query: URLSearchParams): string {

@@ -26,7 +26,7 @@ describe("the library page", () => {
     expect(screen.getByRole("status", { name: "" }).textContent).toContain("Showing 2 books");
   });
 
-  test("one navigation tells in-app Library apart from classic-app handoffs and hides Admin from non-admins", async () => {
+  test("one navigation tells in-app Library and Discover apart from classic-app handoffs and hides Admin from non-admins", async () => {
     renderApp({ server: libraryServer({ "": page([summary()]) }) });
     await screen.findByText("Ada Reader");
     const nav = screen.getByRole("navigation", { name: "Primary" });
@@ -34,7 +34,10 @@ describe("the library page", () => {
     const library = within(nav).getByRole("link", { name: "Library" });
     expect(library.getAttribute("aria-current")).toBe("page");
     expect(library.getAttribute("href")).toBe("/sub/preview/library");
-    for (const [name, href] of [["Discover", "/sub/search"], ["Requests", "/sub/requests"], ["Account", "/sub/profile"]] as const) {
+    const discover = within(nav).getByRole("link", { name: "Discover" });
+    expect(discover.getAttribute("href")).toBe("/sub/preview/discover");
+    expect(discover.getAttribute("aria-current")).toBeNull();
+    for (const [name, href] of [["Requests", "/sub/requests"], ["Account", "/sub/profile"]] as const) {
       const link = within(nav).getByRole("link", { name: `${name} (opens the classic Shelfarr app)` });
       expect(link.getAttribute("href")).toBe(href);
       expect(link.getAttribute("aria-current")).toBeNull();

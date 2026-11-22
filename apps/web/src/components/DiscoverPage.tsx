@@ -5,6 +5,7 @@ import { coverStyles, type DiscoverAnswer, type DiscoverItem, type DiscoverState
 import { useDiscover, useRequestEbook } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
+import { CatalogueSearch } from "./CatalogueSearch";
 import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { EmptyState, ErrorPanel, Loading } from "./States";
@@ -26,14 +27,7 @@ export function checkQuery(raw: string | undefined): CheckedQuery {
 
 export function DiscoverPage() {
   const { mode } = useServices();
-  if (mode !== "go") {
-    return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
-      </EmptyState>
-    );
-  }
-  return <Discover />;
+  return mode === "go" ? <Discover /> : <CatalogueSearch />;
 }
 
 function Discover() {

@@ -65,9 +65,17 @@ export const publicationFileSchema = z.object({
 });
 export type PublicationFile = z.infer<typeof publicationFileSchema>;
 
+export const workSources = ["hardcover", "google_books", "openlibrary", "comic_vine"] as const;
+const workSourceId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const workIdentifier = z.string().regex(/^(?:hardcover|google_books|openlibrary|comic_vine):[A-Za-z0-9_-]{1,64}$/);
+
+export const bookAddressSchema = z.object({ source: z.enum(workSources), id: workSourceId, also: z.array(workIdentifier).max(8) });
+export type BookAddress = z.infer<typeof bookAddressSchema>;
+
 export const publicationDetailSchema = publicationSummarySchema.extend({
   description: z.string(),
   files: z.array(publicationFileSchema),
+  book_page: bookAddressSchema.nullable().optional(),
 });
 export type PublicationDetail = z.infer<typeof publicationDetailSchema>;
 
@@ -454,3 +462,90 @@ export const metadataRejectionSchema = z.object({
 export type MetadataRejection = z.infer<typeof metadataRejectionSchema>;
 
 export type MetadataChange = { enabled?: boolean; search_limit?: number };
+
+export const bookFormatTypes = ["ebook", "audiobook"] as const;
+export type BookFormatType = (typeof bookFormatTypes)[number];
+export const bookFormatStates = ["requestable", "requested", "requested_by_someone", "in_library"] as const;
+export type BookFormatState = (typeof bookFormatStates)[number];
+export const bookRequestStages = ["queued", "searching", "not_found", "awaiting_purchase", "downloading", "processing", "available", "completed", "failed"] as const;
+export type BookRequestStage = (typeof bookRequestStages)[number];
+
+export const bookCopySchema = z.object({
+  id: identifier,
+  title: z.string(),
+  format: z.string().nullable(),
+  size_bytes: z.number().int().nonnegative().nullable(),
+  language: z.string().nullable(),
+  source: z.string(),
+  state: z.enum(["pending", "selected", "rejected"]),
+  skipped: z.boolean(),
+  downloadable: z.boolean(),
+});
+export type BookCopy = z.infer<typeof bookCopySchema>;
+
+export const bookRequestSchema = z.object({
+  id: identifier,
+  status: z.string(),
+  stage: z.enum(bookRequestStages),
+  attention_needed: z.boolean(),
+  download_percent: percent.nullable(),
+  can_cancel: z.boolean(),
+  next_retry_at: timestamp.nullable(),
+  created_at: timestamp,
+  updated_at: timestamp,
+  own: z.boolean(),
+  choice_needed: z.boolean(),
+  requested_by: z.string().optional(),
+  issue: z.string().nullable().optional(),
+  copies: z.object({ selectable: z.boolean(), can_search_again: z.boolean(), candidates: z.array(bookCopySchema) }).optional(),
+});
+export type BookRequest = z.infer<typeof bookRequestSchema>;
+
+export const bookFormatSchema = z.object({
+  book_type: z.enum(bookFormatTypes),
+  state: z.enum(bookFormatStates),
+  note: z.string().nullable(),
+  publication: publicationSummarySchema.nullable(),
+  request: bookRequestSchema.nullable(),
+});
+export type BookFormat = z.infer<typeof bookFormatSchema>;
+
+export const bookSchema = z.object({
+  id: workIdentifier,
+  also: z.array(workIdentifier),
+  details: z.enum(["library", "catalogue", "missing"]),
+  title: z.string().nullable(),
+  author: z.string().nullable(),
+  year: z.number().int().nullable(),
+  description: z.string().nullable(),
+  cover: z.object({ url: httpsUrl.nullable(), style: z.enum(coverStyles) }),
+  source: z.object({ name: z.string(), url: httpsUrl.nullable() }),
+  formats: z.array(bookFormatSchema),
+});
+export type Book = z.infer<typeof bookSchema>;
+
+export const bookEnvelopeSchema = z.object({ account: identifier, book: bookSchema });
+export const bookRequestOutcomeSchema = z.object({ account: identifier, outcome: z.enum(["created", "existing"]), book: bookSchema });
+export type BookRequestOutcome = z.infer<typeof bookRequestOutcomeSchema>;
+export const requestActionSchema = z.object({ account: identifier, request: z.object({ id: identifier, status: z.string() }) });
+
+export const catalogueItemSchema = z.object({
+  book: bookAddressSchema.extend({ metadata: z.string().regex(/^[A-Za-z0-9_-]{32}$/).nullable().optional() }),
+  title: z.string(),
+  author: z.string().nullable(),
+  year: z.number().int().nullable(),
+  cover: z.object({ url: httpsUrl.nullable(), style: z.enum(coverStyles) }),
+  source_name: z.string(),
+  formats: z.array(z.object({ book_type: z.enum(bookFormatTypes), state: z.enum(bookFormatStates) })),
+});
+export type CatalogueItem = z.infer<typeof catalogueItemSchema>;
+
+export const catalogueSchema = z.object({ account: identifier, query: z.string(), providers: z.array(z.string()), items: z.array(catalogueItemSchema) });
+export type CatalogueAnswer = z.infer<typeof catalogueSchema>;
+
+export const bookSearchSchema = z.object({
+  also: z.string().max(800).optional().catch(undefined),
+  metadata: z.string().max(64).optional().catch(undefined),
+  q: z.string().max(200).optional().catch(undefined),
+});
+export type BookSearch = z.infer<typeof bookSearchSchema>;

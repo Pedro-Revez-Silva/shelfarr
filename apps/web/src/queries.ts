@@ -6,9 +6,9 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import type { AccountAnswer, MetadataAnswer } from "./api/client";
+import type { AccountAnswer, BookLocation, MetadataAnswer } from "./api/client";
 import { ApiError, failureKind, isApiError, unconfirmed } from "./api/errors";
-import type { Acquisition, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
+import type { Acquisition, Book, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useServices } from "./services";
 
@@ -357,4 +357,77 @@ export function flattenLibrary(data: InfiniteData<LibraryPage> | undefined) {
   if (!data) return [];
   const seen = new Set<string>();
   return data.pages.flatMap((page) => page.items).filter((item) => (seen.has(item.id) ? false : (seen.add(item.id), true)));
+}
+
+const BOOK_TRANSFER_MS = 3_000;
+const BOOK_WAITING_MS = 10_000;
+const TRANSFERRING_STAGES = new Set(["downloading", "processing"]);
+const WAITING_STAGES = new Set(["queued", "searching"]);
+
+export function bookRefreshInterval(book: Book | undefined): number | false {
+  const stages = (book?.formats ?? []).flatMap((format) => (format.request ? [format.request.stage] : []));
+  if (stages.some((stage) => TRANSFERRING_STAGES.has(stage))) return BOOK_TRANSFER_MS;
+  if (stages.some((stage) => WAITING_STAGES.has(stage))) return BOOK_WAITING_MS;
+  return false;
+}
+
+export function useCatalogue(query: string | null) {
+  const { api, keys } = useServices();
+  return useQuery({
+    queryKey: keys.catalogue(query),
+    queryFn: ({ signal }) => api.catalogue(query ?? "", signal),
+    enabled: query !== null,
+    staleTime: 5 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useBook(location: BookLocation) {
+  const { api, keys } = useServices();
+  return useQuery({
+    queryKey: keys.book(location.source, location.id),
+    queryFn: ({ signal }) => api.book(location, signal),
+    refetchInterval: ({ state }) => bookRefreshInterval(state.data),
+  });
+}
+
+function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Promise<T>, after?: (answer: T) => Book | null) {
+  const { keys, guard } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: send,
+    onSuccess: (answer: T) => {
+      if (!guard.isActive()) return;
+      const book = after?.(answer) ?? null;
+      if (book) client.setQueryData(keys.book(location.source, location.id), book);
+    },
+    onSettled: () => {
+      if (!guard.isActive()) return;
+      void client.invalidateQueries({ queryKey: keys.book(location.source, location.id) });
+      void client.invalidateQueries({ queryKey: keys.catalogueAll });
+      void client.invalidateQueries({ queryKey: keys.libraryAll });
+      void client.invalidateQueries({ queryKey: keys.continueAll });
+    },
+  });
+}
+
+export function useRequestBookEbook(location: BookLocation) {
+  const { api } = useServices();
+  return useBookChange(location, () => api.requestBookEbook(location), (answer) => answer.book);
+}
+
+export function useChooseCopy(location: BookLocation, requestId: string) {
+  const { api } = useServices();
+  return useBookChange(location, (resultId: string) => api.chooseCopy(requestId, resultId));
+}
+
+export function useSearchAgain(location: BookLocation, requestId: string) {
+  const { api } = useServices();
+  return useBookChange(location, () => api.searchAgain(requestId));
+}
+
+export function useCancelRequest(location: BookLocation, requestId: string) {
+  const { api } = useServices();
+  return useBookChange(location, () => api.cancelRequest(requestId));
 }

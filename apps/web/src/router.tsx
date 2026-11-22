@@ -1,7 +1,8 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
-import { discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema } from "./contract";
+import { bookSearchSchema, discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema } from "./contract";
 import { AccountPage } from "./components/AccountPage";
 import { AdminPage } from "./components/AdminPage";
+import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
 import { DiscoverPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
@@ -67,6 +68,13 @@ const discoverRoute = createRoute({
   component: DiscoverPage,
 });
 
+const bookRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/books/$source/$sourceId",
+  validateSearch: (search: Record<string, unknown>) => bookSearchSchema.parse(search),
+  component: BookPage,
+});
+
 const requestsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/requests",
@@ -92,7 +100,7 @@ const serverSettingsRoute = createRoute({
   component: ServerSettingsPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({
