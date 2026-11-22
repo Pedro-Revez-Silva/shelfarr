@@ -50,9 +50,10 @@ module DownloadClients
       end
 
       assign_configured_label!(torrent_id)
-      # label.set_torrent applies the label's queue settings and can turn
-      # removal back on. Disable it again once that label is in place.
-      disable_remove_at_ratio!(torrent_id) if configured_label.present?
+      # Auto-labeling and label.set_torrent can turn removal back on after the
+      # add returns. The torrent is still paused, so clear that flag before it
+      # is allowed to run and hit a share ratio of 0.
+      start_added_torrent!(torrent_id, start_paused: options[:paused] == true)
       torrent_id
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
@@ -224,22 +225,31 @@ module DownloadClients
       progress.to_f.round
     end
 
+    def start_added_torrent!(torrent_id, start_paused:)
+      disable_remove_at_ratio!(torrent_id)
+      resume_added_torrent!(torrent_id) unless start_paused
+    rescue Base::Error, Faraday::Error => error
+      remove_unlabelled_torrent(torrent_id)
+      raise error
+    end
+
     def disable_remove_at_ratio!(torrent_id)
       rpc_call("core.set_torrent_options", [ [ torrent_id ], { "remove_at_ratio" => false } ])
-    rescue Base::Error, Faraday::Error => error
-      Rails.logger.warn "[Deluge] Could not keep torrent #{torrent_id} after its share ratio: #{error.message}"
-      RemoteResult::Failed.new(error)
+    end
+
+    def resume_added_torrent!(torrent_id)
+      rpc_call("core.resume_torrent", [ [ torrent_id ] ])
     end
 
     def build_add_params(options)
       params = {}
       params["download_location"] = options[:save_path] if options[:save_path].present?
-      params["add_paused"] = options[:paused] if options.key?(:paused)
-      # Deluge can delete a torrent the moment its share ratio is reached. A
-      # small download finishes between monitor polls, so the client looks
-      # empty and the grab is failed even though the files are complete.
-      # stop_at_ratio still pauses at the configured ratio. Shelfarr does not
-      # remove the torrent after import, so the paused torrent stays put.
+      # Add paused so a finished torrent cannot be removed while auto-labeling
+      # or label.set_torrent turns removal back on. Resume happens only after
+      # remove_at_ratio is forced off. stop_at_ratio can still pause later.
+      # Shelfarr does not remove the torrent after import, so that paused
+      # torrent stays put.
+      params["add_paused"] = true
       params["remove_at_ratio"] = false
       params
     end

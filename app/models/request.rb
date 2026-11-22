@@ -295,8 +295,13 @@ class Request < ApplicationRecord
 
   # Hashes already rejected for this request. Fallback selection uses this so a
   # later search cannot grab the same torrent from a different indexer.
+  # Refresh Search deletes the result rows, so the hash is also read from the
+  # blocklist event and the failed download that survived that deletion.
   def blocked_torrent_info_hashes
-    search_results.blocklisted.filter_map(&:torrent_info_hash)
+    (
+      blocklisted_result_info_hashes +
+      blocklisted_failure_info_hashes
+    ).uniq
   end
 
   def handle_download_failure!(download, reason:)
@@ -1027,6 +1032,32 @@ class Request < ApplicationRecord
         "Select a release manually or refresh the search.",
       status: :not_found
     )
+  end
+
+  def blocklisted_result_info_hashes
+    search_results.blocklisted.includes(:downloads).flat_map do |result|
+      [ result.torrent_info_hash, *download_info_hashes(result.downloads) ]
+    end.select { |hash| hash.is_a?(String) }
+  end
+
+  def blocklisted_failure_info_hashes
+    request_events.where(event_type: "release_blocklisted").includes(:download).flat_map do |event|
+      [ event_detail_info_hash(event.details), *download_info_hashes([ event.download ]) ]
+    end.select { |hash| hash.is_a?(String) }
+  end
+
+  def download_info_hashes(downloads)
+    downloads.filter_map { |download| info_hash_string(MagnetLink.normalize_info_hash(download&.external_id)) }
+  end
+
+  def info_hash_string(value)
+    value if value.is_a?(String)
+  end
+
+  def event_detail_info_hash(details)
+    return nil unless details.is_a?(Hash)
+
+    MagnetLink.normalize_info_hash(details["info_hash"] || details[:info_hash])
   end
 
   def blocklist_result!(search_result, reason:, download: nil)
