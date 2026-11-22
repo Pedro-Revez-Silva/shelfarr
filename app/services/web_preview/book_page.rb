@@ -6,17 +6,14 @@ module WebPreview
     SOURCES = MetadataSources::NAMES.keys.freeze
     SOURCE_ID = /\A[A-Za-z0-9_-]{1,64}\z/
     WORK_ID = /\A(?<source>#{SOURCES.join("|")}):(?<id>[A-Za-z0-9_-]{1,64})\z/
-    MAX_ALSO = 8
+    MAX_LINKS = 9
     COPY_STATUSES = %w[searching not_found].freeze
+    ACTIVE_DOWNLOADS = %i[queued downloading paused].freeze
     COVER_STYLES = %w[clay moss slate oat plum stone].freeze
     METADATA_ERRORS = [ HardcoverClient::Error, GoogleBooksClient::Error, OpenLibraryClient::Error, ComicVineClient::Error, MetadataService::Error, ArgumentError ].freeze
 
     def self.work_id(source, source_id)
       "#{source}:#{source_id}" if SOURCES.include?(source) && source_id.is_a?(String) && source_id.match?(SOURCE_ID)
-    end
-
-    def self.also(raw, except:)
-      raw.to_s.split(",").map(&:strip).select { |value| value.match?(WORK_ID) }.excluding(except).uniq.first(MAX_ALSO)
     end
 
     def self.cover_style(key)
@@ -25,30 +22,39 @@ module WebPreview
     end
 
     def self.path_for(book)
-      work = book.unified_work_id
-      match = WORK_ID.match(work.to_s)
-      return nil unless match
+      return nil unless FORMATS.include?(book.book_type)
 
-      others = Book.work_ids_for(book).excluding(work).select { |value| value.match?(WORK_ID) }
-      { source: match[:source], id: match[:id], also: others.first(MAX_ALSO) }
+      match = WORK_ID.match(book.unified_work_id.to_s)
+      { source: match[:source], id: match[:id] } if match
     end
 
-    def initialize(user:, work_id:, also:, handoff:, publication:)
+    def self.choosing_allowed?(request)
+      COPY_STATUSES.include?(request.status) && !request.downloads.where(status: ACTIVE_DOWNLOADS).exists?
+    end
+
+    def self.choosable?(result)
+      result.pending? && result.downloadable?
+    end
+
+    def initialize(user:, work_id:, handoff:, publication:)
       @user = user
       @work_id = work_id
-      @also = also
-      @handoff = handoff
+      @handoff = handoff[:work_id] == work_id ? handoff : {}
       @publication = publication
     end
 
     def work_ids
-      [ @work_id, *@also ]
+      @work_ids ||= begin
+        seeds = [ @work_id, *Array(@handoff[:source_work_ids]).map(&:to_s).select { |value| value.match?(WORK_ID) } ].uniq
+        linked = stored_books(Book.preload_by_work_ids(seeds)).flat_map { |book| Book.work_ids_for(book) }
+        [ *seeds, *linked.select { |value| value.match?(WORK_ID) } ].uniq.first(MAX_LINKS)
+      end
     end
 
     def representation
       {
         id: @work_id,
-        also: @also,
+        also: work_ids.drop(1),
         **metadata_fields,
         formats: FORMATS.map { |book_type| format(book_type) }
       }
@@ -72,6 +78,10 @@ module WebPreview
       @books ||= FORMATS.filter_map { |book_type| Book.find_in_lookup(lookup, work_ids, book_type: book_type) }
     end
 
+    def stored_books(found)
+      found.values.flat_map(&:values).uniq
+    end
+
     def local_metadata
       book = books.find(&:acquired?) || books.first
       return unless book
@@ -80,7 +90,7 @@ module WebPreview
     end
 
     def handoff_metadata
-      return unless @handoff[:work_id] == @work_id && @handoff[:title].present?
+      return if @handoff[:title].blank?
 
       found = { origin: "catalogue", title: @handoff[:title], author: @handoff[:author].presence, year: @handoff[:first_publish_year],
         description: @handoff[:description].presence, cover_url: @handoff[:cover_url] }
@@ -114,22 +124,21 @@ module WebPreview
     end
 
     def format(book_type)
-      check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: @also, book_type: book_type, existing_books_lookup: lookup)
-      book = check.existing_book if check.existing_book&.book_type == book_type
+      check = DuplicateDetectionService.check(work_id: @work_id, source_work_ids: work_ids.drop(1), book_type: book_type, existing_books_lookup: lookup)
+      book = Book.find_in_lookup(lookup, work_ids, book_type: book_type)
       entry = { book_type: book_type, state: "requestable", note: nil, publication: nil, request: nil }
-
-      if book&.acquired?
-        return entry.merge(state: "in_library", publication: @publication.call(book))
-      end
+      return entry.merge(state: "in_library", publication: @publication.call(book)) if book&.acquired?
 
       if check.block? && check.existing_request
         request = check.existing_request
-        return entry.merge(state: "requested", request: request_fields(request)) if visible?(request)
-
-        return entry.merge(state: "requested_by_someone")
+        return visible?(request) ? entry.merge(state: "requested", request: request_fields(request)) : entry.merge(state: "requested_by_someone")
       end
 
-      entry.merge(note: check.warn? && book ? check.message : nil)
+      latest = book&.requests&.reject(&:completed?)&.max_by { |request| [ request.created_at, request.id ] }
+      return entry unless latest && visible?(latest)
+      return entry.merge(state: "requested", request: request_fields(latest)) if latest.not_found?
+
+      entry.merge(note: check.warn? ? check.message : nil)
     end
 
     def visible?(request)
@@ -148,7 +157,7 @@ module WebPreview
     def copies(request)
       candidates = request.search_results.best_first.to_a
       {
-        selectable: COPY_STATUSES.include?(request.status) && candidates.any?(&:downloadable?),
+        selectable: self.class.choosing_allowed?(request) && candidates.any? { |result| self.class.choosable?(result) },
         can_search_again: request.search_refresh_allowed?,
         candidates: candidates.map { |result| candidate(result) }
       }
@@ -159,12 +168,12 @@ module WebPreview
         id: result.id.to_s,
         title: result.title.to_s,
         format: (result.primary_extension || result.detected_extensions.first).to_s.upcase.presence,
-        size_bytes: result.size_bytes,
+        size_bytes: result.size_bytes.to_i.positive? ? result.size_bytes : nil,
         language: result.language_display_name,
         source: result.source_display_name,
         state: result.status,
         skipped: result.blocklisted?,
-        downloadable: result.downloadable?
+        downloadable: self.class.choosable?(result)
       }
     end
   end

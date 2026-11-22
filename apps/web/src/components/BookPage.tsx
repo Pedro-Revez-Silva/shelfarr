@@ -14,17 +14,6 @@ import { EmptyState, ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/books/$source/$sourceId");
 
-const MAX_ALSO = 8;
-const WORK_ID = /^(?:hardcover|google_books|openlibrary|comic_vine):[A-Za-z0-9_-]{1,64}$/;
-
-export function parseAlso(raw: string | undefined): string[] {
-  return (raw ?? "")
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => WORK_ID.test(value))
-    .slice(0, MAX_ALSO);
-}
-
 function isWorkSource(value: string): value is BookLocation["source"] {
   return (workSources as readonly string[]).includes(value);
 }
@@ -44,7 +33,7 @@ export function BookPage() {
 
 function BookLoader({ location: { source, id } }: { location: Pick<BookLocation, "source" | "id"> }) {
   const search = routeApi.useSearch();
-  const location: BookLocation = { source, id, also: parseAlso(search.also), metadata: search.metadata };
+  const location: BookLocation = { source, id, metadata: search.metadata };
   const book = useBook(location);
   const session = useSession();
   usePageTitle(book.data?.title ?? (book.isError ? "Book not found" : "Loading book"));
@@ -182,13 +171,14 @@ export function formatState(format: BookFormat): { text: string; tone: Tone } {
     case "requested_by_someone":
       return { text: "Requested by someone here", tone: "progress" };
     case "in_library":
-      return format.publication?.availability === "available" ? { text: "In library", tone: "done" } : { text: "In library, file missing", tone: "attention" };
+      return format.publication?.availability === "available" ? { text: "In library", tone: "done" } : { text: "In library, can't open here", tone: "attention" };
     case "requested":
       return format.request ? requestState(format.request) : { text: "Requested", tone: "progress" };
   }
 }
 
 function requestState(request: BookRequest): { text: string; tone: Tone } {
+  if (stalled(request)) return { text: "Needs attention", tone: "attention" };
   switch (request.stage) {
     case "queued":
       return { text: "Requested", tone: "progress" };
@@ -310,7 +300,7 @@ export function requestSteps(request: BookRequest): { steps: readonly string[]; 
 function RequestSteps({ request }: { request: BookRequest }) {
   if (request.stage === "available" || request.stage === "completed") return null;
   const { steps, current } = requestSteps(request);
-  const stuck = request.stage === "not_found" || request.stage === "awaiting_purchase" || request.stage === "failed";
+  const stuck = stalled(request) || request.stage === "not_found" || request.stage === "awaiting_purchase" || request.stage === "failed";
   return (
     <section className="request-steps" aria-label="Ebook request progress">
       <p className="request-steps-summary">
@@ -359,7 +349,7 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
               <span className="sr-only"> {publication.title} in the reader</span>
             </a>
           ) : (
-            <span>The file for this ebook is not available on the server right now, so it cannot be opened. Your saved place is kept.</span>
+            <span>This ebook is in the library, but there is no file this browser can open right now. Your saved place is kept.</span>
           )}
         </li>
         <li>
@@ -373,7 +363,16 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
   );
 }
 
+export function stalled(request: BookRequest): boolean {
+  return request.attention_needed && !request.choice_needed && request.stage !== "downloading" && request.stage !== "processing";
+}
+
 function stageSentence(request: BookRequest, admin: boolean): string {
+  if (stalled(request)) {
+    return admin
+      ? "Shelfarr stopped working on this request until someone looks at it."
+      : "Shelfarr stopped working on this request until an administrator looks at it. This page updates when it moves again.";
+  }
   switch (request.stage) {
     case "queued":
       return "Requested. Shelfarr will search for copies shortly.";
@@ -487,7 +486,7 @@ function CancelRequest({ request, location }: { request: BookRequest; location: 
 }
 
 function firstChoice(copies: BookCopy[]): string {
-  return copies.find((copy) => copy.downloadable && !copy.skipped && copy.state !== "rejected")?.id ?? copies.find((copy) => copy.downloadable)?.id ?? "";
+  return copies.find((copy) => copy.downloadable && !copy.skipped)?.id ?? copies.find((copy) => copy.downloadable)?.id ?? "";
 }
 
 function CopyTable({ request, copies, location }: { request: BookRequest; copies: BookCopy[]; location: BookLocation }) {
@@ -496,13 +495,14 @@ function CopyTable({ request, copies, location }: { request: BookRequest; copies
   const [missing, setMissing] = useState(false);
   const captionId = useId();
   const errorId = useId();
-  const firstRadio = useRef<HTMLInputElement>(null);
+  const firstChoosable = useRef<HTMLInputElement>(null);
+  const firstChoosableId = copies.find((copy) => copy.downloadable)?.id;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (choose.isPending) return;
     if (!copies.some((copy) => copy.id === chosen && copy.downloadable)) {
       setMissing(true);
-      firstRadio.current?.focus();
+      firstChoosable.current?.focus();
       return;
     }
     setMissing(false);
@@ -528,11 +528,11 @@ function CopyTable({ request, copies, location }: { request: BookRequest; copies
             </tr>
           </thead>
           <tbody>
-            {copies.map((copy, index) => (
+            {copies.map((copy) => (
               <tr key={copy.id} className={chosen === copy.id ? "copy-row copy-row--chosen" : "copy-row"}>
                 <td className="copy-choice">
                   <input
-                    ref={index === 0 ? firstRadio : undefined}
+                    ref={copy.id === firstChoosableId ? firstChoosable : undefined}
                     type="radio"
                     id={`copy-${copy.id}`}
                     name="copy"
@@ -560,8 +560,8 @@ function CopyTable({ request, copies, location }: { request: BookRequest; copies
         </table>
       </div>
       {missing ? (
-        <p id={errorId} className="field-error">
-          <span aria-hidden="true">⚠ </span>Choose one copy first.
+        <p id={errorId} className="field-error" role="alert">
+          <span aria-hidden="true">⚠ </span>Choose one copy that can be downloaded first.
         </p>
       ) : null}
       <div className="copy-actions">

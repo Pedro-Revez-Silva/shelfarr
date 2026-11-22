@@ -69,7 +69,7 @@ export const workSources = ["hardcover", "google_books", "openlibrary", "comic_v
 const workSourceId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const workIdentifier = z.string().regex(/^(?:hardcover|google_books|openlibrary|comic_vine):[A-Za-z0-9_-]{1,64}$/);
 
-export const bookAddressSchema = z.object({ source: z.enum(workSources), id: workSourceId, also: z.array(workIdentifier).max(8) });
+export const bookAddressSchema = z.object({ source: z.enum(workSources), id: workSourceId });
 export type BookAddress = z.infer<typeof bookAddressSchema>;
 
 export const publicationDetailSchema = publicationSummarySchema.extend({
@@ -464,11 +464,8 @@ export type MetadataRejection = z.infer<typeof metadataRejectionSchema>;
 export type MetadataChange = { enabled?: boolean; search_limit?: number };
 
 export const bookFormatTypes = ["ebook", "audiobook"] as const;
-export type BookFormatType = (typeof bookFormatTypes)[number];
 export const bookFormatStates = ["requestable", "requested", "requested_by_someone", "in_library"] as const;
-export type BookFormatState = (typeof bookFormatStates)[number];
 export const bookRequestStages = ["queued", "searching", "not_found", "awaiting_purchase", "downloading", "processing", "available", "completed", "failed"] as const;
-export type BookRequestStage = (typeof bookRequestStages)[number];
 
 export const bookCopySchema = z.object({
   id: identifier,
@@ -540,11 +537,10 @@ export const catalogueItemSchema = z.object({
 });
 export type CatalogueItem = z.infer<typeof catalogueItemSchema>;
 
-export const catalogueSchema = z.object({ account: identifier, query: z.string(), providers: z.array(z.string()), items: z.array(catalogueItemSchema) });
+export const catalogueSchema = z.object({ account: identifier, query: z.string(), providers: z.array(z.string()), unavailable: z.array(z.string()), items: z.array(catalogueItemSchema) });
 export type CatalogueAnswer = z.infer<typeof catalogueSchema>;
 
 export const bookSearchSchema = z.object({
-  also: z.string().max(800).optional().catch(undefined),
   metadata: z.string().max(64).optional().catch(undefined),
   q: z.string().max(200).optional().catch(undefined),
 });

@@ -45,7 +45,6 @@ export function createQueryKeys(account: string) {
     catalogue: (query: string | null) => [...root, "catalogue", query] as const,
     catalogueAll: [...root, "catalogue"] as const,
     book: (source: string, id: string) => [...root, "book", source, id] as const,
-    bookAll: [...root, "book"] as const,
   };
 }
 

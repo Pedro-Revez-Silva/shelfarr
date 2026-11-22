@@ -361,13 +361,15 @@ export function flattenLibrary(data: InfiniteData<LibraryPage> | undefined) {
 
 const BOOK_TRANSFER_MS = 3_000;
 const BOOK_WAITING_MS = 10_000;
+const BOOK_RETRY_MS = 60_000;
 const TRANSFERRING_STAGES = new Set(["downloading", "processing"]);
 const WAITING_STAGES = new Set(["queued", "searching"]);
 
 export function bookRefreshInterval(book: Book | undefined): number | false {
-  const stages = (book?.formats ?? []).flatMap((format) => (format.request ? [format.request.stage] : []));
-  if (stages.some((stage) => TRANSFERRING_STAGES.has(stage))) return BOOK_TRANSFER_MS;
-  if (stages.some((stage) => WAITING_STAGES.has(stage))) return BOOK_WAITING_MS;
+  const requests = (book?.formats ?? []).flatMap((format) => (format.request ? [format.request] : []));
+  if (requests.some((request) => TRANSFERRING_STAGES.has(request.stage))) return BOOK_TRANSFER_MS;
+  if (requests.some((request) => WAITING_STAGES.has(request.stage) && !request.attention_needed)) return BOOK_WAITING_MS;
+  if (requests.some((request) => request.attention_needed || (request.stage === "not_found" && request.next_retry_at !== null))) return BOOK_RETRY_MS;
   return false;
 }
 

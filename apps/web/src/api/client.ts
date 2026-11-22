@@ -403,7 +403,6 @@ function bookPath(address: BookLocation): string {
 
 function bookQuery(address: BookLocation): URLSearchParams {
   const query = new URLSearchParams();
-  if (address.also.length > 0) query.set("also", address.also.join(","));
   if (address.metadata) query.set("metadata", address.metadata);
   return query;
 }

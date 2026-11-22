@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Book, BookFormat, BookRequest, CatalogueAnswer } from "../src/contract";
 import { bookRefreshInterval } from "../src/queries";
@@ -67,7 +67,7 @@ describe("the Book page", () => {
       current = book({ formats: [format("ebook", { state: "requested", request: request() }), format("audiobook")] });
       return { status: 201, body: { account: ACCOUNT, outcome: "created", book: current } };
     });
-    renderApp({ server, url: `${BOOK_URL}?also=hardcover:77&metadata=${"a".repeat(32)}&q=middlemarch` });
+    renderApp({ server, url: `${BOOK_URL}?metadata=${"a".repeat(32)}&q=middlemarch` });
     expect(await screen.findByRole("heading", { level: 1, name: "Middlemarch" })).toBeTruthy();
     expect(screen.getByText("George Eliot", { selector: ".book-author-line" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open Library (opens in a new tab)" }).getAttribute("href")).toBe("https://openlibrary.org/works/OL900W");
@@ -80,7 +80,7 @@ describe("the Book page", () => {
     await userEvent.click(within(card).getByRole("button", { name: "Request ebook of Middlemarch" }));
     expect(await within(card).findByText("Requested")).toBeTruthy();
     const [sent] = server.called("POST", /\/requests/);
-    expect(sent?.path).toBe(`/sub/preview/api/v1/books/openlibrary/OL900W/requests?also=hardcover%3A77&metadata=${"a".repeat(32)}`);
+    expect(sent?.path).toBe(`/sub/preview/api/v1/books/openlibrary/OL900W/requests?metadata=${"a".repeat(32)}`);
     expect(sent?.headers["x-csrf-token"]).toBe("token-123");
     expect(sent?.headers["x-shelfarr-account"]).toBe(ACCOUNT);
     const steps = screen.getByRole("region", { name: "Ebook request progress" });
@@ -91,13 +91,38 @@ describe("the Book page", () => {
     expect(screen.queryByText("Choose a copy")).toBeNull();
   });
 
-  test("follows the ordinary workflow by itself from finding a copy to getting the file", async () => {
+  test("follows the ordinary workflow by itself from finding a copy to getting the file to the reader", async () => {
     let current = book({ formats: [format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching" }) }), format("audiobook")] });
-    renderApp({ server: bookServer(() => current), url: BOOK_URL });
+    const { services } = renderApp({ server: bookServer(() => current), url: BOOK_URL });
     expect(await screen.findByText(/Looking for a suitable copy/)).toBeTruthy();
     expect(screen.queryByRole("radio")).toBeNull();
     current = book({ formats: [format("ebook", { state: "requested", request: request({ status: "downloading", stage: "downloading", download_percent: 42 }) }), format("audiobook")] });
-    expect(bookRefreshInterval(current)).toBe(3_000);
+    await act(() => services.queryClient.invalidateQueries());
+    expect(await screen.findByText("Getting the file · 42%")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Ebook request progress" })).getByText("Getting the file").closest("li")?.getAttribute("aria-current")).toBe("step");
+    current = book({ details: "library", formats: [format("ebook", { state: "in_library", publication: summary({ reader_url: "/sub/read/7" }) }), format("audiobook")] });
+    await act(() => services.queryClient.invalidateQueries());
+    const card = await screen.findByRole("region", { name: "On this server" });
+    const open = await within(card).findByRole("link", { name: "Start reading The Quiet Library in the reader" });
+    expect(open.getAttribute("href")).toBe("/sub/read/7");
+    expect(screen.queryByRole("region", { name: "Ebook request progress" })).toBeNull();
+  });
+
+  test("a request that stopped for attention says so instead of promising an automatic download", async () => {
+    const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", attention_needed: true }) });
+    renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });
+    expect(await screen.findByText(/stopped working on this request until an administrator looks at it/)).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "On this server" })).getByText("Needs attention")).toBeTruthy();
+    expect(screen.queryByText(/Looking for a suitable copy/)).toBeNull();
+    expect(bookRefreshInterval(book({ formats: [ebook] }))).toBe(60_000);
+  });
+
+  test("a request with nothing found yet stays on the page with its next search, not a new Request button", async () => {
+    const ebook = format("ebook", { state: "requested", request: request({ status: "not_found", stage: "not_found", next_retry_at: new Date(Date.now() + 3 * 3600_000).toISOString() }) });
+    renderApp({ server: bookServer(book({ formats: [ebook, format("audiobook")] })), url: BOOK_URL });
+    const status = await screen.findByText(/No suitable copy has been found yet\./);
+    expect(status.textContent).toBe("No suitable copy has been found yet. Shelfarr searches again in 3 hours.");
+    expect(screen.queryByRole("button", { name: /Request ebook/ })).toBeNull();
   });
 
   test("a member whose copies were not picked automatically is told so, with no copy names or controls", async () => {
@@ -136,6 +161,15 @@ describe("the Book page", () => {
     expect(screen.getByRole("link", { name: "Add a link or file on the classic request page (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/requests/41");
   });
 
+  test("a copy that can no longer be chosen is disabled and an empty choice is announced and focuses the first choosable copy", async () => {
+    const candidates = [{ ...COPIES[0]!, id: "500", title: "Gone copy", state: "rejected" as const, downloadable: false }, { ...COPIES[1]!, downloadable: true }];
+    const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", choice_needed: true, copies: { selectable: true, can_search_again: false, candidates } }) });
+    const server = bookServer(book({ formats: [ebook, format("audiobook")] }), ADMIN);
+    renderApp({ server, url: BOOK_URL });
+    const [gone, usable] = (await screen.findAllByRole("radio")) as HTMLInputElement[];
+    expect([gone?.disabled, usable?.disabled, usable?.checked]).toEqual([true, false, true]);
+  });
+
   test("a refused choice says why and keeps the table", async () => {
     const ebook = format("ebook", { state: "requested", request: request({ status: "searching", stage: "searching", choice_needed: true, copies: { selectable: true, can_search_again: false, candidates: COPIES } }) });
     const server = bookServer(book({ formats: [ebook, format("audiobook")] }), ADMIN).on("POST", /selection$/, () => ({ status: 409, body: { error: "not_selectable", message: "Cannot replace a download while dispatch is in progress" } }));
@@ -160,9 +194,9 @@ describe("the Book page", () => {
   test("an owned ebook whose file is gone says so instead of offering to read it", async () => {
     const publication = summary({ availability: "unavailable" });
     renderApp({ server: bookServer(book({ formats: [format("ebook", { state: "in_library", publication }), format("audiobook")] })), url: BOOK_URL });
-    expect(await screen.findByText("In library, file missing")).toBeTruthy();
+    expect(await screen.findByText("In library, can't open here")).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Start reading|Continue reading/ })).toBeNull();
-    expect(screen.getByText(/cannot be opened/)).toBeTruthy();
+    expect(screen.getByText(/no file this browser can open right now/)).toBeTruthy();
   });
 
   test("another account's request shows only that it exists", async () => {
@@ -204,9 +238,10 @@ describe("Discover in the Rails preview", () => {
     account: ACCOUNT,
     query: "middlemarch",
     providers: ["Open Library"],
+    unavailable: [],
     items: [
       {
-        book: { source: "openlibrary", id: "OL900W", also: ["hardcover:77"], metadata: "b".repeat(32) },
+        book: { source: "openlibrary", id: "OL900W", metadata: "b".repeat(32) },
         title: "Middlemarch",
         author: "George Eliot",
         year: 1871,
@@ -224,11 +259,18 @@ describe("Discover in the Rails preview", () => {
     const server = standardServer().on("GET", /\/api\/v1\/discover\?/, () => ({ body: answer }));
     renderApp({ server, url: "/sub/preview/discover?q=middlemarch" });
     const link = await screen.findByRole("link", { name: "Middlemarch" });
-    expect(link.getAttribute("href")).toBe(`/sub/preview/books/openlibrary/OL900W?q=middlemarch&also=hardcover%3A77&metadata=${"b".repeat(32)}`);
+    expect(link.getAttribute("href")).toBe(`/sub/preview/books/openlibrary/OL900W?q=middlemarch&metadata=${"b".repeat(32)}`);
     expect(server.called("GET", /discover/)[0]?.path).toBe("/sub/preview/api/v1/discover?q=middlemarch");
     expect(screen.getByRole("list", { name: "On this server" }).textContent).toBe("Ebook: in libraryAudiobook: not in library");
     expect(screen.getByRole("status").textContent).toBe("1 result for “middlemarch” from Open Library.");
     expect(screen.getByRole("link", { name: "Use the classic search (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/search");
+  });
+
+  test("says when some catalogues could not be reached, so results may be incomplete", async () => {
+    const server = standardServer().on("GET", /\/api\/v1\/discover\?/, () => ({ body: { ...answer, providers: ["Hardcover", "Open Library"], unavailable: ["Hardcover"] } }));
+    renderApp({ server, url: "/sub/preview/discover?q=middlemarch" });
+    expect((await screen.findByRole("note")).textContent).toBe("Hardcover could not be reached, so these results may be incomplete. Try again in a moment.");
+    expect(screen.getByRole("link", { name: "Middlemarch" })).toBeTruthy();
   });
 
   test("says when no catalogue is switched on", async () => {
@@ -247,10 +289,10 @@ describe("Discover in the Rails preview", () => {
 describe("the library detail", () => {
   test("links an owned book to its Book page through the book's own work links", async () => {
     const server = standardServer()
-      .on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ book_page: { source: "hardcover", id: "77", also: ["openlibrary:OL900W"] } }) } }))
+      .on("GET", /\/api\/v1\/library\/7$/, () => ({ body: { account: ACCOUNT, publication: detail({ book_page: { source: "hardcover", id: "77" } }) } }))
       .on("GET", /\/api\/v1\/library(\?|$)/, () => ({ body: page([summary()]) }));
     renderApp({ server, url: "/sub/preview/library/7" });
     const link = await screen.findByRole("link", { name: "Formats and requests for this book" });
-    expect(link.getAttribute("href")).toBe("/sub/preview/books/hardcover/77?also=openlibrary%3AOL900W");
+    expect(link.getAttribute("href")).toBe("/sub/preview/books/hardcover/77");
   });
 });

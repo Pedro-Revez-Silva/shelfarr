@@ -8,7 +8,12 @@ class WebPreview::RequestsController < WebPreview::APIController
   def selection
     request = Request.find(identifier(params[:id]))
     result = request.search_results.find(identifier(params[:result_id]))
-    request.select_result!(result)
+    request.with_lock do
+      result.reload
+      raise ArgumentError, "This copy can no longer be chosen. The page shows what can be chosen now." unless WebPreview::BookPage.choosing_allowed?(request) && WebPreview::BookPage.choosable?(result)
+
+      request.select_result!(result)
+    end
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: request.reload.status } }
   rescue ArgumentError => error
     render_error("not_selectable", :conflict, message: error.message.first(300))

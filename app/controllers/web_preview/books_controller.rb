@@ -4,6 +4,7 @@ class WebPreview::BooksController < WebPreview::APIController
   include ConsumerWebPublication
 
   REQUESTED_TYPE = "ebook"
+  CREATION_LOCK = Mutex.new
 
   def show
     render json: { account: web_preview_account_id, book: book_page.representation }
@@ -11,7 +12,7 @@ class WebPreview::BooksController < WebPreview::APIController
 
   def create_request
     page = book_page
-    outcome = API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_ebook(page) }
+    outcome = CREATION_LOCK.synchronize { request_ebook(page) }
     return render_error("request_rejected", :unprocessable_entity, message: outcome) if outcome.is_a?(String)
 
     render json: { account: web_preview_account_id, outcome: outcome, book: book_page.representation }, status: outcome == :created ? :created : :ok
@@ -48,7 +49,6 @@ class WebPreview::BooksController < WebPreview::APIController
     WebPreview::BookPage.new(
       user: Current.user,
       work_id: work_id,
-      also: WebPreview::BookPage.also(params[:also], except: work_id),
       handoff: RequestMetadataHandoff.fetch(user: Current.user, token: params[:metadata]),
       publication: ->(book) { publication_summary(book) }
     )

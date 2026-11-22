@@ -11,8 +11,10 @@ class WebPreview::DiscoverController < WebPreview::APIController
     return render_error("invalid_query", :unprocessable_entity) unless valid_query?(query)
 
     providers = MetadataService.enabled_metadata_providers(content_kind: ContentKinds::BOOK)
-    results = providers.empty? ? [] : search(query.strip)
-    render json: { account: web_preview_account_id, query: query.strip, providers: providers.map { |source| MetadataSources.display_name(source) }, items: annotate(results) }
+    results, failed = search(query.strip)
+    return render_error("search_unavailable", :service_unavailable) if providers.any? && failed.size == providers.size
+
+    render json: { account: web_preview_account_id, query: query.strip, providers: names(providers), unavailable: names(failed), items: annotate(results) }
   rescue *CONNECTION_ERRORS
     render_error("search_unavailable", :service_unavailable)
   rescue *ANSWER_ERRORS
@@ -26,9 +28,20 @@ class WebPreview::DiscoverController < WebPreview::APIController
   end
 
   def search(query)
-    MetadataService.search(query, limit: LIMIT, content_kind: ContentKinds::BOOK)
+    by_provider = {}
+    failed = []
+    MetadataService.each_provider_search(query, limit: LIMIT, content_kind: ContentKinds::BOOK) do |provider, results, did_fail|
+      by_provider[provider] = results
+      failed << provider if did_fail
+    end
+    results = MetadataService.aggregate_provider_results(MetadataService.merge_provider_results(by_provider), limit: LIMIT, content_kind: ContentKinds::BOOK)
       .reject { |result| ContentKinds.graphic?(result.respond_to?(:content_kind) ? result.content_kind : nil) }
       .first(LIMIT)
+    [ results, failed ]
+  end
+
+  def names(sources)
+    sources.map { |source| MetadataSources.display_name(source) }
   end
 
   def annotate(results)
@@ -42,14 +55,14 @@ class WebPreview::DiscoverController < WebPreview::APIController
 
   def work_ids(result)
     sources = result.respond_to?(:sources) ? Array(result.sources).filter_map { |source| source[:work_id] } : []
-    [ result.work_id, *sources ].compact_blank.map(&:to_s).uniq.first(WebPreview::BookPage::MAX_ALSO + 1)
+    [ result.work_id, *sources ].compact_blank.map(&:to_s).uniq.first(WebPreview::BookPage::MAX_LINKS)
   end
 
   def item(result, ids, lookup)
     source, source_id = Book.parse_work_id(ids.first)
     year = result.year.to_s.match?(/\A\d{1,4}\z/) ? result.year.to_i : nil
     {
-      book: { source: source, id: source_id, also: ids.drop(1).select { |value| value.match?(WebPreview::BookPage::WORK_ID) }, metadata: handoff_token(result, ids, year) },
+      book: { source: source, id: source_id, metadata: handoff_token(result, ids, year) },
       title: result.title.to_s,
       author: result.author.presence,
       year: year,

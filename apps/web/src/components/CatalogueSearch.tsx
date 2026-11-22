@@ -36,6 +36,11 @@ export function CatalogueSearch() {
       </p>
       {query !== null && answer.isPending ? <Loading label="Searching the catalogue…" /> : null}
       {answer.isError ? <SearchFailure error={answer.error} onRetry={() => void answer.refetch()} /> : null}
+      {answer.data && answer.data.unavailable.length > 0 ? (
+        <p className="notice" role="note">
+          {answer.data.unavailable.join(", ")} could not be reached, so these results may be incomplete. Try again in a moment.
+        </p>
+      ) : null}
       {answer.data ? <Results answer={answer.data} /> : null}
       {session.data ? (
         <p className="discover-note">
@@ -179,7 +184,7 @@ function Result({ item, query }: { item: CatalogueItem; query: string }) {
           <Link
             to="/books/$source/$sourceId"
             params={{ source: item.book.source, sourceId: item.book.id }}
-            search={{ q: query, ...(item.book.also.length > 0 ? { also: item.book.also.join(",") } : {}), ...(item.book.metadata ? { metadata: item.book.metadata } : {}) }}
+            search={{ q: query, ...(item.book.metadata ? { metadata: item.book.metadata } : {}) }}
           >
             {item.title}
           </Link>

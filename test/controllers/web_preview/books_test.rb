@@ -29,9 +29,17 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
   end
 
   def catalogue_result(work_id: WORK, title: "Middlemarch", author: "George Eliot")
-    source, source_id = Book.parse_work_id(work_id)
-    MetadataService::SearchResult.new(source: source, source_id: source_id, title: title, author: author, description: "Lives in a provincial town.",
-      year: 1871, cover_url: nil, has_audiobook: nil, has_ebook: nil, series_name: nil, series_position: nil)
+    _, source_id = Book.parse_work_id(work_id)
+    found = OpenLibraryClient::SearchResult.new(work_id: source_id, title: title, author: author, first_publish_year: 1871, cover_id: nil, edition_count: 3)
+    MetadataSearch::ResultNormalizer.call("openlibrary", found, requested_content_kind: ContentKinds::BOOK)
+  end
+
+  def with_catalogue(answers, &block)
+    providers = answers.keys
+    search = lambda do |*_args, **_options, &each|
+      answers.each { |provider, (results, failed)| each.call(provider, results, failed) }
+    end
+    MetadataService.stub(:enabled_metadata_providers, providers) { MetadataService.stub(:each_provider_search, search, &block) }
   end
 
   def discover(query, user:)
@@ -70,26 +78,37 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
   test "discover answers each catalogue result with its Book page address and per-format state for this account" do
     shelved = Book.create!(title: "Owned", author: "A. Reader", book_type: :ebook, open_library_work_id: "OL901W", file_path: @epub_path)
     sign_in_as(@member)
-    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
-      MetadataService.stub(:search, [ catalogue_result, catalogue_result(work_id: "openlibrary:OL901W", title: "Owned") ]) do
+    with_catalogue("openlibrary" => [ [ catalogue_result, catalogue_result(work_id: "openlibrary:OL901W", title: "Owned") ], false ]) do
         body = discover("middlemarch", user: @member)
-        assert_equal [ "account", "items", "providers", "query" ], body.keys.sort
-        assert_equal [ "Open Library" ], body.fetch("providers")
+        assert_equal [ "account", "items", "providers", "query", "unavailable" ], body.keys.sort
+        assert_equal [ [ "Open Library" ], [] ], body.values_at("providers", "unavailable")
         first, owned = body.fetch("items")
-        assert_equal({ "source" => "openlibrary", "id" => "OL900W", "also" => [] }, first.fetch("book").except("metadata"))
+        assert_equal({ "source" => "openlibrary", "id" => "OL900W" }, first.fetch("book").except("metadata"))
         assert_match(/\A[A-Za-z0-9_-]{32}\z/, first.dig("book", "metadata"))
         assert_equal [ "Middlemarch", "George Eliot", 1871, "Open Library" ], first.values_at("title", "author", "year", "source_name")
         assert_equal [ { "book_type" => "ebook", "state" => "requestable" }, { "book_type" => "audiobook", "state" => "requestable" } ], first.fetch("formats")
         assert_equal "in_library", owned.fetch("formats").first.fetch("state")
         assert_not_nil shelved
-      end
+    end
+  end
+
+  test "discover says which catalogues failed, and a search where every catalogue failed is not shown as no matches" do
+    sign_in_as(@member)
+    with_catalogue("hardcover" => [ [], true ], "openlibrary" => [ [ catalogue_result ], false ]) do
+      body = discover("middlemarch", user: @member)
+      assert_equal [ [ "Hardcover", "Open Library" ], [ "Hardcover" ], [ "Middlemarch" ] ], [ body.fetch("providers"), body.fetch("unavailable"), body.fetch("items").map { |item| item.fetch("title") } ]
+    end
+    with_catalogue("openlibrary" => [ [], true ]) do
+      preview_get web_preview_api_discover_path(q: "middlemarch"), user: @member
+      assert_response :service_unavailable
+      assert_equal "search_unavailable", response.parsed_body.fetch("error")
     end
   end
 
   test "discover says when no catalogue is switched on and refuses a malformed query" do
     sign_in_as(@member)
     MetadataService.stub(:enabled_metadata_providers, []) do
-      assert_equal({ "account" => @member.id.to_s, "query" => "middlemarch", "providers" => [], "items" => [] }, discover("middlemarch", user: @member))
+      assert_equal({ "account" => @member.id.to_s, "query" => "middlemarch", "providers" => [], "unavailable" => [], "items" => [] }, discover("middlemarch", user: @member))
     end
     preview_get web_preview_api_discover_path(q: "a\u0007b"), user: @member
     assert_response :unprocessable_entity
@@ -99,10 +118,8 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
   test "a catalogue work opens from its discover hand-off with separate ebook and audiobook rows and no request" do
     sign_in_as(@member)
     token = nil
-    MetadataService.stub(:enabled_metadata_providers, [ "openlibrary" ]) do
-      MetadataService.stub(:search, [ catalogue_result ]) { token = discover("middlemarch", user: @member).dig("items", 0, "book", "metadata") }
-    end
-    book = BookMetadataLookupService.stub(:call, ->(*) { raise "the hand-off must be used before the catalogue" }) { book_json(user: @member, metadata: token) }
+    with_catalogue("openlibrary" => [ [ catalogue_result ], false ]) { token = discover("middlemarch", user: @member).dig("items", 0, "book", "metadata") }
+    book = BookMetadataLookupService.stub(:call, { title: "Not this title", author: "Not this author", description: "Lives in a provincial town." }) { book_json(user: @member, metadata: token) }
     assert_equal({ "id" => WORK, "also" => [], "details" => "catalogue", "title" => "Middlemarch", "author" => "George Eliot", "year" => 1871,
       "description" => "Lives in a provincial town.", "cover" => { "url" => nil, "style" => WebPreview::BookPage.cover_style(WORK) },
       "source" => { "name" => "Open Library", "url" => "https://openlibrary.org/works/OL900W" },
@@ -200,6 +217,25 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal "downloading", format_of(book_json(user: @admin), "ebook").dig("request", "stage")
   end
 
+  test "a copy cannot be chosen once a download is queued or the copy was set aside, and a bad size is left out" do
+    request, copies = requested_middlemarch
+    copies.first.update!(size_bytes: -1)
+    sign_in_as(@admin)
+    assert_nil format_of(book_json(user: @admin), "ebook").dig("request", "copies", "candidates", 0, "size_bytes")
+    copies.last.update!(status: :rejected)
+    post web_preview_api_request_selection_path(request), params: { result_id: copies.last.id.to_s }, headers: account_headers(@admin), as: :json
+    assert_response :conflict
+    assert_equal "not_selectable", response.parsed_body.fetch("error")
+    copies.last.update!(status: :pending)
+    request.downloads.create!(name: "queued", status: :queued, search_result: copies.first)
+    assert_no_enqueued_jobs(only: DownloadJob) do
+      post web_preview_api_request_selection_path(request), params: { result_id: copies.last.id.to_s }, headers: account_headers(@admin), as: :json
+    end
+    assert_response :conflict
+    assert_equal [ "queued" ], request.downloads.reload.map(&:status)
+    assert_equal false, format_of(book_json(user: @admin), "ebook").dig("request", "copies", "selectable")
+  end
+
   test "an administrator can search again, and a copy of another request cannot be chosen" do
     request, = requested_middlemarch
     stranger = Request.create!(book: Book.create!(title: "Other", book_type: :ebook, open_library_work_id: "OL902W"), user: @member, status: :searching)
@@ -228,18 +264,57 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal "requestable", format_of(book_json(user: @member), "ebook").fetch("state")
   end
 
-  test "an acquired ebook found by any of the work's links opens in the existing reader, and the library detail links back to its Book page" do
-    @ebook.update!(open_library_work_id: "OL900W", hardcover_id: "77")
+  test "an acquired ebook found through the work's stored links opens in the existing reader, and the library detail links back to its Book page" do
+    Book.create!(title: "The Quiet Library", book_type: :audiobook, hardcover_id: "77", google_books_id: "gb-1")
+    @ebook.update!(google_books_id: "gb-1")
     sign_in_as(@member)
-    book = book_json(user: @member, source: "hardcover", id: "77", also: "openlibrary:OL900W")
-    assert_equal [ "library", "The Quiet Library" ], book.values_at("details", "title")
+    book = book_json(user: @member, source: "hardcover", id: "77")
+    assert_equal [ "library", "The Quiet Library", [ "google_books:gb-1" ] ], book.values_at("details", "title", "also")
     ebook = format_of(book, "ebook")
     assert_equal "in_library", ebook.fetch("state")
     assert_equal [ @ebook.id.to_s, "available", consumer_publication_path(@ebook), "Start reading" ], ebook.fetch("publication").values_at("id", "availability", "reader_url", "progress_label")
-    assert_equal "requestable", format_of(book, "audiobook").fetch("state")
+    request_ebook_for = -> { post web_preview_api_book_requests_path(source: "hardcover", source_id: "77"), headers: account_headers(@member), as: :json }
+    assert_no_difference("Request.count") { request_ebook_for.call }
 
     preview_get "/preview/api/v1/library/#{@ebook.id}", user: @member
-    assert_equal({ "source" => "hardcover", "id" => "77", "also" => [ "openlibrary:OL900W" ] }, response.parsed_body.dig("publication", "book_page"))
+    assert_equal({ "source" => "google_books", "id" => "gb-1" }, response.parsed_body.dig("publication", "book_page"))
+  end
+
+  test "work links in the address are ignored, so a request cannot join unrelated works" do
+    stranger = Book.create!(title: "Unrelated", author: "Someone", book_type: :audiobook, hardcover_id: "55", file_path: @audio_path)
+    sign_in_as(@member)
+    book = BookMetadataLookupService.stub(:call, { title: "Middlemarch", author: "George Eliot" }) { book_json(user: @member, also: "hardcover:55") }
+    assert_equal [ "Middlemarch", [], "requestable" ], [ book.fetch("title"), book.fetch("also"), format_of(book, "audiobook").fetch("state") ]
+    BookMetadataLookupService.stub(:call, { title: "Middlemarch", author: "George Eliot" }) { request_ebook(user: @member, also: "hardcover:55") }
+    assert_response :created
+    created = Request.order(:id).last.book
+    assert_equal [ "OL900W", nil ], [ created.open_library_work_id, created.hardcover_id ]
+    assert_nil stranger.reload.open_library_work_id
+  end
+
+  test "a hand-off's server-made links group the work, and a comic gets no Book page link" do
+    Book.create!(title: "Middlemarch", book_type: :audiobook, hardcover_id: "88", file_path: @audio_path)
+    sign_in_as(@member)
+    token = RequestMetadataHandoff.params_for(user: @member, metadata: { work_id: WORK, source_work_ids: [ WORK, "hardcover:88" ], title: "Middlemarch", author: "George Eliot", description: "x" })[:metadata_token]
+    book = book_json(user: @member, metadata: token)
+    assert_equal [ [ "hardcover:88" ], "in_library" ], [ book.fetch("also"), format_of(book, "audiobook").fetch("state") ]
+    comic = Book.create!(title: "Comic", book_type: :comicbook, comic_vine_id: "4000-1", file_path: @epub_path)
+    assert_nil WebPreview::BookPage.path_for(comic)
+  end
+
+  test "an own request with nothing found yet stays visible with its next search, and another account's outcome is not disclosed" do
+    request, = requested_middlemarch(status: :searching)
+    request.search_results.destroy_all
+    request.update!(status: :not_found, next_retry_at: 2.hours.from_now)
+    sign_in_as(@member)
+    ebook = format_of(book_json(user: @member), "ebook")
+    assert_equal [ "requested", "not_found", request.next_retry_at.iso8601 ], [ ebook.fetch("state"), ebook.dig("request", "stage"), ebook.dig("request", "next_retry_at") ]
+
+    request.update!(user: @admin, status: :failed)
+    other = format_of(book_json(user: @member), "ebook")
+    assert_equal [ "requestable", nil, nil ], other.values_at("state", "note", "request")
+    request.update!(user: @member)
+    assert_match(/previous request for this ebook failed/, format_of(book_json(user: @member), "ebook").fetch("note"))
   end
 
   test "an acquired ebook whose file is gone is still on the shelf but cannot be opened" do
