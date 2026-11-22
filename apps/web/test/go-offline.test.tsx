@@ -239,7 +239,7 @@ describe("the save control", () => {
 
   test("an unfinished or failed save is shown with the earlier copy still kept", async () => {
     const store = storeFor("5");
-    store.attemptRecords.set("5|7", { key: "5|7", account: "5", id: "7", title: "Member's Saved Book", assetId: NEWER_ID, startedAt: 1, failure: null });
+    store.attemptRecords.set("5|7", { key: "5|7", account: "5", id: "7", title: "Member's Saved Book", assetId: NEWER_ID, token: "t", startedAt: 1, failure: null });
     renderControl(store, EPUB_ID);
     expect(await screen.findByText("The last save didn't finish, so nothing new was stored. Your earlier saved copy is unchanged.")).toBeTruthy();
   });
@@ -453,6 +453,159 @@ describe("the online reader with a saved copy", () => {
       expect(within(header).getByRole("button", { name: "Remove saved copy" })).toBeTruthy();
       await waitFor(() => expect(store.saved.get("5|7")?.accountPlace?.version).toBe(4));
       expect(store.saved.get("5|7")?.accountPlace?.observedAt).toBe(serverProgress().observed_at);
+    } finally {
+      globalThis.fetch = network;
+    }
+  });
+});
+
+function withRegisteredWorker(caches: object = { keys: async () => [] }) {
+  const targets: [object, string][] = [[window, "isSecureContext"], [navigator, "serviceWorker"], [globalThis, "caches"], [globalThis, "indexedDB"]];
+  const saved = targets.map(([target, key]) => Object.getOwnPropertyDescriptor(target, key));
+  const scope = new URL(OFFLINE.scope, window.location.href).href;
+  const registration = { scope, active: { scriptURL: new URL(OFFLINE.worker, window.location.href).href }, unregister: async () => true };
+  const values = [true, { getRegistration: async () => registration, register: async () => registration }, caches, {}];
+  targets.forEach(([target, key], index) => Object.defineProperty(target, key, { value: values[index], configurable: true }));
+  return () =>
+    targets.forEach(([target, key], index) => {
+      const previous = saved[index];
+      if (previous) Object.defineProperty(target, key, previous);
+      else Reflect.deleteProperty(target, key);
+    });
+}
+
+function later<T>() {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
+describe("second review regressions", () => {
+  test("two pages loading at once for different accounts never leave either account usable offline", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5");
+      const first = later<unknown>();
+      const second = later<unknown>();
+      const oldTab = renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => first.promise as never), store);
+      const newTab = renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => second.promise as never), store);
+      await act(async () => {
+        first.resolve({ body: { ...signedIn("5"), offline_expires_in: 3600 } });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      await act(async () => {
+        second.resolve({ body: { ...signedIn("4"), offline_expires_in: 3600 } });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(store.record?.account ?? null).not.toBe("5");
+      oldTab.unmount();
+      newTab.unmount();
+    } finally {
+      restore();
+    }
+  });
+
+  test("a slow signed-out answer cannot erase an account another tab confirmed meanwhile", async () => {
+    const answer = later<unknown>();
+    let calls = 0;
+    const store = storeFor("5");
+    renderOffline(
+      new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("Failed to fetch");
+        return answer.promise as never;
+      }),
+      store,
+    );
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(await store.confirm({ account: "4", confirmedAt: Date.now(), validForMs: DAY }, store.generation)).toBe(true);
+    await act(async () => {
+      answer.resolve({ body: signedOut() });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(store.record?.account).toBe("4");
+    expect(await screen.findByRole("heading", { name: "The signed-in account changed" })).toBeTruthy();
+  });
+
+  test("a slow answer is dated from when it was asked, so its window never outlives the server's", async () => {
+    const answer = later<unknown>();
+    let calls = 0;
+    const store = storeFor("5", Date.now() - DAY);
+    renderOffline(
+      new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+        calls += 1;
+        if (calls === 1) throw new TypeError("Failed to fetch");
+        return answer.promise as never;
+      }),
+      store,
+    );
+    await screen.findByRole("heading", { name: "Member's Saved Book" });
+    const asked = Date.now();
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    await act(async () => {
+      answer.resolve({ body: { ...signedIn("5"), offline_expires_in: 5 } });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await screen.findByRole("button", { name: "Continue online" });
+    expect(store.record!.confirmedAt).toBeLessThan(asked + 60);
+    expect(store.record!.confirmedAt + store.record!.validForMs).toBeLessThan(asked + 60 + 5000);
+  });
+
+  test("a failure while removing the old worker's caches still forgets the account", async () => {
+    const restore = withRegisteredWorker({
+      keys: async () => {
+        throw new DOMException("cache storage failed", "UnknownError");
+      },
+    });
+    try {
+      const store = storeFor("5");
+      renderOffline(unreachable(), store, "downloads", "/preview/library/downloads", null);
+      await screen.findByRole("heading", { name: "Shelfarr is unavailable here" });
+      await waitFor(() => expect(store.record).toBeNull());
+    } finally {
+      restore();
+    }
+  });
+
+  test("reconnecting does not reopen the saved copy a reader is showing", async () => {
+    const network = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("no network in unit tests");
+    }) as unknown as typeof fetch;
+    let connected = false;
+    const store = storeFor("5");
+    store.files.set("5|7", { assetId: EPUB_ID, blob: new Blob([epubBytes()]) });
+    try {
+      resetFirstPage();
+      window.history.replaceState(null, "", "/preview/library/7/read");
+      render(
+        <GoApp
+          boot={{ ...goBoot("reader"), reader_engine: "/preview/assets/reader-engine.0123456789abcdef.js", offline: OFFLINE }}
+          fetcher={
+            new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+              if (!connected) throw new TypeError("Failed to fetch");
+              return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+            }).fetcher
+          }
+          store={store}
+        />,
+      );
+      await screen.findByRole("heading", { level: 1, name: "Member's Saved Book" });
+      const opened = store.opens;
+      connected = true;
+      await act(async () => {
+        window.dispatchEvent(new Event("online"));
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      });
+      await screen.findByRole("button", { name: "Continue online" });
+      expect(store.opens).toBe(opened);
     } finally {
       globalThis.fetch = network;
     }

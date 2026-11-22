@@ -956,9 +956,10 @@ One IndexedDB database, `shelfarr-go-preview-offline` (version 1), created on th
 
 A save downloads the EPUB from the existing account-bound media route (`/preview/api/v1/accounts/{account}/library/{id}/assets/{asset}`),
 requires `200`, `ETag` equal to the asset id, the announced size, exactly that many bytes and a structurally complete
-ZIP (a local header at the start and an end-of-directory record pointing at a central directory that ends where it
-begins), and then writes the book and its file **in one transaction that also re-reads the confirmed account, checks that
-this save's attempt record is still there (a removal in another tab wins) and re-adds the account's saved bytes**;
+EPUB container (a local header at the start, an end-of-directory record pointing at a central directory that ends where
+it begins, every central entry well formed and pointing at a local header, and a `META-INF/container.xml` entry; entry
+contents are not decompressed), and then writes the book and its file **in one transaction that also re-reads the confirmed account, checks that
+this save's attempt record, identified by a random token, is still there (a removal in another tab wins) and re-adds the account's saved bytes**;
 anything else stores nothing and leaves an earlier copy as it was. Right before downloading, the save asks the server
 again (`auth/bootstrap`) and records that confirmation only if the account record has not changed since it was read.
 Limits: 32 MiB per book (the reader's limit), 256 MiB per account per browser (enforced at commit, so two tabs cannot
@@ -976,14 +977,17 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   the Downloads or reader screen, and only for a confirmed account that is still valid: `max(confirmedAt, seenAt) - 5 min
   <= now < confirmedAt + validForMs`. An expired, clock-rewound or missing record shows "Shelfarr can't be reached" and no
   saved book, and an expired or rewound record is deleted, so setting the clock back later cannot revive it.
-* Every record write is a compare-and-set on `generation`: a confirmation is written only if nothing changed since it
-  was read before asking the server, so a slow answer, a stale save or another tab cannot restore an account that was
-  signed out or replaced meanwhile. The record is renewed by every signed-in bootstrap or sign-in once the browser has the
+* Every record write is a compare-and-set on `generation`: a confirmation, and the removal that follows a signed-out or
+  refused answer, is written only if nothing changed since the record was read before asking the server, so a slow answer,
+  a stale save or another tab cannot restore an account that was signed out or replaced meanwhile, nor erase a newer
+  confirmation. When a confirmation cannot be written and the record names another account, that account is forgotten,
+  so two pages answering for different accounts leave neither usable offline. A window is measured from when the server
+  was asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap or sign-in once the browser has the
   worker; it is deleted by sign-out, a signed-out bootstrap, any `4xx` bootstrap answer (allowlist removal, preview off,
   a gateway refusal) and a page lock for that account, and replaced when another account signs in. Books are keyed by
   account, so another account sees only a count and size of them, never titles or places, and can remove them.
 * An offline page re-reads the record on focus, visibility, at the moment it expires and every 30 s, hides itself on
-  `pagehide`, reloads itself when restored from the back/forward cache (so a restored page goes through the whole check
+  `pagehide` (also replacing the book title in the tab), reloads itself when restored from the back/forward cache (so a restored page goes through the whole check
   again before showing anything), and locks if the account changed or the window ended. It also asks the server every
   20 s and on `online`: the same account renews the window and offers **Continue online**; another account, signed out or
   a refusal forgets or replaces the record and locks.

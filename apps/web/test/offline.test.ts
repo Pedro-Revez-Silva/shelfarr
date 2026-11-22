@@ -46,8 +46,8 @@ async function confirmed(store: IndexedDbOfflineStore, value: ConfirmedAccount =
 }
 
 async function seed(store: IndexedDbOfflineStore, book: SavedBook, bytes = epubBytes(book.asset.size_bytes)): Promise<void> {
-  await store.begin({ key: book.key, account: book.account, id: book.id, title: book.title, assetId: book.asset.id, startedAt: 1, failure: null });
-  expect(await store.commit(book, new Blob([bytes]), 1, NOW)).toBe("saved");
+  await store.begin({ key: book.key, account: book.account, id: book.id, title: book.title, assetId: book.asset.id, token: "seed", startedAt: 1, failure: null });
+  expect(await store.commit(book, new Blob([bytes]), "seed", NOW)).toBe("saved");
 }
 
 function respond(body: Uint8Array<ArrayBuffer> | null, init: { status?: number; headers?: Record<string, string> } = {}): Response {
@@ -120,6 +120,17 @@ describe("the confirmed account", () => {
     const seen = confirmation({ seenAt: NOW + 10 * DAY });
     expect(usable(seen, "5", NOW + DAY)).toBe(false);
     expect(usable(seen, "5", NOW + 10 * DAY)).toBe(true);
+  });
+
+  test("a release only clears the generation it was read from", async () => {
+    const store = new IndexedDbOfflineStore();
+    await confirmed(store);
+    const read = await store.accountState();
+    await confirmed(store, confirmation({ account: "4" }));
+    expect(await store.release(read.generation)).toBe(false);
+    expect((await store.accountState()).record?.account).toBe("4");
+    expect(await store.release((await store.accountState()).generation)).toBe(true);
+    expect((await store.accountState()).record).toBeNull();
   });
 
   test("a confirmation only lands on the generation it was read from, and forgetting moves the generation on", async () => {
@@ -222,6 +233,20 @@ describe("the archive check", () => {
     const moved = epubBytes();
     new DataView(moved.buffer).setUint32(SIZE - 6, 3, true);
     expect(await completeZip(new Blob([moved]))).toBe(false);
+    const forged = new Uint8Array(SIZE);
+    const view = new DataView(forged.buffer);
+    const end = SIZE - 22;
+    view.setUint32(0, 0x04034b50, true);
+    view.setUint32(end - 4, 0x02014b50, true);
+    view.setUint32(end, 0x06054b50, true);
+    view.setUint16(end + 8, 1, true);
+    view.setUint16(end + 10, 1, true);
+    view.setUint32(end + 12, 4, true);
+    view.setUint32(end + 16, end - 4, true);
+    expect(await completeZip(new Blob([forged]))).toBe(false);
+    const notEpub = epubBytes();
+    notEpub.set(new TextEncoder().encode("OTHER-IN/container.xml"), SIZE - 22 - 22);
+    expect(await completeZip(new Blob([notEpub]))).toBe(false);
   });
 });
 
@@ -273,9 +298,9 @@ describe("saving a copy", () => {
     await seed(racing, savedBook({ key: bookKey("5", "9"), id: "9", asset: { ...savedBook().asset, size_bytes: ACCOUNT_LIMIT_BYTES - SIZE - 100 } }), epubBytes(SIZE));
     const first = savedBook({ key: bookKey("5", "10"), id: "10" });
     const second = savedBook({ key: bookKey("5", "11"), id: "11" });
-    for (const book of [first, second]) await racing.begin({ key: book.key, account: "5", id: book.id, title: book.title, assetId: EPUB_ID, startedAt: 7, failure: null });
-    expect(await racing.commit(first, new Blob([epubBytes()]), 7, NOW)).toBe("saved");
-    expect(await racing.commit(second, new Blob([epubBytes()]), 7, NOW)).toBe("space");
+    for (const book of [first, second]) await racing.begin({ key: book.key, account: "5", id: book.id, title: book.title, assetId: EPUB_ID, token: "race", startedAt: 7, failure: null });
+    expect(await racing.commit(first, new Blob([epubBytes()]), "race", NOW)).toBe("saved");
+    expect(await racing.commit(second, new Blob([epubBytes()]), "race", NOW)).toBe("space");
     expect(await racing.open("5", "11")).toBeNull();
   });
 
@@ -316,6 +341,20 @@ describe("saving a copy", () => {
       expect(await store.open("5", "7")).toBeNull();
       globalThis.indexedDB = new IDBFactory();
     }
+  });
+
+  test("a save started in the same millisecond after a removal never revives the removed one", async () => {
+    const store = new IndexedDbOfflineStore();
+    let releaseFirst: (response: Response) => void = () => undefined;
+    const firstRun = inputs(store, () => new Promise((resolve) => (releaseFirst = resolve)));
+    const first = saveCopy(firstRun.base).then(() => "saved", (error: unknown) => (error instanceof SaveFailure ? error.kind : "other"));
+    while ((await store.attempts("5")).length === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+    await store.remove("5", "7");
+    const second = inputs(store, async () => respond(null, { status: 503, headers: {} }));
+    expect(await failure(saveCopy(second.base))).toBe("network");
+    releaseFirst(respond(epubBytes()));
+    expect(await first).toBe("removed");
+    expect(await store.open("5", "7")).toBeNull();
   });
 
   test("nothing is committed when the account changed or the copy was removed while the book downloaded", async () => {
@@ -390,9 +429,9 @@ describe("saving a copy", () => {
     await confirmed(store);
     await seed(store, savedBook());
     const replacement = savedBook({ asset: { ...savedBook().asset, id: NEWER_ID, size_bytes: SIZE + 22 } });
-    await store.begin({ key: replacement.key, account: "5", id: "7", title: replacement.title, assetId: NEWER_ID, startedAt: 9, failure: null });
+    await store.begin({ key: replacement.key, account: "5", id: "7", title: replacement.title, assetId: NEWER_ID, token: "replace", startedAt: 9, failure: null });
     const pair = (opened: { book: SavedBook; blob: Blob } | null) => (opened ? `${opened.book.asset.id.slice(0, 1)}:${opened.blob.size}` : "none");
-    const [first, committed, second] = await Promise.all([store.open("5", "7"), store.commit(replacement, new Blob([epubBytes(SIZE + 22)]), 9, NOW), store.open("5", "7")]);
+    const [first, committed, second] = await Promise.all([store.open("5", "7"), store.commit(replacement, new Blob([epubBytes(SIZE + 22)]), "replace", NOW), store.open("5", "7")]);
     expect(committed).toBe("saved");
     for (const seen of [first, second]) expect([`e:${SIZE}`, `f:${SIZE + 22}`]).toContain(pair(seen));
     expect(pair(await store.open("5", "7"))).toBe(`f:${SIZE + 22}`);
@@ -453,8 +492,8 @@ describe("places kept on this device", () => {
   test("a page left open on an edition that another tab replaced never overwrites the new edition's place", async () => {
     const store = await opened();
     const replacement = savedBook({ asset: { ...savedBook().asset, id: NEWER_ID }, devicePlace: { asset_id: NEWER_ID, locator: locator("new"), observedAt: "2026-11-20T11:00:00.000Z", recordedAt: 3 } });
-    await store.begin({ key: replacement.key, account: "5", id: "7", title: replacement.title, assetId: NEWER_ID, startedAt: 9, failure: null });
-    expect(await store.commit(replacement, new Blob([epubBytes()]), 9, NOW)).toBe("saved");
+    await store.begin({ key: replacement.key, account: "5", id: "7", title: replacement.title, assetId: NEWER_ID, token: "replace", startedAt: 9, failure: null });
+    expect(await store.commit(replacement, new Blob([epubBytes()]), "replace", NOW)).toBe("saved");
     const places = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
     places.record({ asset_id: EPUB_ID, locator: locator("old") });
     await places.flush();

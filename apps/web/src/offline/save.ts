@@ -44,23 +44,47 @@ const LOCAL_HEADER = 0x04034b50;
 const CENTRAL_HEADER = 0x02014b50;
 const END_OF_DIRECTORY = 0x06054b50;
 const END_RECORD_BYTES = 22;
+const CENTRAL_RECORD_BYTES = 46;
+const LOCAL_RECORD_BYTES = 30;
 const LONGEST_END = END_RECORD_BYTES + 0xffff;
+const CONTAINER = "META-INF/container.xml";
+
+async function bytesOf(blob: Blob, start: number, end: number): Promise<DataView> {
+  return new DataView(await blob.slice(start, end).arrayBuffer());
+}
+
+async function centralNames(blob: Blob, start: number, size: number, entries: number): Promise<string[] | null> {
+  const directory = await bytesOf(blob, start, start + size);
+  const decoder = new TextDecoder();
+  const names: string[] = [];
+  let offset = 0;
+  for (let entry = 0; entry < entries; entry += 1) {
+    if (offset + CENTRAL_RECORD_BYTES > size || directory.getUint32(offset, true) !== CENTRAL_HEADER) return null;
+    const nameLength = directory.getUint16(offset + 28, true);
+    const next = offset + CENTRAL_RECORD_BYTES + nameLength + directory.getUint16(offset + 30, true) + directory.getUint16(offset + 32, true);
+    const local = directory.getUint32(offset + 42, true);
+    if (nameLength === 0 || next > size || local + LOCAL_RECORD_BYTES > start) return null;
+    const header = await bytesOf(blob, local, local + 4);
+    if (header.getUint32(0, true) !== LOCAL_HEADER) return null;
+    names.push(decoder.decode(new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength)));
+    offset = next;
+  }
+  return offset === size ? names : null;
+}
 
 export async function completeZip(blob: Blob): Promise<boolean> {
-  if (blob.size < END_RECORD_BYTES + 30) return false;
-  const head = new DataView(await blob.slice(0, 4).arrayBuffer());
-  if (head.getUint32(0, true) !== LOCAL_HEADER) return false;
+  if (blob.size < END_RECORD_BYTES + LOCAL_RECORD_BYTES) return false;
+  if ((await bytesOf(blob, 0, 4)).getUint32(0, true) !== LOCAL_HEADER) return false;
   const tailStart = Math.max(0, blob.size - LONGEST_END);
-  const tail = new DataView(await blob.slice(tailStart).arrayBuffer());
+  const tail = await bytesOf(blob, tailStart, blob.size);
   for (let offset = tail.byteLength - END_RECORD_BYTES; offset >= 0; offset -= 1) {
     if (tail.getUint32(offset, true) !== END_OF_DIRECTORY) continue;
     const entries = tail.getUint16(offset + 10, true);
     const size = tail.getUint32(offset + 12, true);
     const start = tail.getUint32(offset + 16, true);
-    const end = tailStart + offset;
-    if (entries === 0 || offset + END_RECORD_BYTES + tail.getUint16(offset + 20, true) !== tail.byteLength || start + size !== end) return false;
-    const central = new DataView(await blob.slice(start, start + 4).arrayBuffer());
-    return central.byteLength === 4 && central.getUint32(0, true) === CENTRAL_HEADER;
+    if (entries === 0 || offset + END_RECORD_BYTES + tail.getUint16(offset + 20, true) !== tail.byteLength || start + size !== tailStart + offset) return false;
+    const names = await centralNames(blob, start, size, entries);
+    return names !== null && names.includes(CONTAINER);
   }
   return false;
 }
@@ -128,9 +152,9 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
   const asset = savedEpub(publication);
   if (!asset) throw new SaveFailure("unsupported");
   const key = bookKey(account, publication.id);
-  const startedAt = now();
+  const token = crypto.randomUUID();
   await checkSpace(inputs, account, publication.id, asset.size_bytes);
-  await store.begin({ key, account, id: publication.id, title: publication.title, assetId: asset.id, startedAt, failure: null });
+  await store.begin({ key, account, id: publication.id, title: publication.title, assetId: asset.id, token, startedAt: now(), failure: null });
   try {
     const blob = await download(asset.url, asset.id, asset.size_bytes, inputs);
     guard.assertActive();
@@ -147,7 +171,7 @@ async function transfer(inputs: SaveInputs, account: string): Promise<void> {
       devicePlace: previous?.devicePlace ?? null,
     };
     const book = previous?.accountPlace ? rememberAccountPlace({ ...fresh, accountPlace: previous.accountPlace }, publication.progress, now()) : fresh;
-    const outcome = await store.commit(book, blob, startedAt, now());
+    const outcome = await store.commit(book, blob, token, now());
     if (outcome !== "saved") throw new SaveFailure(outcome === "account" ? "signed_out" : outcome);
   } catch (error) {
     const kind = classify(error);

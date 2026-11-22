@@ -42,13 +42,20 @@ const SAVED_VIEWS: readonly GoBoot["view"][] = ["reader", "downloads"];
 
 async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null, generation: number | null): Promise<void> {
   if (!boot.offline) return;
-  if (!confirmation) await store.forget();
-  else if (generation !== null && (await hasWorker(boot.offline))) await store.confirm(confirmation, generation);
+  if (!confirmation) {
+    if (generation === null) await store.forget();
+    else await store.release(generation);
+    return;
+  }
+  const written = generation !== null && (await hasWorker(boot.offline)) && (await store.confirm(confirmation, generation));
+  if (written) return;
+  const { record } = await store.accountState();
+  if (record && record.account !== confirmation.account) await store.forget(record.account);
 }
 
 async function retireOffline(store: OfflineStore): Promise<void> {
+  await store.forget().catch(() => undefined);
   await retireWorker(RETIRED_WORKER);
-  await store.forget();
 }
 
 async function offlineFallback(boot: GoBoot, store: OfflineStore, error: unknown): Promise<AuthState | null> {
@@ -75,14 +82,15 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
       setState({ kind: "loading" });
       if (!boot.offline) void retireOffline(store).catch(() => undefined);
       const before = boot.offline ? await store.accountState().catch(() => null) : null;
+      const sentAt = Date.now();
       try {
         const result = await auth.bootstrap();
         setEpoch((value) => value + 1);
-        const next = fromBootstrap(result, options);
+        const next = fromBootstrap(result, options, sentAt);
         void keepOfflineAccount(boot, store, next.kind === "signed_in" ? next.confirmation : null, before?.generation ?? null).catch(() => undefined);
         setState(next);
       } catch (error) {
-        if (definitiveRefusal(error)) await store.forget().catch(() => undefined);
+        if (definitiveRefusal(error)) await (before ? store.release(before.generation) : store.forget()).catch(() => undefined);
         const fallback = await offlineFallback(boot, store, error);
         if (fallback) setEpoch((value) => value + 1);
         setState(fallback ?? { kind: "unavailable", ...describeUnavailable(error) });
@@ -168,7 +176,7 @@ function introFor(view: GoBoot["view"]): string {
   return "Sign in to browse your library.";
 }
 
-function fromBootstrap(result: Bootstrap, options: Load): AuthState {
+function fromBootstrap(result: Bootstrap, options: Load, sentAt: number): AuthState {
   if (result.authenticated) {
     if (options.focus) markPageNavigated();
     return {
@@ -176,7 +184,7 @@ function fromBootstrap(result: Bootstrap, options: Load): AuthState {
       account: result.account,
       token: result.csrf_token,
       expiresIn: result.expires_in,
-      confirmation: confirmationFrom(result.account, result.offline_expires_in, Date.now()),
+      confirmation: confirmationFrom(result.account, result.offline_expires_in, sentAt),
     };
   }
   return {
@@ -255,18 +263,19 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
           confirm: async () => {
             await store.prepare();
             const { generation } = await store.accountState();
+            const sentAt = Date.now();
             let answer: Bootstrap;
             try {
               answer = await auth.bootstrap();
             } catch (error) {
               if (definitiveRefusal(error)) {
-                await store.forget();
+                await store.release(generation);
                 throw new SaveFailure("signed_out");
               }
               throw new SaveFailure("network");
             }
             if (!answer.authenticated) {
-              await store.forget();
+              await store.release(generation);
               services.guard.lock("signed_out");
               throw new SaveFailure("signed_out");
             }
@@ -274,7 +283,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
               services.guard.lock("account_changed");
               throw new SaveFailure("signed_out");
             }
-            const fresh = confirmationFrom(answer.account, answer.offline_expires_in, Date.now());
+            const fresh = confirmationFrom(answer.account, answer.offline_expires_in, sentAt);
             if (!fresh) throw new SaveFailure("unsupported");
             if (!(await store.confirm(fresh, generation))) throw new SaveFailure("signed_out");
             return fresh;

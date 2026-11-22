@@ -31,6 +31,12 @@ export class MemoryOfflineStore implements OfflineStore {
     this.generation += 1;
     return true;
   }
+  async release(generation: number) {
+    if (generation !== this.generation) return false;
+    this.record = null;
+    this.generation += 1;
+    return true;
+  }
   async forget(account?: string) {
     this.forgets.push(account);
     if (account !== undefined && this.record?.account !== account) return;
@@ -55,7 +61,9 @@ export class MemoryOfflineStore implements OfflineStore {
   async book(account: string, id: string) {
     return this.saved.get(bookKey(account, id)) ?? null;
   }
+  opens = 0;
   async open(account: string, id: string) {
+    this.opens += 1;
     const book = this.saved.get(bookKey(account, id));
     const file = this.files.get(bookKey(account, id));
     return book && file && file.assetId === book.asset.id ? { book, blob: file.blob } : null;
@@ -70,12 +78,12 @@ export class MemoryOfflineStore implements OfflineStore {
     const current = this.attemptRecords.get(bookKey(account, id));
     if (current) this.attemptRecords.set(current.key, { ...current, failure });
   }
-  async commit(book: SavedBook, blob: Blob, startedAt: number, now: number): Promise<CommitOutcome> {
+  async commit(book: SavedBook, blob: Blob, token: string, now: number): Promise<CommitOutcome> {
     this.beforeCommit?.();
     if (this.failCommit) throw this.failCommit;
     if (!usable(this.record, book.account, now)) return "account";
     const attempt = this.attemptRecords.get(book.key);
-    if (!attempt || attempt.startedAt !== startedAt || attempt.assetId !== book.asset.id) return "removed";
+    if (!attempt || attempt.token !== token || attempt.assetId !== book.asset.id) return "removed";
     const others = [...this.saved.values()].filter((other) => other.account === book.account && other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
     if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";
     this.files.set(book.key, { assetId: book.asset.id, blob });
@@ -110,7 +118,7 @@ export class MemoryOfflineStore implements OfflineStore {
 export const SIZE = 256;
 
 export function epubBytes(size: number = SIZE): Uint8Array<ArrayBuffer> {
-  const name = new TextEncoder().encode("mimetype");
+  const name = new TextEncoder().encode("META-INF/container.xml");
   const bytes = new Uint8Array(size);
   const view = new DataView(bytes.buffer);
   const data = size - (30 + name.length) - (46 + name.length) - 22;

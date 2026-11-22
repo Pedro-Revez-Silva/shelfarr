@@ -47,20 +47,22 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
     if (!guard.isActive()) return;
     const before = await store.accountState().catch(() => null);
     if (!before) return;
+    const sentAt = Date.now();
+    const ended = async () => {
+      if (await store.release(before.generation).catch(() => false)) guard.lock("signed_out");
+      else await recheck();
+    };
     let answer;
     try {
       answer = await auth.bootstrap();
     } catch (error) {
-      if (!definitiveRefusal(error) || !guard.isActive()) return;
-      await store.forget().catch(() => undefined);
-      guard.lock("signed_out");
+      if (definitiveRefusal(error) && guard.isActive()) await ended();
       return;
     }
     if (!guard.isActive()) return;
-    const confirmation = answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, Date.now()) : null;
+    const confirmation = answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, sentAt) : null;
     if (!answer.authenticated || !confirmation) {
-      await store.forget().catch(() => undefined);
-      guard.lock("signed_out");
+      await ended();
       return;
     }
     if (!(await store.confirm(confirmation, before.generation).catch(() => false))) {
@@ -82,7 +84,10 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
 
   useEffect(() => {
     const root = document.documentElement;
-    const hide = () => root.setAttribute("data-offline-check", "pending");
+    const hide = () => {
+      root.setAttribute("data-offline-check", "pending");
+      document.title = "Shelfarr";
+    };
     const show = () => {
       void recheck().finally(() => root.removeAttribute("data-offline-check"));
       void probe();

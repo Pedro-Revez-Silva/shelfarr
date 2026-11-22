@@ -26,7 +26,7 @@ export type SavedBook = {
 
 export type FailureKind = "network" | "signed_out" | "changed" | "missing" | "space" | "too_large" | "storage" | "worker" | "busy" | "unsupported" | "removed";
 
-export type Attempt = { key: string; account: string; id: string; title: string; assetId: string; startedAt: number; failure: FailureKind | null };
+export type Attempt = { key: string; account: string; id: string; title: string; assetId: string; token: string; startedAt: number; failure: FailureKind | null };
 
 export type CommitOutcome = "saved" | "account" | "removed" | "space";
 export type UpdateOutcome = "updated" | "unchanged" | "refused";
@@ -36,6 +36,7 @@ export type OfflineStore = {
   prepare(): Promise<void>;
   accountState(): Promise<AccountState>;
   confirm(value: ConfirmedAccount, generation: number): Promise<boolean>;
+  release(generation: number): Promise<boolean>;
   forget(account?: string): Promise<void>;
   touch(account: string, now: number): Promise<boolean>;
   books(account: string): Promise<SavedBook[]>;
@@ -44,7 +45,7 @@ export type OfflineStore = {
   attempts(account: string): Promise<Attempt[]>;
   begin(attempt: Attempt): Promise<void>;
   fail(account: string, id: string, failure: FailureKind): Promise<void>;
-  commit(book: SavedBook, blob: Blob, startedAt: number, now: number): Promise<CommitOutcome>;
+  commit(book: SavedBook, blob: Blob, token: string, now: number): Promise<CommitOutcome>;
   updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook | null, now: number): Promise<UpdateOutcome>;
   remove(account: string, id: string): Promise<void>;
   others(account: string): Promise<{ books: number; bytes: number }>;

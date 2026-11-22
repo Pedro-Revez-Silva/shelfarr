@@ -64,6 +64,16 @@ export class IndexedDbOfflineStore implements OfflineStore {
     });
   }
 
+  async release(generation: number): Promise<boolean> {
+    if (!(await this.exists())) return generation === 0;
+    return this.run(["account"], "readwrite", async (stores) => {
+      const current = await readAccount(stores);
+      if (current.generation !== generation) return false;
+      await writeAccount(stores, null, generation + 1);
+      return true;
+    });
+  }
+
   async forget(account?: string): Promise<void> {
     if (!(await this.exists())) return;
     await this.run(["account"], "readwrite", async (stores) => {
@@ -126,11 +136,11 @@ export class IndexedDbOfflineStore implements OfflineStore {
     });
   }
 
-  commit(book: SavedBook, blob: Blob, startedAt: number, now: number): Promise<CommitOutcome> {
+  commit(book: SavedBook, blob: Blob, token: string, now: number): Promise<CommitOutcome> {
     return this.run(["account", "books", "files", "attempts"], "readwrite", async (stores): Promise<CommitOutcome> => {
       if (!usable((await readAccount(stores)).record, book.account, now)) return "account";
       const attempt = await completed<Attempt | undefined>(stores.attempts.get(book.key));
-      if (!attempt || attempt.startedAt !== startedAt || attempt.assetId !== book.asset.id) return "removed";
+      if (!attempt || attempt.token !== token || attempt.assetId !== book.asset.id) return "removed";
       const saved = await completed<SavedBook[]>(stores.books.index("account").getAll(book.account));
       const others = saved.filter((other) => other.key !== book.key).reduce((sum, other) => sum + other.asset.size_bytes, 0);
       if (others + book.asset.size_bytes > ACCOUNT_LIMIT_BYTES) return "space";

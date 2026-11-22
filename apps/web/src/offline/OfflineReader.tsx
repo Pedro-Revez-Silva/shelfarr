@@ -36,13 +36,14 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
   const [opened, setOpened] = useState<Opened>({ kind: "loading" });
   useDocumentTitle(opened.kind === "ready" ? opened.book.title : opened.kind === "missing" ? "Not saved on this device" : "Opening saved book");
 
+  const store = offline?.store;
   useEffect(() => {
-    if (!offline || !id) {
+    if (!store || !id) {
       setOpened({ kind: "missing" });
       return;
     }
     let current = true;
-    offline.store
+    store
       .open(guard.account, id)
       .then((saved) => {
         if (current) setOpened(saved && guard.isActive() ? { kind: "ready", book: saved.book, blob: saved.blob } : { kind: "missing" });
@@ -51,7 +52,7 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
     return () => {
       current = false;
     };
-  }, [offline, id, guard]);
+  }, [store, id, guard]);
 
   const downloads = offline?.boot.downloads ?? `${boot.mount}/library`;
   const back = { href: downloads, label: "Back to downloads", returns: false };
@@ -77,7 +78,7 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
       </ReaderFrame>
     );
   }
-  return <SavedCopyReader offline={offline} book={opened.book} blob={opened.blob} engine={engine} back={back} />;
+  return <SavedCopyReader key={opened.book.asset.id} offline={offline} book={opened.book} blob={opened.blob} engine={engine} back={back} />;
 }
 
 function SavedCopyReader({ offline, book, blob, engine, back }: { offline: Offline; book: SavedBook; blob: Blob; engine: string; back: { href: string; label: string; returns: boolean } }) {
