@@ -949,7 +949,7 @@ One IndexedDB database, `shelfarr-go-preview-offline` (version 1), created on th
 
 | Store | Key | Holds |
 | --- | --- | --- |
-| `account` | `"current"` | `{record, generation}`: `record` is `{account, confirmedAt, validForMs, seenAt}` (the account id the server last confirmed, for how long, and the latest moment this browser saw while it was valid) or `null`; `generation` grows with every change. No token, cookie or credential. |
+| `account` | `"current"` | `{record, clearedAt}`: `record` is `{account, confirmedAt, validForMs, seenAt}` (the account id the server last confirmed, when that question was asked, for how long, and the latest moment this browser saw while it was valid) or `null`; `clearedAt` is when the latest question that ended offline access was asked. No token, cookie or credential. |
 | `books` | `<account>\|<publication id>` | Title, author, the saved asset (`id`, `filename`, `media_type`, `size_bytes`), `savedAt`, `accountPlace` (the last server place this browser learned: locator, version, when learned) and `devicePlace` (the last place reached while offline: locator, activity time, when recorded). |
 | `files` | same key | The EPUB `Blob` and its asset id. |
 | `attempts` | same key | A save in progress or the reason the last one failed. Never bytes. |
@@ -958,7 +958,8 @@ A save downloads the EPUB from the existing account-bound media route (`/preview
 requires `200`, `ETag` equal to the asset id, the announced size, exactly that many bytes and a structurally complete
 EPUB container (a local header at the start, an end-of-directory record pointing at a central directory that ends where
 it begins, every central entry well formed and pointing at a local header, and a `META-INF/container.xml` entry; entry
-contents are not decompressed), and then writes the book and its file **in one transaction that also re-reads the confirmed account, checks that
+contents are not decompressed, so a file the server itself serves damaged is saved as served and the reader then says it
+can't open it, exactly as online), and then writes the book and its file **in one transaction that also re-reads the confirmed account, checks that
 this save's attempt record, identified by a random token, is still there (a removal in another tab wins) and re-adds the account's saved bytes**;
 anything else stores nothing and leaves an earlier copy as it was. Right before downloading, the save asks the server
 again (`auth/bootstrap`) and records that confirmation only if the account record has not changed since it was read.
@@ -977,12 +978,13 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   the Downloads or reader screen, and only for a confirmed account that is still valid: `max(confirmedAt, seenAt) - 5 min
   <= now < confirmedAt + validForMs`. An expired, clock-rewound or missing record shows "Shelfarr can't be reached" and no
   saved book, and an expired or rewound record is deleted, so setting the clock back later cannot revive it.
-* Every record write is a compare-and-set on `generation`: a confirmation, and the removal that follows a signed-out or
-  refused answer, is written only if nothing changed since the record was read before asking the server, so a slow answer,
-  a stale save or another tab cannot restore an account that was signed out or replaced meanwhile, nor erase a newer
-  confirmation. When a confirmation cannot be written and the record names another account, that account is forgotten,
-  so two pages answering for different accounts leave neither usable offline. A window is measured from when the server
-  was asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap or sign-in once the browser has the
+* Answers are ordered by when their question was asked, whichever tab asked and whenever the answer arrives: a
+  confirmation is stored only if it was asked after the latest clearing and is not older than the stored one; a
+  signed-out or refused answer clears any record confirmed by an earlier question and is itself ignored for one confirmed
+  by a later question; signing out or a page lock clears against everything asked until then. So a slow answer, a stale
+  save or another tab can neither restore an account that was signed out or replaced, nor erase a newer confirmation, and
+  of two pages answering for different accounts the later question wins. A window is measured from when the server was
+  asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap or sign-in once the browser has the
   worker; it is deleted by sign-out, a signed-out bootstrap, any `4xx` bootstrap answer (allowlist removal, preview off,
   a gateway refusal) and a page lock for that account, and replaced when another account signs in. Books are keyed by
   account, so another account sees only a count and size of them, never titles or places, and can remove them.
@@ -1036,8 +1038,8 @@ Go tests: the routes and their absence without the option, the worker's headers,
 digests, static shells identical to the served ones, no account state, version per build, the offline window and its
 cap, the start refusals. Bun tests: the worker evaluated with fake caches and network (verified precache, no partial
 cache after a failed install, own-prefix cleanup, no take-over, fallback only for unreachable answers, everything else
-untouched); the IndexedDB store itself on `fake-indexeddb` (generation compare-and-set, expiry and clock high-water,
-commit refusing a removed attempt, a changed account and the account cap, book and file read together, another
+untouched); the IndexedDB store itself on `fake-indexeddb` (expiry and clock high-water,
+answers ordered by question time, commit refusing a removed attempt, a changed account and the account cap, book and file read together, another
 account's books kept apart); the save rules (complete archive, verified bytes, limits, refusals, a fresh server check,
 earlier copy kept); activity-time places; and the Go app's offline fallback, denial on `4xx`, retirement without the
 option, reconnection races, expiry while open, failed removal, Downloads, details and the reader's saved-copy control. Real Chrome (the owner's, through Browse,

@@ -17,7 +17,7 @@ const DATABASE_VERSION = 1;
 const ACCOUNT_KEY = "current";
 
 type StoredFile = { key: string; account: string; assetId: string; blob: Blob };
-type StoredAccount = { id: typeof ACCOUNT_KEY; record: ConfirmedAccount | null; generation: number };
+type StoredAccount = { id: typeof ACCOUNT_KEY; record: ConfirmedAccount | null; clearedAt: number };
 type StoreName = "account" | "books" | "files" | "attempts";
 type Stores = Record<StoreName, IDBObjectStore>;
 
@@ -30,11 +30,21 @@ function completed<T>(request: IDBRequest<T>): Promise<T> {
 
 async function readAccount(stores: Stores): Promise<AccountState> {
   const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
-  return { record: stored?.record ?? null, generation: stored?.generation ?? 0 };
+  return { record: stored?.record ?? null, clearedAt: stored?.clearedAt ?? 0 };
 }
 
-function writeAccount(stores: Stores, record: ConfirmedAccount | null, generation: number): Promise<IDBValidKey> {
-  return completed(stores.account.put({ id: ACCOUNT_KEY, record, generation } satisfies StoredAccount));
+function writeAccount(stores: Stores, state: AccountState): Promise<IDBValidKey> {
+  return completed(stores.account.put({ id: ACCOUNT_KEY, record: state.record, clearedAt: state.clearedAt } satisfies StoredAccount));
+}
+
+export function confirmedState(current: AccountState, value: ConfirmedAccount): AccountState | null {
+  if (value.confirmedAt <= current.clearedAt || (current.record !== null && current.record.confirmedAt > value.confirmedAt)) return null;
+  return { record: { ...value, seenAt: Math.max(current.record?.seenAt ?? 0, value.seenAt ?? 0, value.confirmedAt) }, clearedAt: current.clearedAt };
+}
+
+export function releasedState(current: AccountState, askedAt: number): AccountState {
+  const record = current.record !== null && current.record.confirmedAt <= askedAt ? null : current.record;
+  return { record, clearedAt: Math.max(current.clearedAt, askedAt) };
 }
 
 export class IndexedDbOfflineStore implements OfflineStore {
@@ -51,47 +61,46 @@ export class IndexedDbOfflineStore implements OfflineStore {
   }
 
   async accountState(): Promise<AccountState> {
-    if (!(await this.exists())) return { record: null, generation: 0 };
+    if (!(await this.exists())) return { record: null, clearedAt: 0 };
     return this.run(["account"], "readonly", readAccount);
   }
 
-  confirm(value: ConfirmedAccount, generation: number): Promise<boolean> {
+  confirm(value: ConfirmedAccount): Promise<boolean> {
     return this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
-      if (current.generation !== generation) return false;
-      await writeAccount(stores, value, generation + 1);
-      return true;
+      const next = confirmedState(await readAccount(stores), value);
+      if (next) await writeAccount(stores, next);
+      return next !== null;
     });
   }
 
-  async release(generation: number): Promise<boolean> {
-    if (!(await this.exists())) return generation === 0;
+  async release(askedAt: number): Promise<boolean> {
+    if (!(await this.exists())) return true;
     return this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
-      if (current.generation !== generation) return false;
-      await writeAccount(stores, null, generation + 1);
-      return true;
+      const next = releasedState(await readAccount(stores), askedAt);
+      await writeAccount(stores, next);
+      return next.record === null;
     });
   }
 
-  async forget(account?: string): Promise<void> {
+  async forget(account?: string, at: number = Date.now()): Promise<void> {
     if (!(await this.exists())) return;
     await this.run(["account"], "readwrite", async (stores) => {
       const current = await readAccount(stores);
       if (account !== undefined && current.record?.account !== account) return;
-      await writeAccount(stores, null, current.generation + 1);
+      await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, at, current.record?.confirmedAt ?? 0) });
     });
   }
 
   touch(account: string, now: number): Promise<boolean> {
     return this.run(["account"], "readwrite", async (stores) => {
       const current = await readAccount(stores);
-      const owned = current.record?.account === account;
-      if (!usable(current.record, account, now)) {
-        if (owned) await writeAccount(stores, null, current.generation + 1);
+      const record = current.record;
+      const ownedSince = record?.account === account ? record.confirmedAt : null;
+      if (!usable(record, account, now)) {
+        if (ownedSince !== null) await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, ownedSince) });
         return false;
       }
-      if (now > (current.record.seenAt ?? 0)) await writeAccount(stores, { ...current.record, seenAt: now }, current.generation);
+      if (now > (record.seenAt ?? 0)) await writeAccount(stores, { record: { ...record, seenAt: now }, clearedAt: current.clearedAt });
       return true;
     });
   }

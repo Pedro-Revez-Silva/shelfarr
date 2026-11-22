@@ -1,4 +1,5 @@
 import type { ReaderAsset, ReaderPublication, StoredProgress } from "../src/contract";
+import { confirmedState, releasedState } from "../src/offline/store";
 import { ACCOUNT_LIMIT_BYTES, bookKey, usable, type Attempt, type CommitOutcome, type ConfirmedAccount, type FailureKind, type OfflineStore, type SavedBook, type UpdateOutcome } from "../src/offline/model";
 
 export const EPUB_ID = "e".repeat(64);
@@ -7,7 +8,7 @@ export const DAY = 86_400_000;
 
 export class MemoryOfflineStore implements OfflineStore {
   record: ConfirmedAccount | null = null;
-  generation = 0;
+  clearedAt = 0;
   readonly saved = new Map<string, SavedBook>();
   readonly files = new Map<string, { assetId: string; blob: Blob }>();
   readonly attemptRecords = new Map<string, Attempt>();
@@ -22,33 +23,33 @@ export class MemoryOfflineStore implements OfflineStore {
   }
   async prepare() {}
   async accountState() {
-    return { record: this.record, generation: this.generation };
+    return { record: this.record, clearedAt: this.clearedAt };
   }
-  async confirm(value: ConfirmedAccount, generation: number) {
-    if (generation !== this.generation) return false;
+  async confirm(value: ConfirmedAccount) {
+    const next = confirmedState({ record: this.record, clearedAt: this.clearedAt }, value);
+    if (!next) return false;
     this.confirms.push(value);
-    this.record = value;
-    this.generation += 1;
+    this.record = next.record;
     return true;
   }
-  async release(generation: number) {
-    if (generation !== this.generation) return false;
-    this.record = null;
-    this.generation += 1;
-    return true;
+  async release(askedAt: number) {
+    const next = releasedState({ record: this.record, clearedAt: this.clearedAt }, askedAt);
+    this.record = next.record;
+    this.clearedAt = next.clearedAt;
+    return this.record === null;
   }
-  async forget(account?: string) {
+  async forget(account?: string, at: number = Date.now()) {
     this.forgets.push(account);
     if (account !== undefined && this.record?.account !== account) return;
+    this.clearedAt = Math.max(this.clearedAt, at, this.record?.confirmedAt ?? 0);
     this.record = null;
-    this.generation += 1;
   }
   async touch(account: string, now: number) {
-    const owned = this.record?.account === account;
+    const ownedSince = this.record?.account === account ? this.record.confirmedAt : null;
     if (!usable(this.record, account, now)) {
-      if (owned) {
+      if (ownedSince !== null) {
         this.record = null;
-        this.generation += 1;
+        this.clearedAt = Math.max(this.clearedAt, ownedSince);
       }
       return false;
     }

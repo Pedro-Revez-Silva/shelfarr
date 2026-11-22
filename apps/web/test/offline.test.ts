@@ -42,7 +42,7 @@ afterEach(() => {
 
 async function confirmed(store: IndexedDbOfflineStore, value: ConfirmedAccount = confirmation()): Promise<void> {
   await store.prepare();
-  expect(await store.confirm(value, (await store.accountState()).generation)).toBe(true);
+  expect(await store.confirm(value)).toBe(true);
 }
 
 async function seed(store: IndexedDbOfflineStore, book: SavedBook, bytes = epubBytes(book.asset.size_bytes)): Promise<void> {
@@ -122,29 +122,29 @@ describe("the confirmed account", () => {
     expect(usable(seen, "5", NOW + 10 * DAY)).toBe(true);
   });
 
-  test("a release only clears the generation it was read from", async () => {
-    const store = new IndexedDbOfflineStore();
-    await confirmed(store);
-    const read = await store.accountState();
-    await confirmed(store, confirmation({ account: "4" }));
-    expect(await store.release(read.generation)).toBe(false);
-    expect((await store.accountState()).record?.account).toBe("4");
-    expect(await store.release((await store.accountState()).generation)).toBe(true);
-    expect((await store.accountState()).record).toBeNull();
-  });
-
-  test("a confirmation only lands on the generation it was read from, and forgetting moves the generation on", async () => {
+  test("an answer clears or replaces only what earlier questions recorded", async () => {
     const store = new IndexedDbOfflineStore();
     await store.prepare();
-    const start = await store.accountState();
-    expect(start).toEqual({ record: null, generation: 0 });
-    await store.forget();
-    expect(await store.confirm(confirmation(), start.generation)).toBe(false);
-    expect((await store.accountState()).record).toBeNull();
-    await confirmed(store, confirmation({ account: "4" }));
-    const other = await store.accountState();
-    await store.forget("5");
-    expect(await store.accountState()).toEqual(other);
+    expect(await store.confirm(confirmation({ confirmedAt: 100 }))).toBe(true);
+    expect(await store.release(150)).toBe(true);
+    expect(await store.confirm(confirmation({ confirmedAt: 120 }))).toBe(false);
+    expect(await store.confirm(confirmation({ confirmedAt: 200 }))).toBe(true);
+    expect(await store.release(150)).toBe(false);
+    expect((await store.accountState()).record?.confirmedAt).toBe(200);
+    expect(await store.confirm(confirmation({ account: "4", confirmedAt: 180 }))).toBe(false);
+    expect(await store.confirm(confirmation({ account: "4", confirmedAt: 220 }))).toBe(true);
+    expect((await store.accountState()).record?.account).toBe("4");
+  });
+
+  test("forgetting an account clears it against every earlier question, and leaves another account alone", async () => {
+    const store = new IndexedDbOfflineStore();
+    await confirmed(store, confirmation({ account: "4", confirmedAt: 100 }));
+    await store.forget("5", 300);
+    expect((await store.accountState()).record?.account).toBe("4");
+    await store.forget(undefined, 300);
+    expect(await store.accountState()).toEqual({ record: null, clearedAt: 300 });
+    expect(await store.confirm(confirmation({ confirmedAt: 250 }))).toBe(false);
+    expect(await store.confirm(confirmation({ confirmedAt: 350 }))).toBe(true);
   });
 
   test("touching renews the latest moment seen, and an expired or clock-rewound record is removed for good", async () => {
@@ -153,15 +153,16 @@ describe("the confirmed account", () => {
     expect(await store.touch("5", NOW + 10 * DAY)).toBe(true);
     expect(await store.touch("5", NOW + DAY)).toBe(false);
     expect((await store.accountState()).record).toBeNull();
-    await confirmed(store);
-    expect(await store.touch("5", NOW + 30 * DAY)).toBe(false);
+    expect(await store.confirm(confirmation())).toBe(false);
+    await confirmed(store, confirmation({ confirmedAt: NOW + 1 }));
+    expect(await store.touch("5", NOW + 1 + 30 * DAY)).toBe(false);
     expect((await store.accountState()).record).toBeNull();
-    expect(await store.touch("5", NOW)).toBe(false);
+    expect(await store.touch("5", NOW + 2)).toBe(false);
   });
 
   test("reading the account of a browser that never saved creates nothing", async () => {
     const store = new IndexedDbOfflineStore();
-    expect(await store.accountState()).toEqual({ record: null, generation: 0 });
+    expect(await store.accountState()).toEqual({ record: null, clearedAt: 0 });
     await store.forget();
     expect((await indexedDB.databases()).map((database) => database.name)).toEqual([]);
     await store.prepare();
@@ -366,6 +367,7 @@ describe("saving a copy", () => {
     expect(await failure(saveCopy(switchedRun.base))).toBe("signed_out");
     expect(await switched.open("5", "7")).toBeNull();
 
+    globalThis.indexedDB = new IDBFactory();
     const removed = new IndexedDbOfflineStore();
     const removedRun = inputs(removed, async () => {
       await removed.remove("5", "7");
@@ -374,6 +376,7 @@ describe("saving a copy", () => {
     expect(await failure(saveCopy(removedRun.base))).toBe("removed");
     expect(await removed.open("5", "7")).toBeNull();
 
+    globalThis.indexedDB = new IDBFactory();
     const locked = new IndexedDbOfflineStore();
     const lockedRun = inputs(locked, async () => {
       lockedRun.guard.lock("account_changed");

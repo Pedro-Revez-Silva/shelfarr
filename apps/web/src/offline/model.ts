@@ -6,7 +6,7 @@ export const RESERVE_BYTES = 32 * 1024 * 1024;
 export const CLOCK_TOLERANCE_MS = 5 * 60_000;
 
 export type ConfirmedAccount = { account: string; confirmedAt: number; validForMs: number; seenAt?: number };
-export type AccountState = { record: ConfirmedAccount | null; generation: number };
+export type AccountState = { record: ConfirmedAccount | null; clearedAt: number };
 
 export type SavedAsset = { id: string; filename: string; media_type: string; size_bytes: number };
 export type AccountPlace = { asset_id: string; locator: Locator; version: number; observedAt: string | null; learnedAt: number };
@@ -35,9 +35,9 @@ export type OfflineStore = {
   exists(): Promise<boolean>;
   prepare(): Promise<void>;
   accountState(): Promise<AccountState>;
-  confirm(value: ConfirmedAccount, generation: number): Promise<boolean>;
-  release(generation: number): Promise<boolean>;
-  forget(account?: string): Promise<void>;
+  confirm(value: ConfirmedAccount): Promise<boolean>;
+  release(askedAt: number): Promise<boolean>;
+  forget(account?: string, at?: number): Promise<void>;
   touch(account: string, now: number): Promise<boolean>;
   books(account: string): Promise<SavedBook[]>;
   book(account: string, id: string): Promise<SavedBook | null>;

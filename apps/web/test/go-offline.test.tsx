@@ -522,7 +522,7 @@ describe("second review regressions", () => {
       window.dispatchEvent(new Event("online"));
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
-    expect(await store.confirm({ account: "4", confirmedAt: Date.now(), validForMs: DAY }, store.generation)).toBe(true);
+    expect(await store.confirm({ account: "4", confirmedAt: Date.now(), validForMs: DAY })).toBe(true);
     await act(async () => {
       answer.resolve({ body: signedOut() });
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -556,6 +556,20 @@ describe("second review regressions", () => {
     await screen.findByRole("button", { name: "Continue online" });
     expect(store.record!.confirmedAt).toBeLessThan(asked + 60);
     expect(store.record!.confirmedAt + store.record!.validForMs).toBeLessThan(asked + 60 + 5000);
+  });
+
+  test("a refusal answered after another tab's renewal still ends offline access when it was asked later", async () => {
+    const refusal = later<unknown>();
+    const store = storeFor("5", Date.now() - DAY);
+    renderOffline(new FakeServer().on("GET", /\/auth\/bootstrap$/, () => refusal.promise as never), store);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await store.confirm({ account: "5", confirmedAt: Date.now() - 1_000, validForMs: DAY })).toBe(true);
+    await act(async () => {
+      refusal.resolve(error(403, "forbidden"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(store.record).toBeNull();
+    expect(screen.queryByText(/Saved Book/)).toBeNull();
   });
 
   test("a failure while removing the old worker's caches still forgets the account", async () => {

@@ -45,12 +45,10 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
 
   const probe = useCallback(async () => {
     if (!guard.isActive()) return;
-    const before = await store.accountState().catch(() => null);
-    if (!before) return;
     const sentAt = Date.now();
     const ended = async () => {
-      if (await store.release(before.generation).catch(() => false)) guard.lock("signed_out");
-      else await recheck();
+      await store.release(sentAt).catch(() => false);
+      await recheck();
     };
     let answer;
     try {
@@ -65,7 +63,7 @@ export function OfflineApp({ boot, auth, store, record, onConnected }: Props) {
       await ended();
       return;
     }
-    if (!(await store.confirm(confirmation, before.generation).catch(() => false))) {
+    if (!(await store.confirm(confirmation).catch(() => false))) {
       await recheck();
       return;
     }
