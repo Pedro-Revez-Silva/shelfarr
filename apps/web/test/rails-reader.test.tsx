@@ -99,6 +99,18 @@ describe("the reader served by Rails", () => {
     const section = (await screen.findByRole("heading", { name: "Saved in the web reader" })).closest("section") as HTMLElement;
     expect(within(section).getByRole("link", { name: "Open those downloads" }).getAttribute("href")).toBe("/sub/read/downloads");
   });
+
+  test("offline, Downloads still points to the web reader's own downloads", async () => {
+    const store = new MemoryOfflineStore();
+    store.record = { account: ACCOUNT, confirmedAt: Date.now(), validForMs: 3_600_000 };
+    const unreachable = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+      throw new TypeError("Failed to fetch");
+    });
+    renderReader(unreachable, "downloads", `${MOUNT}/library/downloads`, store);
+    await screen.findByText(/You're offline\./);
+    const section = screen.getByRole("heading", { name: "Saved in the web reader" }).closest("section") as HTMLElement;
+    expect(within(section).getByRole("link", { name: "Open those downloads" }).getAttribute("href")).toBe("/sub/read/downloads");
+  });
 });
 
 describe("reader links in the Rails library", () => {
