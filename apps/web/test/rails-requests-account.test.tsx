@@ -128,6 +128,7 @@ describe("one request in the Rails preview", () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Cancel request" }));
     expect(server.called("POST", /cancel$/)).toHaveLength(0);
+    expect(screen.getByRole("group", { name: "Cancel this request? If a download is running, it is stopped and its files are deleted from the download client." })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
     await waitFor(() => expect(server.called("POST", /\/requests\/7\/cancel$/)).toHaveLength(1));
     expect(server.called("POST", /cancel$/)[0]?.headers["x-csrf-token"]).toBe("token-123");

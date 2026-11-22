@@ -60,7 +60,7 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   def cancel
     request = Request.for_user(Current.user).find(identifier(params[:id]))
-    return render_error("cannot_cancel", :conflict, message: cancel_message(request)) unless request.can_be_cancelled? && !request.failed?
+    return render_error("cannot_cancel", :conflict, message: cancel_message(request)) unless request.can_be_cancelled?
 
     request.cancel!
     render_action(request)
@@ -152,7 +152,6 @@ class WebPreview::RequestsController < WebPreview::APIController
   def cancel_message(request)
     return request.upload_cancellation_blocked_message if request.upload_cancellation_blocked?
     return "This request has already finished." if request.completed?
-    return "This request is already cancelled." if request.failed?
 
     "This request is being finished on the server and can't be cancelled now."
   end

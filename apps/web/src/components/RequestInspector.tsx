@@ -101,7 +101,7 @@ function CancelTracked({ request }: { request: RequestDetail }) {
   const cancel = useCancelTrackedRequest(request.id);
   return (
     <>
-      <Confirm ask="Cancel request" question={request.status === "downloading" ? "Cancel this request? Its download is stopped and removed from the download client." : "Cancel this request?"} confirm="Yes, cancel it" busy="Cancelling…" state={cancel} onConfirm={() => cancel.mutate(undefined)} />
+      <Confirm ask="Cancel request" question="Cancel this request? If a download is running, it is stopped and its files are deleted from the download client." confirm="Yes, cancel it" busy="Cancelling…" state={cancel} onConfirm={() => cancel.mutate(undefined)} />
       {cancel.isError ? <Failure error={cancel.error} fallback="The request could not be cancelled. Nothing was changed." /> : null}
     </>
   );

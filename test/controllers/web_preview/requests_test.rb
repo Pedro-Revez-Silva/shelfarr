@@ -163,13 +163,13 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal "[FILTERED]", filter.filter("nzb_url" => "https://indexer.example/get?apikey=secret").fetch("nzb_url")
   end
 
-  test "cancelling an already cancelled request is refused" do
+  test "a cancelled request no longer offers Cancel, and the existing cancel endpoint answers as before" do
     sign_in_as(@member)
     post_action(web_preview_api_request_cancel_path(@mine), user: @member)
     assert_response :success
-    assert_equal "This request is already cancelled.", post_action(web_preview_api_request_cancel_path(@mine), user: @member).fetch("message")
-    assert_response :conflict
     assert_equal [ false, nil ], detail(@mine, user: @member).dig("request", "actions").values_at("cancel", "remove")
+    assert_equal "failed", post_action(web_preview_api_request_cancel_path(@mine), user: @member).dig("request", "status")
+    assert_response :success
   end
 
   test "request actions need the page's CSRF token and every read needs the account header" do
