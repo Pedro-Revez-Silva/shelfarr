@@ -2,6 +2,7 @@
 
 class WebPreview::ShellController < ApplicationController
   include WebPreviewAccess
+  include WebPreviewReaderShells
 
   CONTENT_SECURITY_POLICY = [
     "default-src 'none'", "script-src 'self'", "style-src 'self'", "font-src 'self'", "img-src 'self' https: data:",
@@ -20,12 +21,27 @@ class WebPreview::ShellController < ApplicationController
       account: web_preview_account_id,
       mount: web_preview_path,
       api: web_preview_api_session_path.delete_suffix("/session"),
-      classic_library: consumer_library_path
+      classic_library: consumer_library_path,
+      reader_formats: Consumer::ReaderFormats::SUPPORTED,
+      offline: web_preview_offline_boot
     }
     render layout: false
   end
 
+  def reader
+    render_reader_shell("reader")
+  end
+
+  def downloads
+    render_reader_shell("downloads")
+  end
+
   private
+
+  def render_reader_shell(view)
+    headers.merge!(reader_shell_headers(view))
+    render html: reader_shell_document(view).html_safe
+  end
 
   def web_preview_not_found
     render file: Rails.public_path.join("404.html"), status: :not_found, layout: false

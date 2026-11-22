@@ -4,6 +4,8 @@ import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { BookLocation } from "../api/client";
 import { workSources, type Book, type BookCopy, type BookFormat, type BookRequest, type PublicationSummary, type Session } from "../contract";
 import { useBook, useCancelRequest, useChooseCopy, useRequestBookEbook, useSearchAgain, useSession } from "../queries";
+import { OfflineChoice } from "../offline/SaveForOffline";
+import { summaryReaderHref } from "../reader/links";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
@@ -211,6 +213,7 @@ function openLabel(publication: PublicationSummary): string {
 }
 
 function OpenAction({ format }: { format: BookFormat }) {
+  const services = useServices();
   const publication = format.publication;
   if (format.state !== "in_library" || !publication) return null;
   if (publication.availability !== "available") {
@@ -221,7 +224,7 @@ function OpenAction({ format }: { format: BookFormat }) {
     );
   }
   return (
-    <a className={`button${format.book_type === "ebook" ? " button--primary" : ""}`} href={publication.reader_url}>
+    <a className={`button${format.book_type === "ebook" ? " button--primary" : ""}`} href={summaryReaderHref(publication, services) ?? publication.reader_url}>
       {openLabel(publication)}
       <span className="sr-only"> {publication.title} in the {publication.action === "listen" ? "player" : "reader"}</span>
     </a>
@@ -336,6 +339,7 @@ function EbookPanel({ format, location, admin, session }: { format: BookFormat; 
 }
 
 function OpenPanel({ publication }: { publication: PublicationSummary }) {
+  const services = useServices();
   return (
     <section className="copy-panel" aria-labelledby="copy-panel-heading">
       <h2 id="copy-panel-heading">Open it</h2>
@@ -343,7 +347,7 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
         <li>
           <span>This browser</span>
           {publication.availability === "available" ? (
-            <a href={publication.reader_url}>
+            <a href={summaryReaderHref(publication, services) ?? publication.reader_url}>
               {openLabel(publication)}
               <span className="sr-only"> {publication.title} in the reader</span>
             </a>
@@ -351,6 +355,12 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
             <span>This ebook is in the library, but there is no file this browser can open right now. Your saved place is kept.</span>
           )}
         </li>
+        {publication.availability === "available" ? (
+          <li>
+            <span>Offline</span>
+            <OfflineChoice publication={publication} />
+          </li>
+        ) : null}
         <li>
           <span>Library</span>
           <Link to="/library/$publicationId" params={{ publicationId: publication.id }}>

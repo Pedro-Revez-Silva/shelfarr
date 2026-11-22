@@ -43,8 +43,8 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     with_forgery_protection do
       get "#{BASE}/preview/library/#{@ebook.id}"
       assert_response :success
-      assert_equal({ "version" => 1, "account" => users(:one).id.to_s, "mount" => "#{BASE}/preview", "api" => "#{BASE}/preview/api/v1", "classic_library" => "#{BASE}/read" },
-        JSON.parse(css_select("script#shelfarr-boot").sole.text))
+      assert_equal({ "version" => 1, "account" => users(:one).id.to_s, "mount" => "#{BASE}/preview", "api" => "#{BASE}/preview/api/v1", "classic_library" => "#{BASE}/read",
+        "reader_formats" => %w[cbz epub pdf], "offline" => offline_boot }, JSON.parse(css_select("script#shelfarr-boot").sole.text))
       assert_select "script[type=module][src^='#{BASE}/assets/web/preview-']"
       assert_select "link[rel=stylesheet][href^='#{BASE}/assets/web/preview-']"
       assert_select "a[href='#{BASE}/read']"
@@ -55,5 +55,31 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_equal [ "#{BASE}/read/#{@audiobook.id}", "#{BASE}/read/#{@ebook.id}" ], items.map { |item| item.fetch("reader_url") }
     get "#{BASE}/preview/api/v1/session", headers: account_headers(users(:one))
     assert_equal({ "legacy_library" => "#{BASE}/read", "discover" => "#{BASE}/search", "requests" => "#{BASE}/requests", "account" => "#{BASE}/profile" }, response.parsed_body.fetch("links"))
+  end
+
+  def offline_boot
+    { "worker" => "#{BASE}/preview/offline-worker.js", "scope" => "#{BASE}/preview/library/", "downloads" => "#{BASE}/preview/library/downloads" }
+  end
+
+  test "the reader, its media, its worker and Downloads live under the deployment path" do
+    sign_in_as(users(:one))
+    get "#{BASE}/preview/library/#{@ebook.id}/read"
+    assert_response :success
+    boot = JSON.parse(css_select("script#shelfarr-boot").sole.text)
+    assert_equal [ "#{BASE}/preview", "#{BASE}/preview/api/v1", "#{BASE}/read/downloads", offline_boot ], boot.values_at("mount", "api", "classic_downloads", "offline")
+    assert_match(%r{\A#{BASE}/assets/consumer_reader_engine-\h+\.js\z}, boot.fetch("reader_engine"))
+    get "#{BASE}/preview/api/v1/library/#{@ebook.id}/reader", headers: account_headers(users(:one))
+    publication = response.parsed_body.fetch("publication")
+    asset = publication.fetch("assets").sole
+    assert_equal "#{BASE}/preview/api/v1/accounts/#{users(:one).id}/library/#{@ebook.id}/assets/#{asset.fetch("id")}", asset.fetch("url")
+    assert_equal "#{BASE}/read/#{@ebook.id}", publication.dig("classic_reader", "url")
+    get asset.fetch("url")
+    assert_response :success
+    get "#{BASE}/preview/library/downloads"
+    assert_response :success
+    get "#{BASE}/preview/offline-worker.js"
+    config = JSON.parse(response.body.split(";\n", 2).first.delete_prefix("self.SHELFARR_GO_OFFLINE = "))
+    assert_equal [ "#{BASE}/preview/library", "#{BASE}/preview/library/downloads" ], config.values_at("library", "downloads")
+    assert config.fetch("assets").all? { |entry| entry.fetch("path").start_with?("#{BASE}/assets/") }
   end
 end

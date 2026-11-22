@@ -128,12 +128,17 @@ export type PasswordChange = { current_password: string; password: string; passw
 
 export const errorEnvelopeSchema = z.object({ error: z.string(), message: z.string().optional() });
 
+export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath });
+export type OfflineBoot = z.infer<typeof offlineBootSchema>;
+
 export const bootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
   account: identifier,
   mount: z.string(),
   api: z.string().startsWith("/"),
   classic_library: sitePath,
+  reader_formats: z.array(z.string()).optional(),
+  offline: offlineBootSchema.optional(),
 });
 
 export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin", "server_settings", "downloads"] as const;
@@ -146,12 +151,9 @@ export const pageEngineSchema = z.object({
 });
 export type PageEngine = z.infer<typeof pageEngineSchema>;
 
-export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath });
-export type OfflineBoot = z.infer<typeof offlineBootSchema>;
-
 export const goBootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
-  runtime: z.literal("go"),
+  runtime: z.enum(["go", "rails"]),
   view: z.enum(goViews),
   mount: sitePath,
   api: sitePath,
@@ -159,6 +161,7 @@ export const goBootSchema = z.object({
   reader_formats: z.array(z.string()).optional(),
   page_engine: pageEngineSchema.optional(),
   offline: offlineBootSchema.optional(),
+  classic_downloads: sitePath.optional(),
 });
 export type GoBoot = z.infer<typeof goBootSchema>;
 
@@ -170,6 +173,8 @@ export type Boot = {
   classic_library: string | null;
   runtime?: "go";
   reader_formats?: readonly string[];
+  offline?: OfflineBoot;
+  classic_downloads?: string;
 };
 
 export const bootstrapSchema = z.discriminatedUnion("authenticated", [
@@ -371,6 +376,7 @@ export const readerPublicationSchema = z.object({
   assets: z.array(readerAssetSchema),
   other_formats: z.array(z.string()),
   progress: storedProgressSchema.nullable(),
+  classic_reader: z.object({ url: sitePath, read_along: z.boolean() }).optional(),
 });
 export type ReaderPublication = z.infer<typeof readerPublicationSchema>;
 

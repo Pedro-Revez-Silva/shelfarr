@@ -31,7 +31,11 @@ type Props = {
 export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: Props) {
   const [built] = useState(() => {
     const guard = new AccountGuard(record.account);
-    const services = createServices({ boot: { version: 1, account: record.account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go" }, guard, csrfToken: () => null });
+    const services = createServices({
+      boot: { version: 1, account: record.account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go", ...(boot.classic_downloads ? { classic_downloads: boot.classic_downloads } : {}) },
+      guard,
+      csrfToken: () => null,
+    });
     const sync = createPlaceSync({ boot, auth, store, guard, fetcher });
     return { guard, services, sync };
   });

@@ -183,6 +183,35 @@ With the Go runtime's `-web-offline` option an EPUB can also be saved in the bro
 server is unreachable, through a worker scoped to `/preview/library/` and kept apart from the Rails `/read` worker and
 its storage; see [`go-http-migration.md`](go-http-migration.md#offline-epub-reading-opt-in).
 
+## Rails-served reader and Downloads (dev preview)
+
+Under Rails the preview now opens its own reader and player instead of handing off to `/read/:id`, using the same
+TypeScript reader, page reader and offline code as the Go runtime. Rails answers the Go browser contract through a small
+session adapter, so the client code is shared rather than forked:
+
+| Route | Answer |
+| --- | --- |
+| `GET /preview/library/:id/read`, `GET /preview/library/downloads` | A static shell, identical for every visitor (no account, no CSRF meta), with the Go boot shape and `runtime: "rails"`. Reader policy as in Go; Downloads uses the Library policy. Access rules as the other preview shells (404 off/not listed, sign-in redirect). |
+| `GET /preview/api/v1/auth/bootstrap` | Signed in: `{authenticated:true, account, csrf_token, expires_in:7200, offline_expires_in}`. The token is Rails' own form token; `offline_expires_in` is the session's remaining life (`created_at` + `session_max_age_days`), capped at 30 days. Signed out: `{authenticated:false, csrf_token, expires_in, sign_in:{available:false, reason:"rails_sign_in"}}`; the page then links to Rails' sign-in, which returns to it. 404 when the preview is off or the account is not listed. |
+| `GET /preview/api/v1/library/:id/reader` | The Go reader publication. Every browser format (EPUB, PDF, CBZ, audio) is listed with an account-bound media URL; `other_formats` is always empty. Adds `classic_reader:{url, read_along}` so the reader can offer `/read/:id` for read-along books. |
+| `GET`, `PUT /preview/api/v1/library/:id/progress` | `Consumer::ProgressWriter`, unchanged rules. `{account, progress}`, `409 {account, error:"progress_conflict", progress}`, `422 invalid_progress`, `422 invalid_csrf`. |
+| `GET /preview/api/v1/library/:id/assets/:asset_id/reading_order` | `{account, asset_id, format:"cbz", items}`; `403 cross_site_refused` for a cross-site fetch; `410 asset_unavailable`. |
+| `GET /preview/api/v1/accounts/:account/library/:id/assets/:asset_id` | The existing range-capable media response, refused `401 account_changed` when the path account is not the session's and `403 cross_site_refused` before the session is read. `Cross-Origin-Resource-Policy: same-origin`, `Referrer-Policy: no-referrer`, document sandbox policy. |
+| `GET /preview/offline-worker.js` | The Go worker source (`apps/server/internal/gohttp/offline_worker.js`, served unchanged) with a configuration naming the two shells above and the SHA-256 of the bundle, stylesheet, fonts and reader engine it precaches. Account-free; 404 when the preview is off. |
+
+The Library shell's boot gains `reader_formats` and `offline`; clients that do not know them ignore them, and without
+`reader_formats` every link keeps its `/read/:id` address. The engines are Rails' own digested copies of the vendored
+EPUB.js and PDF.js files.
+
+Offline copies live in the Go preview's `shelfarr-go-preview-offline` database under the scope `/preview/library/`. The
+`/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
+`/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
+server is unreachable, exactly as after a Go rollback.
+
+Not ported yet (each says so on screen and links to `/read/:id` or `/read/downloads`): read-along narration, offline
+audiobooks, PDFs and comics, and showing the `/read` downloads in the new Downloads list. The reader still lives under
+`/preview`; moving it to `/read/:id` needs the worker, outbox and manifest transition in `backend-migration.md`.
+
 ## Not in this slice
 
 Full frontend parity, Go authentication or write ownership, moving `/read` or the PWA identity,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
-import type { ReaderPublication } from "../contract";
+import type { PublicationSummary, ReaderPublication } from "../contract";
 import { useServices } from "../services";
 import { announceChange, onChange, useOffline, type Offline } from "./context";
 import { bookKey, type FailureKind, type SavedBook } from "./model";
@@ -217,4 +217,36 @@ function StatusText({ state, outdated, compact }: { state: CopyState; outdated: 
     case "failed":
       return <p>{`${FAILURES[state.failure]}${state.previous ? " Your earlier saved copy is unchanged." : ""}`}</p>;
   }
+}
+
+const UNSAVED_KINDS: Record<string, string> = { listen: "audiobooks", PDF: "PDFs", Comic: "comics" };
+
+export function OfflineNotSavable({ kind, fallback, compact }: { kind: string; fallback: string | null; compact?: boolean }) {
+  const offline = useOffline();
+  const heading = useId();
+  if (!offline?.confirmation) return null;
+  const what = UNSAVED_KINDS[kind] ?? "books in this format";
+  return (
+    <section className={`offline-copy${compact ? " offline-copy--compact" : ""}`} aria-labelledby={heading} data-state="unsupported">
+      <h2 id={heading} className={compact ? "sr-only" : "offline-copy-heading"}>
+        Offline reading
+      </h2>
+      <p className="offline-copy-status">{`This book can't be saved here yet: this reader keeps EPUBs offline, not ${what}.`}</p>
+      {fallback ? (
+        <div className="offline-copy-actions">
+          <a className="button" href={fallback}>
+            Download it in the web reader
+          </a>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+export function OfflineChoice({ publication }: { publication: PublicationSummary }) {
+  const { api, mode } = useServices();
+  if (publication.action === "read" && publication.format_label === "Ebook") {
+    return <SaveForOffline id={publication.id} title={publication.title} currentAsset={null} load={(signal) => api.reader(publication.id, signal)} compact />;
+  }
+  return <OfflineNotSavable kind={publication.action === "listen" ? "listen" : publication.format_label} fallback={mode === "rails" ? publication.reader_url : null} compact />;
 }
