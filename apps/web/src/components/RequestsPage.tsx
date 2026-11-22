@@ -5,6 +5,7 @@ import { useRequests, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
+import { FindTabs } from "./FindRequests";
 import { PageHeading } from "./PageHeading";
 import { coverOf, StatusBadges, Time } from "./requestText";
 import { EmptyState, ErrorPanel, Loading } from "./States";
@@ -53,24 +54,13 @@ function searchFor(key: FilterKey, q: string | undefined): RequestFilters {
 }
 
 export function RequestsPage() {
-  const { mode } = useServices();
-  if (mode !== "go") {
-    return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
-      </EmptyState>
-    );
-  }
-  return <Requests />;
-}
-
-function Requests() {
   const raw = routeApi.useSearch();
   const filters: RequestFilters = { ...raw };
   const q = trimQuery(raw.q);
   if (q) filters.q = q;
   else delete filters.q;
   const navigate = useNavigate();
+  const { mode } = useServices();
   const session = useSession();
   const list = useRequests(filters);
   const current = list.isError ? undefined : list.data;
@@ -89,9 +79,10 @@ function Requests() {
         <p className="eyebrow">Requests</p>
         <PageHeading id="requests-heading">{heading}</PageHeading>
         <p className="lede">
-          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to. You can’t cancel or retry a request from this page.
+          {everyone ? "Every request on this server" : "The books and audiobooks you asked this server for"}, and where each one has got to.{mode === "go" ? " You can’t cancel or retry a request from this page." : " Open one to see its progress or change it."}
         </p>
       </header>
+      <FindTabs />
 
       <nav className="request-filters" aria-label="Request filters">
         <ul>
@@ -216,11 +207,12 @@ function Results({ list, filters, filter }: { list: RequestList; filters: Reques
 }
 
 function Empty({ filters, filter }: { filters: RequestFilters; filter: string }) {
+  const { mode } = useServices();
   if (!filters.q && filter === "all") {
     return (
       <EmptyState title="No requests yet">
-        <Link to="/discover" className="button">
-          Discover books
+        <Link to={mode === "go" ? "/discover" : "/find"} className="button">
+          Find books
         </Link>
       </EmptyState>
     );
@@ -245,9 +237,15 @@ function RequestCard({ request }: { request: RequestSummary }) {
       <Cover publication={coverOf(request)} />
       <div className="request-copy">
         <h3 id={titleId}>
-          <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-link">
-            {request.title}
-          </Link>
+          {request.status === "completed" && request.book_page ? (
+            <Link to="/books/$source/$sourceId" params={{ source: request.book_page.source, sourceId: request.book_page.id }} className="request-link">
+              {request.title}
+            </Link>
+          ) : (
+            <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-link">
+              {request.title}
+            </Link>
+          )}
         </h3>
         {request.author ? <p className="book-author">{request.author}</p> : null}
         <StatusBadges request={request} />

@@ -26,7 +26,7 @@ describe("the library page", () => {
     expect(screen.getByRole("status", { name: "" }).textContent).toContain("Showing 2 books");
   });
 
-  test("one navigation tells in-app Library and Discover apart from classic-app handoffs and hides Admin from non-admins", async () => {
+  test("one navigation offers Library, Find and Account in the app and hides Server from non-admins", async () => {
     renderApp({ server: libraryServer({ "": page([summary()]) }) });
     await screen.findByText("Ada Reader");
     const nav = screen.getByRole("navigation", { name: "Primary" });
@@ -34,21 +34,19 @@ describe("the library page", () => {
     const library = within(nav).getByRole("link", { name: "Library" });
     expect(library.getAttribute("aria-current")).toBe("page");
     expect(library.getAttribute("href")).toBe("/sub/preview/library");
-    const discover = within(nav).getByRole("link", { name: "Discover" });
-    expect(discover.getAttribute("href")).toBe("/sub/preview/discover");
-    expect(discover.getAttribute("aria-current")).toBeNull();
-    for (const [name, href] of [["Requests", "/sub/requests"], ["Account", "/sub/profile"]] as const) {
-      const link = within(nav).getByRole("link", { name: `${name} (opens the classic Shelfarr app)` });
+    for (const [name, href] of [["Find", "/sub/preview/find"], ["Account", "/sub/preview/account"]] as const) {
+      const link = within(nav).getByRole("link", { name });
       expect(link.getAttribute("href")).toBe(href);
       expect(link.getAttribute("aria-current")).toBeNull();
     }
-    expect(within(nav).queryByRole("link", { name: /Admin/ })).toBeNull();
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Find", "Account"]);
+    expect(within(nav).queryByRole("link", { name: /Server|Admin/ })).toBeNull();
   });
 
-  test("an admin gets the Admin handoff", async () => {
+  test("an admin gets Server, still a handoff until its own pages exist", async () => {
     const server = libraryServer({ "": page([summary()]) }).on("GET", /session$/, () => ({ body: session({ admin: { url: "/sub/admin" } }) }));
     renderApp({ server });
-    const link = await screen.findByRole("link", { name: "Admin (opens the classic Shelfarr app)" });
+    const link = await screen.findByRole("link", { name: "Server (opens the classic Shelfarr app)" });
     expect(link.getAttribute("href")).toBe("/sub/admin");
   });
 

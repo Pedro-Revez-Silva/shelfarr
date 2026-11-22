@@ -3,28 +3,17 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { Acquisition, RequestDetail } from "../contract";
 import { selectionRunning, useAcquisition, useRequest, useSelectionFinished, useSelectResult, useSession } from "../queries";
-import { useServices } from "../services";
 import { usePageTitle } from "../title";
+import { RequestSteps, type StepState } from "./BookPage";
 import { Cover } from "./Cover";
+import { RequestTools } from "./RequestInspector";
 import { PageHeading } from "./PageHeading";
 import { BOOK_TYPE_LABELS, coverOf, DOWNLOAD_LABELS, relativeTime, StatusBadges, Time } from "./requestText";
-import { EmptyState, ErrorPanel, Loading } from "./States";
+import { ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/requests/$requestId");
 
 export function RequestPage() {
-  const { mode } = useServices();
-  if (mode !== "go") {
-    return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
-      </EmptyState>
-    );
-  }
-  return <RequestView />;
-}
-
-function RequestView() {
   const { requestId } = routeApi.useParams();
   const request = useRequest(requestId);
   const session = useSession();
@@ -108,7 +97,7 @@ function stage(request: RequestDetail): string {
     case "failed":
       return "This request was cancelled or failed and is no longer being worked on.";
     case "awaiting_purchase":
-      return "Waiting for a purchase. Store offers are not shown in this preview.";
+      return request.store_offers ? "Waiting for a purchase." : "Waiting for a purchase. Store offers are not shown in this preview.";
     case "unknown":
       return "The server reported a status this preview does not know yet.";
   }
@@ -136,6 +125,8 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
           ) : null}
 
           {admin && request.acquisition === true ? <ChooseCopy request={request} /> : null}
+
+          {request.actions ? <TrackedSteps request={request} /> : null}
 
           <div className="request-stage" role="status">
             <p>{stage(request)}</p>
@@ -173,6 +164,18 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
                 </dd>
               </div>
             ) : null}
+            {request.notes ? (
+              <div>
+                <dt>Notes</dt>
+                <dd>{request.notes}</dd>
+              </div>
+            ) : null}
+            {request.collection_title ? (
+              <div>
+                <dt>Part of</dt>
+                <dd>{request.collection_title}</dd>
+              </div>
+            ) : null}
             {request.next_retry_at && Date.parse(request.next_retry_at) > Date.now() ? (
               <div>
                 <dt>Next retry</dt>
@@ -182,6 +185,7 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
               </div>
             ) : null}
           </dl>
+          <RequestTools request={request} admin={admin} />
         </div>
       </div>
 
@@ -201,6 +205,23 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
       ) : null}
     </article>
   );
+}
+
+const STAGES: Partial<Record<RequestDetail["status"], StepState["stage"]>> = {
+  pending: "queued",
+  searching: "searching",
+  not_found: "not_found",
+  awaiting_purchase: "awaiting_purchase",
+  downloading: "downloading",
+  processing: "processing",
+  failed: "failed",
+};
+
+function TrackedSteps({ request }: { request: RequestDetail }) {
+  const stage = request.status === "completed" ? (request.library?.state === "available" ? "available" : "completed") : STAGES[request.status];
+  if (!stage) return null;
+  const choiceNeeded = request.status === "searching" && (request.copies?.selectable === true || request.attention_reason === SELECTION_REASON);
+  return <RequestSteps request={{ stage, choice_needed: choiceNeeded, attention_needed: request.attention_needed }} />;
 }
 
 const SEARCH_NOTES: Record<NonNullable<Acquisition["search"]>["state"], string> = {

@@ -102,7 +102,7 @@ describe("the server settings page", () => {
     expect(screen.getByRole("heading", { name: "Server settings", level: 1 })).toBeTruthy();
     expect(document.title).toBe("Server settings · Shelfarr");
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
+    expect(within(nav).getByRole("link", { name: "Server" }).getAttribute("aria-current")).toBe("page");
     expect(within(nav).getByRole("link", { name: "Account" }).getAttribute("aria-current")).toBeNull();
     expect(screen.getByRole("link", { name: "Server overview" }).getAttribute("aria-current")).toBeNull();
     expect(within(document.querySelector(".settings .lede") as HTMLElement).getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/preview/account");

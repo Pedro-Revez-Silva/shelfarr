@@ -2,7 +2,7 @@ import { Link, Outlet } from "@tanstack/react-router";
 import { useGuardState } from "../services";
 import { useSession } from "../queries";
 import { AccountBar } from "./AccountBar";
-import { PrimaryNavigation } from "./Navigation";
+import { NotificationBell, PrimaryNavigation } from "./Navigation";
 import { LockedScreen } from "./LockedScreen";
 import { useServices } from "../services";
 import { useAccountRevalidation } from "../revalidation";
@@ -43,6 +43,7 @@ function ActiveShell({ classicLibrary }: { classicLibrary: string | null }) {
           <span className="preview-badge">{go ? "Experimental server" : "Library preview"}</span>
         </div>
         <AccountBar session={session.data} loading={session.isPending} />
+        <NotificationBell session={session.data} />
         {go ? (
           <SignOutButton />
         ) : (

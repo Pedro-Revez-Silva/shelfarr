@@ -239,12 +239,15 @@ class WebPreview::LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_equal 0, ConsumerReadingState.count
   end
 
-  test "the session names the account, the server and the classic pages, and reveals admin only to admins" do
+  test "the session names the account, the server, the classic pages and the account's unread notifications, and reveals admin only to admins" do
+    Notification.create!(user: users(:one), title: "Ready", message: "Your book arrived", notification_type: "request_completed")
     preview_get web_preview_api_session_path
     assert_response :success
     assert_equal({ "account" => { "id" => users(:one).id.to_s, "name" => "User One" },
       "server" => { "name" => "www.example.com", "version" => Consumer::ServerInfo.server_version },
-      "links" => { "legacy_library" => "/read", "discover" => "/search", "requests" => "/requests", "account" => "/profile" } }, response.parsed_body)
+      "links" => { "legacy_library" => "/read", "discover" => "/search", "requests" => "/requests", "account" => "/profile" },
+      "notifications" => { "url" => "/notifications", "unread" => users(:one).notifications.unread.count } }, response.parsed_body)
+    assert_operator users(:one).notifications.unread.count, :>, 0
     sign_out
     sign_in_as(users(:two))
     preview_get web_preview_api_session_path, user: users(:two)

@@ -109,13 +109,11 @@ describe("the Go Account page", () => {
     expect(writes(server)).toHaveLength(0);
   });
 
-  test("the classic preview neither links to nor serves this page", async () => {
+  test("the Rails preview links to its own Account page", async () => {
     const server = standardServer();
-    renderApp({ server, url: "/sub/preview/account" });
-    expect(await screen.findByText("That page is not part of this preview")).toBeTruthy();
-    const nav = screen.getByRole("navigation", { name: "Primary" });
-    await waitFor(() => expect(within(nav).getByRole("link", { name: /Account/ }).getAttribute("href")).toBe("/sub/profile"));
-    expect(server.called("GET", /\/account$/)).toHaveLength(0);
+    renderApp({ server, url: "/sub/preview/library" });
+    const nav = await screen.findByRole("navigation", { name: "Primary" });
+    await waitFor(() => expect(within(nav).getByRole("link", { name: "Account" }).getAttribute("href")).toBe("/sub/preview/account"));
   });
 });
 

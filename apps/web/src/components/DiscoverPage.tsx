@@ -1,4 +1,4 @@
-import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
+import { getRouteApi, Link, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import { coverStyles, type DiscoverAnswer, type DiscoverItem, type DiscoverState, type LibraryCopyType, type RequestCreation } from "../contract";
@@ -7,6 +7,7 @@ import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { CatalogueSearch } from "./CatalogueSearch";
 import { Cover } from "./Cover";
+import { FindTabs } from "./FindRequests";
 import { PageHeading } from "./PageHeading";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
@@ -27,7 +28,13 @@ export function checkQuery(raw: string | undefined): CheckedQuery {
 
 export function DiscoverPage() {
   const { mode } = useServices();
-  return mode === "go" ? <Discover /> : <CatalogueSearch />;
+  const { q } = routeApi.useSearch();
+  return mode === "go" ? <Discover /> : <Navigate to="/find" search={q === undefined ? {} : { q }} replace />;
+}
+
+export function FindPage() {
+  const { mode } = useServices();
+  return mode === "go" ? <Navigate to="/discover" replace /> : <CatalogueSearch />;
 }
 
 function Discover() {
@@ -35,7 +42,7 @@ function Discover() {
   const navigate = useNavigate();
   const checked = checkQuery(q);
   const query = checked.kind === "ready" ? checked.query : null;
-  usePageTitle(query ? `Discover: ${query}` : "Discover");
+  usePageTitle(query ? `Find: ${query}` : "Find");
   const answer = useDiscover(query);
   const state = answer.isError ? null : (answer.data?.search ?? null);
   const searchable = state === null || state === "available";
@@ -48,12 +55,13 @@ function Discover() {
     <section className="discover" aria-labelledby="discover-heading">
       <header className="page-heading">
         <p className="eyebrow">Find books</p>
-        <PageHeading id="discover-heading">Discover</PageHeading>
+        <PageHeading id="discover-heading">Find</PageHeading>
         <p className="lede">
           Search <a href={OPEN_LIBRARY} target="_blank" rel="noopener noreferrer">Open Library<span className="sr-only"> (opens in a new tab)</span></a>, the free catalogue
           run by the Internet Archive, by title or author, and see what is already in your library.
         </p>
       </header>
+      <FindTabs />
 
       {searchable ? (
         <SearchForm source={q ?? ""} initial={checked.kind === "ready" ? checked.query : (q ?? "")} problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null} onSearch={submit} />

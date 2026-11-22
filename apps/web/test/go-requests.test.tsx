@@ -208,7 +208,7 @@ describe("the Requests page", () => {
     const answers: Record<string, string> = {};
     const server = requestsServer(() => ({ body: list([], { counts: { attention: 0, active: 0 } }) }));
     for (const [url, title, body] of [
-      ["/preview/requests", "No requests yet", "Discover books"],
+      ["/preview/requests", "No requests yet", "Find books"],
       ["/preview/requests?attention=true", "No requests need attention", "All requests are processing normally."],
       ["/preview/requests?q=zola", "No matching requests", "No requests match “zola”."],
       ["/preview/requests?status=failed", "No matching requests", "No requests match your current filter."],
@@ -425,9 +425,12 @@ describe("the Requests page", () => {
     expect(lists(server).map(params)).toEqual([{ status: "completed" }]);
   });
 
-  test("the classic preview does not offer the page", async () => {
+  test("the Rails preview offers the same page inside Find", async () => {
     renderApp({ server: requestsServer(), url: "/sub/preview/requests" });
-    expect(await screen.findByRole("heading", { name: "That page is not part of this preview" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
+    const find = within(screen.getByRole("navigation", { name: "Find" }));
+    expect(find.getByRole("link", { name: "Requests" }).getAttribute("aria-current")).toBe("page");
+    expect(within(screen.getByRole("navigation", { name: "Primary" })).getByRole("link", { name: "Find" }).getAttribute("aria-current")).toBe("page");
   });
 });
 

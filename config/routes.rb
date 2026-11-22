@@ -210,6 +210,8 @@ Rails.application.routes.draw do
   get "preview/requests", to: "web_preview/shell#show", as: :web_preview_requests
   get "preview/requests/:id", to: "web_preview/shell#show", as: :web_preview_request, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/account", to: "web_preview/shell#show", as: :web_preview_account
+  get "preview/account/:section", to: "web_preview/shell#show", as: :web_preview_account_section, constraints: { section: /security|devices|connections|about/ }
+  get "preview/find", to: "web_preview/shell#show", as: :web_preview_find
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
     get "session", to: "sessions#show"
     get "continue", to: "library#continue"

@@ -75,7 +75,8 @@ module WebPreview
     end
 
     def links
-      value = { kobo_readers: @routes.kobo_devices_path, kobo_accounts: @routes.kobo_accounts_path, hardcover: @routes.profile_path(anchor: "hardcover") }
+      value = { kobo_readers: @routes.kobo_devices_path, kobo_accounts: @routes.kobo_accounts_path, hardcover: @routes.profile_path(anchor: "hardcover"),
+        sign_out: @routes.session_path, phone_app: @routes.consumer_connect_path }
       value[:kobo_shared] = @routes.kobo_shared_libraries_path if @user.received_kobo_account_shares.effective.exists?
       android = @routes.helpers.android_app_page_path
       value[:android_app] = android if android
