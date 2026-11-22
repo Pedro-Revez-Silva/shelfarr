@@ -171,7 +171,8 @@ class FindViewModel(
                 val items = backend.discover(query)
                 findState.update { state ->
                     val latest = state.requests.associateBy { it.id }
-                    state.copy(searching = false, searchedFor = query, results = items.map { it.updatedBy(latest) })
+                    val links = state.results.requestLinks()
+                    state.copy(searching = false, searchedFor = query, results = items.map { it.relinked(links).updatedBy(latest) })
                 }
             } catch (error: ApiException) {
                 if (error is ApiException.Forbidden) lostPermission()
@@ -232,11 +233,11 @@ class FindViewModel(
                         navigation.trySend(FindDestination.Request(request.id))
                     }
                     is RequestOutcome.InLibrary -> {
-                        updateFormat(item, format) { it.copy(state = FormatState.IN_LIBRARY, publicationId = outcome.publicationId) }
+                        updateFormat(item, format) { it.copy(state = FormatState.IN_LIBRARY, publicationId = outcome.publicationId, request = null) }
                         titleState.update { it.copy(submitting = false, format = null, message = "This ${format.word} is already in the library.") }
                     }
                     is RequestOutcome.RequestedBySomeone -> {
-                        updateFormat(item, format) { it.copy(state = FormatState.REQUESTED_BY_SOMEONE) }
+                        updateFormat(item, format) { it.copy(state = FormatState.REQUESTED_BY_SOMEONE, request = null) }
                         titleState.update {
                             it.copy(submitting = false, format = null, message = outcome.message ?: "Someone on this server already asked for this ${format.word}. It will appear in the library when it arrives.")
                         }
@@ -384,9 +385,9 @@ internal fun FormatOption.following(request: RequestItem): FormatOption {
     val known = this.request
     if (known?.id == request.id && request.isOlderThan(known)) return this
     return when {
-        request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
+        request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = request)
         request.stage in STAGES_HOLDING_THE_FORMAT -> copy(state = FormatState.REQUESTED, request = request)
-        else -> copy(state = FormatState.REQUESTABLE, request = null)
+        else -> copy(state = FormatState.REQUESTABLE, request = request)
     }
 }
 
@@ -414,7 +415,22 @@ private fun DiscoverItem.updatedBy(latest: Map<String, RequestItem>): DiscoverIt
         formats = formats.map { option ->
             val answered = option.request
             val listed = answered?.let { latest[it.id] }
-            if (listed != null && answered.isOlderThan(listed)) option.following(listed) else option
+            val requestableHere = option.state == FormatState.REQUESTABLE
+            if (listed != null && listed.supersedes(answered) && (!requestableHere || listed.isReady)) option.following(listed) else option
+        },
+    )
+
+private fun RequestItem.supersedes(answered: RequestItem): Boolean =
+    answered.isOlderThan(this) || (isReady && !isOlderThan(answered))
+
+private fun List<DiscoverItem>.requestLinks(): Map<Pair<String, BookType>, RequestItem> =
+    flatMap { item -> item.formats.mapNotNull { option -> option.request?.let { (item.id to option.bookType) to it } } }.toMap()
+
+private fun DiscoverItem.relinked(links: Map<Pair<String, BookType>, RequestItem>): DiscoverItem =
+    copy(
+        formats = formats.map { option ->
+            val link = links[id to option.bookType]
+            if (option.state == FormatState.REQUESTABLE && option.request == null && link != null) option.copy(request = link) else option
         },
     )
 

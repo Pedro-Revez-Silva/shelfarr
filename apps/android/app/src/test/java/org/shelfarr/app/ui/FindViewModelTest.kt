@@ -70,6 +70,10 @@ class FindViewModelTest {
 
     private fun shownEbook() = model.find.value.results.single().format(BookType.EBOOK)!!
 
+    private fun assertOwned(publicationId: String, option: FormatOption?) {
+        assertEquals(FormatState.IN_LIBRARY to publicationId, option?.state to option?.publicationId)
+    }
+
     private fun searchAnswering(item: DiscoverItem) {
         model.setQuery("lighthouse")
         model.search()
@@ -91,21 +95,52 @@ class FindViewModelTest {
         assertEquals(requested(request(RequestStage.AWAITING_PURCHASE)), shownEbook())
 
         listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-1"))
-        assertEquals(FormatOption(BookType.EBOOK, FormatState.IN_LIBRARY, publicationId = "pub-1"), shownEbook())
+        assertOwned("pub-1", shownEbook())
     }
 
     @Test
-    fun `a request that ends without a copy leaves its format requestable, as a new search would show it`() = runTest(dispatcher) {
+    fun `a request that ends without a copy leaves its format requestable and still follows the server's own retry`() = runTest(dispatcher) {
         for (ending in listOf(RequestStage.NOT_FOUND, RequestStage.FAILED, RequestStage.COMPLETED)) {
-            searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+            val id = "r-$ending"
+            searchAnswering(title(requested(request(RequestStage.SEARCHING, id = id))))
             backend.discoverAnswer = CompletableDeferred()
 
-            listShowing(request(ending))
-            assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE), shownEbook())
+            listShowing(request(ending, id = id))
+            assertEquals(FormatState.REQUESTABLE, shownEbook().state)
 
-            listShowing(request(RequestStage.QUEUED))
-            assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE), shownEbook())
+            listShowing(request(RequestStage.QUEUED, id = id))
+            assertEquals(requested(request(RequestStage.QUEUED, id = id)), shownEbook())
+
+            listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-$id", id = id))
+            assertOwned("pub-$id", shownEbook())
         }
+    }
+
+    @Test
+    fun `a new search keeps following a request that ended without a copy`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+        listShowing(request(RequestStage.NOT_FOUND))
+        backend.discoverAnswer = CompletableDeferred()
+        model.search()
+        runCurrent()
+
+        listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-1"))
+        backend.discoverAnswer.complete(listOf(title(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE))))
+        runCurrent()
+        assertOwned("pub-1", shownEbook())
+    }
+
+    @Test
+    fun `a new search showing a request ended keeps it requestable until the server lists it again`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.SEARCHING, "2026-11-22T10:00:00Z"))))
+        backend.discoverAnswer = CompletableDeferred()
+        model.search()
+        backend.discoverAnswer.complete(listOf(title(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE))))
+        runCurrent()
+        assertEquals(FormatState.REQUESTABLE, shownEbook().state)
+
+        listShowing(request(RequestStage.QUEUED, "2026-11-22T10:05:00Z"))
+        assertEquals(FormatState.REQUESTED, shownEbook().state)
     }
 
     @Test
@@ -121,6 +156,35 @@ class FindViewModelTest {
 
         assertEquals(FormatOption(BookType.EBOOK, FormatState.IN_LIBRARY, publicationId = "pub-9"), model.title.value.item?.format(BookType.EBOOK))
         assertEquals(FormatState.IN_LIBRARY, shownEbook().state)
+    }
+
+    @Test
+    fun `a copy the list already shows ready outlasts a search answer from the same second`() = runTest(dispatcher) {
+        listShowing(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z"))
+        model.setQuery("lighthouse")
+        model.search()
+        runCurrent()
+        listShowing(request(RequestStage.AVAILABLE, "2026-11-22T10:00:00Z", publicationId = "pub-1"))
+
+        backend.discoverAnswer.complete(listOf(title(requested(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z")))))
+        runCurrent()
+
+        assertOwned("pub-1", shownEbook())
+    }
+
+    @Test
+    fun `someone else's request found by a new request after a failure outlasts the failed request in the list`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+        listShowing(request(RequestStage.FAILED))
+        model.choose(model.find.value.results.single())
+        backend.createAnswer.complete(RequestOutcome.RequestedBySomeone(null))
+        model.submit()
+        runCurrent()
+
+        listShowing(request(RequestStage.FAILED))
+
+        assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTED_BY_SOMEONE), model.title.value.item?.format(BookType.EBOOK))
+        assertEquals(FormatState.REQUESTED_BY_SOMEONE, shownEbook().state)
     }
 
     @Test
@@ -143,7 +207,7 @@ class FindViewModelTest {
         backend.discoverAnswer.complete(listOf(title(requested(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z")))))
         runCurrent()
 
-        assertEquals(FormatOption(BookType.EBOOK, FormatState.IN_LIBRARY, publicationId = "pub-1"), shownEbook())
+        assertOwned("pub-1", shownEbook())
     }
 
     @Test
