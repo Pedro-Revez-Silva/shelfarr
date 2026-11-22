@@ -25,7 +25,6 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   setup do
     # Selenium reuses its browser after reset_sessions!, including the window
     # size left by a mobile test. Give each test the declared desktop viewport.
-    # A cold Chrome sometimes closes the socket on that first command.
     resize_browser
   end
 

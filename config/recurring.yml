@@ -48,9 +48,6 @@ default: &default
     class: OwnedLibraryAutomationJob
     queue: default
     schedule: every 5 minutes
-  # health_check and audiobookshelf_library_sync are dynamic tasks. Their
-  # schedules follow the interval settings, so Solid Queue does not insert a
-  # job on every skipped minute. See IntervalRecurringTasks.
   hardcover_sync:
     class: HardcoverSyncSchedulerJob
     queue: default

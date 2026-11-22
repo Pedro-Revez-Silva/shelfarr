@@ -2,13 +2,11 @@
 
 require "fugit"
 
-# health_check and audiobookshelf_library_sync follow Settings intervals.
-# A static every-minute tick still inserts a Solid Queue job on every skip,
-# and a running scheduler only notices dynamic tasks that are deleted and
-# created again, so changing an interval replaces the row.
-# Solid Queue only plans the next future tick, so startup of bin/jobs enqueues
-# one scheduled run. The job's due-check performs overdue work and skips the rest.
 class IntervalRecurringTasks
+  DAY_MINUTES = 24 * 60
+  RECONCILE_INTERVAL = 60
+  ELAPSED_ZONE = "UTC"
+
   TASKS = {
     "health_check" => {
       job_class: "HealthCheckJob",
@@ -23,10 +21,42 @@ class IntervalRecurringTasks
     }.freeze
   }.freeze
 
+  class Reconciler
+    attr_reader :pending_catch_ups
+
+    def initialize(interval:, executor:)
+      @executor = executor
+      @pending_catch_ups = TASKS.keys
+      @timer = Concurrent::TimerTask.new(execution_interval: interval) { run }
+    end
+
+    def start
+      run
+    ensure
+      @timer.execute
+    end
+
+    def run
+      @executor.wrap do
+        IntervalRecurringTasks.reconcile!
+        @pending_catch_ups = IntervalRecurringTasks.catch_up!(@pending_catch_ups)
+      end
+    end
+
+    def stop
+      @timer.shutdown
+    end
+
+    def running?
+      @timer.running?
+    end
+  end
+
   class << self
-    def sync_all!(catch_up: false)
+    attr_reader :reconciler
+
+    def sync_all!
       TASKS.each_key { |key| sync_task!(key) }
-      enqueue_catch_up! if catch_up
     end
 
     def sync_setting!(setting_key)
@@ -35,13 +65,47 @@ class IntervalRecurringTasks
       sync_task!(key) if key
     end
 
-    # Exact sub-day intervals keep a matching cron. Anything else uses the
-    # coarsest uniform tick that divides it, and the due-check keeps the
-    # requested spacing instead of rounding the interval up.
-    # Multi-day month grids restart on the 1st, so 7 days is weekly and
-    # other multi-day values tick daily. The due-check keeps that spacing.
+    def reconcile!
+      sync_all!
+      true
+    rescue ActiveRecord::ActiveRecordError => error
+      Rails.logger.warn "[Shelfarr] Interval recurring tasks were not reconciled: #{error.message}"
+      RemoteResult::Failed.new(error)
+    end
+
+    def reconcile_setting!(setting_key)
+      sync_setting!(setting_key)
+      true
+    rescue ActiveRecord::ActiveRecordError => error
+      Rails.logger.warn "[Shelfarr] #{setting_key} schedule waits for the next reconciliation: #{error.message}"
+      RemoteResult::Failed.new(error)
+    end
+
+    def scheduler_started!(reconcile_every: RECONCILE_INTERVAL, executor: Rails.application.executor)
+      scheduler_stopped!
+      @reconciler = Reconciler.new(interval: reconcile_every, executor: executor)
+      @reconciler.start
+    end
+
+    def scheduler_stopped!
+      @reconciler&.stop
+      @reconciler = nil
+    end
+
+    def reconciling?
+      @reconciler&.running? || false
+    end
+
+    def pending_catch_ups
+      @reconciler&.pending_catch_ups || []
+    end
+
+    def catch_up!(keys = TASKS.keys, now: Time.current)
+      keys.select { |key| still_missed?(catch_up_task(key, now)) }
+    end
+
     def schedule_for(interval_seconds)
-      minutes = [ (interval_seconds.to_f / 60).ceil, 1 ].max
+      minutes = interval_minutes(interval_seconds)
       expression = expression_for(minutes)
       parsed = Fugit.parse(expression)
       unless parsed.is_a?(Fugit::Cron)
@@ -51,9 +115,6 @@ class IntervalRecurringTasks
       expression
     end
 
-    # A late start records the next minute, so the following slot looks early
-    # against that timestamp. Comparing slots keeps the configured spacing.
-    # Local midnights are not a fixed number of seconds apart across DST.
     def due?(last_at, interval_seconds, now: Time.current)
       return true unless last_at.respond_to?(:beginning_of_minute)
 
@@ -64,15 +125,41 @@ class IntervalRecurringTasks
 
       previous_slot = schedule_slot(last_minute, seconds)
       current_slot = schedule_slot(now_minute, seconds)
-      minutes = (seconds / 60.0).ceil
-      if minutes >= 24 * 60
-        calendar_days_between(previous_slot, current_slot) >= calendar_day_count(minutes)
+      minutes = interval_minutes(seconds)
+      if whole_days?(minutes)
+        calendar_days_between(previous_slot, current_slot) >= minutes / DAY_MINUTES
       else
         current_slot >= previous_slot + minutes.minutes
       end
     end
 
     private
+
+    def still_missed?(result)
+      RemoteResult.failed?(result) || !result
+    end
+
+    def catch_up_task(key, now)
+      config = TASKS.fetch(key)
+      schedule = desired_schedule(config)
+      return true if schedule.nil?
+
+      task = SolidQueue::RecurringTask.dynamic.find_by(key: key)
+      return false unless same_task?(task, key, task_options(config, schedule))
+
+      slot = missed_slot(task.schedule, now)
+      slot.nil? || task.enqueue(at: slot) || SolidQueue::RecurringExecution.exists?(task_key: key, run_at: slot)
+    rescue ActiveRecord::ActiveRecordError => error
+      Rails.logger.warn "[Shelfarr] #{key} catch-up will be retried: #{error.message}"
+      RemoteResult::Failed.new(error)
+    end
+
+    def missed_slot(schedule, now)
+      cron = Fugit.parse(schedule)
+      missed = cron.previous_time(now.change(usec: 0) + 1.second).to_t
+      upcoming = cron.next_time(now).to_t
+      missed if now - missed < upcoming - now
+    end
 
     def sync_task!(key)
       attempts = 0
@@ -87,10 +174,10 @@ class IntervalRecurringTasks
 
     def write_task!(key)
       config = TASKS.fetch(key)
-      schedule = desired_schedule(config)
 
       SolidQueue::RecurringTask.transaction do
-        existing = SolidQueue::RecurringTask.find_by(key: key)
+        existing = SolidQueue::RecurringTask.uncached { SolidQueue::RecurringTask.find_by(key: key) }
+        schedule = Setting.uncached { desired_schedule(config) }
         if schedule.nil?
           existing&.destroy!
           next
@@ -131,14 +218,20 @@ class IntervalRecurringTasks
           SolidQueue::RecurringTask::Arguments.dump(desired.arguments)
     end
 
-    def expression_for(minutes)
-      return day_cron(calendar_day_count(minutes)) if minutes >= 24 * 60
-
-      cron_for_tick(tick_minutes(minutes))
+    def interval_minutes(interval_seconds)
+      [ (interval_seconds.to_f / 60).ceil, 1 ].max
     end
 
-    # Largest repeating cron step that divides the interval. 75 minutes
-    # ticks every 15; 31 minutes has no coarser step than one minute.
+    def whole_days?(minutes)
+      minutes >= DAY_MINUTES && (minutes % DAY_MINUTES).zero?
+    end
+
+    def expression_for(minutes)
+      return "every day at noon #{Time.zone.tzinfo.name}" if whole_days?(minutes)
+
+      "#{cron_for_tick(tick_minutes(minutes))} #{ELAPSED_ZONE}"
+    end
+
     def tick_minutes(minutes)
       minutes.downto(1).find { |step| (minutes % step).zero? && uniform_tick?(step) }
     end
@@ -161,31 +254,12 @@ class IntervalRecurringTasks
       "every #{hours} hours"
     end
 
-    def calendar_day_count(minutes)
-      (minutes / (24.0 * 60)).ceil
-    end
-
     def calendar_days_between(earlier, later)
       (later.in_time_zone.to_date - earlier.in_time_zone.to_date).to_i
     end
 
-    def day_cron(days)
-      return "every Sunday" if days == 7
-
-      "every day"
-    end
-
-    # previous_time is exclusive, so step forward to keep an exact slot.
     def schedule_slot(time, interval_seconds)
       Fugit.parse(schedule_for(interval_seconds)).previous_time(time + 1.second).to_t
-    end
-
-    def enqueue_catch_up!
-      TASKS.each_value do |config|
-        next if desired_schedule(config).nil?
-
-        config[:job_class].constantize.perform_later(scheduled: true)
-      end
     end
   end
 end
