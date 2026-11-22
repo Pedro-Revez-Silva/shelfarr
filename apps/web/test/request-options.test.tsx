@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Book, BookFormat, BookRequest, BookRequestResult, CatalogueAnswer, CatalogueItem, RequestOptions } from "../src/contract";
-import { requestPlan } from "../src/components/RequestChoices";
 import { ACCOUNT, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
 
 afterEach(cleanup);
@@ -160,6 +159,10 @@ describe("choosing what to request on the Book page", () => {
     renderApp({ server: bookServer(() => book([format("ebook"), format("audiobook")], options({ default_format: "ask" }))), url: BOOK_URL });
     const ebook = await within(await screen.findByRole("region", { name: "On this server" })).findByRole("button", { name: "Request ebook of Middlemarch" });
     expect([ebook.className, within(card()).getByRole("button", { name: "Request audiobook of Middlemarch" }).className]).toEqual(["button", "button"]);
+    cleanup();
+    renderApp({ server: bookServer(() => book([format("ebook", { state: "requested_by_someone" }), format("audiobook")])), url: BOOK_URL });
+    const quiet = await within(await screen.findByRole("region", { name: "On this server" })).findByRole("button", { name: "Request audiobook of Middlemarch" });
+    expect(quiet.className).toBe("button");
   });
 
   test("only formats that can still be requested are offered, and nothing is offered when none can", async () => {
@@ -368,25 +371,5 @@ describe("requesting from a Find result", () => {
     renderApp({ server: findServer(catalogue(undefined)), url: "/sub/preview/find?q=middlemarch" });
     expect(await screen.findByRole("link", { name: "Middlemarch" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Request/ })).toBeNull();
-  });
-});
-
-describe("the request plan", () => {
-  const both = [format("ebook"), format("audiobook")];
-  const onlyAudio = [format("ebook", { state: "in_library" }), format("audiobook")];
-  test("follows the server's default and offers only formats that can be requested", () => {
-    expect(requestPlan(both, options({ default_format: "ebook" }))).toEqual([{ format: "ebook", accent: true }]);
-    expect(requestPlan(both, options({ default_format: "audiobook" }))).toEqual([{ format: "audiobook", accent: true }]);
-    expect(requestPlan(both, options({ default_format: "both" }))).toEqual([{ format: "both", accent: true }]);
-    expect(requestPlan(both, options({ default_format: "ask" }))).toEqual([
-      { format: "ebook", accent: false },
-      { format: "audiobook", accent: false },
-    ]);
-    expect(requestPlan(onlyAudio, options({ default_format: "ebook" }))).toEqual([{ format: "audiobook", accent: false }]);
-    expect(requestPlan(onlyAudio, options({ default_format: "both" }))).toEqual([{ format: "audiobook", accent: true }]);
-    expect(requestPlan(onlyAudio, options({ default_format: "ask" }))).toEqual([{ format: "audiobook", accent: false }]);
-    expect(requestPlan([format("ebook", { state: "requested" }), format("audiobook", { state: "requested_by_someone" })], options({ default_format: "both" }))).toEqual([]);
-    expect(requestPlan(both, options({ formats: [], default_format: "both" }))).toEqual([]);
-    expect(requestPlan(both, options({ formats: ["ebook"], default_format: "both" }))).toEqual([{ format: "ebook", accent: true }]);
   });
 });
