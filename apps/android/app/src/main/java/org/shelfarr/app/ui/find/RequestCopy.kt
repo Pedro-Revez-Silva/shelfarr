@@ -32,7 +32,7 @@ fun RequestItem.stageCopy(): StageCopy = when (stage) {
 /** One line under a format's name on the title page. */
 fun FormatOption.summary(): String = when (state) {
     FormatState.REQUESTABLE -> if (bookType == BookType.EBOOK) "Read it in the app" else "Listen in the app"
-    FormatState.IN_LIBRARY -> "Already in your library"
+    FormatState.IN_LIBRARY -> "In your library"
     FormatState.REQUESTED -> request?.let { "You requested it · ${it.stageCopy().headline}" } ?: "You requested it"
     FormatState.REQUESTED_BY_SOMEONE -> "Already requested on this server. It will appear in the library."
     FormatState.UNKNOWN -> "Not available to request"
@@ -49,5 +49,7 @@ internal fun RequestItem.stepReached(): Int = when (stage) {
 }
 
 internal val REQUEST_STEPS = listOf("Requested", "Finding a copy", "Downloading", "Adding to the library", "Ready")
+
+internal val BookType.openLabel: String get() = if (this == BookType.EBOOK) "Read now" else "Listen now"
 
 internal val BookType.label: String get() = if (this == BookType.EBOOK) "Ebook" else "Audiobook"

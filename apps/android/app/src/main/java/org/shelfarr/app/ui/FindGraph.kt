@@ -76,7 +76,8 @@ internal fun NavGraphBuilder.findScreens(
             onBack = navController::popBackStack,
             onSelect = find::selectFormat,
             onSubmit = find::submit,
-            onOpenPublication = openDetails,
+            onRead = { publicationId -> find.openOwned(publicationId, openPublication) },
+            onDetails = openDetails,
             onOpenRequest = find::openRequest,
         )
     }

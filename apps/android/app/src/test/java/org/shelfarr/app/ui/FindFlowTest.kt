@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.material3.Text
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -87,6 +88,7 @@ class FindFlowTest {
     )
     private val opened = mutableListOf<Publication>()
     private val browser = mutableListOf<String>()
+    private val details = mutableListOf<String>()
     private lateinit var find: FindViewModel
 
     private val backend = object : FindBackend {
@@ -126,7 +128,7 @@ class FindFlowTest {
                 FindNavigation(find, navController, openBrowser = { browser += it })
                 MainShellLayout(navController, miniPlayer = null) {
                     screen(HOME) { Text("Home") }
-                    findScreens(find, navController, fixture.address.host, "Ada Reader", openWebsite = {}, openPublication = { opened += it }, openDetails = {})
+                    findScreens(find, navController, fixture.address.host, "Ada Reader", openWebsite = {}, openPublication = { opened += it }, openDetails = { details += it })
                 }
                 androidx.compose.runtime.LaunchedEffect(Unit) { navController.navigate(FIND) }
             }
@@ -228,6 +230,57 @@ class FindFlowTest {
     }
 
     @Test
+    fun `a request that becomes ready turns its title into an owned copy that reads in one tap`() {
+        signIn(RequestScopes.BASE + RequestScopes.REQUESTING)
+        render()
+        waitFor("search") { hasNode("Title or author") }
+        compose.onNodeWithTag("find-query").performTextInput("light")
+        compose.onNodeWithTag("find-submit").performClick()
+        waitFor("results") { hasNode("The Lighthouse Keeper") }
+        compose.onNodeWithTag("result:fx:lighthouse").performClick()
+        waitFor("title") { hasNode("Request ebook") }
+        compose.onNodeWithTag("request-submit").performClick()
+        waitFor("the ebook to be ready") { hasNode("Read now") }
+
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        waitFor("Find again") { hasNode("Your requests") }
+        compose.onNodeWithText("Ebook in your library · Audiobook can be requested").assertIsDisplayed()
+
+        compose.onNodeWithTag("result:fx:lighthouse").performClick()
+        waitFor("the title page") { hasNode("Choose a format") }
+        compose.onNodeWithText("In your library").assertIsDisplayed()
+        compose.onNodeWithText("Request audiobook").assertIsDisplayed()
+        compose.onRoot().captureRoboImage("build/screenshots/32-find-title-owned.png")
+        compose.onNodeWithTag("format-open:ebook").assertTextEquals("Read now").performClick()
+        waitFor("the reader to open") { opened.isNotEmpty() }
+        val ready = find.find.value.requests.single()
+        assertEquals(listOf(ready.publicationId to BookType.EBOOK), opened.map { it.id to it.bookType })
+        assertTrue(details.isEmpty())
+        assertEquals(1, fixture.createRequests.get())
+    }
+
+    @Test
+    fun `a copy already in the library offers Read now and its details from the title page`() {
+        signIn(RequestScopes.BASE + RequestScopes.REQUESTING)
+        render()
+        waitFor("search") { hasNode("Title or author") }
+        compose.onNodeWithTag("find-query").performTextInput("here")
+        compose.onNodeWithTag("find-submit").performClick()
+        waitFor("results") { hasNode("A Book Already Here") }
+        compose.onNodeWithTag("result:fx:in-library").performClick()
+        waitFor("the title page") { hasNode("Choose a format") }
+        compose.onNodeWithTag("format-details:ebook").performClick()
+        assertEquals(listOf("lib-1"), details)
+        assertTrue(opened.isEmpty())
+
+        fixture.shutdown()
+        compose.onNodeWithTag("format-open:ebook").performClick()
+        waitFor("the offline message") { hasNode("You're offline. Downloaded books still open from Library.") }
+        assertTrue(opened.isEmpty())
+        assertEquals(0, fixture.createRequests.get())
+    }
+
+    @Test
     fun `existing, already-requested and offline states are explained, and nothing is requested twice`() {
         signIn(RequestScopes.BASE + RequestScopes.REQUESTING)
         render()
@@ -288,6 +341,10 @@ class FindFlowTest {
         compose.onAllNodesWithText("Cancel request")[1].performClick()
         waitFor("stopped") { hasNode("Stopped") }
         compose.onAllNodes(hasTestTag("request-cancel")).fetchSemanticsNodes().let { assertTrue(it.isEmpty()) }
+
+        compose.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        waitFor("Find again") { hasNode("Your requests") }
+        compose.onNodeWithText("Ebook or audiobook").assertIsDisplayed()
     }
 
     @Test

@@ -17,12 +17,14 @@ import org.shelfarr.app.AppContainer
 import org.shelfarr.app.core.ApiException
 import org.shelfarr.app.core.BookType
 import org.shelfarr.app.core.DiscoverItem
+import org.shelfarr.app.core.FormatOption
 import org.shelfarr.app.core.FormatState
 import org.shelfarr.app.core.NewRequest
 import org.shelfarr.app.core.Publication
 import org.shelfarr.app.core.RequestAccess
 import org.shelfarr.app.core.RequestItem
 import org.shelfarr.app.core.RequestOutcome
+import org.shelfarr.app.core.RequestStage
 
 /** Everything Find needs from the account, so tests can run it against a fixture server. */
 interface FindBackend {
@@ -85,6 +87,7 @@ data class TitleState(
     val item: DiscoverItem? = null,
     val format: BookType? = null,
     val submitting: Boolean = false,
+    val opening: Boolean = false,
     /** What the last attempt said, in plain words. */
     val message: String? = null,
 )
@@ -178,6 +181,7 @@ class FindViewModel(
             try {
                 val items = backend.requests()
                 findState.update { it.copy(requests = items, requestsLoaded = true, requestsError = null) }
+                followInFormats(items)
             } catch (error: ApiException) {
                 if (error is ApiException.Forbidden) lostPermission()
                 findState.update { it.copy(requestsLoaded = true, requestsError = error) }
@@ -305,13 +309,24 @@ class FindViewModel(
     fun openPublication(id: String, onReady: (Publication) -> Unit) {
         if (trackState.value.opening) return
         trackState.update { it.copy(opening = true, cancelMessage = null) }
+        open(id, onReady) { failure -> trackState.update { it.copy(opening = false, cancelMessage = failure) } }
+    }
+
+    fun openOwned(id: String, onReady: (Publication) -> Unit) {
+        if (titleState.value.opening) return
+        titleState.update { it.copy(opening = true, message = null) }
+        open(id, onReady) { failure -> titleState.update { it.copy(opening = false, message = failure) } }
+    }
+
+    private fun open(id: String, onReady: (Publication) -> Unit, finished: (failure: String?) -> Unit) {
         viewModelScope.launch {
-            try {
+            val failure = try {
                 onReady(backend.publication(id))
-                trackState.update { it.copy(opening = false) }
+                null
             } catch (error: ApiException) {
-                trackState.update { it.copy(opening = false, cancelMessage = requestFailure(error)) }
+                openFailure(error)
             }
+            finished(failure)
         }
     }
 
@@ -326,8 +341,15 @@ class FindViewModel(
     }
 
     private fun markRequested(item: DiscoverItem, format: BookType, request: RequestItem) {
-        updateFormat(item, format) { it.copy(state = FormatState.REQUESTED, request = request) }
+        updateFormat(item, format) { it.following(request) }
         findState.update { state -> state.copy(requests = listOf(request) + state.requests.filterNot { it.id == request.id }) }
+    }
+
+    private fun followInFormats(requests: List<RequestItem>) {
+        val latest = requests.associateBy { it.id }
+        fun DiscoverItem.current() = copy(formats = formats.map { option -> option.request?.let { latest[it.id] }?.let(option::following) ?: option })
+        findState.update { state -> state.copy(results = state.results.map { it.current() }) }
+        titleState.update { state -> state.copy(item = state.item?.current()) }
     }
 
     private fun updateFormat(item: DiscoverItem, format: BookType, change: (org.shelfarr.app.core.FormatOption) -> org.shelfarr.app.core.FormatOption) {
@@ -338,6 +360,7 @@ class FindViewModel(
 
     private fun replaceInList(request: RequestItem) {
         findState.update { state -> state.copy(requests = state.requests.map { if (it.id == request.id) request else it }) }
+        followInFormats(listOf(request))
     }
 }
 
@@ -346,7 +369,16 @@ sealed interface FindDestination {
     data class Request(val id: String) : FindDestination
 }
 
+internal fun FormatOption.following(request: RequestItem): FormatOption = when {
+    request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
+    request.stage == RequestStage.FAILED || request.stage == RequestStage.COMPLETED -> copy(state = FormatState.REQUESTABLE, request = null)
+    else -> copy(state = FormatState.REQUESTED, request = request)
+}
+
 internal val BookType.word: String get() = if (this == BookType.EBOOK) "ebook" else "audiobook"
+
+internal fun openFailure(error: ApiException): String =
+    if (error.isPlainOffline) "You're offline. Downloaded books still open from Library." else requestFailure(error)
 
 internal fun requestFailure(error: ApiException): String = when {
     error.isPlainOffline -> "You're offline. Requesting needs a connection to your server."

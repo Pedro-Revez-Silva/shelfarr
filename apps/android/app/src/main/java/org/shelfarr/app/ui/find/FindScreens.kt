@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -378,7 +380,8 @@ fun TitleScreen(
     onBack: () -> Unit,
     onSelect: (BookType) -> Unit,
     onSubmit: () -> Unit,
-    onOpenPublication: (String) -> Unit,
+    onRead: (String) -> Unit,
+    onDetails: (String) -> Unit,
     onOpenRequest: (RequestItem) -> Unit,
 ) {
     val item = state.item
@@ -407,7 +410,15 @@ fun TitleScreen(
                 Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     listOf(BookType.EBOOK, BookType.AUDIOBOOK).forEach { type ->
                         val option = item.format(type) ?: FormatOption(type)
-                        FormatRow(option, selected = state.format == type, onSelect = { onSelect(type) }, onOpenPublication = onOpenPublication, onOpenRequest = onOpenRequest)
+                        FormatRow(
+                            option,
+                            selected = state.format == type,
+                            opening = state.opening,
+                            onSelect = { onSelect(type) },
+                            onRead = onRead,
+                            onDetails = onDetails,
+                            onOpenRequest = onOpenRequest,
+                        )
                     }
                 }
 
@@ -447,8 +458,10 @@ fun TitleScreen(
 private fun FormatRow(
     option: FormatOption,
     selected: Boolean,
+    opening: Boolean,
     onSelect: () -> Unit,
-    onOpenPublication: (String) -> Unit,
+    onRead: (String) -> Unit,
+    onDetails: (String) -> Unit,
     onOpenRequest: (RequestItem) -> Unit,
 ) {
     val requestable = option.state == FormatState.REQUESTABLE
@@ -462,36 +475,53 @@ private fun FormatRow(
         .testTag("format:${option.bookType.word}")
     val interactive = when {
         requestable -> base.selectable(selected = selected, role = Role.RadioButton, onClick = onSelect)
-        option.state == FormatState.IN_LIBRARY && publication != null -> base.clickable(role = Role.Button, onClickLabel = "Open") { onOpenPublication(publication) }
         option.state == FormatState.REQUESTED && request != null -> base.clickable(role = Role.Button, onClickLabel = "Follow request") { onOpenRequest(request) }
+        option.state == FormatState.IN_LIBRARY -> base
         else -> base.semantics { stateDescription = "Not available to request" }
     }
-    Row(interactive.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (requestable) {
-            Box(
-                Modifier
-                    .size(20.dp)
-                    .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else ShelfarrTheme.extended.inkMuted, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (selected) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+    Column(interactive.padding(horizontal = 14.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (requestable) {
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .border(2.dp, if (selected) MaterialTheme.colorScheme.primary else ShelfarrTheme.extended.inkMuted, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected) Box(Modifier.size(10.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+                }
+            } else {
+                Icon(
+                    if (option.state == FormatState.IN_LIBRARY) ShelfarrIcons.Downloaded else if (option.bookType == BookType.AUDIOBOOK) ShelfarrIcons.Headphones else ShelfarrIcons.Library,
+                    null,
+                    tint = ShelfarrTheme.extended.inkMuted,
+                    modifier = Modifier.size(20.dp),
+                )
             }
-        } else {
-            Icon(
-                if (option.state == FormatState.IN_LIBRARY) ShelfarrIcons.Downloaded else if (option.bookType == BookType.AUDIOBOOK) ShelfarrIcons.Headphones else ShelfarrIcons.Library,
-                null,
-                tint = ShelfarrTheme.extended.inkMuted,
-                modifier = Modifier.size(20.dp),
-            )
+            Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                Text(option.bookType.label, style = MaterialTheme.typography.titleSmall)
+                Text(option.summary(), style = MaterialTheme.typography.bodySmall, color = ShelfarrTheme.extended.inkMuted, modifier = Modifier.padding(top = 2.dp))
+            }
+            if (option.state == FormatState.REQUESTED && request != null) Icon(ShelfarrIcons.ChevronRight, null, modifier = Modifier.size(18.dp))
         }
-        Column(Modifier.weight(1f).padding(start = 14.dp)) {
-            Text(option.bookType.label, style = MaterialTheme.typography.titleSmall)
-            Text(option.summary(), style = MaterialTheme.typography.bodySmall, color = ShelfarrTheme.extended.inkMuted, modifier = Modifier.padding(top = 2.dp))
+        if (option.state == FormatState.IN_LIBRARY && publication != null) {
+            OwnedActions(option.bookType, opening, onRead = { onRead(publication) }, onDetails = { onDetails(publication) })
         }
-        when {
-            option.state == FormatState.IN_LIBRARY && publication != null -> Text("Open", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-            option.state == FormatState.REQUESTED && request != null -> Icon(ShelfarrIcons.ChevronRight, null, modifier = Modifier.size(18.dp))
-            else -> Unit
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OwnedActions(type: BookType, opening: Boolean, onRead: () -> Unit, onDetails: () -> Unit) {
+    FlowRow(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        PrimaryButton(
+            if (opening) "Opening…" else type.openLabel,
+            onRead,
+            Modifier.testTag("format-open:${type.word}"),
+            enabled = !opening,
+        )
+        TextButton(onClick = onDetails, modifier = Modifier.heightIn(min = 52.dp).testTag("format-details:${type.word}")) {
+            Text("Details and download")
         }
     }
 }
@@ -559,7 +589,7 @@ fun RequestScreen(
                 if (request.isReady && publication != null) {
                     Spacer(Modifier.height(24.dp))
                     PrimaryButton(
-                        if (state.opening) "Opening…" else if (request.bookType == BookType.EBOOK) "Read now" else "Listen now",
+                        if (state.opening) "Opening…" else request.bookType.openLabel,
                         { onOpen(publication) },
                         Modifier.fillMaxWidth().testTag("request-open"),
                         enabled = !state.opening,
