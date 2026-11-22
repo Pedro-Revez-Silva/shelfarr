@@ -55,6 +55,27 @@ class AddBlocklistedInfoHashToDownloads < ActiveRecord::Migration[8.1]
             AND later_downloads.id > downloads.id
             AND lower(later_downloads.external_id) = lower(downloads.external_id)
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM request_events AS overrides
+          WHERE overrides.request_id = downloads.request_id
+            AND overrides.event_type = 'blocklist_overridden'
+            AND overrides.created_at > downloads.created_at
+            AND CASE WHEN json_valid(overrides.details)
+              THEN CAST(json_extract(overrides.details, '$.search_result_id') AS INTEGER)
+            END = downloads.search_result_id
+            AND NOT EXISTS (
+              SELECT 1 FROM search_results AS overridden_results
+              WHERE overridden_results.id = downloads.search_result_id
+                AND overridden_results.blocklisted_at > overrides.created_at
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM request_events AS later_failures
+              JOIN downloads AS later_attempts ON later_attempts.id = later_failures.download_id
+              WHERE later_attempts.search_result_id = downloads.search_result_id
+                AND later_failures.event_type = 'release_blocklisted'
+                AND later_failures.created_at > overrides.created_at
+            )
+        )
     SQL
   end
 end

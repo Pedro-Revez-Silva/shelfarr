@@ -1059,7 +1059,7 @@ class Request < ApplicationRecord
     known_hash = search_result.torrent_info_hash
     same_release = recorded.select do |download|
       download.search_result_id == search_result.id ||
-        (known_hash.nil? && download.blocklisted_release_guid == search_result.guid)
+        (search_result.magnet_info_hash.nil? && download.blocklisted_release_guid == search_result.guid)
     end
     hashes = [ known_hash, *same_release.map(&:blocklisted_info_hash) ].compact.uniq
     overridden = recorded.select { |download| same_release.include?(download) || hashes.include?(download.blocklisted_info_hash) }
@@ -1107,7 +1107,7 @@ class Request < ApplicationRecord
 
   def remember_release_info_hash!(search_result, download)
     hash = download&.torrent_info_hash
-    return if hash.nil? || MagnetLink.info_hash(search_result.magnet_url).is_a?(String)
+    return if hash.nil? || search_result.magnet_info_hash
 
     search_result.update!(info_hash: hash) unless search_result.info_hash == hash
   end

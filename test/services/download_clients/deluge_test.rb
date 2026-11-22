@@ -179,21 +179,66 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent leaves Deluge untouched when the add response is lost" do
+  test "add_torrent reports a lost add response as needing a check in Deluge and makes no further calls" do
     VCR.turned_off do
       torrent_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
       stub_deluge_login
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"core.add_torrent_magnet"/)
-        .to_raise(Faraday::TimeoutError.new("timed out"))
+      [
+        Faraday::TimeoutError.new("timed out"),
+        Faraday::ConnectionFailed.new(Errno::ECONNRESET.new),
+        Faraday::ConnectionFailed.new("end of file reached")
+      ].each do |lost|
+        stub_request(:post, "http://localhost:8112/json")
+          .with(body: /"core.add_torrent_magnet"/)
+          .to_raise(lost)
 
-      assert_raises(DownloadClients::Base::ConnectionError) do
-        @client.add_torrent("magnet:?xt=urn:btih:#{torrent_hash}")
+        error = assert_raises(DownloadClients::Base::ConfigurationError) do
+          @client.add_torrent("magnet:?xt=urn:btih:#{torrent_hash}")
+        end
+        assert_match(/did not confirm whether it added/, error.message)
+        assert_match(/remove it in Deluge, then retry/, error.message)
       end
 
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.get_torrents_status"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.set_torrent_options"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+    end
+  end
+
+  test "add_torrent reports a gateway timeout on add as needing a check in Deluge" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.add_torrent_magnet"/)
+        .to_return(status: 504, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      error = assert_raises(DownloadClients::Base::ConfigurationError) do
+        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+      end
+
+      assert_match(/did not confirm whether it added/, error.message)
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
+    end
+  end
+
+  test "add_torrent keeps an add that never reached Deluge as a connection error" do
+    VCR.turned_off do
+      stub_deluge_login
+      [
+        Faraday::ConnectionFailed.new(Errno::ECONNREFUSED.new),
+        Faraday::TimeoutError.new(Net::OpenTimeout.new)
+      ].each do |undelivered|
+        stub_request(:post, "http://localhost:8112/json")
+          .with(body: /"core.add_torrent_magnet"/)
+          .to_raise(undelivered)
+
+        error = assert_raises(DownloadClients::Base::ConnectionError) do
+          @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+        assert_instance_of DownloadClients::Base::ConnectionError, error
+      end
+
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
     end
   end
@@ -228,7 +273,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent leaves a torrent that is already in Deluge untouched" do
+  test "add_torrent neither adopts nor removes a torrent that is already in Deluge" do
     VCR.turned_off do
       existing_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
       stub_deluge_login
@@ -243,6 +288,10 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       end
 
       assert_match(/already in session/, error.message)
+      assert_match(/did not adopt or change it/, error.message)
+      assert_match(/may have merged this release's trackers/, error.message)
+      assert_match(/remove it in Deluge, then retry/, error.message)
+      assert_no_match(/untouched/, error.message)
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.set_torrent_options"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
@@ -995,6 +1044,38 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
       assert_equal "Info Torrent", info.name
       assert_equal :completed, info.state
       assert_equal "/downloads/Info Torrent", info.download_path
+    end
+  end
+
+  test "torrent_info returns nil only when Deluge answers that the torrent is missing" do
+    VCR.turned_off do
+      stub_deluge_login
+      stub_deluge_rpc("core.get_torrents_status", {})
+
+      assert_nil @client.torrent_info("missing_torrent")
+      assert_equal [], @client.list_torrents
+    end
+  end
+
+  test "torrent_info and list_torrents raise when a cached Deluge session cannot read torrents" do
+    VCR.turned_off do
+      Thread.current[:deluge_sessions] = { @client_record.id => { cookie: "sessionid=cached" } }
+      responses = {
+        DownloadClients::Base::ConnectionError => { status: 503, body: {}.to_json },
+        DownloadClients::Base::AuthenticationError => { status: 200, body: { result: nil, error: { "message" => "Not logged in" }, id: 1 }.to_json },
+        DownloadClients::Base::Error => { status: 200, body: { result: nil, error: { "message" => "Unknown method" }, id: 1 }.to_json }
+      }
+
+      responses.each do |error_class, response|
+        Thread.current[:deluge_sessions] = { @client_record.id => { cookie: "sessionid=cached" } }
+        stub_request(:post, "http://localhost:8112/json")
+          .with(body: /"core.get_torrents_status"/)
+          .to_return(response.merge(headers: { "Content-Type" => "application/json" }))
+
+        assert_raises(error_class) { @client.torrent_info("known_torrent") }
+        Thread.current[:deluge_sessions] = { @client_record.id => { cookie: "sessionid=cached" } }
+        assert_raises(error_class) { @client.list_torrents }
+      end
     end
   end
 

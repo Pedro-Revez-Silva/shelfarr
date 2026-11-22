@@ -27,6 +27,18 @@ module DownloadClients
     LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
     LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
     DUPLICATE_TORRENT_PATTERN = /already in session|already being added/i
+    GATEWAY_TIMEOUT_STATUS = 504
+    UNDELIVERED_REQUEST_ERRORS = [
+      Errno::ECONNREFUSED,
+      Errno::EHOSTUNREACH,
+      Errno::ENETUNREACH,
+      Errno::EADDRNOTAVAIL,
+      SocketError,
+      Net::OpenTimeout
+    ].freeze
+    REMOVE_UNTRACKED_TORRENT_GUIDANCE = "If Deluge shows this torrent paused, Shelfarr is not tracking it: remove it in Deluge, then retry."
+
+    class UnconfirmedReplyError < Base::ConnectionError; end
     TRANSIENT_LABEL_ERROR_PATTERNS = [
       /unknown torrent/i,
       /timeout/i,
@@ -143,6 +155,10 @@ module DownloadClients
         raise Base::AuthenticationError, "Deluge authentication failed: #{response.status}"
       end
 
+      if response.status == GATEWAY_TIMEOUT_STATUS
+        raise UnconfirmedReplyError, "Deluge API error: #{response.status}"
+      end
+
       unless response.status == 200
         raise_for_http_status!(response.status, "Deluge API error: #{response.status}")
       end
@@ -181,9 +197,10 @@ module DownloadClients
 
     def torrent_statuses(filter = {})
       normalized_filter = filter.to_h.with_indifferent_access
-      rpc_call("core.get_torrents_status", [normalized_filter, TORRENT_FIELDS]) || {}
-    rescue Base::Error
-      {}
+      statuses = rpc_call("core.get_torrents_status", [ normalized_filter, TORRENT_FIELDS ]) || {}
+      raise Base::ConnectionError, "Deluge returned unreadable torrent statuses" unless statuses.is_a?(Hash)
+
+      statuses
     end
 
     def torrent_status(hash)
@@ -234,12 +251,29 @@ module DownloadClients
 
     def submit_new_torrent(prepared, params)
       submit_torrent(prepared, params)
+    rescue Faraday::Error => error
+      raise if undelivered_request?(error)
+
+      raise_unconfirmed_add!(error)
+    rescue UnconfirmedReplyError => error
+      raise_unconfirmed_add!(error)
     rescue Base::ConnectionError, Base::AuthenticationError
       raise
     rescue Base::Error => error
       raise unless DUPLICATE_TORRENT_PATTERN.match?(error.message)
 
-      raise Base::ConfigurationError, "Deluge already has this torrent; Shelfarr left it untouched: #{error.message}"
+      raise Base::ConfigurationError,
+        "Deluge already has this torrent, so Shelfarr did not adopt or change it. " \
+        "Deluge may have merged this release's trackers into it. #{REMOVE_UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
+    end
+
+    def undelivered_request?(error)
+      UNDELIVERED_REQUEST_ERRORS.any? { |error_class| error.wrapped_exception.is_a?(error_class) }
+    end
+
+    def raise_unconfirmed_add!(error)
+      raise Base::ConfigurationError,
+        "Deluge did not confirm whether it added this torrent. #{REMOVE_UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
     end
 
     def stage_added_torrent!(torrent_id, start:)

@@ -267,6 +267,33 @@ class DownloadMonitorJobTest < ActiveJob::TestCase
     end
   end
 
+  test "an unreadable Deluge status never counts as a missing torrent" do
+    deluge = DownloadClient.create!(
+      name: "Unavailable Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    selected = search_results(:selected_result)
+    @download.update!(download_client: deluge, search_result: selected, not_found_count: DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1)
+    Thread.current[:deluge_sessions] = { deluge.id => { cookie: "sessionid=cached" } }
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_torrents_status"/)
+        .to_return(status: 503, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      DownloadMonitorJob.perform_now
+    end
+
+    assert @download.reload.downloading?
+    assert_equal DownloadMonitorJob::NOT_FOUND_THRESHOLD - 1, @download.not_found_count
+    assert_nil @download.blocklisted_info_hash
+    assert_not selected.reload.blocklisted?
+  end
+
   test "does not post-process incomplete paused Deluge torrents rounded to 100 percent" do
     deluge = DownloadClient.create!(
       name: "Incomplete Deluge",

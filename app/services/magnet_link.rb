@@ -17,17 +17,32 @@ class MagnetLink
   # Returns the 40-character lowercase hex hash, or nil when the link
   # doesn't carry a valid btih hash.
   def self.info_hash(url)
-    decoded_url = URI.decode_www_form_component(url.to_s)
-    match = decoded_url.match(/btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})/i)
-    return nil unless match
+    query = magnet_query(url.to_s.strip)
+    return nil unless query
 
-    hash = match[1]
-    return hash.downcase if hash.match?(/\A[a-fA-F0-9]{40}\z/)
-
-    base32_to_hex(hash)
+    hashes = query.split("&").filter_map { |param| exact_topic_hash(param) }.uniq
+    hashes.first if hashes.one?
   rescue ArgumentError => error
     RemoteResult::Failed.new(error)
   end
+
+  def self.magnet_query(url)
+    url = URI.decode_www_form_component(url) if url.match?(/\Amagnet%3A/i)
+    url.sub(/\Amagnet:\?/i, "") if url.match?(/\Amagnet:\?/i)
+  end
+  private_class_method :magnet_query
+
+  def self.exact_topic_hash(param)
+    key, value = param.split("=", 2)
+    return nil unless value && key.match?(/\Axt(\.\d+)?\z/i)
+
+    hash = URI.decode_www_form_component(value)[/\Aurn:btih:([0-9a-f]{40}|[a-z2-7]{32})\z/i, 1]
+    return nil unless hash
+    return hash.downcase if hash.length == 40
+
+    base32_to_hex(hash)
+  end
+  private_class_method :exact_topic_hash
 
   def self.base32_to_hex(value)
     bits = value.upcase.each_char.map do |char|

@@ -97,6 +97,11 @@ class SearchResult < ApplicationRecord
     blocklisted_at.present?
   end
 
+  def magnet_info_hash
+    hash = MagnetLink.info_hash(magnet_url)
+    hash if hash.is_a?(String)
+  end
+
   def torrent_info_hash
     [ magnet_url, info_hash, download_url ].each do |candidate|
       hash = MagnetLink.normalize_info_hash(candidate)

@@ -647,6 +647,31 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert_empty request.blocked_torrent_info_hashes
   end
 
+  test "manually selecting a failed GUID that now advertises another hash overrides the GUID failure" do
+    SettingsService.set(:auto_select_enabled, false)
+    request = build_request
+    failed_hash = "8" * 40
+    opaque_url = "http://prowlarr.example/1/download?id=opaque"
+    selected = create_result(request, guid: "opaque-guid", status: :selected, magnet_url: nil, download_url: opaque_url)
+    failed_download = request.downloads.create!(
+      name: selected.title,
+      search_result: selected,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent"
+    )
+    request.handle_download_failure!(failed_download, reason: "Download not found in client")
+    request.refresh_search!
+    request.update!(status: :searching)
+    returned = create_result(request, guid: "opaque-guid", magnet_url: nil, download_url: opaque_url, info_hash: "9" * 40)
+
+    request.select_result!(returned)
+
+    assert_nil failed_download.reload.blocklisted_release_guid
+    assert_empty request.blocked_release_guids
+    assert_empty request.blocked_torrent_info_hashes
+  end
+
   test "a republished GUID with a different torrent is judged by its hash, not its GUID" do
     SettingsService.set(:auto_select_enabled, true)
     request = build_request
