@@ -57,6 +57,15 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_equal({ "legacy_library" => "#{BASE}/read", "discover" => "#{BASE}/search", "requests" => "#{BASE}/requests", "account" => "#{BASE}/profile" }, response.parsed_body.fetch("links"))
   end
 
+  test "an account the allowlist refuses gets a release page that names this deployment's path" do
+    sign_in_as(users(:one))
+    with_env(WebPreview::Access::VARIABLE => users(:two).id.to_s) do
+      get "#{BASE}/preview/library/downloads"
+      assert_response :not_found
+      assert_select "meta[name=shelfarr-base][content='#{BASE}']"
+    end
+  end
+
   def offline_boot
     { "worker" => "#{BASE}/preview/offline-worker.js", "scope" => "#{BASE}/preview/library/", "downloads" => "#{BASE}/preview/library/downloads" }
   end

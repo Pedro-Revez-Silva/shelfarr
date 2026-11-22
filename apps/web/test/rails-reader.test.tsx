@@ -90,6 +90,23 @@ describe("the reader served by Rails", () => {
     expect(server.called("PUT", /progress$/)).toEqual([]);
   });
 
+  test("a refusal from the reader API checks the session, and an account the server no longer serves loses offline access", async () => {
+    let refused = false;
+    const server = new FakeServer()
+      .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn(), offline_expires_in: 3600 } }))
+      .on("GET", /\/api\/v1\/session$/, () => (refused ? { status: 404, body: { error: "not_found" } } : { body: session() }))
+      .on("GET", /\/api\/v1\/library\/8\/reader$/, () => {
+        refused = true;
+        return { status: 404, body: { error: "not_found" } };
+      });
+    const store = new MemoryOfflineStore();
+    store.record = { account: ACCOUNT, confirmedAt: Date.now() - 1000, validForMs: 3_600_000 };
+    renderReader(server, "reader", `${MOUNT}/library/8/read`, store);
+    await screen.findByRole("heading", { name: "The signed-in account changed" });
+    expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThan(0);
+    await waitFor(() => expect(store.record).toBeNull());
+  });
+
   test("a book without read-along shows no narration offer", async () => {
     const publication = { id: "8", title: "Plain Sampler", author: null, book_type: "audiobook", content_kind: "book", reading_status: "unread", assets: [track], other_formats: [], progress: null, classic_reader: { url: "/sub/read/8", read_along: false } };
     renderReader(readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication));

@@ -401,6 +401,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
         imports = JSON.parse(css_select("script[type=importmap]").sole.text).fetch("imports")
         assert_match(%r{\A/assets/web_preview_access_refused-\h+\.js\z}, imports.fetch("web_preview_access_refused"))
         assert_select "script[type=module]", text: /import "web_preview_access_refused"/
+        assert_select "meta[name=shelfarr-base][content='']"
         assert_not_includes response.body, "shelfarr-boot"
       end
     end
