@@ -378,6 +378,16 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
     assert_equal [ newer.id.to_s, "available" ], publication.values_at("id", "availability")
   end
 
+  test "a copy the browser can open wins over a newer copy in a format it cannot" do
+    @ebook.update!(hardcover_id: "77")
+    mobi = File.join(@root, "Middlemarch.mobi")
+    File.binwrite(mobi, "BOOKMOBI")
+    Book.create!(title: "Middlemarch", book_type: :ebook, hardcover_id: "77", file_path: mobi)
+    sign_in_as(@member)
+    publication = format_of(book_json(user: @member, source: "hardcover", id: "77"), "ebook").fetch("publication")
+    assert_equal [ @ebook.id.to_s, "available" ], publication.values_at("id", "availability")
+  end
+
   test "an acquired ebook whose file is gone is still on the shelf but cannot be opened" do
     @ebook.update!(open_library_work_id: "OL900W")
     File.unlink(@epub_path)

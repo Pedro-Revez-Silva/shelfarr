@@ -85,7 +85,17 @@ module WebPreview
     end
 
     def acquired_book(book_type)
-      books_of(book_type).select(&:acquired?).max_by { |book| [ File.exist?(book.file_path.to_s) ? 1 : 0, book.id ] }
+      library_copy(book_type)&.first
+    end
+
+    def library_copy(book_type)
+      @library_copies ||= {}
+      return @library_copies[book_type] if @library_copies.key?(book_type)
+
+      copies = books_of(book_type).select(&:acquired?).map { |book| [ book, @publication&.call(book) ] }
+      @library_copies[book_type] = copies.max_by do |book, summary|
+        [ summary&.fetch(:availability) == "available" ? 1 : 0, File.exist?(book.file_path.to_s) ? 1 : 0, book.id ]
+      end
     end
 
     def active_request(book_type)
@@ -111,7 +121,7 @@ module WebPreview
       {
         book_type: book_type,
         state: current,
-        publication: current == "in_library" ? @publication.call(acquired_book(book_type)) : nil,
+        publication: current == "in_library" ? library_copy(book_type).last : nil,
         request: current == "requested" ? request_fields(active_request(book_type)) : nil
       }
     end
