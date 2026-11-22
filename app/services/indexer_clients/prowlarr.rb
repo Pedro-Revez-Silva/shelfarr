@@ -263,6 +263,7 @@ module IndexerClients
           leechers: item["leechers"],
           download_url: extract_download_url(item),
           magnet_url: extract_magnet_url(item),
+          info_hash: release_info_hash(item),
           info_url: item["infoUrl"],
           published_at: published_at_for(item["publishDate"]),
           category_ids: extract_category_ids(item)
@@ -307,6 +308,15 @@ module IndexerClients
 
         Rails.logger.debug "[IndexerClients::Prowlarr] Received download URL from indexer '#{item['indexer']}' (#{url.length} chars): #{UrlRedactor.redact(url).truncate(100)}"
         url
+      end
+
+      def release_info_hash(item)
+        [ item["infoHash"], item["magnetUrl"], item["downloadUrl"] ].each do |raw|
+          hash = MagnetLink.normalize_info_hash(raw)
+          return hash if hash.is_a?(String)
+        end
+
+        nil
       end
 
       def extract_magnet_url(item)

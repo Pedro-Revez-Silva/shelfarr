@@ -178,6 +178,156 @@ class AutoSelectServiceTest < ActiveSupport::TestCase
     assert_equal high_seeder, selection.search_result
   end
 
+  test "does not auto-select a later result that repeats a blocklisted info hash" do
+    shared_hash = "a" * 40
+    other_hash = "b" * 40
+    blocked = create_search_result(
+      seeders: 100,
+      status: :rejected,
+      magnet_url: nil,
+      download_url: "http://indexer.example/old.torrent",
+      info_hash: shared_hash
+    )
+    blocked.blocklist!("Download not found in client")
+    duplicate = create_search_result(
+      seeders: 80,
+      magnet_url: nil,
+      download_url: "http://other.example/same.torrent",
+      info_hash: shared_hash
+    )
+    fallback = create_search_result(seeders: 5, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert duplicate.reload.rejected?
+    assert_not duplicate.blocklisted?
+  end
+
+  test "does not auto-select a hash after refresh search removes the blocklisted result" do
+    shared_hash = "a" * 40
+    other_hash = "b" * 40
+    blocked = create_search_result(
+      seeders: 40,
+      status: :selected,
+      magnet_url: "magnet:?xt=urn:btih:#{shared_hash}"
+    )
+    download = @request.downloads.create!(
+      name: blocked.title,
+      search_result: blocked,
+      status: :failed,
+      external_id: shared_hash,
+      download_type: "torrent"
+    )
+    SettingsService.set(:auto_select_enabled, false)
+    @request.handle_download_failure!(download, reason: "Download not found in client")
+    SettingsService.set(:auto_select_enabled, true)
+    @request.update!(status: :not_found)
+    @request.refresh_search!
+
+    assert_nil download.reload.search_result_id
+    assert_not @request.search_results.exists?(guid: blocked.guid)
+
+    duplicate = create_search_result(seeders: 90, magnet_url: "magnet:?xt=urn:btih:#{shared_hash}")
+    fallback = create_search_result(seeders: 4, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert_not duplicate.reload.selected?
+  end
+
+  test "an advertised info hash does not clear a release GUID that failed as another torrent" do
+    failed_hash = "b" * 40
+    advertised_hash = "a" * 40
+    other_hash = "c" * 40
+    @request.downloads.create!(
+      name: "Failed release",
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: "opaque-guid"
+    )
+    same_release = create_search_result(
+      guid: "opaque-guid",
+      seeders: 90,
+      magnet_url: nil,
+      download_url: "https://indexer.example/download?id=1",
+      info_hash: advertised_hash
+    )
+    fallback = create_search_result(seeders: 4, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert_not same_release.reload.selected?
+  end
+
+  test "skips a new GUID when an ambiguous magnet contains a failed torrent" do
+    failed_hash = "b" * 40
+    other_hash = "a" * 40
+    @request.downloads.create!(
+      name: "Failed release",
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: "failed-guid"
+    )
+    duplicate = create_search_result(
+      guid: "another-indexer-guid",
+      seeders: 90,
+      magnet_url: "magnet:?xt=urn:btih:#{failed_hash}&dn=Book#xt=urn:btih:#{other_hash}"
+    )
+    fallback = create_search_result(seeders: 4, magnet_url: "magnet:?xt=urn:btih:#{other_hash}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal fallback, selection.search_result
+    assert_not duplicate.reload.selected?
+  end
+
+  test "a magnet exact topic for another torrent lets a previously failed GUID auto-select" do
+    failed_hash = "b" * 40
+    @request.downloads.create!(
+      name: "Failed release",
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: "opaque-guid"
+    )
+    replacement = create_search_result(guid: "opaque-guid", seeders: 90, magnet_url: "magnet:?xt=urn:btih:#{"a" * 40}")
+    create_search_result(seeders: 4, magnet_url: "magnet:?xt=urn:btih:#{"c" * 40}")
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal replacement, selection.search_result
+  end
+
+  test "still auto-selects a torrent whose download was cancelled rather than blocklisted" do
+    shared_hash = "e" * 40
+    cancelled = create_search_result(seeders: 15, magnet_url: "magnet:?xt=urn:btih:#{shared_hash}")
+    @request.downloads.create!(
+      name: cancelled.title,
+      search_result: cancelled,
+      status: :failed,
+      external_id: shared_hash,
+      download_type: "torrent"
+    )
+
+    selection = AutoSelectService.call(@request)
+
+    assert selection.success?
+    assert_equal cancelled, selection.search_result
+  end
+
   test "skips blocklisted best candidate and selects next eligible result" do
     blocklisted = create_search_result(seeders: 100, magnet_url: "magnet:?blocked")
     blocklisted.blocklist!("Previous failure")

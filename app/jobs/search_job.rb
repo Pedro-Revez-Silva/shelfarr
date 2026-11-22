@@ -614,15 +614,34 @@ class SearchJob < ApplicationJob
       size_bytes: result.size_bytes,
       seeders: result.seeders,
       leechers: result.leechers,
-      download_url: result.download_url,
-      magnet_url: result.magnet_url,
       info_url: result.info_url,
       published_at: result.published_at,
       source: source
     )
+    if search_result.blocklisted?
+      refresh_blocklisted_indexer_link(search_result, result)
+    else
+      search_result.assign_attributes(
+        download_url: result.download_url,
+        magnet_url: result.magnet_url,
+        info_hash: result.info_hash.presence || search_result.info_hash
+      )
+    end
     search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
     search_result.save!
     search_result
+  end
+
+  def refresh_blocklisted_indexer_link(search_result, result)
+    link = result.download_link.to_s
+    magnet_hash = MagnetLink.info_hash(link) if link.start_with?("magnet:")
+
+    if magnet_hash && magnet_hash == search_result.torrent_info_hash
+      search_result.assign_attributes(download_url: result.download_url, magnet_url: result.magnet_url)
+    elsif result.download_url.present? &&
+        [ result.download_url, search_result.download_link ].none? { |url| url.to_s.start_with?("magnet:") }
+      search_result.download_url = result.download_url
+    end
   end
 
   def save_anna_archive_result(request, result)

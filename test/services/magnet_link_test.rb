@@ -21,6 +21,67 @@ class MagnetLinkTest < ActiveSupport::TestCase
     assert_equal hash, MagnetLink.info_hash(encoded)
   end
 
+  test "normalizes a bare info hash and ignores other ids" do
+    hash = "ab" * 20
+
+    assert_equal hash, MagnetLink.normalize_info_hash("  #{hash.upcase}  ")
+    assert_equal hash, MagnetLink.normalize_info_hash("magnet:?xt=urn:btih:#{hash}&dn=Book")
+    assert_nil MagnetLink.normalize_info_hash("SABnzbd_nzo_#{hash[0, 12]}")
+    assert_nil MagnetLink.normalize_info_hash("abc123def456")
+    assert_nil MagnetLink.normalize_info_hash(nil)
+  end
+
+  test "reads the hash only from the exact topic of a magnet link" do
+    real = "ab" * 20
+    decoy = "cd" * 20
+
+    assert_equal real, MagnetLink.info_hash("magnet:?dn=btih:#{decoy}&xt=urn:btih:#{real}")
+    assert_equal real, MagnetLink.info_hash("magnet:?dn=Book&xt.1=urn:btih:#{real.upcase}&tr=http://t.example/announce")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:sha1:#{real}&dn=urn:btih:#{decoy}")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{real}0&dn=Book")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{real}&xt=urn:btih:#{decoy}")
+  end
+
+  test "a topic hidden behind a fragment still counts, so conflicting readings give no hash" do
+    hash = "ab" * 20
+    other = "cd" * 20
+
+    assert_equal hash, MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}#section")
+    assert_equal hash, MagnetLink.info_hash("magnet:?%78t=urn:btih:#{hash}&dn=Book")
+    assert_equal hash, MagnetLink.info_hash("magnet:?dn=Book#section&xt=urn:btih:#{hash}")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}&dn=Book#section&xt=urn:btih:#{other}")
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}#xt=urn:btih:#{other}&dn=Book")
+    assert_nil MagnetLink.info_hash("magnet:?%78t=urn:btih:#{hash}&xt=urn:btih:#{other}")
+    assert_equal hash, MagnetLink.info_hash("magnet:?%ZZ=1&xt=urn:btih:#{hash}")
+  end
+
+  test "converts a declared base32 exact topic to the same hex identity" do
+    hex = "aa" * 20
+    base32 = "VK" * 16
+
+    assert_equal hex, MagnetLink.info_hash("magnet:?xt=urn:btih:#{base32.downcase}&dn=Book")
+    assert_equal hex, MagnetLink.info_hash("magnet:?xt=urn:btih:#{hex}&xt=urn:btih:#{base32}")
+  end
+
+  test "keeps viable topics when a magnet is ambiguous or has a malformed topic" do
+    first = "a" * 40
+    second = "b" * 40
+    magnet = "magnet:?xt=urn:btih:#{first}&xt=urn:btih:%ZZ&dn=Book#xt=urn:btih:#{second}"
+
+    assert_equal [ first, second ], MagnetLink.info_hashes(magnet)
+    assert_nil MagnetLink.info_hash(magnet)
+    assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:%FF")
+  end
+
+  test "finds no hash in an HTTP link that mentions one" do
+    hash = "ab" * 20
+
+    assert_nil MagnetLink.info_hash("https://indexer.example/download?title=urn:btih:#{hash}")
+    assert_nil MagnetLink.info_hash("https://indexer.example/magnet:?xt=urn:btih:#{hash}")
+    assert_nil MagnetLink.normalize_info_hash("https://indexer.example/get?link=#{CGI.escape("magnet:?xt=urn:btih:#{hash}")}")
+    assert_nil MagnetLink.normalize_info_hash("Book btih:#{hash}")
+  end
+
   test "returns nil when no valid hash is present" do
     assert_nil MagnetLink.info_hash("magnet:?dn=No+Hash")
     assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:tooshort")

@@ -1,5 +1,5 @@
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_22_120000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -131,6 +131,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
   end
 
   create_table "downloads", force: :cascade do |t|
+    t.string "blocklisted_info_hash"
+    t.string "blocklisted_release_guid"
     t.boolean "configuration_failure", default: false, null: false
     t.datetime "created_at", null: false
     t.string "direct_book_path"
@@ -504,6 +506,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_02_120000) do
     t.string "guid", null: false
     t.string "indexer"
     t.integer "indexer_id"
+    t.string "info_hash"
     t.string "info_url"
     t.integer "leechers"
     t.string "magnet_url"

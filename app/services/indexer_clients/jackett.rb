@@ -143,6 +143,7 @@ module IndexerClients
           leechers: integer_attr(attrs["peers"]) || integer_attr(attrs["leechers"]),
           download_url: extract_download_url(enclosure_url),
           magnet_url: extract_magnet_url(enclosure_url),
+          info_hash: release_info_hash(attrs, enclosure_url),
           info_url: link,
           published_at: parse_date(item.at_xpath("pubDate")&.text),
           category_ids: extract_category_ids(item)
@@ -177,6 +178,15 @@ module IndexerClients
         return nil if enclosure_url.blank? || enclosure_url.start_with?("magnet:")
 
         enclosure_url
+      end
+
+      def release_info_hash(attrs, enclosure_url)
+        [ attrs["infohash"], attrs["infoHash"], enclosure_url ].each do |raw|
+          hash = MagnetLink.normalize_info_hash(raw)
+          return hash if hash.is_a?(String)
+        end
+
+        nil
       end
 
       def extract_magnet_url(enclosure_url)

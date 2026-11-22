@@ -118,6 +118,8 @@ class AutoSelectService
   end
 
   def find_matching_results
+    blocked_hashes = @request.blocked_torrent_info_hashes
+    blocked_guids = @request.blocked_release_guids
     @request.search_results
       .pending
       .not_blocklisted
@@ -125,6 +127,13 @@ class AutoSelectService
       .matches_language(@requested_language)
       .best_first
       .select(&:auto_select_allowed_by_preferences?)
+      .reject { |result| previously_failed?(result, blocked_hashes, blocked_guids) }
+  end
+
+  def previously_failed?(result, blocked_hashes, blocked_guids)
+    return true if result.torrent_info_hashes.intersect?(blocked_hashes)
+
+    blocked_guids.include?(result.guid) && result.dispatched_magnet_info_hash.nil?
   end
 
   def meets_confidence_threshold?(result)

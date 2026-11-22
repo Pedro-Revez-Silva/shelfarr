@@ -293,6 +293,17 @@ class Request < ApplicationRecord
     retry_job.enqueue ? :post_processing_queued : :post_processing_recovery_pending
   end
 
+  def blocked_torrent_info_hashes
+    (
+      search_results.blocklisted.filter_map(&:torrent_info_hash) +
+        downloads.where.not(blocklisted_info_hash: [ nil, "" ]).pluck(:blocklisted_info_hash)
+    ).uniq
+  end
+
+  def blocked_release_guids
+    downloads.where.not(blocklisted_release_guid: [ nil, "" ]).distinct.pluck(:blocklisted_release_guid)
+  end
+
   def handle_download_failure!(download, reason:)
     download.update!(status: :failed) unless download.failed?
 
@@ -580,7 +591,7 @@ class Request < ApplicationRecord
     raise ArgumentError, "Enter a valid magnet link" unless magnet_link.start_with?("magnet:?")
 
     info_hash = MagnetLink.info_hash(magnet_link)
-    raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
+    raise ArgumentError, "Enter a magnet link with a valid info hash" unless info_hash.is_a?(String)
 
     with_lock do
       if completed? && !library_replacement_requested?(replace_library_file)
@@ -917,8 +928,7 @@ class Request < ApplicationRecord
       cancel_download(download)
     end
 
-    if search_result.blocklisted?
-      search_result.clear_blocklist!
+    if override_blocklisted_release!(search_result)
       track_diagnostic(
         "blocklist_overridden",
         message: "Blocklist overridden for selected release",
@@ -1024,7 +1034,43 @@ class Request < ApplicationRecord
   end
 
   def blocklist_result!(search_result, reason:, download: nil)
+    download ||= search_result && downloads.where(search_result: search_result).order(created_at: :desc, id: :desc).first
+    hashes = release_info_hashes(search_result, download)
+    remember_blocklisted_release!(download, search_result, hashes)
     return false unless search_result
+
+    remember_release_info_hash!(search_result, download)
+    blocklisted = persist_blocklist!(search_result, reason:, download:)
+    blocklist_same_info_hash!(hashes, reason:, download:)
+    blocklisted
+  end
+
+  def remember_blocklisted_release!(download, search_result, hashes)
+    return if download.nil? || hashes.empty? || download.blocklisted_info_hash.present?
+
+    download.update!(
+      blocklisted_info_hash: download.torrent_info_hash || hashes.first,
+      blocklisted_release_guid: search_result&.guid
+    )
+  end
+
+  def override_blocklisted_release!(search_result)
+    recorded = downloads.where.not(blocklisted_info_hash: [ nil, "" ]).to_a
+    known_hash = search_result.torrent_info_hash
+    same_release = recorded.select do |download|
+      download.search_result_id == search_result.id ||
+        (search_result.dispatched_magnet_info_hash.nil? && download.blocklisted_release_guid == search_result.guid)
+    end
+    hashes = [ known_hash, *same_release.map(&:blocklisted_info_hash) ].compact.uniq
+    overridden = recorded.select { |download| same_release.include?(download) || hashes.include?(download.blocklisted_info_hash) }
+    downloads.where(id: overridden.map(&:id)).update_all(blocklisted_info_hash: nil, blocklisted_release_guid: nil, updated_at: Time.current)
+
+    same_torrent = search_results.blocklisted.select { |result| result.id == search_result.id || hashes.include?(result.torrent_info_hash) }
+    same_torrent.each(&:clear_blocklist!)
+    overridden.any? || same_torrent.any?
+  end
+
+  def persist_blocklist!(search_result, reason:, download:)
     return false if search_result.blocklisted?
 
     search_result.blocklist!(reason)
@@ -1037,10 +1083,33 @@ class Request < ApplicationRecord
       details: {
         search_result_id: search_result.id,
         title: search_result.title,
-        reason: reason
+        reason: reason,
+        info_hash: search_result.torrent_info_hash
       }
     )
     true
+  end
+
+  def blocklist_same_info_hash!(hashes, reason:, download:)
+    return if hashes.empty?
+
+    search_results.not_blocklisted.find_each do |result|
+      next unless hashes.intersect?(result.torrent_info_hashes)
+
+      persist_blocklist!(result, reason:, download:)
+      result.update!(status: :rejected) if result.pending?
+    end
+  end
+
+  def release_info_hashes(search_result, download)
+    [ download&.torrent_info_hash || search_result&.torrent_info_hash ].compact
+  end
+
+  def remember_release_info_hash!(search_result, download)
+    hash = download&.torrent_info_hash
+    return if hash.nil? || search_result.dispatched_magnet_info_hash
+
+    search_result.update!(info_hash: hash) unless search_result.info_hash == hash
   end
 
   def auto_select_enabled?

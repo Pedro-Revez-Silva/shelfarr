@@ -10,6 +10,32 @@ class SearchResultTest < ActiveSupport::TestCase
     Setting.where(key: %w[preferred_download_types preferred_download_type]).delete_all
   end
 
+  test "only a magnet the release itself dispatches proves its torrent identity" do
+    hash = "ab" * 20
+    magnet = "magnet:?xt=urn:btih:#{hash}"
+    dispatched = {
+      SearchResult::SOURCE_PROWLARR => hash,
+      SearchResult::SOURCE_JACKETT => hash,
+      SearchResult::SOURCE_MANUAL_MAGNET => hash,
+      SearchResult::SOURCE_CUSTOM => nil,
+      SearchResult::SOURCE_ANNA_ARCHIVE => nil
+    }
+
+    assert_equal dispatched, dispatched.keys.to_h { |source| [ source, SearchResult.new(source: source, magnet_url: magnet).dispatched_magnet_info_hash ] }
+    assert_nil SearchResult.new(source: SearchResult::SOURCE_PROWLARR, magnet_url: nil, info_hash: hash).dispatched_magnet_info_hash
+  end
+
+  test "a custom provider's advertised magnet is not the identity of the torrent it acquires" do
+    advertised = "ab" * 20
+    acquired = "cd" * 20
+    result = SearchResult.new(source: SearchResult::SOURCE_CUSTOM, magnet_url: "magnet:?xt=urn:btih:#{advertised}")
+
+    assert_nil result.torrent_info_hash
+    result.info_hash = acquired
+    assert_equal acquired, result.torrent_info_hash
+    assert_equal advertised, SearchResult.new(source: SearchResult::SOURCE_JACKETT, magnet_url: result.magnet_url, info_hash: acquired).torrent_info_hash
+  end
+
   test "requires guid" do
     result = SearchResult.new(request: requests(:pending_request), title: "Test")
     assert_not result.valid?

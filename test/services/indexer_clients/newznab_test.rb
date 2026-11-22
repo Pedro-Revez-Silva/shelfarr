@@ -137,4 +137,33 @@ class IndexerClients::NewznabTest < ActiveSupport::TestCase
       assert IndexerClients::Newznab.test_connection
     end
   end
+
+  test "search stores a newznab infohash when the enclosure is a torrent file" do
+    info_hash = "12" * 20
+    body = <<~XML
+      <?xml version="1.0" encoding="UTF-8"?>
+      <rss version="2.0" xmlns:newznab="http://www.newznab.com/DTD/2010/feeds/attributes/">
+        <channel>
+          <item>
+            <title>Same Book Torrent</title>
+            <guid>newznab-guid-hash</guid>
+            <enclosure url="http://localhost:5076/getnzb/api/hash?apikey=newznab-api-key" length="4096" type="application/x-bittorrent" />
+            <newznab:attr name="infohash" value="#{info_hash.upcase}" />
+            <newznab:attr name="seeders" value="2" />
+          </item>
+        </channel>
+      </rss>
+    XML
+
+    VCR.turned_off do
+      stub_request(:get, "http://localhost:5076/api")
+        .with(query: hash_including("apikey" => "newznab-api-key", "t" => "search"))
+        .to_return(status: 200, body: body, headers: { "Content-Type" => "application/xml" })
+
+      result = IndexerClients::Newznab.search("same book", book_type: :ebook).first
+
+      assert_equal info_hash, result.info_hash
+      assert_nil result.magnet_url
+    end
+  end
 end

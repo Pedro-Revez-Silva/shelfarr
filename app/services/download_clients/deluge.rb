@@ -7,6 +7,7 @@ module DownloadClients
   class Deluge < Base
     AUTH_ERROR_PATTERNS = [
       /not logged in/i,
+      /not authenticated/i,
       /authentication/i,
       /not authorized/i,
       /not permitted/i
@@ -26,6 +27,19 @@ module DownloadClients
     LABEL_ASSIGN_RETRY_WAIT = 0.25
     LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
     LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
+    DUPLICATE_TORRENT_PATTERN = /already in session|already being added/i
+    UNDELIVERED_REQUEST_ERRORS = [
+      Errno::ECONNREFUSED,
+      Errno::EHOSTUNREACH,
+      Errno::ENETUNREACH,
+      Errno::EADDRNOTAVAIL,
+      SocketError,
+      Net::OpenTimeout
+    ].freeze
+    UNTRACKED_TORRENT_GUIDANCE = "Shelfarr is not tracking it from this attempt. " \
+      "Check in Deluge whether another request or tool uses it; if nothing does, remove it in Deluge, then retry."
+
+    class UnconfirmedReplyError < Base::ConnectionError; end
     TRANSIENT_LABEL_ERROR_PATTERNS = [
       /unknown torrent/i,
       /timeout/i,
@@ -36,20 +50,13 @@ module DownloadClients
       ensure_authenticated!
       ensure_configured_label!
 
-      params = build_add_params(options)
+      start_after_staging = !add_paused?(options)
       prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
-      result = submit_torrent(prepared, params)
+      result = submit_new_torrent(prepared, build_add_params(options))
       torrent_id = result if result.is_a?(String) && result.present?
+      raise_unconfirmed_add!("Deluge did not return a torrent id after add") if torrent_id.blank?
 
-      if torrent_id.blank?
-        if configured_label.present?
-          raise Base::Error, "Deluge did not return a torrent id after add; cannot assign label"
-        end
-
-        return nil
-      end
-
-      assign_configured_label!(torrent_id)
+      stage_added_torrent!(torrent_id, start: start_after_staging)
       torrent_id
     rescue Faraday::Error => e
       raise Base::ConnectionError, "Failed to connect to Deluge: #{e.message}"
@@ -142,13 +149,17 @@ module DownloadClients
         raise Base::AuthenticationError, "Deluge authentication failed: #{response.status}"
       end
 
+      if transient_http_status?(response.status) || response.status.between?(201, 299)
+        raise UnconfirmedReplyError, "Deluge API error: #{response.status}"
+      end
+
       unless response.status == 200
         raise_for_http_status!(response.status, "Deluge API error: #{response.status}")
       end
 
       body = response.body
       unless body.is_a?(Hash)
-        raise Base::ConnectionError, "Deluge API returned unexpected response format"
+        raise UnconfirmedReplyError, "Deluge API returned unexpected response format"
       end
 
       body
@@ -180,9 +191,10 @@ module DownloadClients
 
     def torrent_statuses(filter = {})
       normalized_filter = filter.to_h.with_indifferent_access
-      rpc_call("core.get_torrents_status", [normalized_filter, TORRENT_FIELDS]) || {}
-    rescue Base::Error
-      {}
+      statuses = rpc_call("core.get_torrents_status", [ normalized_filter, TORRENT_FIELDS ])
+      raise Base::ConnectionError, "Deluge returned unreadable torrent statuses" unless statuses.is_a?(Hash)
+
+      statuses
     end
 
     def torrent_status(hash)
@@ -221,10 +233,57 @@ module DownloadClients
       progress.to_f.round
     end
 
+    def add_paused?(options)
+      return options[:paused] == true if options.key?(:paused)
+
+      rpc_call("core.get_config_value", [ "add_paused" ]) == true
+    rescue Base::ConnectionError, Base::AuthenticationError
+      raise
+    rescue Base::Error => error
+      raise Base::ConfigurationError, "Deluge could not report its add_paused setting: #{error.message}"
+    end
+
+    def submit_new_torrent(prepared, params)
+      submit_torrent(prepared, params)
+    rescue Faraday::Error => error
+      raise if undelivered_request?(error)
+
+      raise_unconfirmed_add!(error.message)
+    rescue UnconfirmedReplyError => error
+      raise_unconfirmed_add!(error.message)
+    rescue Base::ConnectionError, Base::AuthenticationError
+      raise
+    rescue Base::Error => error
+      raise unless DUPLICATE_TORRENT_PATTERN.match?(error.message)
+
+      raise Base::ConfigurationError,
+        "Deluge already has this torrent, so Shelfarr did not adopt or change it. " \
+        "Deluge may have merged this release's trackers into it. #{UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
+    end
+
+    def undelivered_request?(error)
+      UNDELIVERED_REQUEST_ERRORS.any? { |error_class| error.wrapped_exception.is_a?(error_class) }
+    end
+
+    def raise_unconfirmed_add!(detail)
+      raise Base::ConfigurationError,
+        "Deluge did not confirm whether it added this torrent; it may be paused there. #{UNTRACKED_TORRENT_GUIDANCE} (#{detail})"
+    end
+
+    def stage_added_torrent!(torrent_id, start:)
+      assign_configured_label!(torrent_id)
+      rpc_call("core.set_torrent_options", [ [ torrent_id ], { "remove_at_ratio" => false } ])
+      rpc_call("core.resume_torrent", [ [ torrent_id ] ]) if start
+    rescue Base::Error, Faraday::Error => error
+      discard_staged_torrent(torrent_id)
+      raise Base::ConfigurationError, "Deluge could not prepare the added torrent: #{error.message}"
+    end
+
     def build_add_params(options)
       params = {}
       params["download_location"] = options[:save_path] if options[:save_path].present?
-      params["add_paused"] = options[:paused] if options.key?(:paused)
+      params["add_paused"] = true
+      params["remove_at_ratio"] = false
       params
     end
 
@@ -296,7 +355,6 @@ module DownloadClients
         end
       end
 
-      remove_unlabelled_torrent(torrent_id)
       raise label_error
     end
 
@@ -329,20 +387,12 @@ module DownloadClients
       TRANSIENT_LABEL_ERROR_PATTERNS.any? { |pattern| pattern.match?(error.message) }
     end
 
-    def remove_unlabelled_torrent(torrent_id)
-      # The ID came directly from this add request, so removing its partial data
-      # cannot affect a torrent submitted by another application.
-      removed = remove_torrent(torrent_id, delete_files: true)
-      enqueue_stale_cleanup(torrent_id) unless removed
-    rescue Base::Error => cleanup_error
-      Rails.logger.error "[Deluge] Failed to remove unlabelled torrent #{torrent_id}: #{cleanup_error.message}"
-      enqueue_stale_cleanup(torrent_id)
-    end
+    def discard_staged_torrent(torrent_id)
+      return if remove_torrent(torrent_id, delete_files: false)
 
-    def enqueue_stale_cleanup(torrent_id)
-      StaleClientDispatchCleanupJob.perform_later(config.id, torrent_id)
-    rescue StandardError => e
-      Rails.logger.error "[Deluge] Failed to enqueue cleanup for unlabelled torrent #{torrent_id}: #{e.class}"
+      Rails.logger.error "[Deluge] Deluge did not remove staged torrent #{torrent_id}; it stays paused"
+    rescue Base::Error => cleanup_error
+      Rails.logger.error "[Deluge] Failed to remove staged torrent #{torrent_id}; it stays paused: #{cleanup_error.message}"
     end
 
     def configured_label

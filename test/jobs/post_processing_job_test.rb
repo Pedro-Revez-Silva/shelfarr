@@ -5135,6 +5135,30 @@ class PostProcessingJobTest < ActiveJob::TestCase
     assert_match /source path is blank/i, @request.issue_description
   end
 
+  test "a download client outage while re-reading a blank path reports the missing path" do
+    client = DownloadClient.create!(
+      name: "Unavailable Deluge",
+      client_type: :deluge,
+      url: "http://localhost:8112",
+      password: "adminadmin"
+    )
+    Thread.current[:deluge_sessions] = { client.id => { cookie: "sessionid=cached" } }
+    @download.update!(download_client: client, download_type: "torrent", external_id: "b" * 40, download_path: "")
+
+    VCR.turned_off do
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_torrents_status"/)
+        .to_return(status: 503, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
+
+      PostProcessingJob.perform_now(@download.id)
+    end
+
+    assert_match(/did not report/, @request.reload.issue_description)
+    assert_no_match(/TypeError|safe filesystem operation/, @request.issue_description)
+  ensure
+    Thread.current[:deluge_sessions] = {}
+  end
+
   test "re-reads a blank download path from SABnzbd so a post-processing retry can recover" do
     client = DownloadClient.create!(
       name: "Retry SABnzbd",

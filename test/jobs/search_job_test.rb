@@ -1492,6 +1492,150 @@ class SearchJobTest < ActiveJob::TestCase
     end
   end
 
+  test "saves an indexer info hash and keeps a hash learned from the download client" do
+    book = Book.create!(title: "Stored Hash", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    info_hash = "ef" * 20
+    result = IndexerClients::Result.new(
+      guid: "stored-hash",
+      title: "Stored Hash Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      size_bytes: 2048,
+      seeders: 3,
+      leechers: 0,
+      download_url: "http://prowlarr.example/1/download",
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil,
+      info_hash: info_hash
+    )
+
+    saved = SearchJob.new.send(:save_indexer_result, request, result, "prowlarr")
+
+    assert_equal info_hash, saved.info_hash
+    assert_nil saved.magnet_url
+
+    saved.update!(blocklisted_at: Time.current, blocklist_reason: "failed", status: :rejected)
+    refresh = IndexerClients::Result.new(
+      guid: "stored-hash",
+      title: result.title,
+      indexer: result.indexer,
+      size_bytes: result.size_bytes,
+      seeders: result.seeders,
+      leechers: 0,
+      download_url: result.download_url,
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil
+    )
+
+    refreshed = SearchJob.new.send(:save_indexer_result, request, refresh, "prowlarr")
+
+    assert_equal info_hash, refreshed.info_hash
+    assert refreshed.blocklisted?
+  end
+
+  test "a repeat search does not move a blocklisted release onto the torrent it now advertises" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 0)
+    SettingsService.set(:auto_select_min_seeders, 0)
+    book = Book.create!(title: "Moved Hash", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    failed_hash = "b" * 40
+    republished_hash = "a" * 40
+    blocked = request.search_results.create!(
+      guid: "republished-guid",
+      title: "Moved Hash Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      magnet_url: "magnet:?xt=urn:btih:#{failed_hash}",
+      status: :rejected,
+      source: "prowlarr"
+    )
+    blocked.blocklist!("Download not found in client")
+    request.downloads.create!(
+      name: blocked.title,
+      search_result: blocked,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: blocked.guid
+    )
+    indexer_result = ->(guid, hash) do
+      {
+        source: "prowlarr",
+        result: IndexerClients::Result.new(
+          guid: guid,
+          title: "Moved Hash Indexer Author EPUB",
+          indexer: "ProwlarrIndexer",
+          size_bytes: 2048,
+          seeders: 30,
+          leechers: 0,
+          download_url: nil,
+          magnet_url: "magnet:?xt=urn:btih:#{hash}",
+          info_url: nil,
+          published_at: nil
+        )
+      }
+    end
+
+    SearchJob.new.send(:save_results, request, [ indexer_result.call("republished-guid", republished_hash), indexer_result.call("other-guid", republished_hash) ])
+
+    assert_equal [ failed_hash ], request.reload.blocked_torrent_info_hashes
+    assert_equal failed_hash, blocked.reload.torrent_info_hash
+    assert blocked.blocklisted?
+    assert_not request.search_results.find_by!(guid: "other-guid").blocklisted?
+  end
+
+  test "a repeat search refreshes the opaque download link of a blocklisted release" do
+    book = Book.create!(title: "Fresh Link", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    blocked = request.search_results.create!(
+      guid: "expiring-guid",
+      title: "Fresh Link Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      download_url: "http://prowlarr.example/1/download?token=expired",
+      info_hash: "b" * 40,
+      status: :rejected,
+      source: "prowlarr"
+    )
+    blocked.blocklist!("Download not found in client")
+    refreshed = IndexerClients::Result.new(
+      guid: "expiring-guid",
+      title: blocked.title,
+      indexer: "ProwlarrIndexer",
+      size_bytes: 2048,
+      seeders: 30,
+      leechers: 0,
+      download_url: "http://prowlarr.example/1/download?token=fresh",
+      magnet_url: nil,
+      info_url: nil,
+      published_at: nil,
+      info_hash: "a" * 40
+    )
+
+    SearchJob.new.send(:save_indexer_result, request, refreshed, "prowlarr")
+
+    assert_equal "http://prowlarr.example/1/download?token=fresh", blocked.reload.download_url
+    assert_equal "b" * 40, blocked.torrent_info_hash
+    assert blocked.blocklisted?
+
+    [
+      "magnet:?xt=urn:btih:#{"a" * 40}",
+      "magnet:?xt=urn:btih:#{"a" * 40}&xt=urn:btih:#{"b" * 40}"
+    ].each_with_index do |magnet_url, index|
+      fresh_url = "http://prowlarr.example/1/download?token=retry-#{index}"
+      replacement = refreshed.with(download_url: fresh_url, magnet_url: magnet_url)
+
+      SearchJob.new.send(:save_indexer_result, request, replacement, "prowlarr")
+
+      assert_equal fresh_url, blocked.reload.download_link
+      assert_nil blocked.magnet_url
+      assert_equal "b" * 40, blocked.torrent_info_hash
+      assert blocked.blocklisted?
+    end
+  end
+
   test "preliminary scoring uses a known file size before a result counts as a strong match" do
     SettingsService.set(:indexer_search_scope, "strict")
     SettingsService.set(:min_match_confidence, 80)

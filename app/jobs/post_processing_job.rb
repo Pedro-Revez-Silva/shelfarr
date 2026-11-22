@@ -2241,7 +2241,8 @@ class PostProcessingJob < ApplicationJob
   # per-client download_path) without requiring a single "correct" configuration.
   def remap_download_path(path, download)
     if path.blank?
-      path = refresh_download_path_from_client(download).to_s
+      refreshed = refresh_download_path_from_client(download)
+      path = refreshed.to_s if refreshed.is_a?(String)
     end
 
     if path.blank?

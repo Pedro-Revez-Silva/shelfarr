@@ -97,6 +97,20 @@ class SearchResult < ApplicationRecord
     blocklisted_at.present?
   end
 
+  def dispatched_magnet_info_hash
+    hashes = dispatched_magnet_info_hashes
+    hashes.first if hashes.one?
+  end
+
+  def torrent_info_hash
+    hashes = torrent_info_hashes
+    hashes.first if hashes.one?
+  end
+
+  def torrent_info_hashes
+    dispatched_magnet_info_hashes.presence || [ MagnetLink.normalize_info_hash(info_hash) ].compact
+  end
+
   def blocklist!(reason)
     attributes = {
       blocklisted_at: Time.current,
@@ -272,6 +286,17 @@ class SearchResult < ApplicationRecord
   def from_indexer?
     from_prowlarr? || from_jackett? || from_newznab?
   end
+
+  def dispatches_own_torrent_link?
+    from_indexer? || source == SOURCE_MANUAL_MAGNET
+  end
+
+  def dispatched_magnet_info_hashes
+    return [] unless dispatches_own_torrent_link?
+
+    MagnetLink.info_hashes(download_link)
+  end
+  private :dispatched_magnet_info_hashes
 
   def from_anna_archive?
     source == SOURCE_ANNA_ARCHIVE
