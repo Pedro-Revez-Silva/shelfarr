@@ -183,6 +183,22 @@ class FindViewModelTest {
     }
 
     @Test
+    fun `an answer to Request that arrives after the copy is known to be ready keeps it owned`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+        listShowing(request(RequestStage.NOT_FOUND, "2026-11-22T10:00:00Z"))
+        model.choose(model.find.value.results.single())
+        model.submit()
+        runCurrent()
+
+        listShowing(request(RequestStage.AVAILABLE, "2026-11-22T10:00:03Z", publicationId = "pub-1"))
+        backend.createAnswer.complete(RequestOutcome.Existing(request(RequestStage.PROCESSING, "2026-11-22T10:00:02Z")))
+        runCurrent()
+
+        assertOwned("pub-1", model.title.value.item?.format(BookType.EBOOK))
+        assertOwned("pub-1", shownEbook())
+    }
+
+    @Test
     fun `a copy the list already shows ready outlasts a search answer from the same second`() = runTest(dispatcher) {
         listShowing(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z"))
         model.setQuery("lighthouse")

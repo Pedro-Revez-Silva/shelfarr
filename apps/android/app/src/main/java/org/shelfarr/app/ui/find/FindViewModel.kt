@@ -354,7 +354,7 @@ class FindViewModel(
     }
 
     private fun markRequested(item: DiscoverItem, format: BookType, request: RequestItem) {
-        updateFormat(item, format) { it.following(request) }
+        updateFormat(item, format) { if (it.state == FormatState.IN_LIBRARY) it else it.following(request) }
         findState.update { state -> state.copy(requests = listOf(request) + state.requests.filterNot { it.id == request.id }) }
     }
 
