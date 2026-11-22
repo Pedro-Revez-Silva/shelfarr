@@ -9,15 +9,14 @@ const OPEN_STATUSES = new Set<RequestSummary["status"]>(["pending", "searching",
 const SHOWN = 5;
 
 export function FindTabs() {
-  const { mode, boot } = useServices();
-  const pathname = useLocation({ select: (location) => location.pathname.slice(boot.mount.replace(/\/$/, "").length) });
-  const onRequests = pathname.startsWith("/requests");
+  const { mode } = useServices();
+  const onRequests = useLocation({ select: (location) => /(?:^|\/)requests(?:\/|$)/.test(location.pathname) });
   return (
     <nav className="find-tabs" aria-label="Find">
       <ul>
         <li>
           <Link to={mode === "go" ? "/discover" : "/find"} className="filter-link" aria-current={onRequests ? undefined : "page"} activeProps={{}}>
-            Search
+            Search books
           </Link>
         </li>
         <li>
@@ -50,10 +49,12 @@ export function YourRequests() {
       <ul className="your-requests-list">
         {open.map((request) => (
           <li key={request.id}>
-            <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-link">
-              {request.title}
-            </Link>
-            {request.author ? <span className="request-meta"> · {request.author}</span> : null}
+            <p className="your-request-title">
+              <Link to="/requests/$requestId" params={{ requestId: request.id }} className="request-link">
+                {request.title}
+              </Link>
+              {request.author ? <span className="request-meta">{request.author}</span> : null}
+            </p>
             <StatusBadges request={request} />
           </li>
         ))}

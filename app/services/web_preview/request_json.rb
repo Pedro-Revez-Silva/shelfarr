@@ -39,8 +39,9 @@ module WebPreview
 
     def detail(store_offers:)
       value = summary.merge(
-        attention_reason: @request.attention_needed ? @request.issue_description.to_s.first(TEXT_LIMIT).presence : nil,
+        attention_reason: admin? && @request.attention_needed ? @request.issue_description.to_s.first(TEXT_LIMIT).presence : nil,
         downloads: @request.downloads.order(id: :desc).map { |download| download_fields(download) },
+        choice_needed: @request.needs_manual_selection?,
         notes: @request.notes.to_s.first(TEXT_LIMIT).presence,
         year: @book.year.to_s.match?(/\A\d{1,4}\z/) ? @book.year.to_i : nil,
         collection_title: @request.collection_title.to_s.first(TEXT_LIMIT).presence,

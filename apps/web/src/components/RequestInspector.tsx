@@ -12,13 +12,6 @@ export function RequestTools({ request, admin }: { request: RequestDetail; admin
   if (!actions) return null;
   return (
     <>
-      {request.book_page ? (
-        <p className="request-book-link">
-          <Link to="/books/$source/$sourceId" params={{ source: request.book_page.source, sourceId: request.book_page.id }} className="button button--subtle">
-            Open the Book page<span className="sr-only"> for {request.title}</span>
-          </Link>
-        </p>
-      ) : null}
       {request.store_offers && request.store_offers.length > 0 ? <StoreOffers offers={request.store_offers} uploadUrl={actions.upload_url} /> : null}
       <MainActions request={request} actions={actions} admin={admin} />
       {admin ? <Inspector request={request} actions={actions} /> : null}
@@ -29,10 +22,15 @@ export function RequestTools({ request, admin }: { request: RequestDetail; admin
 function MainActions({ request, actions, admin }: { request: RequestDetail; actions: RequestActions; admin: boolean }) {
   const retry = useRetryRequest(request.id);
   const search = useSearchRequestAgain(request.id);
-  const shown = actions.cancel || actions.download_url || (admin && (actions.retry || actions.search_again)) || (!admin && actions.remove === "delete_history");
+  const shown = request.book_page || actions.cancel || actions.download_url || (admin && (actions.retry || actions.search_again)) || (!admin && actions.remove === "delete_history");
   if (!shown) return null;
   return (
     <div className="copy-actions request-actions">
+      {request.book_page ? (
+        <Link to="/books/$source/$sourceId" params={{ source: request.book_page.source, sourceId: request.book_page.id }} className="button">
+          Open the Book page<span className="sr-only"> for {request.title}</span>
+        </Link>
+      ) : null}
       {actions.download_url ? (
         <a className="button" href={actions.download_url} download>
           Download the file<span className="sr-only"> of {request.title}</span>

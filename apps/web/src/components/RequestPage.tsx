@@ -4,7 +4,7 @@ import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { Acquisition, RequestDetail } from "../contract";
 import { selectionRunning, useAcquisition, useRequest, useSelectionFinished, useSelectResult, useSession } from "../queries";
 import { usePageTitle } from "../title";
-import { RequestSteps, type StepState } from "./BookPage";
+import { RequestSteps, stageSentence, type StepState } from "./BookPage";
 import { Cover } from "./Cover";
 import { RequestTools } from "./RequestInspector";
 import { PageHeading } from "./PageHeading";
@@ -116,7 +116,7 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
           {request.author ? <p className="details-author">{request.author}</p> : null}
           <StatusBadges request={request} />
 
-          {request.attention_needed ? (
+          {request.attention_needed && !request.actions ? (
             <div className="attention" role="note">
               <h2>Attention Required</h2>
               <p>{request.attention_reason ?? "This request needs your attention."}</p>
@@ -126,10 +126,9 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
 
           {admin && request.acquisition === true ? <ChooseCopy request={request} /> : null}
 
-          {request.actions ? <TrackedSteps request={request} /> : null}
 
           <div className="request-stage" role="status">
-            <p>{stage(request)}</p>
+            <p>{request.actions ? trackedSentence(request, admin) : stage(request)}</p>
             {request.status === "downloading" && request.download_percent !== null ? <progress max={100} value={request.download_percent} aria-label="Download progress" /> : null}
           </div>
 
@@ -185,9 +184,11 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
               </div>
             ) : null}
           </dl>
-          <RequestTools request={request} admin={admin} />
         </div>
       </div>
+
+      {request.actions ? <TrackedSteps request={request} /> : null}
+      <RequestTools request={request} admin={admin} />
 
       {request.downloads.length > 0 ? (
         <section className="request-downloads" aria-labelledby="downloads-heading">
@@ -217,11 +218,22 @@ const STAGES: Partial<Record<RequestDetail["status"], StepState["stage"]>> = {
   failed: "failed",
 };
 
-function TrackedSteps({ request }: { request: RequestDetail }) {
+function trackedState(request: RequestDetail): (StepState & { download_percent: number | null }) | null {
   const stage = request.status === "completed" ? (request.library?.state === "available" ? "available" : "completed") : STAGES[request.status];
   if (!stage) return null;
-  const choiceNeeded = request.status === "searching" && (request.copies?.selectable === true || request.attention_reason === SELECTION_REASON);
-  return <RequestSteps request={{ stage, choice_needed: choiceNeeded, attention_needed: request.attention_needed }} />;
+  const choiceNeeded = request.choice_needed ?? (request.status === "searching" && request.attention_reason === SELECTION_REASON);
+  return { stage, choice_needed: choiceNeeded, attention_needed: request.attention_needed, download_percent: request.download_percent };
+}
+
+function trackedSentence(request: RequestDetail, admin: boolean): string {
+  if (request.status === "awaiting_purchase") return stage(request);
+  const state = trackedState(request);
+  return state ? stageSentence(state, admin) : stage(request);
+}
+
+function TrackedSteps({ request }: { request: RequestDetail }) {
+  const state = trackedState(request);
+  return state ? <RequestSteps request={state} /> : null;
 }
 
 const SEARCH_NOTES: Record<NonNullable<Acquisition["search"]>["state"], string> = {

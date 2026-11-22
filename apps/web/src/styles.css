@@ -2591,6 +2591,19 @@ thead th {
   border: 1px solid var(--line);
   border-radius: 14px;
 }
+.your-requests-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.your-request-title {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  min-width: 0;
+}
 .find-requests-link {
   margin-top: 24px;
 }
@@ -2598,11 +2611,13 @@ thead th {
 .request-actions {
   margin-top: 16px;
 }
-.request-book-link {
-  margin-top: 12px;
+.request-details > .request-steps {
+  margin-top: 28px;
 }
 .store-offers,
 .request-inspector {
+  align-self: stretch;
+  width: 100%;
   display: grid;
   gap: 12px;
   margin-top: 24px;

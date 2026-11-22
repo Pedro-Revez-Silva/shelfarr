@@ -28,7 +28,7 @@ export function AccountRail({ current }: { current: AccountSection }) {
         {ACCOUNT_SECTIONS.map((section) => (
           <li key={section.key}>
             {section.key === "profile" ? (
-              <Link to="/account" className="filter-link" aria-current={current === "profile" ? "page" : undefined} activeProps={{}}>
+              <Link to="/account" className="filter-link" aria-current={current === "profile" ? "page" : undefined} activeOptions={{ exact: true }} activeProps={{}}>
                 {section.label}
               </Link>
             ) : (

@@ -361,7 +361,7 @@ export function stalled(request: Pick<BookRequest, "attention_needed" | "choice_
   return request.attention_needed && !request.choice_needed;
 }
 
-function stageSentence(request: BookRequest, admin: boolean): string {
+export function stageSentence(request: Pick<BookRequest, "stage" | "choice_needed" | "attention_needed" | "download_percent">, admin: boolean): string {
   if (stalled(request)) {
     return admin
       ? "Shelfarr stopped working on this request until someone looks at it."

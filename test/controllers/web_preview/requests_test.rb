@@ -74,9 +74,13 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
 
   test "a member sees their own request's details and actions but not another account's request, copies or diagnostics" do
     @mine.search_results.create!(guid: "copy", title: "Émile.epub", source: SearchResult::SOURCE_GUTENBERG, download_url: "https://files.example.test/e.epub")
+    @mine.update!(attention_needed: true, issue_description: "Émile.epub from Gutenberg needs a choice")
     RequestEvent.record!(request: @mine, event_type: "dispatch_failed", source: "test", message: "Client down", level: :error)
     sign_in_as(@member)
     request = detail(@mine, user: @member).fetch("request")
+    assert_nil request.fetch("attention_reason")
+    assert request.fetch("choice_needed")
+    assert_not_includes response.body, "Émile.epub"
     assert_equal "Second edition please", request.fetch("notes")
     assert_equal({ "cancel" => true, "remove" => nil, "retry" => false, "search_again" => false, "manual_download" => false,
       "replaces_library_file" => false, "upload_url" => nil, "download_url" => nil }, request.fetch("actions"))

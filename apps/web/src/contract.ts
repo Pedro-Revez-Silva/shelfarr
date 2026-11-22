@@ -365,6 +365,7 @@ export const requestDetailSchema = requestSummarySchema.extend({
   attention_reason: z.string().nullable(),
   downloads: z.array(z.object({ status: z.enum(downloadStatuses), progress: percent.nullable() })),
   acquisition: z.boolean().optional(),
+  choice_needed: z.boolean().optional(),
   notes: z.string().nullable().optional(),
   year: z.number().int().nullable().optional(),
   collection_title: z.string().nullable().optional(),
