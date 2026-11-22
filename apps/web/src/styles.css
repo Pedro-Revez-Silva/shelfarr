@@ -2229,9 +2229,32 @@ thead th {
   font-size: 13px;
   margin-top: 10px;
 }
+@media (max-width: 719px) {
+  .book-hero {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+  .book-hero .cover-slot--large {
+    width: 100%;
+  }
+  .book-title-block h1 {
+    font-size: clamp(1.75rem, 8vw, 2.5rem);
+    letter-spacing: -0.5px;
+  }
+  .book-blurb {
+    font-size: 16px;
+  }
+  .server-card {
+    grid-column: 1 / -1;
+  }
+}
 @media (min-width: 720px) {
   .format-row {
     grid-template-columns: 7rem 1fr auto;
+  }
+  .format-state {
+    white-space: nowrap;
   }
   .format-action {
     grid-column: auto;
