@@ -3,6 +3,61 @@
 require "test_helper"
 
 class OpenLibraryClientTest < ActiveSupport::TestCase
+  test "search skips requests shorter than 3 characters" do
+    VCR.turned_off do
+      request = stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+        .with(query: hash_including(
+          "fields" => "key,title,author_name,first_publish_year,cover_i,edition_count,subject"
+        ))
+        .to_return(
+          status: 200,
+          headers: { "Content-Type" => "application/json" },
+          body: { "docs" => [] }.to_json
+        )
+
+      assert_equal [], OpenLibraryClient.search("Du")
+      assert_equal [], OpenLibraryClient.search("  x ")
+      assert_not_requested request
+
+      assert_equal [], OpenLibraryClient.search("Dun")
+      assert_requested request
+    end
+  end
+
+  test "search raises QueryError when the query is rejected" do
+    VCR.turned_off do
+      [ 400, 422 ].each do |status|
+        stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+          .with(query: hash_including("q" => "Dune"))
+          .to_return(
+            status: status,
+            headers: { "Content-Type" => "application/json" },
+            body: "{}"
+          )
+
+        error = assert_raises(OpenLibraryClient::QueryError) { OpenLibraryClient.search("Dune") }
+        assert_equal "API request failed with status #{status}", error.message
+      end
+    end
+  end
+
+  test "search raises Error when Open Library returns a server error" do
+    VCR.turned_off do
+      stub_request(:get, "#{OpenLibraryClient::BASE_URL}/search.json")
+        .with(query: hash_including("q" => "Dune"))
+        .to_return(
+          status: 500,
+          headers: { "Content-Type" => "application/json" },
+          body: "{}"
+        )
+
+      error = assert_raises(OpenLibraryClient::Error) { OpenLibraryClient.search("Dune") }
+
+      assert_equal OpenLibraryClient::Error, error.class
+      assert_equal "API request failed with status 500", error.message
+    end
+  end
+
   test "search returns array of SearchResult" do
     with_cassette("open_library/search_harry_potter") do
       results = OpenLibraryClient.search("harry potter")

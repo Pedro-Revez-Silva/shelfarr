@@ -99,6 +99,12 @@ class MetadataService
         return with_outcome ? outcome : outcome.results
       end
 
+      # A too-short query is not an Open Library outage, so leave provider health unchanged.
+      if open_library_query_too_short?(provider, query)
+        outcome = ProviderSearchOutcome.new(results: [], failed: false, skipped: false)
+        return with_outcome ? outcome : outcome.results
+      end
+
       results = if content_kind.present?
         send("search_#{provider}", query, provider_limit(provider, limit), content_kind: content_kind)
       else
@@ -108,6 +114,13 @@ class MetadataService
       outcome = ProviderSearchOutcome.new(results: results, failed: false, skipped: false)
       with_outcome ? outcome : outcome.results
     rescue *provider_errors(provider) => e
+      # A 400/422 is a rejected query, not an outage.
+      if e.is_a?(OpenLibraryClient::QueryError)
+        Rails.logger.info "[MetadataService] #{provider} rejected the query: #{e.message}"
+        outcome = ProviderSearchOutcome.new(results: [], failed: false, skipped: false)
+        return with_outcome ? outcome : outcome.results
+      end
+
       status&.record_failure!(e)
       Rails.logger.warn "[MetadataService] #{provider} search failed: #{e.message}"
       outcome = ProviderSearchOutcome.new(results: [], failed: true, skipped: false)
@@ -187,6 +200,10 @@ class MetadataService
     end
 
     private
+
+    def open_library_query_too_short?(provider, query)
+      provider.to_s == "openlibrary" && query.to_s.strip.length < OpenLibraryClient::MIN_QUERY_LENGTH
+    end
 
     def provider_errors(provider)
       errors = case provider.to_s

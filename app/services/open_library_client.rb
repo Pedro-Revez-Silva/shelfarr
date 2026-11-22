@@ -3,11 +3,14 @@
 class OpenLibraryClient
   BASE_URL = "https://openlibrary.org"
   COVERS_URL = "https://covers.openlibrary.org"
+  # Open Library's search API returns HTTP 422 below this length.
+  MIN_QUERY_LENGTH = 3
 
   class Error < StandardError; end
   class ConnectionError < Error; end
   class NotFoundError < Error; end
   class RateLimitError < Error; end
+  class QueryError < Error; end
 
   SearchResult = Data.define(:work_id, :title, :author, :first_publish_year, :cover_id, :edition_count, :subjects) do
     def initialize(work_id:, title:, author:, first_publish_year:, cover_id:, edition_count:, subjects: [])
@@ -53,6 +56,8 @@ class OpenLibraryClient
     end
 
     def search(query, limit: nil)
+      return [] if query.to_s.strip.length < MIN_QUERY_LENGTH
+
       limit ||= SettingsService.get("open_library_search_limit", default: 20)
 
       response = connection.get("/search.json", {
@@ -173,6 +178,9 @@ class OpenLibraryClient
       case response.status
       when 200
         yield response.body
+      when 400, 422
+        # The query was rejected. The service itself responded.
+        raise QueryError, "API request failed with status #{response.status}"
       when 404
         raise NotFoundError, "Resource not found"
       when 429
