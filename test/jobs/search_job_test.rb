@@ -1619,6 +1619,21 @@ class SearchJobTest < ActiveJob::TestCase
     assert_equal "http://prowlarr.example/1/download?token=fresh", blocked.reload.download_url
     assert_equal "b" * 40, blocked.torrent_info_hash
     assert blocked.blocklisted?
+
+    [
+      "magnet:?xt=urn:btih:#{"a" * 40}",
+      "magnet:?xt=urn:btih:#{"a" * 40}&xt=urn:btih:#{"b" * 40}"
+    ].each_with_index do |magnet_url, index|
+      fresh_url = "http://prowlarr.example/1/download?token=retry-#{index}"
+      replacement = refreshed.with(download_url: fresh_url, magnet_url: magnet_url)
+
+      SearchJob.new.send(:save_indexer_result, request, replacement, "prowlarr")
+
+      assert_equal fresh_url, blocked.reload.download_link
+      assert_nil blocked.magnet_url
+      assert_equal "b" * 40, blocked.torrent_info_hash
+      assert blocked.blocklisted?
+    end
   end
 
   test "preliminary scoring uses a known file size before a result counts as a strong match" do

@@ -634,12 +634,12 @@ class SearchJob < ApplicationJob
 
   def refresh_blocklisted_indexer_link(search_result, result)
     link = result.download_link.to_s
-    if link.start_with?("magnet:")
-      hash = MagnetLink.info_hash(link)
-      return unless hash && hash == search_result.torrent_info_hash
+    magnet_hash = MagnetLink.info_hash(link) if link.start_with?("magnet:")
 
+    if magnet_hash && magnet_hash == search_result.torrent_info_hash
       search_result.assign_attributes(download_url: result.download_url, magnet_url: result.magnet_url)
-    elsif result.download_url.present? && !search_result.download_link.to_s.start_with?("magnet:")
+    elsif result.download_url.present? &&
+        [ result.download_url, search_result.download_link ].none? { |url| url.to_s.start_with?("magnet:") }
       search_result.download_url = result.download_url
     end
   end

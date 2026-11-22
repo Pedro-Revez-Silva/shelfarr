@@ -261,6 +261,14 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
       indexer: "SecondIndexer",
       magnet_url: "magnet:?xt=urn:btih:#{shared_hash.upcase}&dn=Same+Book"
     )
+    ambiguous_duplicate = create_result(
+      request,
+      guid: "other-indexer-ambiguous-torrent",
+      status: :pending,
+      seeders: 95,
+      indexer: "SecondIndexer",
+      magnet_url: "magnet:?xt=urn:btih:#{shared_hash}&dn=Same+Book#xt=urn:btih:#{other_hash}"
+    )
     other = create_result(
       request,
       guid: "different-torrent",
@@ -288,6 +296,8 @@ class RequestDownloadFailureTest < ActiveSupport::TestCase
     assert selected.reload.blocklisted?
     assert duplicate.reload.blocklisted?
     assert duplicate.rejected?
+    assert ambiguous_duplicate.reload.blocklisted?
+    assert ambiguous_duplicate.rejected?
     assert other.reload.selected?
     assert_equal other.id, request.downloads.order(:id).last.search_result_id
     assert_not request.reload.attention_needed?

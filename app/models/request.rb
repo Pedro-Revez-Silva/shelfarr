@@ -1094,7 +1094,7 @@ class Request < ApplicationRecord
     return if hashes.empty?
 
     search_results.not_blocklisted.find_each do |result|
-      next unless hashes.include?(result.torrent_info_hash)
+      next unless hashes.intersect?(result.torrent_info_hashes)
 
       persist_blocklist!(result, reason:, download:)
       result.update!(status: :rejected) if result.pending?
