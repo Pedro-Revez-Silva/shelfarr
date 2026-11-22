@@ -207,13 +207,15 @@ Offline copies live in the Go preview's `shelfarr-go-preview-offline` database u
 deployment under a subpath uses `shelfarr-go-preview-offline|<subpath>/preview` and worker caches named
 `shelfarr-go-preview-offline.v1@<subpath>/preview/library|<version>`, so two deployments on one origin never see or delete
 each other's copies. The Rails sign-in page (shown after every sign-out) releases this deployment's confirmed offline account,
-as it already does for `/read`; saved files stay, hidden, until that account confirms again. The
+as it already does for `/read`, and so does the 404 page a signed-in account gets when the allowlist no longer names it;
+saved files stay, hidden, until that account confirms again. The
 `/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
 `/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
 server is unreachable, exactly as after a Go rollback.
 
-Not ported yet (each says so on screen and links to `/read/:id` or `/read/downloads`): read-along narration, offline
-audiobooks, PDFs and comics, and showing the `/read` downloads in the new Downloads list. The reader still lives under
+Not ported yet (each says so on screen and links to `/read/:id` or `/read/downloads`): read-along narration, choosing
+among a book's several files, offline audiobooks, PDFs and comics, and showing the `/read` downloads in the new Downloads
+list. The reader still lives under
 `/preview`; moving it to `/read/:id` needs the worker, outbox and manifest transition in `backend-migration.md`.
 
 ## Not in this slice
