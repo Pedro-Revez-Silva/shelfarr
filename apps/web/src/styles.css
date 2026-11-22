@@ -2225,6 +2225,9 @@ thead th {
   gap: 6px;
   justify-items: start;
 }
+.request-format .button {
+  white-space: nowrap;
+}
 .request-both {
   display: flex;
   margin-top: 12px;
@@ -2268,6 +2271,9 @@ thead th {
   display: grid;
   gap: 8px;
   margin-top: 8px;
+}
+.result-request .request-extras {
+  margin-top: 0;
 }
 .result-request-actions {
   display: flex;
