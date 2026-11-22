@@ -195,12 +195,20 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
   );
 }
 
+function RowRequestLabel({ format }: { format: BookFormat["book_type"] }) {
+  return (
+    <>
+      Request<span className="sr-only"> {format}</span>
+    </>
+  );
+}
+
 function RequestButton({ format, accent, title, busy, mine, pending, error, onPress }: { format: RequestFormat; accent: boolean; title: string | null; busy: boolean; mine: boolean; pending: boolean; error: unknown; onPress: (format: RequestFormat) => void }) {
   const failed = mine && error !== null;
   return (
     <span className="request-format">
       <button type="button" className={accent ? "button button--primary" : "button"} aria-disabled={busy ? true : undefined} onClick={() => onPress(format)}>
-        {mine && pending ? "Requesting…" : failed ? "Try requesting again" : requestLabel(format)}
+        {mine && pending ? "Requesting…" : failed ? "Try requesting again" : format === "both" ? requestLabel(format) : <RowRequestLabel format={format} />}
         <span className="sr-only"> of {title ?? "this book"}</span>
       </button>
       {failed ? (
