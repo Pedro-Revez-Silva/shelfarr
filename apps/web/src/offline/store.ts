@@ -14,6 +14,7 @@ import {
 } from "./model";
 
 export const DATABASE_NAME = "shelfarr-go-preview-offline";
+const DEFAULT_MOUNT = "/preview";
 const DATABASE_VERSION = 1;
 const ACCOUNT_KEY = "current";
 
@@ -48,13 +49,22 @@ export function releasedState(current: AccountState, askedAt: number): AccountSt
   return { record, clearedAt: Math.max(current.clearedAt, askedAt) };
 }
 
+export function databaseNameFor(mount: string): string {
+  return mount === DEFAULT_MOUNT ? DATABASE_NAME : `${DATABASE_NAME}|${mount}`;
+}
+
 export class IndexedDbOfflineStore implements OfflineStore {
   private opened: Promise<IDBDatabase> | null = null;
+  private readonly name: string;
+
+  constructor(name: string = DATABASE_NAME) {
+    this.name = name;
+  }
 
   async exists(): Promise<boolean> {
     if (this.opened) return true;
     if (typeof indexedDB.databases !== "function") return true;
-    return (await indexedDB.databases()).some((database) => database.name === DATABASE_NAME);
+    return (await indexedDB.databases()).some((database) => database.name === this.name);
   }
 
   async prepare(): Promise<void> {
@@ -200,7 +210,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   private database(): Promise<IDBDatabase> {
     this.opened ??= new Promise((resolve, reject) => {
-      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      const request = indexedDB.open(this.name, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
         database.createObjectStore("account", { keyPath: "id" });
@@ -254,4 +264,13 @@ export class IndexedDbOfflineStore implements OfflineStore {
   }
 }
 
-export const offlineStore: OfflineStore = new IndexedDbOfflineStore();
+const stores = new Map<string, OfflineStore>();
+
+export function offlineStoreFor(mount: string): OfflineStore {
+  const name = databaseNameFor(mount);
+  const known = stores.get(name);
+  if (known) return known;
+  const created = new IndexedDbOfflineStore(name);
+  stores.set(name, created);
+  return created;
+}

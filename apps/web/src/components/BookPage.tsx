@@ -355,12 +355,7 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
             <span>This ebook is in the library, but there is no file this browser can open right now. Your saved place is kept.</span>
           )}
         </li>
-        {publication.availability === "available" ? (
-          <li>
-            <span>Offline</span>
-            <OfflineChoice publication={publication} />
-          </li>
-        ) : null}
+        {publication.availability === "available" ? <OfflineChoice publication={publication} /> : null}
         <li>
           <span>Library</span>
           <Link to="/library/$publicationId" params={{ publicationId: publication.id }}>

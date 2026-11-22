@@ -21,7 +21,23 @@ class WebPreview::BootstrapController < WebPreview::APIController
   end
 
   def offline_window
-    ends = Current.session.created_at + SettingsService.get(:session_max_age_days, default: 30).to_i.days
-    (ends - Time.current).clamp(0, OFFLINE_WINDOW_LIMIT.to_i).to_i
+    now = Time.current
+    ends = [ Current.session.created_at + SettingsService.get(:session_max_age_days, default: 30).to_i.days, now + OFFLINE_WINDOW_LIMIT ]
+    ends << signed_cookie_expiry if signed_cookie_expiry
+    (ends.min - now).clamp(0, OFFLINE_WINDOW_LIMIT.to_i).to_i
+  end
+
+  def signed_cookie_expiry
+    return @signed_cookie_expiry if defined?(@signed_cookie_expiry)
+
+    @signed_cookie_expiry = read_signed_cookie_expiry
+  end
+
+  def read_signed_cookie_expiry
+    envelope = JSON.parse(Base64.strict_decode64(cookies[:session_id].to_s.split("--").first.to_s))
+    expiry = envelope.is_a?(Hash) ? envelope.dig("_rails", "exp") : nil
+    expiry.nil? ? nil : Time.iso8601(expiry)
+  rescue ArgumentError, JSON::ParserError, TypeError
+    Time.current
   end
 end

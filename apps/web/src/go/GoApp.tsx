@@ -20,7 +20,7 @@ import type { ConfirmedAccount, OfflineStore } from "../offline/model";
 import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
 import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
 import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "../offline/online";
-import { offlineStore } from "../offline/store";
+import { offlineStoreFor } from "../offline/store";
 import { retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
 import { useGuardState } from "../services";
@@ -60,7 +60,7 @@ function describeUnavailable(error: unknown): { message: string; retry: boolean 
   return { message: "The server answered with something these screens do not understand. Reload the page to try again.", retry: true };
 }
 
-export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
+export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
   const auth = useMemo(() => new AuthClient(boot.api, fetcher), [boot.api, fetcher]);
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [epoch, setEpoch] = useState(0);

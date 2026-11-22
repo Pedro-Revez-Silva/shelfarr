@@ -1143,7 +1143,8 @@ thead th {
   font-variant-numeric: tabular-nums;
 }
 .reader-notice,
-.reader-error {
+.reader-error,
+.reader-files {
   margin-block: 4px 8px;
 }
 .epub {

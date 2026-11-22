@@ -29,8 +29,12 @@ class WebPreview::OfflineWorkerController < ApplicationController
   end
 
   def precached_assets
-    PRECACHED.map do |logical|
-      { path: helpers.asset_path(logical), sha256: Digest::SHA256.hexdigest(Rails.application.assets.load_path.find(logical).compiled_content) }
-    end
+    PRECACHED.map { |logical| { path: helpers.asset_path(logical), sha256: Digest::SHA256.hexdigest(served_bytes(logical)) } }
+  end
+
+  def served_bytes(logical)
+    asset = Rails.application.assets.load_path.find(logical)
+    precompiled = Pathname(Rails.application.assets.config.output_path).join(asset.digested_path)
+    precompiled.file? ? precompiled.binread : asset.compiled_content
   end
 end

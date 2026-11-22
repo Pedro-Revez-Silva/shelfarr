@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createMemoryHistory } from "@tanstack/react-router";
 import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { App } from "../src/App";
 import { resetFirstPage } from "../src/components/PageHeading";
-import type { Boot, GoBoot, PublicationDetail } from "../src/contract";
+import { readerEnvelopeSchema, type Boot, type GoBoot, type PublicationDetail } from "../src/contract";
 import { GoApp } from "../src/go/GoApp";
 import { RailsOffline } from "../src/offline/RailsOffline";
 import { publicationReaderHref, summaryReaderHref } from "../src/reader/links";
@@ -76,6 +77,22 @@ describe("the reader served by Rails", () => {
     expect(server.called("PUT", /progress$/)).toEqual([]);
   });
 
+  test("a book with several files lets the reader switch between them, and a stored place with a null type is accepted", async () => {
+    const first = { id: "c".repeat(64), filename: "First.epub", format: "epub", media_type: "application/epub+zip", size_bytes: 10, position: 0, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"c".repeat(64)}` };
+    const second = { ...first, id: "d".repeat(64), filename: "Second.epub", position: 1, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"d".repeat(64)}` };
+    const progress = { asset_id: second.id, locator: { href: "OEBPS/one.xhtml", type: null, locations: { progression: 0.25 } }, position_seconds: null, version: 2, observed_at: null, updated_at: "2026-11-22T10:00:00.000Z", client_mutation_id: "m" };
+    const publication = { id: "8", title: "Two Files", author: null, book_type: "ebook", content_kind: "book", reading_status: "in_progress", assets: [first, second], other_formats: [], progress, classic_reader: { url: "/sub/read/8", read_along: false } };
+    expect(readerEnvelopeSchema.safeParse({ account: ACCOUNT, publication }).success).toBe(true);
+    const server = readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication);
+    renderReader(server);
+    const choice = (await screen.findByRole("combobox", { name: "File" })) as HTMLSelectElement;
+    expect(choice.value).toBe(second.id);
+    expect([...choice.options].map((option) => option.textContent)).toEqual(["First.epub (EPUB)", "Second.epub (EPUB)"]);
+    await userEvent.selectOptions(choice, first.id);
+    expect(((await screen.findByRole("combobox", { name: "File" })) as HTMLSelectElement).value).toBe(first.id);
+    expect(server.called("PUT", /progress$/)).toEqual([]);
+  });
+
   test("a book without read-along shows no narration offer", async () => {
     const publication = { id: "8", title: "Plain Sampler", author: null, book_type: "audiobook", content_kind: "book", reading_status: "unread", assets: [track], other_formats: [], progress: null, classic_reader: { url: "/sub/read/8", read_along: false } };
     renderReader(readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication));
@@ -110,6 +127,19 @@ describe("the reader served by Rails", () => {
     await screen.findByText(/You're offline\./);
     const section = screen.getByRole("heading", { name: "Saved in the web reader" }).closest("section") as HTMLElement;
     expect(within(section).getByRole("link", { name: "Open those downloads" }).getAttribute("href")).toBe("/sub/read/downloads");
+  });
+});
+
+describe("the Go runtime keeps its offline controls", () => {
+  test("an audiobook's Go player and details offer no Rails download fallback", async () => {
+    const publication = { id: "8", title: "Go Sampler", author: null, book_type: "audiobook", content_kind: "book", reading_status: "unread", assets: [track], other_formats: [], progress: null };
+    const server = readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication);
+    resetFirstPage();
+    window.history.replaceState(null, "", "/preview/library/8/read");
+    render(<GoApp boot={{ version: 1, runtime: "go", view: "reader", mount: "/preview", api: "/preview/api/v1", offline: { worker: "/preview/offline-worker.js", scope: "/preview/library/", downloads: "/preview/library/downloads" }, reader_engine: "/preview/assets/reader-engine.0123456789abcdef.js" }} fetcher={server.fetcher} store={new MemoryOfflineStore()} />);
+    await screen.findByRole("heading", { level: 1, name: "Go Sampler" });
+    expect(screen.queryByText(/can't be saved here yet/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "Download it in the web reader" })).toBeNull();
   });
 });
 

@@ -155,6 +155,38 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     end
   end
 
+  def sign_in_with_expiring_cookie(user, expires:)
+    Current.session = user.sessions.create!
+    ActionDispatch::TestRequest.create.cookie_jar.tap do |jar|
+      jar.signed[:session_id] = { value: Current.session.id, expires: expires }
+      cookies["session_id"] = jar[:session_id]
+    end
+  end
+
+  test "the offline window never outlives the signed session cookie, even after the session lifetime is raised" do
+    freeze_time do
+      sign_in_with_expiring_cookie(users(:one), expires: 10.days.from_now)
+      Session.where(user: users(:one)).update_all(created_at: 20.days.ago)
+      SettingsService.set(:session_max_age_days, 90)
+      get web_preview_api_auth_bootstrap_path
+      assert_equal 10.days.to_i, response.parsed_body.fetch("offline_expires_in")
+      SettingsService.set(:session_max_age_days, 25)
+      get web_preview_api_auth_bootstrap_path
+      assert_equal 5.days.to_i, response.parsed_body.fetch("offline_expires_in")
+    end
+  end
+
+  test "errors are private and the off switch answers 404 before any cross-site refusal" do
+    get web_preview_api_reader_path(id: @ebook.id), headers: account_headers(users(:one))
+    assert_response :unauthorized
+    assert_equal "private, no-store", response.headers["Cache-Control"]
+    with_env(WebPreview::Access::VARIABLE => nil) do
+      get web_preview_api_reading_order_path(id: @comic.id, asset_id: comic_asset.id), headers: { "Sec-Fetch-Site" => "cross-site" }
+      assert_response :not_found
+      assert_equal "private, no-store", response.headers["Cache-Control"]
+    end
+  end
+
   test "the bootstrap token is the Rails form token, so a progress write with it passes forgery protection and one without it does not" do
     sign_in_as(users(:one))
     asset = consumer_asset(@audiobook)
@@ -340,6 +372,24 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
       get web_preview_offline_worker_path
       assert_response :not_found
     end
+  end
+
+  test "the worker hashes a precompiled asset's own bytes, which are what a deployment serves" do
+    output = Dir.mktmpdir("precompiled-assets")
+    previous = Rails.application.config.assets.output_path
+    Rails.application.config.assets.output_path = Pathname(output)
+    stylesheet = Rails.application.assets.load_path.find("web/preview.css")
+    FileUtils.mkdir_p(File.join(output, "web"))
+    File.binwrite(File.join(output, stylesheet.digested_path.to_s), "precompiled stylesheet bytes")
+    get web_preview_offline_worker_path
+    config = JSON.parse(response.body.split(";\n", 2).first.delete_prefix("self.SHELFARR_GO_OFFLINE = "))
+    hashes = config.fetch("assets").to_h { |asset| [ asset.fetch("path"), asset.fetch("sha256") ] }
+    assert_equal Digest::SHA256.hexdigest("precompiled stylesheet bytes"), hashes.fetch(ApplicationController.helpers.asset_path("web/preview.css"))
+    assert_equal Digest::SHA256.hexdigest(Rails.application.assets.load_path.find("consumer_reader_engine.js").compiled_content),
+      hashes.fetch(ApplicationController.helpers.asset_path("consumer_reader_engine.js"))
+  ensure
+    Rails.application.config.assets.output_path = previous
+    FileUtils.remove_entry(output) if output
   end
 
   def boot_reader_engine

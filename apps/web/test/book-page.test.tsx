@@ -214,6 +214,7 @@ describe("the Book page", () => {
     expect(screen.queryByRole("region", { name: "Ebook request progress" })).toBeNull();
     expect(screen.getByRole("link", { name: "Reading status and files of The Quiet Library" }).getAttribute("href")).toBe("/sub/preview/library/7");
     expect(screen.getByText("Details from your library ·", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
   });
 
   test("an owned ebook whose file is gone says so instead of offering to read it", async () => {

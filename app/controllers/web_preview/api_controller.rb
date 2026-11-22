@@ -24,10 +24,13 @@ class WebPreview::APIController < ApplicationController
   end
 
   def render_error(code, status, message: nil)
+    private_response
     render json: { error: code, message: message }.compact, status: status
   end
 
   def refuse_cross_site_fetch
+    return unless WebPreview::Access.current.configured?
+
     sites = request.headers["Sec-Fetch-Site"]
     render_error("cross_site_refused", :forbidden) unless sites.nil? || %w[same-origin none].include?(sites)
   end

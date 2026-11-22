@@ -328,7 +328,7 @@ const assetIdentifier = z.string().min(1).max(128);
 
 export const locatorSchema = z.looseObject({
   href: z.string(),
-  type: z.string().optional(),
+  type: z.string().nullable().optional(),
   locations: z
     .looseObject({
       progression: z.number().nullable().optional(),

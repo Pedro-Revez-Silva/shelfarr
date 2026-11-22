@@ -5,11 +5,11 @@ import { confirmationFrom, OfflineProvider, type Offline } from "./context";
 import type { OfflineStore } from "./model";
 import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "./online";
 import { definitiveRefusal } from "./reachability";
-import { offlineStore } from "./store";
+import { offlineStoreFor } from "./store";
 
 type Props = { services: Services; store?: OfflineStore; fetcher?: typeof fetch; children: ReactNode };
 
-export function RailsOffline({ services, store = offlineStore, fetcher, children }: Props) {
+export function RailsOffline({ services, store = offlineStoreFor(services.boot.mount), fetcher, children }: Props) {
   const { boot, guard } = services;
   const [auth] = useState(() => new AuthClient(boot.api, fetcher));
   const [offline, setOffline] = useState<Offline | null>(null);

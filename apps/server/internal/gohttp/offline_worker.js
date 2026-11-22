@@ -2,7 +2,8 @@
 
 ;(() => {
   const CONFIG = self.SHELFARR_GO_OFFLINE
-  const PREFIX = "shelfarr-go-preview-offline.v1|"
+  const DEFAULT_LIBRARY = "/preview/library"
+  const PREFIX = CONFIG.library === DEFAULT_LIBRARY ? "shelfarr-go-preview-offline.v1|" : `shelfarr-go-preview-offline.v1@${CONFIG.library}|`
   const CACHE = PREFIX + CONFIG.version
   const ORIGIN = self.location.origin
   const ASSETS = new Map(CONFIG.assets.map(asset => [asset.path, asset.sha256]))

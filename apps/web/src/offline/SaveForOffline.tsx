@@ -221,10 +221,10 @@ function StatusText({ state, outdated, compact }: { state: CopyState; outdated: 
 
 const UNSAVED_KINDS: Record<string, string> = { listen: "audiobooks", PDF: "PDFs", Comic: "comics" };
 
-export function OfflineNotSavable({ kind, fallback, compact }: { kind: string; fallback: string | null; compact?: boolean }) {
+export function OfflineNotSavable({ kind, fallback, compact }: { kind: string; fallback: string | null; compact?: boolean | undefined }) {
   const offline = useOffline();
   const heading = useId();
-  if (!offline?.confirmation) return null;
+  if (!offline?.confirmation || !fallback) return null;
   const what = UNSAVED_KINDS[kind] ?? "books in this format";
   return (
     <section className={`offline-copy${compact ? " offline-copy--compact" : ""}`} aria-labelledby={heading} data-state="unsupported">
@@ -232,21 +232,28 @@ export function OfflineNotSavable({ kind, fallback, compact }: { kind: string; f
         Offline reading
       </h2>
       <p className="offline-copy-status">{`This book can't be saved here yet: this reader keeps EPUBs offline, not ${what}.`}</p>
-      {fallback ? (
-        <div className="offline-copy-actions">
-          <a className="button" href={fallback}>
-            Download it in the web reader
-          </a>
-        </div>
-      ) : null}
+      <div className="offline-copy-actions">
+        <a className="button" href={fallback}>
+          Download it in the web reader
+        </a>
+      </div>
     </section>
   );
 }
 
 export function OfflineChoice({ publication }: { publication: PublicationSummary }) {
   const { api, mode } = useServices();
-  if (publication.action === "read" && publication.format_label === "Ebook") {
-    return <SaveForOffline id={publication.id} title={publication.title} currentAsset={null} load={(signal) => api.reader(publication.id, signal)} compact />;
-  }
-  return <OfflineNotSavable kind={publication.action === "listen" ? "listen" : publication.format_label} fallback={mode === "rails" ? publication.reader_url : null} compact />;
+  const offline = useOffline();
+  if (!offline?.confirmation || mode !== "rails") return null;
+  const savable = publication.action === "read" && publication.format_label === "Ebook";
+  return (
+    <li>
+      <span>Offline</span>
+      {savable ? (
+        <SaveForOffline id={publication.id} title={publication.title} currentAsset={null} load={(signal) => api.reader(publication.id, signal)} compact />
+      ) : (
+        <OfflineNotSavable kind={publication.action === "listen" ? "listen" : publication.format_label} fallback={publication.reader_url} compact />
+      )}
+    </li>
+  );
 }

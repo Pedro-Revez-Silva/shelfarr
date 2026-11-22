@@ -17,7 +17,8 @@ import {
 } from "../src/offline/model";
 import { offeredDevicePlace } from "../src/offline/remembered";
 import { completeZip, saveCopy, SaveFailure, type SaveInputs } from "../src/offline/save";
-import { DATABASE_NAME, IndexedDbOfflineStore } from "../src/offline/store";
+import { DATABASE_NAME, IndexedDbOfflineStore, databaseNameFor } from "../src/offline/store";
+import { previewDatabaseName, releasePreviewAccount } from "../../../app/javascript/web_preview_offline_release.js";
 import { WorkerFailure } from "../src/offline/worker";
 import { DAY, EPUB_ID, NEWER_ID, SIZE, asset, epubBytes, readerPublication, savedBook, serverProgress } from "./offline-helpers";
 
@@ -531,5 +532,36 @@ describe("a refused save download", () => {
     expect(guard.isActive()).toBe(false);
     expect(sent).toHaveLength(1);
     expect(guard.lockAskedAt!).toBeLessThanOrEqual(sent[0]!);
+  });
+});
+
+describe("one origin, several deployments", () => {
+  test("each mount keeps its own saved books and account, and the default mount keeps the Go database", async () => {
+    expect([databaseNameFor("/preview"), databaseNameFor("/shelf/preview")]).toEqual([DATABASE_NAME, `${DATABASE_NAME}|/shelf/preview`]);
+    const root = new IndexedDbOfflineStore(databaseNameFor("/preview"));
+    const shelf = new IndexedDbOfflineStore(databaseNameFor("/shelf/preview"));
+    await root.prepare();
+    expect(await root.confirm(confirmation())).toBe(true);
+    expect((await shelf.accountState()).record).toBeNull();
+    expect((await root.accountState()).record?.account).toBe("5");
+  });
+
+  test("the Rails sign-in page releases only this deployment's confirmed account, in the format the reader reads, and creates nothing", async () => {
+    expect([previewDatabaseName(""), previewDatabaseName("/shelf")]).toEqual([databaseNameFor("/preview"), databaseNameFor("/shelf/preview")]);
+    expect(await releasePreviewAccount("", NOW)).toBe(false);
+    expect((await indexedDB.databases()).map((database) => database.name)).toEqual([]);
+    const root = new IndexedDbOfflineStore(databaseNameFor("/preview"));
+    const shelf = new IndexedDbOfflineStore(databaseNameFor("/shelf/preview"));
+    await root.prepare();
+    await shelf.prepare();
+    await root.confirm(confirmation());
+    await shelf.confirm(confirmation());
+    expect(await releasePreviewAccount("", NOW + 1)).toBe(true);
+    expect(await root.accountState()).toEqual({ record: null, clearedAt: NOW + 1 });
+    expect((await shelf.accountState()).record?.account).toBe("5");
+    expect(await root.confirm(confirmation())).toBe(false);
+    expect(await root.confirm(confirmation({ confirmedAt: NOW + 2 }))).toBe(true);
+    expect(await releasePreviewAccount("", NOW + 1)).toBe(false);
+    expect((await root.accountState()).record?.confirmedAt).toBe(NOW + 2);
   });
 });
