@@ -16,10 +16,11 @@ module WebPreview
     end
 
     def secret_values
-      SettingsService::DEFINITIONS.keys
-        .select { |key| SettingsService.secret_setting_key?(key) }
-        .filter_map { |key| SettingsService.get(key).to_s.presence }
+      keys = SettingsService::DEFINITIONS.keys.select { |key| SettingsService.secret_setting_key?(key) || AdminSettings::WRITE_ONLY_ADDRESSES.include?(key) }
+      values = keys.filter_map { |key| SettingsService.get(key).to_s.strip.presence }
+      (values + values.filter_map { |value| value.split("?", 2)[1] })
         .select { |value| value.length >= MIN_SECRET_LENGTH }
+        .uniq
         .sort_by { |value| -value.length }
     end
   end

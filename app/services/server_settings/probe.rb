@@ -11,6 +11,8 @@ module ServerSettings
       end
     end
 
+    WebhookModeNotSaved = Class.new(StandardError)
+
     NAMES = %w[
       indexer audiobookshelf flaresolverr hardcover google_books open_library comic_vine zlibrary
       librivox gutenberg ebooks_com oidc webhook discord telegram telegram_webhook
@@ -222,9 +224,11 @@ module ServerSettings
       end
 
       Integrations::Telegram::Client.set_webhook!(url: telegram_webhook_url)
-      SettingsService.set(:telegram_update_mode, "webhook")
+      save_webhook_mode!
       TelegramPollingJob.clear_schedule!
       Outcome.notice("Telegram webhook configured: #{telegram_webhook_url}")
+    rescue WebhookModeNotSaved
+      polling_kept
     rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
       Outcome.alert(e.message)
     end
@@ -237,6 +241,20 @@ module ServerSettings
       return posted.to_unsafe_h if posted.respond_to?(:to_unsafe_h)
 
       posted.is_a?(Hash) ? posted : {}
+    end
+
+    def save_webhook_mode!
+      SettingsService.set(:telegram_update_mode, "webhook")
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.error("[SettingsController] Telegram accepted the webhook but the delivery mode could not be saved: #{e.class}")
+      raise WebhookModeNotSaved
+    end
+
+    def polling_kept
+      Integrations::Telegram::Client.delete_webhook!(drop_pending_updates: false)
+      Outcome.alert("Telegram accepted the webhook, but Shelfarr could not save the change, so it kept polling. Try again in a moment.")
+    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError
+      Outcome.alert("Telegram accepted the webhook, but Shelfarr could not save the change or undo the registration. Try again in a moment; until then the bot may not receive messages.")
     end
 
     def metadata_probe(provider, name, client, not_configured)

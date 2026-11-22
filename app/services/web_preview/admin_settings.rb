@@ -102,7 +102,7 @@ module WebPreview
       SettingsService.secret_setting_key?(key) || WRITE_ONLY_ADDRESSES.include?(key.to_sym)
     end
 
-    ADDRESS_ORIGIN = %r{\A(https?)://(?:[^/?#@\s]*@)?([^/?#:@\s]+)}i
+    ADDRESS_ORIGIN = %r{\A(https?)://(?:[^/?#@\s]*@)?(\[[0-9a-f:.]+\]|[^/?#:@\s\[\]]+)}i
 
     def address_origin(value)
       match = value.to_s.strip.match(ADDRESS_ORIGIN)
@@ -110,7 +110,7 @@ module WebPreview
     end
 
     def kept_address?(key, value)
-      WRITE_ONLY_ADDRESSES.include?(key.to_sym) && value == ""
+      WRITE_ONLY_ADDRESSES.include?(key.to_sym) && value.is_a?(String) && value.strip.empty?
     end
 
     def managed_by(key)

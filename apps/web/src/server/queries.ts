@@ -57,9 +57,10 @@ export function useSaveGroup(groupId: string) {
     mutationFn: (values: serverApi.SubmittedValues) => serverApi.saveGroup(api, groupId, values),
     onSuccess: async (answer) => {
       if (!guard.isActive() || answer.kind !== "saved") return;
-      await client.cancelQueries({ queryKey: keys.settings });
+      const changed = answer.saved.changed.length > 0;
+      if (changed) await client.cancelQueries({ queryKey: keys.settings });
       client.setQueryData<ServerSettings>(keys.settings, (current) => (current ? replaceGroup(current, answer.saved.group) : current));
-      if (answer.saved.changed.length > 0) {
+      if (changed) {
         void client.invalidateQueries({ queryKey: keys.settings });
         void client.invalidateQueries({ queryKey: keys.library });
       }

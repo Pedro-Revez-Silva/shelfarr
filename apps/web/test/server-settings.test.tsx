@@ -194,6 +194,7 @@ describe("Server settings drafts", () => {
   test("removing a saved write-only value sends an explicit null, and keeping it sends nothing", () => {
     const webhook = group("webhook", { fields: [field("webhook_url", { input: "secret", value: null, configured: true, clearable: true, shown: "https://ntfy.example" })] });
     expect(changedKeys(webhook, { webhook_url: "" })).toEqual([]);
+    expect(changedKeys(webhook, { webhook_url: "   " })).toEqual([]);
     expect(submission(webhook, { webhook_url: REMOVE_SAVED }, changedKeys(webhook, { webhook_url: REMOVE_SAVED }))).toEqual({ webhook_url: null });
   });
 
@@ -363,11 +364,34 @@ describe("Server in the Rails preview", () => {
     expect(within(card).getByText(/Saved for https:\/\/ntfy\.example\./)).toBeTruthy();
     await userEvent.click(within(card).getByRole("button", { name: "Remove" }));
     expect(within(card).getByText("Will be removed")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(within(card).getByRole("button", { name: "Keep saved" })));
     expect(server.called("PUT", /webhook$/)).toEqual([]);
     await userEvent.click(within(card).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(server.called("PUT", /webhook$/).length).toBe(1));
     expect(server.called("PUT", /webhook$/)[0]!.body).toEqual({ values: { webhook_url: null } });
   });
+
+  test("a refresh that fails after a save keeps every card and its unsaved changes", async () => {
+    let reads = 0;
+    const settings = settingsFixture();
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/settings$/, () => {
+        reads += 1;
+        return reads === 1 ? { body: settings } : { status: 503, body: { error: "server_busy" } };
+      })
+      .on("PUT", /formats$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Settings saved." }, changed: ["ebook_preferred_formats"], group: settings.categories[0]!.groups[1]! } }));
+    renderApp({ server, url: "/sub/preview/server/policy" });
+    const requests = await waitFor(() => card("New requests"));
+    await userEvent.click(within(requests).getByRole("radio", { name: "Ebook" }));
+    const formats = card("Formats and sizes");
+    const preferred = within(formats).getByRole("textbox", { name: "Preferred ebook formats" });
+    await userEvent.clear(preferred);
+    await userEvent.type(preferred, "epub");
+    await userEvent.click(within(formats).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText(/The latest settings could not be loaded\./, undefined, { timeout: 8000 })).toBeTruthy();
+    expect((within(card("New requests")).getByRole("radio", { name: "Ebook" }) as HTMLInputElement).checked).toBe(true);
+    expect(within(card("New requests")).getByText("Unsaved changes")).toBeTruthy();
+  }, 15000);
 
   test("environment-managed settings are read-only and are never sent", async () => {
     const server = adminServer().on("PUT", /webhook$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Settings saved." }, changed: [], group: settingsFixture().categories[4]!.groups[0]! } }));

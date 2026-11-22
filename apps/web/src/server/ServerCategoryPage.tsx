@@ -50,14 +50,28 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
         <Loading label="Loading the server settings…" />
       ) : !admin || (settings.isError && failureKind(settings.error) === "not_found") ? (
         <AdministratorsOnly />
+      ) : found && settings.data ? (
+        <>
+          {settings.isError ? <RefreshProblem onRetry={() => void settings.refetch()} /> : null}
+          <CategoryCards category={found} settings={settings.data} />
+        </>
       ) : settings.isError ? (
         <ErrorPanel error={settings.error} onRetry={() => void settings.refetch()} />
-      ) : found && settings.data ? (
-        <CategoryCards category={found} settings={settings.data} />
       ) : (
         <Loading label="Loading the server settings…" />
       )}
     </ServerShell>
+  );
+}
+
+function RefreshProblem({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p className="refresh-problem" role="alert">
+      <span aria-hidden="true">⚠ </span>The latest settings could not be loaded. The page shows what was last read; your unsaved changes are kept.{" "}
+      <button type="button" className="button button--subtle" onClick={onRetry}>
+        Try again
+      </button>
+    </p>
   );
 }
 

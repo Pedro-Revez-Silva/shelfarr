@@ -658,3 +658,13 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.refresh-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--danger);
+  border-radius: 14px;
+  color: var(--danger);
+}

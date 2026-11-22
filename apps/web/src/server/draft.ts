@@ -54,7 +54,7 @@ export function changedKeys(group: SettingGroup, drafts: Drafts): string[] {
     .filter((field) => {
       const draft = drafts[field.key];
       if (draft === undefined) return false;
-      if (field.input === "secret") return draft === REMOVE_SAVED || (typeof draft === "string" && draft !== "");
+      if (field.input === "secret") return draft === REMOVE_SAVED || (typeof draft === "string" && draft.trim() !== "");
       return !same(draft, initialDraft(field));
     })
     .map((field) => field.key);
@@ -90,7 +90,7 @@ export function submission(group: SettingGroup, drafts: Drafts, keys: string[]):
 export function probeValues(group: SettingGroup, drafts: Drafts): SubmittedValues {
   const keys = groupFields(group)
     .filter((field) => editable(field) && isVisible(field, group, drafts))
-    .filter((field) => !(field.input === "secret" && (drafts[field.key] === "" || drafts[field.key] === REMOVE_SAVED)))
+    .filter((field) => !(field.input === "secret" && (drafts[field.key] === REMOVE_SAVED || String(drafts[field.key] ?? "").trim() === "")))
     .map((field) => field.key);
   return submission(group, drafts, keys);
 }

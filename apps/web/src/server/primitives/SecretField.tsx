@@ -63,7 +63,15 @@ export function SecretField({ field, value, onChange, error, scope }: ControlPro
                 Replace
               </button>
               {field.clearable ? (
-                <button type="button" className="button button--subtle button--danger" aria-describedby={`${id}-label`} onClick={() => onChange(REMOVE_SAVED)}>
+                <button
+                  type="button"
+                  className="button button--subtle button--danger"
+                  aria-describedby={`${id}-label`}
+                  onClick={() => {
+                    onChange(REMOVE_SAVED);
+                    requestAnimationFrame(() => replace.current?.focus());
+                  }}
+                >
                   Remove
                 </button>
               ) : null}
