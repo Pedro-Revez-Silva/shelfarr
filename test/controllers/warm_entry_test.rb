@@ -31,6 +31,10 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     with_preview_users(@admin, &block)
   end
 
+  def without_web_preview(&block)
+    with_env(WebPreview::Access::VARIABLE => nil, &block)
+  end
+
   def enable_oidc(auto_redirect: false)
     SettingsService.set(:oidc_enabled, true)
     SettingsService.set(:oidc_auto_redirect, auto_redirect)
@@ -96,12 +100,12 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
   end
 
   test "servers without the web preview keep the current pages at the same addresses" do
-    get new_session_path
+    without_web_preview { get new_session_path }
     assert_response :success
     assert_classic_page
 
     sign_in_as(@member)
-    get consumer_connect_path
+    without_web_preview { get consumer_connect_path }
     assert_classic_page
   end
 
@@ -143,7 +147,7 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
   end
 
   test "a frame request with the preview off keeps the frame layout it had" do
-    get new_session_path, headers: { "Turbo-Frame" => "modal" }
+    without_web_preview { get new_session_path, headers: { "Turbo-Frame" => "modal" } }
 
     assert_response :success
     assert_select "body.bg-gray-950", false
