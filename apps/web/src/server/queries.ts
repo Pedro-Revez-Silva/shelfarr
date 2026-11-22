@@ -55,11 +55,12 @@ export function useSaveGroup(groupId: string) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (values: serverApi.SubmittedValues) => serverApi.saveGroup(api, groupId, values),
-    onSuccess: (answer) => {
+    onSuccess: async (answer) => {
       if (!guard.isActive() || answer.kind !== "saved") return;
+      await client.cancelQueries({ queryKey: keys.settings });
       client.setQueryData<ServerSettings>(keys.settings, (current) => (current ? replaceGroup(current, answer.saved.group) : current));
       if (answer.saved.changed.length > 0) {
-        void client.invalidateQueries({ queryKey: keys.settings, refetchType: "none" });
+        void client.invalidateQueries({ queryKey: keys.settings });
         void client.invalidateQueries({ queryKey: keys.library });
       }
     },
@@ -77,11 +78,23 @@ export function useLibraryInventory(enabled: boolean) {
   return useQuery({ queryKey: keys.library, queryFn: ({ signal }) => serverApi.libraryInventory(api, signal), enabled, refetchOnWindowFocus: false });
 }
 
+export const FOLLOW_UP_READS_MS = [5_000, 15_000, 45_000] as const;
+
+function readAgainLater(client: ReturnType<typeof useQueryClient>, queryKey: readonly unknown[]) {
+  for (const delay of FOLLOW_UP_READS_MS) setTimeout(() => void client.invalidateQueries({ queryKey }), delay);
+}
+
 export function useLibrarySync() {
   const { api } = useServices();
   const keys = useServerKeys();
   const client = useQueryClient();
-  return useMutation({ mutationFn: () => serverApi.syncLibrary(api), onSettled: () => void client.invalidateQueries({ queryKey: keys.library }) });
+  return useMutation({
+    mutationFn: () => serverApi.syncLibrary(api),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: keys.library });
+      readAgainLater(client, keys.library);
+    },
+  });
 }
 
 export function useTelegramChats(enabled: boolean) {
@@ -108,8 +121,10 @@ export function useOverviewAction() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (action: serverApi.OverviewAction) => serverApi.runOverviewAction(api, action),
-    onSuccess: ({ overview }) => {
-      if (guard.isActive() && overview) client.setQueryData<ServerOverview>(keys.overview, overview);
+    onSuccess: ({ overview }, action) => {
+      if (!guard.isActive()) return;
+      if (overview) client.setQueryData<ServerOverview>(keys.overview, overview);
+      if (action === "health_check") readAgainLater(client, keys.overview);
     },
   });
 }

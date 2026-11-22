@@ -41,8 +41,22 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
         attention_requests: Request.needs_attention.count
       },
       services: SystemHealth::SERVICES.map { |service| service_json(service, health[service]) },
-      release: release_json(update_check)
+      release: release_json(update_check),
+      pending: pending_screens
     }
+  end
+
+  def pending_screens
+    [
+      [ "Download clients", admin_download_clients_path ],
+      [ "Download routing", admin_download_routing_rules_path ],
+      [ "Custom acquisition providers", admin_acquisition_providers_path ],
+      [ "Users", admin_users_path ],
+      [ "Uploads", admin_uploads_path ],
+      [ "Audible backup", admin_owned_library_connections_path ],
+      [ "Activity log", admin_activity_logs_path ],
+      [ "Setup", admin_setup_wizard_path ]
+    ].map { |label, url| { label: label, url: url } }
   end
 
   def service_json(service, health)

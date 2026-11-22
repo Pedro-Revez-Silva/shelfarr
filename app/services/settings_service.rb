@@ -756,7 +756,11 @@ class SettingsService
     end
 
     def auth_disabled?
-      ENV["DISABLE_AUTH"]&.downcase == "true" || get(:auth_disabled, default: false)
+      auth_disabled_by_environment? || get(:auth_disabled, default: false)
+    end
+
+    def auth_disabled_by_environment?
+      ENV["DISABLE_AUTH"]&.downcase == "true"
     end
 
     def user_uploads_allowed?

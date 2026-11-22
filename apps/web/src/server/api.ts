@@ -19,7 +19,7 @@ import {
   type TelegramChatAction,
 } from "./contract";
 
-export type SubmittedValue = string | string[];
+export type SubmittedValue = string | string[] | null;
 export type SubmittedValues = Record<string, SubmittedValue>;
 
 export type GroupSaveAnswer = { kind: "saved"; saved: GroupSaved } | { kind: "rejected"; errors: GroupRejected["errors"] };

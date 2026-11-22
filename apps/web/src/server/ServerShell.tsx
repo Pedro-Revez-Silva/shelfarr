@@ -34,7 +34,23 @@ export function railItems(current: ServerCategoryId | "overview", settings: Serv
   ];
 }
 
-export function ServerShell({ current, settings, headingId, title, summary, children }: { current: ServerCategoryId | "overview"; settings: ServerSettings | undefined; headingId: string; title: string; summary: ReactNode; children: ReactNode }) {
+export function ServerShell({
+  current,
+  settings,
+  headingId,
+  title,
+  summary,
+  rail,
+  children,
+}: {
+  current: ServerCategoryId | "overview";
+  settings: ServerSettings | undefined;
+  headingId: string;
+  title: string;
+  summary: ReactNode;
+  rail: boolean;
+  children: ReactNode;
+}) {
   return (
     <section className="server" aria-labelledby={headingId}>
       <header className="page-heading server-heading">
@@ -44,7 +60,7 @@ export function ServerShell({ current, settings, headingId, title, summary, chil
         <p className="server-scope">These apply to everyone on this server.</p>
       </header>
       <div className="server-layout">
-        <SettingsRail label="Server" items={railItems(current, settings)} />
+        {rail ? <SettingsRail label="Server" items={railItems(current, settings)} /> : null}
         <div className="server-content">{children}</div>
       </div>
     </section>

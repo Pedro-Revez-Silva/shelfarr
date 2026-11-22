@@ -221,9 +221,9 @@ module ServerSettings
         return Outcome.alert("Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
       end
 
+      Integrations::Telegram::Client.set_webhook!(url: telegram_webhook_url)
       SettingsService.set(:telegram_update_mode, "webhook")
       TelegramPollingJob.clear_schedule!
-      Integrations::Telegram::Client.set_webhook!(url: telegram_webhook_url)
       Outcome.notice("Telegram webhook configured: #{telegram_webhook_url}")
     rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
       Outcome.alert(e.message)

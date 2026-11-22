@@ -48,7 +48,7 @@ export type MutationLifecycle = {
   rejected: () => void;
 };
 
-export type RequestOptions<T> = {
+type RequestOptions<T> = {
   path: string;
   schema: z.ZodType<T>;
   signal?: AbortSignal | undefined;

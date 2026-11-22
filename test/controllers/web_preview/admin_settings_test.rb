@@ -444,6 +444,90 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal({ "state" => "available", "version" => "1.1.0", "release_url" => "https://github.com/example/releases/1.1.0" }, response.parsed_body.dig("release", "latest"))
   end
 
+  test "webhook addresses never reach the request log" do
+    filter = ActiveSupport::ParameterFilter.new(Rails.application.config.filter_parameters)
+    filtered = filter.filter("values" => { "discord_webhook_url" => "https://discord.example/api/webhooks/1/abc", "webhook_url" => "https://ntfy.example/t?auth=abc", "webhook_topic" => "books" })
+    assert_equal({ "values" => { "discord_webhook_url" => "[FILTERED]", "webhook_url" => "[FILTERED]", "webhook_topic" => "books" } }, filtered)
+  end
+
+  test "the webhook address is write-only: only its origin is shown, blank keeps it and an explicit removal clears it" do
+    SettingsService.set(:webhook_url, "https://ntfy.example/shelf?auth=webhook-secret-7781")
+    body = settings_json
+    assert_not_includes response.body, "webhook-secret-7781"
+    assert_equal({ "input" => "secret", "configured" => true, "clearable" => true, "shown" => "https://ntfy.example", "value" => nil },
+      field_json(body, :webhook_url).slice("input", "configured", "clearable", "shown", "value"))
+
+    save_group("webhook", { webhook_url: "" })
+    assert_equal [], response.parsed_body.fetch("changed")
+    assert_equal "https://ntfy.example/shelf?auth=webhook-secret-7781", SettingsService.get(:webhook_url)
+    assert_not_includes response.body, "webhook-secret-7781"
+
+    SettingsService.set(:webhook_url, "https://user:pass-5512@hooks.example:8443/path?auth=x")
+    assert_equal "https://hooks.example", field_json(settings_json, :webhook_url).fetch("shown")
+    assert_not_includes response.body, "pass-5512"
+    save_group("webhook", { webhook_url: "https://hooks.example/new" })
+    assert_equal "https://hooks.example/new", SettingsService.get(:webhook_url)
+    save_group("webhook", { webhook_url: nil })
+    assert_equal [ "webhook_url" ], response.parsed_body.fetch("changed")
+    assert_equal "", SettingsService.get(:webhook_url)
+  end
+
+  test "passwords switched off by DISABLE_AUTH show as managed by it and the stored setting is left alone" do
+    with_env("DISABLE_AUTH" => "true") do
+      body = settings_json
+      assert_equal({ "managed_by" => "DISABLE_AUTH", "value" => true }, field_json(body, :auth_disabled).slice("managed_by", "value"))
+      save_group("sign_in", { auth_disabled: "true", session_max_age_days: "14" })
+      assert_equal [ "session_max_age_days" ], response.parsed_body.fetch("changed")
+      assert_equal false, SettingsService.get(:auth_disabled)
+    end
+    body = settings_json
+    assert_nil field_json(body, :auth_disabled)["managed_by"]
+    assert_equal false, field_json(body, :auth_disabled).fetch("value")
+  end
+
+  test "a refused Telegram webhook registration leaves polling running" do
+    SettingsService.set(:telegram_enabled, true)
+    SettingsService.set(:telegram_update_mode, "polling")
+    SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
+    SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
+    cleared = false
+    sign_in_as(@admin)
+    refuse = ->(url:) { raise Integrations::Telegram::Client::DeliveryError, "Telegram setWebhook failed: HTTPS url must be provided for webhook" }
+    TelegramPollingJob.stub(:clear_schedule!, -> { cleared = true }) do
+      Integrations::Telegram::Client.stub(:set_webhook!, refuse) { probe("telegram_webhook") }
+    end
+    assert_equal({ "tone" => "error", "message" => "Telegram setWebhook failed: HTTPS url must be provided for webhook" }, response.parsed_body.fetch("outcome"))
+    assert_equal "polling", SettingsService.get(:telegram_update_mode)
+    assert_not cleared
+  end
+
+  test "a card reads the other bound of a size range inside the same write transaction" do
+    SettingsService.set(:ebook_max_file_size, "100 MB")
+    baseline = Setting.connection.open_transactions
+    seen = []
+    lookup = ->(key) { seen << [ key.to_s, Setting.connection.open_transactions ]; SettingsService.get(key) }
+    ServerSettings::Change.new(lookup: lookup).apply([ [ "ebook_min_file_size", "80 MB" ] ])
+    assert_equal [ [ "ebook_max_file_size", baseline + 1 ] ], seen
+  end
+
+  test "old overview and settings addresses still open the preview, which then moves to Server" do
+    sign_in_as(@admin)
+    [ web_preview_admin_path, web_preview_admin_settings_path ].each do |path|
+      get path
+      assert_response :success, path
+      assert_select "#shelfarr-boot"
+    end
+  end
+
+  test "the overview lists the administration screens that are not in the preview yet" do
+    admin_get web_preview_api_admin_overview_path
+    assert_equal [ "Download clients", "Download routing", "Custom acquisition providers", "Users", "Uploads", "Audible backup", "Activity log", "Setup" ],
+      response.parsed_body.fetch("pending").map { |entry| entry.fetch("label") }
+    assert_equal admin_download_clients_path, response.parsed_body.dig("pending", 0, "url")
+    indexer = settings_json.fetch("categories").flat_map { |category| category["groups"] }.find { |group| group["id"] == "indexer" }
+    assert_equal ServerSettings::Probe::POSTED_KEYS, indexer.dig("probes", 0, "draft_keys")
+  end
+
   test "the session tells every page what this account may do without exposing settings" do
     SettingsService.set(:allow_user_uploads, true)
     sign_in_as(@member)

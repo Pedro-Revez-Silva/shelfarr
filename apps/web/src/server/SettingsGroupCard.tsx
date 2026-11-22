@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { isApiError, unconfirmed } from "../api/errors";
 import type { SubmittedValues } from "./api";
 import type { SettingField, SettingGroup } from "./contract";
-import { changedKeys, groupFields, initialDraft, isVisible, probeValues, submission, type DraftValue, type Drafts } from "./draft";
+import { changedKeys, groupFields, initialDraft, isVisible, probeValues, same, submission, untestedChanges, type DraftValue, type Drafts } from "./draft";
 import { CardNotes, LibraryInventoryPanel, RolesReadout, TelegramChatsPanel } from "./extras";
 import { AdvancedSection, CardActions, HealthStatus, SettingControl, SettingsCard, TestResult, controlId, useScope, type TestOutcome } from "./primitives";
 import { useLibraryInventory, useProbe, useSaveGroup, useServerKeys } from "./queries";
@@ -115,16 +115,25 @@ export function SettingsGroupCard({ group, settings, onDirtyChange }: { group: S
           return;
         }
         setErrors({});
-        setEdits((current) => Object.fromEntries(Object.entries(current).filter(([key, value]) => !(key in sent) || !sameDraft(value, sent[key]))));
+        setEdits((current) => {
+          const latest = Object.fromEntries(fields.map((field) => [field.key, current[field.key] ?? initialDraft(field)])) as Drafts;
+          const hidden = new Set(fields.filter((field) => !isVisible(field, group, latest)).map((field) => field.key));
+          return Object.fromEntries(Object.entries(current).filter(([key, value]) => !hidden.has(key) && (!(key in sent) || !same(value, sent[key]))));
+        });
         say(answer.saved.outcome.tone, answer.saved.outcome.message);
       },
       onError: (error) => say("error", saveFailureText(error)),
     });
   };
 
-  const runTest = (probeId: string, uses: "draft" | "saved", changes: boolean) => {
+  const runTest = (probeId: string, uses: "draft" | "saved", changes: boolean, draftKeys: string[] | undefined) => {
     const values: SubmittedValues = uses === "draft" ? probeValues(group, drafts) : {};
-    const note = uses === "saved" && dirty ? "This tested the saved settings, not your unsaved changes." : undefined;
+    const note =
+      uses === "saved" && dirty
+        ? "This tested the saved settings, not your unsaved changes."
+        : uses === "draft" && untestedChanges(changed, draftKeys)
+          ? "Some of your unsaved changes are not part of this test; it used the saved values for them."
+          : undefined;
     probe.mutate(
       { probe: probeId, values },
       {
@@ -180,7 +189,7 @@ export function SettingsGroupCard({ group, settings, onDirtyChange }: { group: S
             </button>
           ) : null}
           {group.probes.map((entry) => (
-            <button key={entry.id} type="button" className="button" disabled={probe.isPending} aria-busy={probe.isPending && probe.variables?.probe === entry.id} onClick={() => runTest(entry.id, entry.uses, entry.changes)}>
+            <button key={entry.id} type="button" className="button" disabled={probe.isPending} aria-busy={probe.isPending && probe.variables?.probe === entry.id} onClick={() => runTest(entry.id, entry.uses, entry.changes, entry.draft_keys)}>
               {probe.isPending && probe.variables?.probe === entry.id ? "Testing…" : entry.label}
             </button>
           ))}
@@ -199,9 +208,4 @@ export function SettingsGroupCard({ group, settings, onDirtyChange }: { group: S
       {group.extras.includes("roles") ? <RolesReadout roles={settings.roles} /> : null}
     </SettingsCard>
   );
-}
-
-function sameDraft(left: DraftValue | undefined, right: DraftValue | undefined): boolean {
-  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((entry, index) => entry === right[index]);
-  return left === right;
 }

@@ -20,21 +20,32 @@ export function useOverviewOutcome() {
   return { outcome, say };
 }
 
-export function ServerOverviewShell({ children }: { children: ReactNode }) {
+export function ServerOverviewShell({ rail, children }: { rail: boolean; children: ReactNode }) {
   useDocumentTitle("Server overview");
   return (
-    <ServerShell current="overview" settings={undefined} headingId="overview-heading" title="Server overview" summary="Health, requests and releases for everyone on this server. Only administrators see this.">
+    <ServerShell current="overview" settings={undefined} headingId="overview-heading" title="Server overview" summary="Health, requests and releases. Only administrators see this." rail={rail}>
       <div className="overview server-overview">{children}</div>
     </ServerShell>
   );
 }
 
-export function OverviewActions({ build }: { build: string }) {
+export function PendingScreens({ pending }: { pending: NonNullable<ServerOverview["pending"]> }) {
+  if (pending.length === 0) return null;
   return (
-    <dl className="overview-build">
-      <dt>Build</dt>
-      <dd>{build}</dd>
-    </dl>
+    <section className="overview-card" aria-labelledby="pending-heading">
+      <h2 id="pending-heading">Not in this preview yet</h2>
+      <p className="overview-note">These administration screens have not moved here yet. They open in the classic Shelfarr app.</p>
+      <ul className="pending-list">
+        {pending.map((entry) => (
+          <li key={entry.url}>
+            <a className="nav-link--handoff" href={entry.url}>
+              {entry.label}
+              <span className="sr-only"> (opens the classic Shelfarr app)</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

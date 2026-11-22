@@ -223,6 +223,8 @@ Rails.application.routes.draw do
     post "requests/:id/cancel", to: "requests#cancel", as: :request_cancel
   end
 
+  get "preview/admin", to: "web_preview/shell#show", as: :web_preview_admin
+  get "preview/admin/settings", to: "web_preview/shell#show", as: :web_preview_admin_settings
   get "preview/server", to: "web_preview/shell#show", as: :web_preview_server
   get "preview/server/:category", to: "web_preview/shell#show", as: :web_preview_server_category,
     constraints: { category: /policy|sources|downloads|library|notifications|people|system/ }

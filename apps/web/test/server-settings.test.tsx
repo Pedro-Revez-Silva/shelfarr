@@ -3,7 +3,7 @@ import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ServerSettings, SettingField, SettingGroup } from "../src/server/contract";
 import { serverSettingsSchema } from "../src/server/contract";
-import { changedKeys, initialDrafts, isVisible, submission } from "../src/server/draft";
+import { changedKeys, initialDrafts, isVisible, probeValues, REMOVE_SAVED, submission } from "../src/server/draft";
 import { sentences } from "../src/server/primitives";
 import { ACCOUNT, FakeServer, renderApp, session, standardServer } from "./helpers";
 
@@ -133,6 +133,7 @@ function overviewFixture() {
       checked_at: service === "indexer" ? "2026-11-22T10:00:00Z" : null,
       ...(service === "indexer" ? { message: "Connection refused", fix: { category: "sources", group: "indexer", label: "Indexer settings" } } : {}),
     })),
+    pending: [{ label: "Download clients", url: "/sub/admin/download_clients" }],
     release: {
       build: "1.0.0",
       channel: "Shelfarr 1.0",
@@ -170,13 +171,30 @@ describe("Server settings drafts", () => {
     expect(submission(release, drafts, ["preferred_download_types"])).toEqual({ preferred_download_types: '["usenet","torrent","direct"]' });
 
     const webhook = sample.categories[4]!.groups[0]!;
-    const webhookDrafts = { ...initialDrafts(webhook), webhook_url: "https://changed.example", webhook_events: ["request_created", "request_failed"], webhook_enabled: false };
-    expect(changedKeys(webhook, webhookDrafts)).toEqual(["webhook_enabled", "webhook_events"]);
-    expect(submission(webhook, webhookDrafts, changedKeys(webhook, webhookDrafts))).toEqual({ webhook_enabled: "false", webhook_events: "request_created,request_failed" });
+    const webhookDrafts = { ...initialDrafts(webhook), webhook_url: "https://changed.example", webhook_events: ["request_created", "request_failed"] };
+    expect(changedKeys(webhook, webhookDrafts)).toEqual(["webhook_events"]);
+    expect(submission(webhook, webhookDrafts, changedKeys(webhook, webhookDrafts))).toEqual({ webhook_events: "request_created,request_failed" });
+    const switchedOff = { ...webhookDrafts, webhook_enabled: false };
+    expect(submission(webhook, switchedOff, changedKeys(webhook, switchedOff))).toEqual({ webhook_enabled: "false" });
 
     const hardcover = sample.categories[1]!.groups[0]!;
     expect(changedKeys(hardcover, initialDrafts(hardcover))).toEqual([]);
     expect(changedKeys(hardcover, { ...initialDrafts(hardcover), hardcover_api_token: "new" })).toEqual(["hardcover_api_token"]);
+  });
+
+  test("an edit to a field that is hidden again is neither saved nor tested", () => {
+    const indexer = settingsFixture().categories[1]!.groups[1]!;
+    const drafts = { ...initialDrafts(indexer), prowlarr_url: "http://typo.test", indexer_provider: "none" };
+    expect(changedKeys(indexer, drafts)).toEqual(["indexer_provider"]);
+    expect(probeValues(indexer, drafts)).toEqual({ indexer_provider: "none" });
+    const hardcover = settingsFixture().categories[1]!.groups[0]!;
+    expect(changedKeys(hardcover, { ...initialDrafts(hardcover), hardcover_enabled: false, hardcover_api_token: "typed" })).toEqual(["hardcover_enabled"]);
+  });
+
+  test("removing a saved write-only value sends an explicit null, and keeping it sends nothing", () => {
+    const webhook = group("webhook", { fields: [field("webhook_url", { input: "secret", value: null, configured: true, clearable: true, shown: "https://ntfy.example" })] });
+    expect(changedKeys(webhook, { webhook_url: "" })).toEqual([]);
+    expect(submission(webhook, { webhook_url: REMOVE_SAVED }, changedKeys(webhook, { webhook_url: REMOVE_SAVED }))).toEqual({ webhook_url: null });
   });
 
   test("conditional and switched-off fields follow the values being edited", () => {
@@ -201,10 +219,11 @@ describe("Server settings drafts", () => {
 });
 
 describe("Server in the Rails preview", () => {
-  test("a member sees no Server link and the page refuses without asking the server", async () => {
+  test("a member sees no Server link or rail and the page refuses without asking the server", async () => {
     const server = standardServer();
     renderApp({ server, url: "/sub/preview/server/policy" });
     expect(await screen.findByRole("heading", { name: "Only administrators can see this page" })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Server" })).toBeNull();
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).queryByRole("link", { name: "Server" })).toBeNull();
     expect(server.requests.filter((request) => request.path.includes("/admin/"))).toEqual([]);
@@ -222,6 +241,8 @@ describe("Server in the Rails preview", () => {
     expect(within(attention).getByText("Connection refused")).toBeTruthy();
     expect(within(attention).getByRole("link", { name: "Open indexer settings" }).getAttribute("href")).toBe("/sub/preview/server/sources#indexer");
     expect(screen.getByText("You're up to date")).toBeTruthy();
+    const pending = screen.getByRole("heading", { name: "Not in this preview yet", level: 2 }).closest("section")!;
+    expect(within(pending).getByRole("link", { name: "Download clients (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/admin/download_clients");
     const rail = screen.getByRole("navigation", { name: "Server" });
     expect(within(rail).getAllByRole("link").map((entry) => entry.textContent)).toEqual(["Overview", "Request policy", "Catalogues and sources", "Downloads", "Library and files", "Notifications", "People and access", "System"]);
     expect(within(rail).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
@@ -315,7 +336,37 @@ describe("Server in the Rails preview", () => {
     await userEvent.type(within(indexer).getByRole("textbox", { name: "Jackett address" }), "http://jackett.test");
     await userEvent.click(within(indexer).getByRole("button", { name: "Test" }));
     expect(await within(indexer).findByText(/Jackett connection successful!/)).toBeTruthy();
-    expect(server.called("POST", /probes\/indexer$/)[0]!.body).toEqual({ values: { indexer_provider: "jackett", prowlarr_url: "http://prowlarr.test", jackett_url: "http://jackett.test" } });
+    expect(server.called("POST", /probes\/indexer$/)[0]!.body).toEqual({ values: { indexer_provider: "jackett", jackett_url: "http://jackett.test" } });
+  });
+
+  test("a draft test says when some unsaved changes were not part of it", async () => {
+    const settings = settingsFixture();
+    const indexer = settings.categories[1]!.groups[1]!;
+    indexer.probes = [{ id: "indexer", label: "Test", uses: "draft", changes: false, draft_keys: ["indexer_provider", "prowlarr_url"] }];
+    indexer.advanced = [field("prowlarr_tags", { label: "Prowlarr tags", visible_when: { key: "indexer_provider", in: ["prowlarr"] } })];
+    const server = adminServer(settings).on("POST", /probes\/indexer$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connection successful!" } } }));
+    renderApp({ server, url: "/sub/preview/server/sources" });
+    const card = await waitFor(() => screen.getByRole("heading", { name: "Indexer", level: 3 }).closest("section")!);
+    await userEvent.click(within(card).getByText("Advanced"));
+    await userEvent.type(within(card).getByRole("textbox", { name: "Prowlarr tags" }), "books");
+    await userEvent.click(within(card).getByRole("button", { name: "Test" }));
+    expect(await within(card).findByText("Some of your unsaved changes are not part of this test; it used the saved values for them.")).toBeTruthy();
+  });
+
+  test("a write-only address can be removed, and the removal is sent only on Save", async () => {
+    const settings = settingsFixture();
+    const webhookCard = settings.categories[4]!.groups[0]!;
+    webhookCard.fields = [webhookCard.fields[0]!, field("webhook_url", { label: "Webhook address", input: "secret", value: null, configured: true, clearable: true, shown: "https://ntfy.example" })];
+    const server = adminServer(settings).on("PUT", /webhook$/, () => ({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Settings saved." }, changed: ["webhook_url"], group: webhookCard } }));
+    renderApp({ server, url: "/sub/preview/server/notifications" });
+    const card = await waitFor(() => screen.getByRole("heading", { name: "Webhook", level: 3 }).closest("section")!);
+    expect(within(card).getByText(/Saved for https:\/\/ntfy\.example\./)).toBeTruthy();
+    await userEvent.click(within(card).getByRole("button", { name: "Remove" }));
+    expect(within(card).getByText("Will be removed")).toBeTruthy();
+    expect(server.called("PUT", /webhook$/)).toEqual([]);
+    await userEvent.click(within(card).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(server.called("PUT", /webhook$/).length).toBe(1));
+    expect(server.called("PUT", /webhook$/)[0]!.body).toEqual({ values: { webhook_url: null } });
   });
 
   test("environment-managed settings are read-only and are never sent", async () => {

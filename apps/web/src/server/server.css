@@ -645,3 +645,16 @@
   background: var(--sunken);
   font-size: 0.85rem;
 }
+.pending-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+.pending-list a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

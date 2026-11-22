@@ -55,6 +55,7 @@ module WebPreview
     }.freeze
     CUSTOM_CATEGORY_KEYS = %i[indexer_custom_audiobook_categories indexer_custom_ebook_categories indexer_custom_comicbook_categories].freeze
     MAX_VALUE_LENGTH = 10_000
+    WRITE_ONLY_ADDRESSES = %i[webhook_url].freeze
 
     def initialize(base_url:)
       @base_url = base_url
@@ -76,7 +77,8 @@ module WebPreview
       stray = values.keys - allowed
       raise Unknown, "These settings are not part of #{group[:title]}: #{stray.first(5).join(', ')}" if stray.any?
 
-      candidates = values.reject { |key, value| SettingsService.env_managed?(key) || ServerSettings::Change.unchanged_secret?(key, value) }
+      candidates = values.reject { |key, value| managed_by(key.to_sym) || ServerSettings::Change.unchanged_secret?(key, value) || kept_address?(key, value) }
+        .to_h { |key, value| [ key, value.nil? ? "" : value ] }
       lookup = ->(key) { values.key?(key.to_s) ? values[key.to_s] : SettingsService.get(key) }
       ServerSettings::Change.new(lookup: lookup).apply(candidates.to_a)
     end
@@ -96,7 +98,30 @@ module WebPreview
       submitted.to_h { |key, value| [ key.to_s, scalar_or_list(key, value) ] }
     end
 
+    def write_only?(key)
+      SettingsService.secret_setting_key?(key) || WRITE_ONLY_ADDRESSES.include?(key.to_sym)
+    end
+
+    ADDRESS_ORIGIN = %r{\A(https?)://(?:[^/?#@\s]*@)?([^/?#:@\s]+)}i
+
+    def address_origin(value)
+      match = value.to_s.strip.match(ADDRESS_ORIGIN)
+      "#{match[1].downcase}://#{match[2]}" if match
+    end
+
+    def kept_address?(key, value)
+      WRITE_ONLY_ADDRESSES.include?(key.to_sym) && value == ""
+    end
+
+    def managed_by(key)
+      return "DISABLE_AUTH" if key == :auth_disabled && SettingsService.auth_disabled_by_environment?
+
+      SettingsService.env_override_name(key) if SettingsService.env_managed?(key)
+    end
+
     def scalar_or_list(key, value)
+      return nil if value.nil? && WRITE_ONLY_ADDRESSES.include?(key.to_sym)
+
       case value
       when String
         raise Unknown, "#{key} is too long" if value.length > MAX_VALUE_LENGTH
@@ -126,11 +151,16 @@ module WebPreview
         toggle: group[:toggle]&.to_s,
         fields: group[:fields].map { |key| field(key) },
         advanced: group.fetch(:advanced, []).map { |key| field(key) },
-        probes: group.fetch(:probes, []).map { |probe| { id: probe[:id], label: probe[:label], uses: probe[:uses], changes: probe.fetch(:changes, false) } },
+        probes: group.fetch(:probes, []).map { |probe| probe_json(probe) },
         extras: group.fetch(:extras, []),
         notes: group.fetch(:notes, []),
         health: group[:health] && health(group[:health])
       }.compact
+    end
+
+    def probe_json(probe)
+      json = { id: probe[:id], label: probe[:label], uses: probe[:uses], changes: probe.fetch(:changes, false) }
+      probe[:uses] == "draft" ? json.merge(draft_keys: ServerSettings::Probe::POSTED_KEYS) : json
     end
 
     def health(service)
@@ -158,8 +188,8 @@ module WebPreview
 
     def field(key)
       definition = SettingsService::DEFINITIONS.fetch(key)
-      managed = SettingsService.env_managed?(key)
-      secret = SettingsService.secret_setting_key?(key)
+      managed = managed_by(key)
+      secret = write_only?(key)
       {
         key: key.to_s,
         label: AdminSettingsLayout::LABELS.fetch(key) { SettingsService.label_for(key) },
@@ -168,7 +198,9 @@ module WebPreview
         value: secret ? nil : value(key),
         default: secret ? nil : presented_default(key, definition),
         configured: secret ? SettingsService.get(key).present? : nil,
-        managed_by: managed ? SettingsService.env_override_name(key) : nil,
+        clearable: WRITE_ONLY_ADDRESSES.include?(key) || nil,
+        shown: WRITE_ONLY_ADDRESSES.include?(key) ? address_origin(SettingsService.get(key)) : nil,
+        managed_by: managed,
         options: options(key),
         min: RANGES.dig(key, 0),
         max: RANGES.dig(key, 1),
@@ -202,6 +234,8 @@ module WebPreview
     end
 
     def value(key)
+      return SettingsService.auth_disabled? if key == :auth_disabled
+
       case key
       when :indexer_provider then SettingsService.get(key).presence || SettingsService.active_indexer_provider
       when :preferred_download_types then SettingsService.preferred_download_types

@@ -1,7 +1,7 @@
 import { Link, Navigate } from "@tanstack/react-router";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { failureKind } from "../api/errors";
-import { OverviewActions, OverviewOutcome, ReleaseCard, RunHealthCheck, ServerOverviewShell, useOverviewOutcome } from "../server/OverviewParts";
+import { OverviewOutcome, PendingScreens, ReleaseCard, RunHealthCheck, ServerOverviewShell, useOverviewOutcome } from "../server/OverviewParts";
 import type { HealthService, HealthStatus, ServerOverview, ServiceHealth } from "../contract";
 import { useServerOverview, useSession } from "../queries";
 import { useServices } from "../services";
@@ -83,11 +83,11 @@ function Overview() {
 
   if (rails) {
     return (
-      <ServerOverviewShell>
-        {session.data && admin && current ? <OverviewActions build={current.release?.build ?? session.data.server.version} /> : null}
+      <ServerOverviewShell rail={admin}>
         <OverviewOutcome outcome={outcome.outcome} />
         {body}
         {current?.release ? <ReleaseCard release={current.release} say={outcome.say} /> : null}
+        {current?.pending ? <PendingScreens pending={current.pending} /> : null}
       </ServerOverviewShell>
     );
   }

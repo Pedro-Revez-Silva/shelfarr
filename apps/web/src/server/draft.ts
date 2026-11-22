@@ -1,7 +1,8 @@
 import type { SubmittedValue, SubmittedValues } from "./api";
 import type { SettingField, SettingGroup } from "./contract";
 
-export type DraftValue = string | boolean | string[];
+export const REMOVE_SAVED = { remove: true } as const;
+export type DraftValue = string | boolean | string[] | typeof REMOVE_SAVED;
 export type Drafts = Record<string, DraftValue>;
 
 function asList(value: SettingField["value"]): string[] {
@@ -38,7 +39,7 @@ export function initialDrafts(group: SettingGroup): Drafts {
   return Object.fromEntries(groupFields(group).map((field) => [field.key, initialDraft(field)]));
 }
 
-function same(left: DraftValue, right: DraftValue): boolean {
+export function same(left: DraftValue | undefined, right: DraftValue | undefined): boolean {
   if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((entry, index) => entry === right[index]);
   return left === right;
 }
@@ -49,17 +50,18 @@ export function editable(field: SettingField): boolean {
 
 export function changedKeys(group: SettingGroup, drafts: Drafts): string[] {
   return groupFields(group)
-    .filter((field) => editable(field))
+    .filter((field) => editable(field) && isVisible(field, group, drafts))
     .filter((field) => {
       const draft = drafts[field.key];
       if (draft === undefined) return false;
-      if (field.input === "secret") return typeof draft === "string" && draft !== "";
+      if (field.input === "secret") return draft === REMOVE_SAVED || (typeof draft === "string" && draft !== "");
       return !same(draft, initialDraft(field));
     })
     .map((field) => field.key);
 }
 
 export function submittedValue(field: SettingField, draft: DraftValue): SubmittedValue {
+  if (draft === REMOVE_SAVED) return null;
   switch (field.input) {
     case "toggle":
       return draft === true ? "true" : "false";
@@ -87,14 +89,14 @@ export function submission(group: SettingGroup, drafts: Drafts, keys: string[]):
 
 export function probeValues(group: SettingGroup, drafts: Drafts): SubmittedValues {
   const keys = groupFields(group)
-    .filter((field) => editable(field) && !(field.input === "secret" && drafts[field.key] === ""))
+    .filter((field) => editable(field) && isVisible(field, group, drafts))
+    .filter((field) => !(field.input === "secret" && (drafts[field.key] === "" || drafts[field.key] === REMOVE_SAVED)))
     .map((field) => field.key);
   return submission(group, drafts, keys);
 }
 
-export function draftText(drafts: Drafts, field: SettingField): string {
-  const value = drafts[field.key];
-  return typeof value === "string" ? value : String(initialDraft(field));
+export function untestedChanges(changed: string[], draftKeys: string[] | undefined): boolean {
+  return draftKeys !== undefined && changed.some((key) => !draftKeys.includes(key));
 }
 
 export function isVisible(field: SettingField, group: SettingGroup, drafts: Drafts): boolean {

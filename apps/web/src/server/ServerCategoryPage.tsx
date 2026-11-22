@@ -43,7 +43,7 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
   const headingId = `server-${category}-heading`;
 
   return (
-    <ServerShell current={category} settings={settings.data} headingId={headingId} title={title} summary={found?.summary ?? ""}>
+    <ServerShell current={category} settings={settings.data} headingId={headingId} title={title} summary={found?.summary ?? ""} rail={admin}>
       {session.isError && !session.data ? (
         <ErrorPanel error={session.error} onRetry={() => void session.refetch()} />
       ) : !session.data ? (

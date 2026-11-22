@@ -52,22 +52,13 @@ module ServerSettings
     end
 
     def apply(candidates)
-      rejections = []
-      entries = []
-      candidates.each do |key, value|
-        value = self.class.normalize(key, value)
-        error = error_for(key, value)
-        next if error.nil? && !stored_setting_changed?(key, value)
-
-        if error
-          rejections << Rejection.new(key: key.to_s, message: error)
-        else
-          entries << [ key, value ]
-        end
+      rejections, entries = Setting.transaction do
+        checked = check(candidates)
+        checked.last.each { |key, value| SettingsService.set(key, value) } if checked.first.empty?
+        checked
       end
       return Result.new(rejections: rejections, changed_keys: [], follow_up_error: nil) if rejections.any?
 
-      Setting.transaction { entries.each { |key, value| SettingsService.set(key, value) } }
       changed_keys = entries.map { |key, _| key.to_s }
       Result.new(rejections: [], changed_keys: changed_keys, follow_up_error: FollowUp.call(changed_keys))
     end
@@ -87,6 +78,23 @@ module ServerSettings
     private
 
     attr_reader :lookup
+
+    def check(candidates)
+      rejections = []
+      entries = []
+      candidates.each do |key, value|
+        value = self.class.normalize(key, value)
+        error = error_for(key, value)
+        next if error.nil? && !stored_setting_changed?(key, value)
+
+        if error
+          rejections << Rejection.new(key: key.to_s, message: error)
+        else
+          entries << [ key, value ]
+        end
+      end
+      [ rejections, entries ]
+    end
 
     def auto_select_confidence_threshold_error(key, value)
       return nil unless key.to_s == "auto_select_confidence_threshold"

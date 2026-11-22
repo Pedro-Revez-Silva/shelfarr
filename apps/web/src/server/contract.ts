@@ -22,6 +22,8 @@ export const settingFieldSchema = z.object({
   value: fieldValue,
   default: fieldValue.optional(),
   configured: z.boolean().optional(),
+  clearable: z.boolean().optional(),
+  shown: z.string().optional(),
   managed_by: z.string().optional(),
   options: z.array(optionSchema).optional(),
   min: z.number().int().optional(),
@@ -43,7 +45,7 @@ export const cardHealthSchema = z.object({
 });
 export type CardHealth = z.infer<typeof cardHealthSchema>;
 
-export const probeSchema = z.object({ id: z.string(), label: z.string(), uses: z.enum(["draft", "saved"]), changes: z.boolean() });
+export const probeSchema = z.object({ id: z.string(), label: z.string(), uses: z.enum(["draft", "saved"]), changes: z.boolean(), draft_keys: z.array(z.string()).optional() });
 export type Probe = z.infer<typeof probeSchema>;
 
 export const cardExtras = ["library_inventory", "telegram_chats", "roles"] as const;
