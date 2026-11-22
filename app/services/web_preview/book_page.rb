@@ -82,8 +82,11 @@ module WebPreview
     def handoff_metadata
       return unless @handoff[:work_id] == @work_id && @handoff[:title].present?
 
-      { origin: "catalogue", title: @handoff[:title], author: @handoff[:author].presence, year: @handoff[:first_publish_year],
+      found = { origin: "catalogue", title: @handoff[:title], author: @handoff[:author].presence, year: @handoff[:first_publish_year],
         description: @handoff[:description].presence, cover_url: @handoff[:cover_url] }
+      return found if found[:author] && found[:description]
+
+      (catalogue_metadata || {}).merge(found.compact)
     end
 
     def catalogue_metadata

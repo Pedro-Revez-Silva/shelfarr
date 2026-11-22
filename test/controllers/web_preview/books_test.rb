@@ -109,6 +109,13 @@ class WebPreview::BooksTest < ActionDispatch::IntegrationTest
       "formats" => %w[ebook audiobook].map { |type| { "book_type" => type, "state" => "requestable", "note" => nil, "publication" => nil, "request" => nil } } }, book)
   end
 
+  test "a hand-off without a description keeps its own details and takes only the missing ones from the catalogue" do
+    sign_in_as(@member)
+    token = RequestMetadataHandoff.params_for(user: @member, metadata: { work_id: WORK, title: "Middlemarch", author: "George Eliot", first_publish_year: 1871 })[:metadata_token]
+    book = BookMetadataLookupService.stub(:call, { title: "Middlemarch: A Study", author: "G. Eliot", description: "Lives in a provincial town." }) { book_json(user: @member, metadata: token) }
+    assert_equal [ "Middlemarch", "George Eliot", 1871, "Lives in a provincial town." ], book.values_at("title", "author", "year", "description")
+  end
+
   test "without a hand-off the work's details come from the catalogue, and an unreachable catalogue is said plainly" do
     sign_in_as(@member)
     found = BookMetadataLookupService.stub(:call, { title: "Middlemarch", author: "George Eliot", year: 1871 }) { book_json(user: @member) }

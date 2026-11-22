@@ -2146,6 +2146,9 @@ thead th {
 }
 .book-title-block h1 {
   margin-bottom: 4px;
+  font-size: clamp(2.1rem, 4.6vw, 4rem);
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 .book-author-line {
   font-family: var(--serif);
@@ -2237,7 +2240,7 @@ thead th {
 }
 @media (min-width: 1000px) {
   .book-hero {
-    grid-template-columns: 228px minmax(0, 1fr) minmax(0, 34rem);
+    grid-template-columns: 228px minmax(0, 1fr) minmax(0, 27rem);
     gap: 40px;
     align-items: start;
   }
