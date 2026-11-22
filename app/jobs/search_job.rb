@@ -614,13 +614,17 @@ class SearchJob < ApplicationJob
       size_bytes: result.size_bytes,
       seeders: result.seeders,
       leechers: result.leechers,
-      download_url: result.download_url,
-      magnet_url: result.magnet_url,
-      info_hash: result.info_hash.presence || search_result.info_hash,
       info_url: result.info_url,
       published_at: result.published_at,
       source: source
     )
+    unless search_result.blocklisted?
+      search_result.assign_attributes(
+        download_url: result.download_url,
+        magnet_url: result.magnet_url,
+        info_hash: result.info_hash.presence || search_result.info_hash
+      )
+    end
     search_result.status = :pending unless search_result.blocklisted? || search_result.selected?
     search_result.save!
     search_result

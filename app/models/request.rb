@@ -591,7 +591,7 @@ class Request < ApplicationRecord
     raise ArgumentError, "Enter a valid magnet link" unless magnet_link.start_with?("magnet:?")
 
     info_hash = MagnetLink.info_hash(magnet_link)
-    raise ArgumentError, "Enter a magnet link with a valid info hash" if info_hash.blank?
+    raise ArgumentError, "Enter a magnet link with a valid info hash" unless info_hash.is_a?(String)
 
     with_lock do
       if completed? && !library_replacement_requested?(replace_library_file)
@@ -1059,7 +1059,7 @@ class Request < ApplicationRecord
     known_hash = search_result.torrent_info_hash
     same_release = recorded.select do |download|
       download.search_result_id == search_result.id ||
-        (search_result.magnet_info_hash.nil? && download.blocklisted_release_guid == search_result.guid)
+        (search_result.dispatched_magnet_info_hash.nil? && download.blocklisted_release_guid == search_result.guid)
     end
     hashes = [ known_hash, *same_release.map(&:blocklisted_info_hash) ].compact.uniq
     overridden = recorded.select { |download| same_release.include?(download) || hashes.include?(download.blocklisted_info_hash) }
@@ -1107,7 +1107,7 @@ class Request < ApplicationRecord
 
   def remember_release_info_hash!(search_result, download)
     hash = download&.torrent_info_hash
-    return if hash.nil? || search_result.magnet_info_hash
+    return if hash.nil? || search_result.dispatched_magnet_info_hash
 
     search_result.update!(info_hash: hash) unless search_result.info_hash == hash
   end

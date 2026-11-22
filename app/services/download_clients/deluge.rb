@@ -7,6 +7,7 @@ module DownloadClients
   class Deluge < Base
     AUTH_ERROR_PATTERNS = [
       /not logged in/i,
+      /not authenticated/i,
       /authentication/i,
       /not authorized/i,
       /not permitted/i
@@ -27,7 +28,7 @@ module DownloadClients
     LABEL_PLUGIN_READY_MAX_ATTEMPTS = 5
     LABEL_PLUGIN_READY_RETRY_WAIT = 0.2
     DUPLICATE_TORRENT_PATTERN = /already in session|already being added/i
-    GATEWAY_TIMEOUT_STATUS = 504
+    UNPROCESSED_REQUEST_STATUSES = [ 408, 425, 429, 503 ].freeze
     UNDELIVERED_REQUEST_ERRORS = [
       Errno::ECONNREFUSED,
       Errno::EHOSTUNREACH,
@@ -36,7 +37,8 @@ module DownloadClients
       SocketError,
       Net::OpenTimeout
     ].freeze
-    REMOVE_UNTRACKED_TORRENT_GUIDANCE = "If Deluge shows this torrent paused, Shelfarr is not tracking it: remove it in Deluge, then retry."
+    UNTRACKED_TORRENT_GUIDANCE = "Shelfarr is not tracking it from this attempt. " \
+      "Check in Deluge whether another request or tool uses it; if nothing does, remove it in Deluge, then retry."
 
     class UnconfirmedReplyError < Base::ConnectionError; end
     TRANSIENT_LABEL_ERROR_PATTERNS = [
@@ -53,14 +55,7 @@ module DownloadClients
       prepared = prepare_torrent_submission(url, validate_source_url: options[:validate_source_url])
       result = submit_new_torrent(prepared, build_add_params(options))
       torrent_id = result if result.is_a?(String) && result.present?
-
-      if torrent_id.blank?
-        if configured_label.present?
-          raise Base::Error, "Deluge did not return a torrent id after add; cannot assign label"
-        end
-
-        return nil
-      end
+      raise_unconfirmed_add!("Deluge did not return a torrent id after add") if torrent_id.blank?
 
       stage_added_torrent!(torrent_id, start: start_after_staging)
       torrent_id
@@ -155,7 +150,7 @@ module DownloadClients
         raise Base::AuthenticationError, "Deluge authentication failed: #{response.status}"
       end
 
-      if response.status == GATEWAY_TIMEOUT_STATUS
+      if response.status >= 500 && !UNPROCESSED_REQUEST_STATUSES.include?(response.status)
         raise UnconfirmedReplyError, "Deluge API error: #{response.status}"
       end
 
@@ -165,7 +160,7 @@ module DownloadClients
 
       body = response.body
       unless body.is_a?(Hash)
-        raise Base::ConnectionError, "Deluge API returned unexpected response format"
+        raise UnconfirmedReplyError, "Deluge API returned unexpected response format"
       end
 
       body
@@ -197,7 +192,7 @@ module DownloadClients
 
     def torrent_statuses(filter = {})
       normalized_filter = filter.to_h.with_indifferent_access
-      statuses = rpc_call("core.get_torrents_status", [ normalized_filter, TORRENT_FIELDS ]) || {}
+      statuses = rpc_call("core.get_torrents_status", [ normalized_filter, TORRENT_FIELDS ])
       raise Base::ConnectionError, "Deluge returned unreadable torrent statuses" unless statuses.is_a?(Hash)
 
       statuses
@@ -254,9 +249,9 @@ module DownloadClients
     rescue Faraday::Error => error
       raise if undelivered_request?(error)
 
-      raise_unconfirmed_add!(error)
+      raise_unconfirmed_add!(error.message)
     rescue UnconfirmedReplyError => error
-      raise_unconfirmed_add!(error)
+      raise_unconfirmed_add!(error.message)
     rescue Base::ConnectionError, Base::AuthenticationError
       raise
     rescue Base::Error => error
@@ -264,16 +259,16 @@ module DownloadClients
 
       raise Base::ConfigurationError,
         "Deluge already has this torrent, so Shelfarr did not adopt or change it. " \
-        "Deluge may have merged this release's trackers into it. #{REMOVE_UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
+        "Deluge may have merged this release's trackers into it. #{UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
     end
 
     def undelivered_request?(error)
       UNDELIVERED_REQUEST_ERRORS.any? { |error_class| error.wrapped_exception.is_a?(error_class) }
     end
 
-    def raise_unconfirmed_add!(error)
+    def raise_unconfirmed_add!(detail)
       raise Base::ConfigurationError,
-        "Deluge did not confirm whether it added this torrent. #{REMOVE_UNTRACKED_TORRENT_GUIDANCE} (#{error.message})"
+        "Deluge did not confirm whether it added this torrent; it may be paused there. #{UNTRACKED_TORRENT_GUIDANCE} (#{detail})"
     end
 
     def stage_added_torrent!(torrent_id, start:)

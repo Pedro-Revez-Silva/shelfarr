@@ -45,6 +45,10 @@ class RequestManualMagnetTest < ActiveSupport::TestCase
     assert_raises(ArgumentError, match: /info hash/) do
       @request.add_manual_magnet!("magnet:?dn=No+Hash+Here")
     end
+
+    assert_raises(ArgumentError, match: /info hash/) do
+      @request.add_manual_magnet!("magnet:?xt=urn:btih:%ZZ")
+    end
   end
 
   test "add_manual_magnet dedups magnets with the same info hash" do

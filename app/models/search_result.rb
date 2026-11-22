@@ -97,7 +97,9 @@ class SearchResult < ApplicationRecord
     blocklisted_at.present?
   end
 
-  def magnet_info_hash
+  def dispatched_magnet_info_hash
+    return nil unless from_indexer? || source == SOURCE_MANUAL_MAGNET
+
     hash = MagnetLink.info_hash(magnet_url)
     hash if hash.is_a?(String)
   end

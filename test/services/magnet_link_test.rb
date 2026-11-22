@@ -42,6 +42,15 @@ class MagnetLinkTest < ActiveSupport::TestCase
     assert_nil MagnetLink.info_hash("magnet:?xt=urn:btih:#{real}&xt=urn:btih:#{decoy}")
   end
 
+  test "reads the exact topic from the query and not the fragment" do
+    hash = "ab" * 20
+
+    assert_equal hash, MagnetLink.info_hash("magnet:?xt=urn:btih:#{hash}#section")
+    assert_equal hash, MagnetLink.info_hash("magnet:?%78t=urn:btih:#{hash}&dn=Book")
+    assert_nil MagnetLink.info_hash("magnet:?dn=Book#section&xt=urn:btih:#{hash}")
+    assert_equal hash, MagnetLink.info_hash("magnet:?%ZZ=1&xt=urn:btih:#{hash}")
+  end
+
   test "converts a declared base32 exact topic to the same hex identity" do
     hex = "aa" * 20
     base32 = "VK" * 16

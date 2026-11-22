@@ -91,13 +91,18 @@ class AddBlocklistedInfoHashToDownloadsTest < ActiveSupport::TestCase
     refailed = insert_search_result(blocklisted: true, at: "2026-01-03 00:00:00")
     overridden_before_failure = insert_search_result(blocklisted: false)
     retried_and_refailed = insert_search_result(blocklisted: false)
+    separately_failed = insert_search_result(blocklisted: false)
+    retried_as_other_torrent = insert_search_result(blocklisted: false)
+    refreshed_away_id = 9_000
     rows = {
       overridden_monitor_miss: insert_download(request_id: 20, external_id: "1" * 40, not_found_count: 3, search_result_id: overridden, at: "2026-01-01 00:00:00"),
       overridden_blocklisted: insert_download(request_id: 21, external_id: "2" * 40, search_result_id: overridden, at: "2026-01-01 00:00:00"),
       refailed_after_override: insert_download(request_id: 22, external_id: "3" * 40, not_found_count: 3, search_result_id: refailed, at: "2026-01-01 00:00:00"),
       failed_after_override: insert_download(request_id: 23, external_id: "4" * 40, not_found_count: 3, search_result_id: overridden_before_failure, at: "2026-01-02 00:00:00"),
-      other_release_overridden: insert_download(request_id: 24, external_id: "5" * 40, not_found_count: 3, search_result_id: refailed, at: "2026-01-01 00:00:00"),
-      retry_refailed_after_override: insert_download(request_id: 25, external_id: "6" * 40, not_found_count: 3, search_result_id: retried_and_refailed, at: "2026-01-01 00:00:00")
+      other_release_overridden: insert_download(request_id: 24, external_id: "5" * 40, not_found_count: 3, search_result_id: separately_failed, at: "2026-01-01 00:00:00"),
+      retry_refailed_after_override: insert_download(request_id: 25, external_id: "6" * 40, not_found_count: 3, search_result_id: retried_and_refailed, at: "2026-01-01 00:00:00"),
+      retry_got_other_torrent: insert_download(request_id: 26, external_id: "a" * 40, not_found_count: 3, search_result_id: retried_as_other_torrent, at: "2026-01-01 00:00:00"),
+      refreshed_after_override: insert_download(request_id: 27, external_id: "b" * 40, search_result_id: nil, at: "2026-01-01 00:00:00")
     }
     insert_event(rows[:overridden_blocklisted], "release_blocklisted", request_id: 21, at: "2026-01-01 01:00:00")
     insert_override(request_id: 20, search_result_id: overridden, at: "2026-01-02 00:00:00")
@@ -110,6 +115,10 @@ class AddBlocklistedInfoHashToDownloadsTest < ActiveSupport::TestCase
     insert_override(request_id: 25, search_result_id: retried_and_refailed, at: "2026-01-02 00:00:00")
     refailed_retry = insert_download(request_id: 25, external_id: nil, search_result_id: retried_and_refailed, at: "2026-01-02 00:00:01")
     insert_event(refailed_retry, "release_blocklisted", request_id: 25, at: "2026-01-02 01:00:00")
+    insert_override(request_id: 26, search_result_id: retried_as_other_torrent, at: "2026-01-02 00:00:00")
+    rows[:other_torrent_retry] = insert_download(request_id: 26, external_id: "c" * 40, not_found_count: 3, search_result_id: retried_as_other_torrent, at: "2026-01-02 00:00:01")
+    insert_event(rows[:refreshed_after_override], "release_blocklisted", request_id: 27, at: "2026-01-01 01:00:00", search_result_id: refreshed_away_id)
+    insert_override(request_id: 27, search_result_id: refreshed_away_id, at: "2026-01-02 00:00:00")
 
     run_migration
 
@@ -120,7 +129,10 @@ class AddBlocklistedInfoHashToDownloadsTest < ActiveSupport::TestCase
         refailed_after_override: "3" * 40,
         failed_after_override: "4" * 40,
         other_release_overridden: "5" * 40,
-        retry_refailed_after_override: "6" * 40
+        retry_refailed_after_override: nil,
+        retry_got_other_torrent: nil,
+        refreshed_after_override: nil,
+        other_torrent_retry: "c" * 40
       },
       rows.transform_values { |id| blocklisted_hash(id) }
     )
@@ -146,10 +158,11 @@ class AddBlocklistedInfoHashToDownloadsTest < ActiveSupport::TestCase
     id
   end
 
-  def insert_event(download_id, event_type, request_id: nil, at: "2026-01-01 01:00:00")
+  def insert_event(download_id, event_type, request_id: nil, at: "2026-01-01 01:00:00", search_result_id: nil)
+    details = { search_result_id: search_result_id }.compact.to_json
     @connection.execute(<<~SQL.squish)
-      INSERT INTO request_events (request_id, download_id, event_type, created_at)
-      VALUES (#{@connection.quote(request_id)}, #{Integer(download_id)}, #{@connection.quote(event_type)}, #{@connection.quote(at)})
+      INSERT INTO request_events (request_id, download_id, event_type, details, created_at)
+      VALUES (#{@connection.quote(request_id)}, #{Integer(download_id)}, #{@connection.quote(event_type)}, #{@connection.quote(details)}, #{@connection.quote(at)})
     SQL
   end
 

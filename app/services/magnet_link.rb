@@ -28,13 +28,13 @@ class MagnetLink
 
   def self.magnet_query(url)
     url = URI.decode_www_form_component(url) if url.match?(/\Amagnet%3A/i)
-    url.sub(/\Amagnet:\?/i, "") if url.match?(/\Amagnet:\?/i)
+    url.sub(/\Amagnet:\?/i, "").split("#", 2).first.to_s if url.match?(/\Amagnet:\?/i)
   end
   private_class_method :magnet_query
 
   def self.exact_topic_hash(param)
     key, value = param.split("=", 2)
-    return nil unless value && key.match?(/\Axt(\.\d+)?\z/i)
+    return nil unless value && key.match?(/\A(?:x|%78)(?:t|%74)(?:\.\d+)?\z/i)
 
     hash = URI.decode_www_form_component(value)[/\Aurn:btih:([0-9a-f]{40}|[a-z2-7]{32})\z/i, 1]
     return nil unless hash

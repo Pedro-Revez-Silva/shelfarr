@@ -3612,6 +3612,57 @@ class DownloadJobTest < ActiveJob::TestCase
     assert_not_requested :post, "http://localhost:8112/json", body: /"core.(set_torrent_options|resume_torrent|remove_torrents|get_torrents_status)"/
   end
 
+  test "a Deluge add reply without a torrent id or with a proxy error is not treated as a failed release" do
+    @client.destroy!
+    DownloadClient.create!(
+      name: "Test Deluge",
+      client_type: "deluge",
+      url: "http://localhost:8112",
+      password: "adminadmin",
+      priority: 0,
+      enabled: true
+    )
+    SettingsService.set(:auto_select_enabled, true)
+    @selected_result.update!(magnet_url: "magnet:?xt=urn:btih:#{"e" * 40}", download_url: nil)
+    fallback = @request.search_results.create!(
+      guid: "fallback-guid",
+      title: "Fallback release",
+      indexer: "Test",
+      magnet_url: "magnet:?xt=urn:btih:#{"f" * 40}",
+      seeders: 50,
+      confidence_score: 100,
+      status: :pending
+    )
+
+    [ { status: 200, result: nil }, { status: 502, result: nil } ].each_with_index do |reply, index|
+      Thread.current[:deluge_sessions] = {}
+      download = index.zero? ? @download : @request.downloads.create!(name: @selected_result.title, search_result: @selected_result, status: :queued)
+
+      VCR.turned_off do
+        WebMock.reset!
+        stub_request(:post, "http://localhost:8112/json")
+          .to_return do |request|
+            method = JSON.parse(request.body)["method"]
+            status = method == "core.add_torrent_magnet" ? reply[:status] : 200
+            result = { "auth.login" => true, "core.get_session_state" => [], "core.get_config_value" => false, "core.add_torrent_magnet" => reply[:result] }.fetch(method)
+            {
+              status: status,
+              headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test; Path=/" },
+              body: { result: result, error: nil, id: 1 }.to_json
+            }
+          end
+
+        DownloadJob.perform_now(download.id)
+      end
+
+      assert download.reload.failed?, "reply #{reply}"
+      assert download.configuration_failure?, "reply #{reply}"
+      assert_match(/did not confirm whether it added/, @request.reload.issue_description)
+      assert_not @selected_result.reload.blocklisted?
+      assert_not fallback.reload.selected?
+    end
+  end
+
   private
 
   def perform_download_with_vanishing_external_id_owner

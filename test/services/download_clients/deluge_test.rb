@@ -196,28 +196,12 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
           @client.add_torrent("magnet:?xt=urn:btih:#{torrent_hash}")
         end
         assert_match(/did not confirm whether it added/, error.message)
-        assert_match(/remove it in Deluge, then retry/, error.message)
+        assert_match(/whether another request or tool uses it; if nothing does, remove it in Deluge, then retry/, error.message)
       end
 
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.get_torrents_status"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.set_torrent_options"/
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.resume_torrent"/
-      assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
-    end
-  end
-
-  test "add_torrent reports a gateway timeout on add as needing a check in Deluge" do
-    VCR.turned_off do
-      stub_deluge_login
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"core.add_torrent_magnet"/)
-        .to_return(status: 504, headers: { "Content-Type" => "application/json" }, body: {}.to_json)
-
-      error = assert_raises(DownloadClients::Base::ConfigurationError) do
-        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
-      end
-
-      assert_match(/did not confirm whether it added/, error.message)
       assert_not_requested :post, "http://localhost:8112/json", body: /"core.remove_torrents"/
     end
   end
@@ -289,6 +273,7 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
 
       assert_match(/already in session/, error.message)
       assert_match(/did not adopt or change it/, error.message)
+      assert_match(/whether another request or tool uses it/, error.message)
       assert_match(/may have merged this release's trackers/, error.message)
       assert_match(/remove it in Deluge, then retry/, error.message)
       assert_no_match(/untouched/, error.message)
@@ -1057,6 +1042,35 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
+  test "torrent_info raises for a status reply that is not a torrent map" do
+    VCR.turned_off do
+      stub_deluge_login
+      [ nil, false, [] ].each do |result|
+        stub_deluge_rpc("core.get_torrents_status", result)
+
+        assert_raises(DownloadClients::Base::ConnectionError, "result #{result.inspect}") { @client.torrent_info("known_torrent") }
+        assert_raises(DownloadClients::Base::ConnectionError, "result #{result.inspect}") { @client.list_torrents }
+      end
+    end
+  end
+
+  test "an expired Deluge Web session is dropped so the next read logs in again" do
+    VCR.turned_off do
+      Thread.current[:deluge_sessions] = { @client_record.id => { cookie: "sessionid=cached" } }
+      login = stub_deluge_login
+      stub_request(:post, "http://localhost:8112/json")
+        .with(body: /"core.get_torrents_status"/)
+        .to_return(
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { result: nil, error: { "message" => "Not authenticated", "code" => 1 }, id: 1 }.to_json },
+          { status: 200, headers: { "Content-Type" => "application/json" }, body: { result: {}, error: nil, id: 1 }.to_json }
+        )
+
+      assert_raises(DownloadClients::Base::AuthenticationError) { @client.torrent_info("known_torrent") }
+      assert_nil @client.torrent_info("known_torrent")
+      assert_requested login, times: 1
+    end
+  end
+
   test "torrent_info and list_torrents raise when a cached Deluge session cannot read torrents" do
     VCR.turned_off do
       Thread.current[:deluge_sessions] = { @client_record.id => { cookie: "sessionid=cached" } }
@@ -1197,28 +1211,27 @@ class DownloadClients::DelugeTest < ActiveSupport::TestCase
     end
   end
 
-  test "add_torrent raises ConnectionError for an unparseable API envelope" do
+  test "add_torrent reports an add whose reply cannot be read as needing a check in Deluge" do
     VCR.turned_off do
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"auth.login"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json", "Set-Cookie" => "sessionid=test_session_id; Path=/" },
-          body: { result: true, error: nil, id: 1 }.to_json
-        )
-      stub_request(:post, "http://localhost:8112/json")
-        .with(body: /"core.add_torrent_magnet"/)
-        .to_return(
-          status: 200,
-          headers: { "Content-Type" => "application/json" },
-          body: "not a hash".to_json
-        )
+      stub_deluge_login
+      [
+        { status: 200, body: "not a hash".to_json },
+        { status: 200, body: { result: nil, error: nil, id: 1 }.to_json },
+        { status: 500, body: {}.to_json },
+        { status: 502, body: {}.to_json },
+        { status: 504, body: {}.to_json }
+      ].each do |reply|
+        stub_request(:post, "http://localhost:8112/json")
+          .with(body: /"core.add_torrent_magnet"/)
+          .to_return(reply.merge(headers: { "Content-Type" => "application/json" }))
 
-      error = assert_raises(DownloadClients::Base::ConnectionError) do
-        @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        error = assert_raises(DownloadClients::Base::ConfigurationError, "reply #{reply}") do
+          @client.add_torrent("magnet:?xt=urn:btih:abcdef")
+        end
+        assert_match(/did not confirm whether it added/, error.message)
       end
-      assert_instance_of DownloadClients::Base::ConnectionError, error
-      assert_equal "Deluge API returned unexpected response format", error.message
+
+      assert_not_requested :post, "http://localhost:8112/json", body: /"core.(set_torrent_options|resume_torrent|remove_torrents)"/
     end
   end
 

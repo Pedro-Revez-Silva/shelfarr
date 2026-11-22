@@ -1535,6 +1535,58 @@ class SearchJobTest < ActiveJob::TestCase
     assert refreshed.blocklisted?
   end
 
+  test "a repeat search does not move a blocklisted release onto the torrent it now advertises" do
+    SettingsService.set(:auto_select_enabled, true)
+    SettingsService.set(:auto_select_confidence_threshold, 0)
+    SettingsService.set(:auto_select_min_seeders, 0)
+    book = Book.create!(title: "Moved Hash", author: "Indexer Author", book_type: :ebook)
+    request = Request.create!(book: book, user: users(:one), status: :searching, language: "en")
+    failed_hash = "b" * 40
+    republished_hash = "a" * 40
+    blocked = request.search_results.create!(
+      guid: "republished-guid",
+      title: "Moved Hash Indexer Author EPUB",
+      indexer: "ProwlarrIndexer",
+      magnet_url: "magnet:?xt=urn:btih:#{failed_hash}",
+      status: :rejected,
+      source: "prowlarr"
+    )
+    blocked.blocklist!("Download not found in client")
+    request.downloads.create!(
+      name: blocked.title,
+      search_result: blocked,
+      status: :failed,
+      external_id: failed_hash,
+      download_type: "torrent",
+      blocklisted_info_hash: failed_hash,
+      blocklisted_release_guid: blocked.guid
+    )
+    indexer_result = ->(guid, hash) do
+      {
+        source: "prowlarr",
+        result: IndexerClients::Result.new(
+          guid: guid,
+          title: "Moved Hash Indexer Author EPUB",
+          indexer: "ProwlarrIndexer",
+          size_bytes: 2048,
+          seeders: 30,
+          leechers: 0,
+          download_url: nil,
+          magnet_url: "magnet:?xt=urn:btih:#{hash}",
+          info_url: nil,
+          published_at: nil
+        )
+      }
+    end
+
+    SearchJob.new.send(:save_results, request, [ indexer_result.call("republished-guid", republished_hash), indexer_result.call("other-guid", republished_hash) ])
+
+    assert_equal [ failed_hash ], request.reload.blocked_torrent_info_hashes
+    assert_equal failed_hash, blocked.reload.torrent_info_hash
+    assert blocked.blocklisted?
+    assert_not request.search_results.find_by!(guid: "other-guid").blocklisted?
+  end
+
   test "preliminary scoring uses a known file size before a result counts as a strong match" do
     SettingsService.set(:indexer_search_scope, "strict")
     SettingsService.set(:min_match_confidence, 80)

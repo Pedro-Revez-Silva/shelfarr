@@ -60,22 +60,31 @@ class AddBlocklistedInfoHashToDownloads < ActiveRecord::Migration[8.1]
           WHERE overrides.request_id = downloads.request_id
             AND overrides.event_type = 'blocklist_overridden'
             AND overrides.created_at > downloads.created_at
-            AND CASE WHEN json_valid(overrides.details)
-              THEN CAST(json_extract(overrides.details, '$.search_result_id') AS INTEGER)
-            END = downloads.search_result_id
-            AND NOT EXISTS (
-              SELECT 1 FROM search_results AS overridden_results
-              WHERE overridden_results.id = downloads.search_result_id
-                AND overridden_results.blocklisted_at > overrides.created_at
+            AND #{event_search_result_id("overrides")} = COALESCE(
+              downloads.search_result_id,
+              (
+                SELECT #{event_search_result_id("failures")} FROM request_events AS failures
+                WHERE failures.download_id = downloads.id
+                  AND failures.event_type = 'release_blocklisted'
+                ORDER BY failures.id
+                LIMIT 1
+              )
             )
             AND NOT EXISTS (
-              SELECT 1 FROM request_events AS later_failures
-              JOIN downloads AS later_attempts ON later_attempts.id = later_failures.download_id
-              WHERE later_attempts.search_result_id = downloads.search_result_id
-                AND later_failures.event_type = 'release_blocklisted'
-                AND later_failures.created_at > overrides.created_at
+              SELECT 1 FROM search_results AS reblocked
+              WHERE reblocked.id = downloads.search_result_id
+                AND reblocked.blocklisted_at > overrides.created_at
+                AND NOT EXISTS (
+                  SELECT 1 FROM downloads AS later_attempts
+                  WHERE later_attempts.search_result_id = downloads.search_result_id
+                    AND later_attempts.id > downloads.id
+                )
             )
         )
     SQL
+  end
+
+  def event_search_result_id(table)
+    "CASE WHEN json_valid(#{table}.details) THEN CAST(json_extract(#{table}.details, '$.search_result_id') AS INTEGER) END"
   end
 end

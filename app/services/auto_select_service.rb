@@ -134,7 +134,7 @@ class AutoSelectService
     hash = result.torrent_info_hash
     return true if hash && blocked_hashes.include?(hash)
 
-    result.magnet_info_hash.nil? && blocked_guids.include?(result.guid)
+    result.dispatched_magnet_info_hash.nil? && blocked_guids.include?(result.guid)
   end
 
   def meets_confidence_threshold?(result)
