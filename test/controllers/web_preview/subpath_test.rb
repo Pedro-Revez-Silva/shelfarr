@@ -56,4 +56,14 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     get "#{BASE}/preview/api/v1/session", headers: account_headers(users(:one))
     assert_equal({ "legacy_library" => "#{BASE}/read", "discover" => "#{BASE}/search", "requests" => "#{BASE}/requests", "account" => "#{BASE}/profile" }, response.parsed_body.fetch("links"))
   end
+
+  test "a chosen format is requested through the API under the deployment path" do
+    sign_in_as(users(:one))
+    BookMetadataLookupService.stub(:call, { title: "Middlemarch", author: "George Eliot" }) do
+      post "#{BASE}/preview/api/v1/books/openlibrary/OL900W/requests", params: { book_type: "audiobook", language: "en" }, headers: account_headers(users(:one)), as: :json
+    end
+    assert_response :created
+    assert_equal [ [ "audiobook", "created" ] ], response.parsed_body.fetch("results").map { |result| result.values_at("book_type", "outcome") }
+    assert_equal "requested", response.parsed_body.fetch("book").fetch("formats").find { |format| format.fetch("book_type") == "audiobook" }.fetch("state")
+  end
 end

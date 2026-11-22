@@ -3,39 +3,73 @@
 class WebPreview::BooksController < WebPreview::APIController
   include ConsumerWebPublication
 
-  REQUESTED_TYPE = "ebook"
   CREATION_LOCK = Mutex.new
+  Outcome = Data.define(:created, :results)
 
   def show
-    render json: { account: web_preview_account_id, book: book_page.representation }
+    render json: { account: web_preview_account_id, book: book_representation(book_page) }
   end
 
   def create_request
     outcome = CREATION_LOCK.synchronize do
-      API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_ebook(book_page) }
+      API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_chosen_formats(book_page) }
     end
+    return render_error("invalid_request", :unprocessable_entity) if outcome == :invalid
+    return web_preview_signed_out if outcome == :signed_out || !Session.exists?(Current.session.id)
+    return web_preview_not_found unless WebPreview::Access.current.allows?(Current.session.user.reload)
     return render_error("request_rejected", :unprocessable_entity, message: outcome) if outcome.is_a?(String)
 
-    render json: { account: web_preview_account_id, outcome: outcome, book: book_page.representation }, status: outcome == :created ? :created : :ok
+    render json: { account: web_preview_account_id, outcome: outcome.created ? :created : :existing, results: outcome.results, book: book_representation(book_page) },
+      status: outcome.created ? :created : :ok
   end
 
   private
 
-  def request_ebook(page)
-    return :existing unless page.requestable?(REQUESTED_TYPE)
+  def request_chosen_formats(page)
+    choice = request_options(page).choice(params)
+    choice ? request_formats(page, choice) : :invalid
+  end
+
+  def request_options(page)
+    WebPreview::RequestOptions.new(content_kind: page.content_kind)
+  end
+
+  def request_formats(page, choice)
+    wanted = choice.book_types.select { |book_type| page.requestable?(book_type) }
+    return Outcome.new(created: false, results: choice.book_types.map { |book_type| { book_type: book_type, outcome: "existing" } }) if wanted.empty?
     return "This book's details could not be loaded, so it cannot be requested yet. Try again later." if page.metadata[:title].blank?
+    return :signed_out unless Session.exists?(Current.session.id)
 
     result = RequestCreationService.call(
       user: Current.user,
       work_id: page.work_ids.first,
       source_work_ids: page.work_ids.drop(1),
-      book_types: [ REQUESTED_TYPE ],
-      metadata_attrs: page.metadata.slice(:title, :author, :cover_url, :year, :description).merge(content_kind: ContentKinds::BOOK),
+      book_types: wanted,
+      metadata_attrs: page.metadata.slice(:title, :author, :cover_url, :year, :description).merge(content_kind: page.content_kind),
+      language: choice.language,
+      notes: choice.notes,
       origin: { created_via: "web" }
     )
-    return :created if result.created_requests.any?
+    created = result.created_requests.map { |request| request.book.book_type }
+    return rejection(result.errors.first) if created.empty?
 
-    result.errors.first.to_s.first(300).presence || "The request could not be made."
+    Outcome.new(created: true, results: choice.book_types.map { |book_type| format_result(book_type, wanted, created, result.errors) })
+  end
+
+  def format_result(book_type, wanted, created, errors)
+    return { book_type: book_type, outcome: "created" } if created.include?(book_type)
+    return { book_type: book_type, outcome: "existing" } unless wanted.include?(book_type)
+
+    label = RequestOptionPolicy.book_type_label(book_type)
+    { book_type: book_type, outcome: "rejected", message: rejection(errors.find { |error| error.to_s.include?(" #{label}: ") } || errors.first) }
+  end
+
+  def rejection(error)
+    error.to_s.first(300).presence || "The request could not be made."
+  end
+
+  def book_representation(page)
+    page.representation.merge(request_options: request_options(page).representation)
   end
 
   def book_page

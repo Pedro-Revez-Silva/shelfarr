@@ -6,7 +6,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import type { AccountAnswer, BookLocation, MetadataAnswer } from "./api/client";
+import type { AccountAnswer, BookLocation, MetadataAnswer, RequestChoice } from "./api/client";
 import { ApiError, failureKind, isApiError, unconfirmed } from "./api/errors";
 import type { Acquisition, Book, LibraryFilters, MetadataChange, MetadataSettings, LibraryPage, Profile, PublicationDetail, ReadingStatus, RequestFilters, RequestSummary, Session } from "./contract";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -415,9 +415,24 @@ function useBookChange<V, T>(location: BookLocation, send: (variables: V) => Pro
   });
 }
 
-export function useRequestBookEbook(location: BookLocation) {
-  const { api } = useServices();
-  return useBookChange(location, () => api.requestBookEbook(location), (answer) => answer.book);
+export function useRequestBook(location: BookLocation) {
+  const { api, keys, guard } = useServices();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (choice: RequestChoice) => api.requestBook(location, choice),
+    onSuccess: (answer) => {
+      if (!guard.isActive()) return;
+      client.setQueryData(keys.book(location.source, location.id, location.metadata ?? null), answer.book);
+    },
+    onSettled: async () => {
+      if (!guard.isActive()) return;
+      for (const queryKey of [keys.bookAll(location.source, location.id), keys.requestsAll, keys.libraryAll, keys.continueAll]) {
+        void client.invalidateQueries({ queryKey });
+      }
+      await client.cancelQueries({ queryKey: keys.catalogueAll });
+      if (guard.isActive()) void client.invalidateQueries({ queryKey: keys.catalogueAll });
+    },
+  });
 }
 
 export function useChooseCopy(location: BookLocation, requestId: string) {

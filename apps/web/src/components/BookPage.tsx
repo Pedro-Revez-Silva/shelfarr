@@ -3,13 +3,14 @@ import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { failureKind } from "../api/errors";
 import type { BookLocation } from "../api/client";
 import { workSources, type Book, type BookCopy, type BookFormat, type BookRequest, type PublicationSummary, type Session } from "../contract";
-import { useBook, useCancelRequest, useChooseCopy, useRequestBookEbook, useSearchAgain, useSession } from "../queries";
+import { useBook, useCancelRequest, useChooseCopy, useRequestBook, useSearchAgain, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { CopyTable } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
+import { choiceFor, FALLBACK_OPTIONS, NO_EXTRAS, offered, RejectedFormats, RequestExtrasFields, requestLabel, requestPlan, type RequestFormat } from "./RequestChoices";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/books/$source/$sourceId");
@@ -84,10 +85,12 @@ function BackLink({ query }: { query: string | undefined }) {
 
 const FORMAT_NAMES: Record<BookFormat["book_type"], string> = { ebook: "Ebook", audiobook: "Audiobook" };
 
+function panelId(bookType: BookFormat["book_type"]): string {
+  return bookType === "ebook" ? "choose-copy" : `choose-copy-${bookType}`;
+}
+
 function BookView({ book, location, session, query }: { book: Book; location: BookLocation; session: Session | undefined; query: string | undefined }) {
   const admin = session?.admin !== undefined;
-  const ebook = book.formats.find((format) => format.book_type === "ebook");
-  const request = ebook?.state === "requested" ? ebook.request : null;
   const title = book.title ?? "Details not available";
   return (
     <article className="book-page" aria-labelledby="book-heading">
@@ -119,8 +122,9 @@ function BookView({ book, location, session, query }: { book: Book; location: Bo
         <ServerCard book={book} location={location} />
       </div>
 
-      {request ? <RequestSteps request={request} /> : null}
-      {ebook ? <EbookPanel format={ebook} location={location} admin={admin} /> : null}
+      {book.formats.map((format) => (
+        <FormatProgress key={format.book_type} format={format} location={location} admin={admin} />
+      ))}
 
       {book.description && book.description !== firstParagraph(book.description) ? (
         <section className="about" aria-labelledby="about-heading">
@@ -137,6 +141,34 @@ function firstParagraph(text: string): string {
 }
 
 function ServerCard({ book, location }: { book: Book; location: BookLocation }) {
+  const options = book.request_options ?? FALLBACK_OPTIONS;
+  const plan = requestPlan(book.formats, options);
+  const request = useRequestBook(location);
+  const [pressed, setPressed] = useState<RequestFormat | null>(null);
+  const [extras, setExtras] = useState(NO_EXTRAS);
+  const [focusTarget, setFocusTarget] = useState<string | null>(null);
+  useEffect(() => {
+    const target = focusTarget === null ? null : document.getElementById(focusTarget);
+    if (!target) return;
+    target.focus();
+    setFocusTarget(null);
+  }, [focusTarget, book]);
+  const unavailable = book.title === null;
+  const send = (format: RequestFormat) => {
+    if (request.isPending || unavailable) return;
+    setPressed(format);
+    request.mutate(choiceFor(format, extras, options), {
+      onSuccess: (answer) => {
+        setExtras((current) => ({ ...current, notes: "" }));
+        const shown = answer.book.formats.find((entry) => (format === "both" || entry.book_type === format) && entry.state === "requested");
+        if (shown) setFocusTarget(panelId(shown.book_type));
+      },
+    });
+  };
+  const pressedShown = plan.some((entry) => entry.format === pressed) || (pressed !== "both" && book.formats.some((format) => format.book_type === pressed && offered(format, options)));
+  const button = (format: RequestFormat, accent: boolean) => (
+    <RequestButton format={format} accent={accent} title={book.title} busy={request.isPending || unavailable} mine={pressed === format} pending={request.isPending} error={request.isError ? request.error : null} onPress={send} />
+  );
   return (
     <section className="server-card" aria-labelledby="server-heading">
       <h2 id="server-heading">On this server</h2>
@@ -145,14 +177,46 @@ function ServerCard({ book, location }: { book: Book; location: BookLocation }) 
           <li key={format.book_type} className="format-row">
             <span className="format-name">{FORMAT_NAMES[format.book_type]}</span>
             <FormatState format={format} />
-            <span className="format-action">{format.book_type === "ebook" ? <EbookAction book={book} format={format} location={location} /> : <OpenAction format={format} />}</span>
+            <span className="format-action">
+              {offered(format, options) ? button(format.book_type, plan.some((entry) => entry.format === format.book_type && entry.accent)) : <FormatAction format={format} />}
+            </span>
           </li>
         ))}
       </ul>
-      {book.formats.some((format) => format.book_type === "audiobook" && format.state === "requestable") ? (
-        <p className="format-advisory">This preview requests ebooks only.</p>
+      {plan.some((entry) => entry.format === "both") ? <div className="request-both">{button("both", true)}</div> : null}
+      {plan.length > 0 ? <RequestExtrasFields options={options} extras={extras} onChange={setExtras} disabled={request.isPending} /> : null}
+      {request.isSuccess ? <RejectedFormats results={request.data.results} /> : null}
+      {request.isError && !pressedShown ? (
+        <p className="field-error" role="alert">
+          {actionFailure(request.error, "The request could not be made. Nothing was changed.")}
+        </p>
       ) : null}
     </section>
+  );
+}
+
+function RowRequestLabel({ format }: { format: BookFormat["book_type"] }) {
+  return (
+    <>
+      Request<span className="sr-only"> {format}</span>
+    </>
+  );
+}
+
+function RequestButton({ format, accent, title, busy, mine, pending, error, onPress }: { format: RequestFormat; accent: boolean; title: string | null; busy: boolean; mine: boolean; pending: boolean; error: unknown; onPress: (format: RequestFormat) => void }) {
+  const failed = mine && error !== null;
+  return (
+    <span className="request-format">
+      <button type="button" className={accent ? "button button--primary" : "button"} aria-disabled={busy ? true : undefined} onClick={() => onPress(format)}>
+        {mine && pending ? "Requesting…" : failed ? "Try requesting again" : format === "both" ? requestLabel(format) : <RowRequestLabel format={format} />}
+        <span className="sr-only"> of {title ?? "this book"}</span>
+      </button>
+      {failed ? (
+        <span className="field-error" role="alert">
+          {actionFailure(error, "The request could not be made. Nothing was changed.")}
+        </span>
+      ) : null}
+    </span>
   );
 }
 
@@ -228,12 +292,11 @@ function OpenAction({ format }: { format: BookFormat }) {
   );
 }
 
-function EbookAction({ book, format, location }: { book: Book; format: BookFormat; location: BookLocation }) {
+function FormatAction({ format }: { format: BookFormat }) {
   if (format.state === "in_library") return <OpenAction format={format} />;
-  if (format.state === "requestable") return <RequestEbook book={book} location={location} />;
   if (format.state === "requested" && format.request?.copies?.selectable) {
     const reveal = () => {
-      const panel = document.getElementById("choose-copy");
+      const panel = document.getElementById(panelId(format.book_type));
       panel?.scrollIntoView({ block: "start" });
       panel?.focus({ preventScroll: true });
     };
@@ -244,27 +307,6 @@ function EbookAction({ book, format, location }: { book: Book; format: BookForma
     );
   }
   return null;
-}
-
-function RequestEbook({ book, location }: { book: Book; location: BookLocation }) {
-  const request = useRequestBookEbook(location);
-  const unavailable = book.title === null;
-  const send = () => {
-    if (!request.isPending && !unavailable) request.mutate(undefined);
-  };
-  return (
-    <span className="request-ebook">
-      <button type="button" className="button button--primary" aria-disabled={request.isPending || unavailable ? true : undefined} onClick={send}>
-        {request.isPending ? "Requesting…" : request.isError ? "Try requesting again" : "Request ebook"}
-        <span className="sr-only"> of {book.title ?? "this book"}</span>
-      </button>
-      {request.isError ? (
-        <span className="field-error" role="alert">
-          {actionFailure(request.error, "The request could not be made. Nothing was changed.")}
-        </span>
-      ) : null}
-    </span>
-  );
 }
 
 
@@ -315,19 +357,31 @@ export function RequestSteps({ request, label = "Ebook request progress" }: { re
   );
 }
 
-function EbookPanel({ format, location, admin }: { format: BookFormat; location: BookLocation; admin: boolean }) {
-  if (format.state === "in_library" && format.publication) return <OpenPanel publication={format.publication} />;
+function FormatProgress({ format, location, admin }: { format: BookFormat; location: BookLocation; admin: boolean }) {
+  const request = format.state === "requested" ? format.request : null;
+  return (
+    <>
+      {request ? <RequestSteps request={request} label={`${FORMAT_NAMES[format.book_type]} request progress`} /> : null}
+      <FormatPanel format={format} location={location} admin={admin} />
+    </>
+  );
+}
+
+function FormatPanel({ format, location, admin }: { format: BookFormat; location: BookLocation; admin: boolean }) {
+  const headingId = format.book_type === "ebook" ? "copy-panel-heading" : `copy-panel-heading-${format.book_type}`;
+  const noun = format.book_type;
+  if (format.state === "in_library" && format.publication && format.book_type === "ebook") return <OpenPanel publication={format.publication} />;
   if (format.state === "requested_by_someone") {
     return (
-      <section className="copy-panel" aria-labelledby="copy-panel-heading">
-        <h2 id="copy-panel-heading">Already requested</h2>
-        <p>Someone on this server has already requested this ebook. Once it arrives it will be in the library for everyone here.</p>
+      <section className="copy-panel" aria-labelledby={headingId}>
+        <h2 id={headingId}>{format.book_type === "ebook" ? "Already requested" : `${FORMAT_NAMES[format.book_type]} already requested`}</h2>
+        <p>Someone on this server has already requested this {noun}. Once it arrives it will be in the library for everyone here.</p>
       </section>
     );
   }
   const request = format.state === "requested" ? format.request : null;
   if (!request) return null;
-  return <RequestPanel request={request} location={location} admin={admin} />;
+  return <RequestPanel request={request} location={location} admin={admin} bookType={format.book_type} headingId={headingId} />;
 }
 
 function OpenPanel({ publication }: { publication: PublicationSummary }) {
@@ -391,16 +445,17 @@ export function stageSentence(request: Pick<BookRequest, "stage" | "choice_neede
   }
 }
 
-function RequestPanel({ request, location, admin }: { request: BookRequest; location: BookLocation; admin: boolean }) {
+function RequestPanel({ request, location, admin, bookType, headingId }: { request: BookRequest; location: BookLocation; admin: boolean; bookType: BookFormat["book_type"]; headingId: string }) {
   const copies = request.copies;
   const choosing = admin && copies?.selectable === true;
   const retrying = request.stage === "not_found" && request.next_retry_at !== null && Date.parse(request.next_retry_at) > Date.now();
+  const ebook = bookType === "ebook";
   return (
-    <section className="copy-panel" id="choose-copy" aria-labelledby="copy-panel-heading" tabIndex={-1}>
-      <h2 id="copy-panel-heading">{choosing ? "Choose a copy" : "Ebook request"}</h2>
+    <section className="copy-panel" id={panelId(bookType)} aria-labelledby={headingId} tabIndex={-1}>
+      <h2 id={headingId}>{choosing ? (ebook ? "Choose a copy" : `Choose a copy of the ${bookType}`) : `${FORMAT_NAMES[bookType]} request`}</h2>
       <div role="status" className="request-stage">
         <p>
-          {stageSentence(request, admin)}
+          {stageSentence(request, admin, bookType)}
           {retrying && request.next_retry_at ? (
             <>
               {" "}

@@ -17,7 +17,7 @@ import { discoverSchema, type DiscoverAnswer } from "../contract";
 import { requestEnvelopeSchema, requestListSchema, type RequestDetail, type RequestFilters, type RequestList } from "../contract";
 import { acquisitionSchema, requestCreationSchema, selectionEnvelopeSchema, type Acquisition, type RequestCreation, type Selection } from "../contract";
 import { serverOverviewSchema, type ServerOverview } from "../contract";
-import { bookEnvelopeSchema, bookRequestOutcomeSchema, catalogueSchema, requestActionSchema, type Book, type BookAddress, type BookRequestOutcome, type CatalogueAnswer } from "../contract";
+import { bookEnvelopeSchema, bookRequestOutcomeSchema, catalogueSchema, requestActionSchema, type Book, type BookAddress, type BookFormat, type BookRequestOutcome, type CatalogueAnswer } from "../contract";
 import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema, type MetadataChange, type MetadataRejection, type MetadataSettings } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { backupCodesSchema, createdTokenSchema, twoFactorSetupSchema, type CreatedToken, type RequestActionAnswer, type TwoFactorSetup } from "../contract";
@@ -246,8 +246,9 @@ export class ApiClient {
     return envelope.book;
   }
 
-  requestBookEbook(address: BookLocation, signal?: AbortSignal): Promise<BookRequestOutcome> {
-    return this.request({ path: `${bookPath(address)}/requests${suffix(bookQuery(address))}`, schema: bookRequestOutcomeSchema, method: "POST", body: {}, signal, account: (value) => value.account });
+  requestBook(address: BookLocation, choice: RequestChoice, signal?: AbortSignal): Promise<BookRequestOutcome> {
+    const body = { book_type: choice.format, ...(choice.language ? { language: choice.language } : {}), ...(choice.notes ? { notes: choice.notes } : {}) };
+    return this.request({ path: `${bookPath(address)}/requests${suffix(bookQuery(address))}`, schema: bookRequestOutcomeSchema, method: "POST", body, signal, account: (value) => value.account });
   }
 
   chooseCopy(requestId: string, resultId: string, signal?: AbortSignal): Promise<unknown> {
@@ -459,6 +460,7 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 export type BookLocation = BookAddress & { metadata?: string | undefined };
+export type RequestChoice = { format: BookFormat["book_type"] | "both"; language?: string | undefined; notes?: string | undefined };
 
 function bookPath(address: BookLocation): string {
   return `/books/${encodeURIComponent(address.source)}/${encodeURIComponent(address.id)}`;

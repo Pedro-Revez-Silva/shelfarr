@@ -74,6 +74,12 @@ module WebPreview
       @metadata ||= local_metadata || handoff_metadata || catalogue_metadata || {}
     end
 
+    def content_kind
+      return ContentKinds::GRAPHIC if stored_books.any?(&:content_graphic?)
+
+      ContentKinds.resolve(nil, source_work_ids: work_ids)
+    end
+
     private
 
     def stored_books

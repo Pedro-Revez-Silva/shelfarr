@@ -14,7 +14,8 @@ class WebPreview::DiscoverController < WebPreview::APIController
     results, failed = search(query.strip)
     return render_error("search_unavailable", :service_unavailable) if providers.any? && failed.size == providers.size
 
-    render json: { account: web_preview_account_id, query: query.strip, providers: names(providers), unavailable: names(failed), items: annotate(results) }
+    render json: { account: web_preview_account_id, query: query.strip, providers: names(providers), unavailable: names(failed), items: annotate(results),
+      request_options: WebPreview::RequestOptions.new.representation }
   rescue *CONNECTION_ERRORS
     render_error("search_unavailable", :service_unavailable)
   rescue *ANSWER_ERRORS
@@ -60,6 +61,8 @@ class WebPreview::DiscoverController < WebPreview::APIController
     source, source_id = Book.parse_work_id(ids.first)
     year = result.year.to_s.match?(/\A\d{1,4}\z/) ? result.year.to_i : nil
     page = WebPreview::BookPage.new(user: Current.user, work_id: ids.first, links: ids.drop(1))
+    return if ContentKinds.graphic?(page.content_kind)
+
     {
       book: { source: source, id: source_id, metadata: handoff_token(result, page, year) },
       title: result.title.to_s,
