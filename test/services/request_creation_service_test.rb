@@ -637,6 +637,48 @@ class RequestCreationServiceTest < ActiveSupport::TestCase
     assert_includes result.errors.join, "already has an active request"
   end
 
+  test "collection requests load acquired titles once per format" do
+    items = [ "First Volume", "Second Volume" ].each_with_index.map do |title, index|
+      id = "hardcover:collection-volume-#{index}"
+      MetadataCollectionService::Item.new(
+        work_id: id, source_work_ids: [ id ], metadata_attrs: { title: title, author: "Collection Author" }
+      )
+    end
+    acquired_queries = []
+    record_acquired_query = ->(*args) do
+      sql = args.last[:sql]
+      acquired_queries << sql if sql.match?(/SELECT .*FROM "books".*TRIM\(file_path\)/)
+    end
+
+    result = MetadataCollectionService.stub(:expand, items) do
+      ActiveSupport::Notifications.subscribed(record_acquired_query, "sql.active_record") do
+        RequestCreationService.call(
+          user: @user, work_id: "hardcover:collection", book_types: [ "ebook" ], expand_collection: true,
+          metadata_attrs: { request_scope: "collection", collection_source: "hardcover", collection_id: "collection" }
+        )
+      end
+    end
+
+    assert_equal [ "First Volume", "Second Volume" ], result.created_requests.map { |request| request.book.title }
+    assert_equal 1, acquired_queries.size
+  end
+
+  test "a failed request does not hide the same book acquired under a different provider" do
+    title = "The Hound of the Baskervilles"
+    author = "Arthur Conan Doyle"
+    pending_book = Book.create!(title: title, author: author, book_type: :ebook, google_books_id: "gb-owned-elsewhere")
+    @user.requests.create!(book: pending_book, status: :failed)
+    Book.create!(title: title, author: author, book_type: :ebook,
+      hardcover_id: "hc-owned-elsewhere", file_path: "/ebooks/owned-elsewhere.epub")
+
+    assert_no_difference "Request.count" do
+      result = RequestCreationService.call(user: @user, work_id: "google_books:gb-owned-elsewhere",
+        book_types: [ "ebook" ], metadata_attrs: { title: title, author: author }, lookup_metadata: false)
+
+      assert_equal [ "#{title} Ebook: This ebook is already in your library." ], result.errors
+    end
+  end
+
   test "collection request expands into per item requests" do
     items = [
       RequestCreationService::RequestInput.new(

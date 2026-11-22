@@ -52,6 +52,7 @@ class RequestCreationService
     warnings = []
     errors = []
     existing_books_lookup = Book.preload_by_work_ids(request_inputs.flat_map(&:source_work_ids))
+    acquired_title_cache = {}
 
     request_inputs.each do |input|
       unless RequestOptionPolicy.permitted_book_types?(book_types, input.metadata_attrs[:content_kind])
@@ -65,7 +66,7 @@ class RequestCreationService
       else
         {}
       end
-      requests = persist_requests(input, resolved_metadata, warnings:, errors:)
+      requests = persist_requests(input, resolved_metadata, acquired_title_cache:, warnings:, errors:)
       requests.each { |request| after_create(request) }
       created_requests.concat(requests)
     end
@@ -189,14 +190,14 @@ class RequestCreationService
     end
   end
 
-  def persist_requests(input, metadata, warnings:, errors:)
+  def persist_requests(input, metadata, acquired_title_cache:, warnings:, errors:)
     label = metadata[:title].presence || input.metadata_attrs[:title].presence || input.work_id
 
     Book.uncached do
       Book.transaction do
         lookup = Book.preload_by_work_ids([ input.work_id, *input.source_work_ids ])
         book_types.filter_map do |book_type|
-          duplicate = check_duplicates(input, book_type, lookup, metadata)
+          duplicate = check_duplicates(input, book_type, lookup, metadata, acquired_title_cache:)
           if duplicate.block?
             errors << "#{label} #{RequestOptionPolicy.book_type_label(book_type)}: #{duplicate.message}"
             next
@@ -217,14 +218,17 @@ class RequestCreationService
     end
   end
 
-  def check_duplicates(input, book_type, lookup, metadata)
+  def check_duplicates(input, book_type, lookup, metadata, acquired_title_cache:)
     supplied = input.metadata_attrs.values_at(:title, :author)
     resolved = metadata.values_at(:title, :author)
     if supplied.any?(&:blank?)
       resolved = resolved.zip(supplied).map { |detail, fallback| detail.presence || fallback }
     end
 
-    arguments = { work_id: input.work_id, source_work_ids: input.source_work_ids, book_type:, existing_books_lookup: lookup }
+    arguments = {
+      work_id: input.work_id, source_work_ids: input.source_work_ids, book_type:,
+      existing_books_lookup: lookup, acquired_title_cache:
+    }
     result = DuplicateDetectionService.check(**arguments, title: supplied.first, author: supplied.last)
     if result.block? || resolved == supplied || resolved.any?(&:blank?)
       result

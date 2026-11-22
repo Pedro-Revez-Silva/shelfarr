@@ -41,7 +41,7 @@ class DuplicateDetectionService
   end
 
   class << self
-    def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil, title: nil, author: nil)
+    def check(work_id:, edition_id: nil, book_type:, source_work_ids: nil, existing_books_lookup: nil, title: nil, author: nil, acquired_title_cache: nil)
       book_type = book_type.to_s
       work_ids = [ work_id, *Array(source_work_ids) ].compact_blank.uniq
 
@@ -61,17 +61,18 @@ class DuplicateDetectionService
       # Work ids stay inside one metadata provider. An acquired Hardcover copy
       # therefore cannot block an Open Library or Google Books candidate until
       # the title and author are compared for this format alone.
-      existing_book ||= find_acquired_by_identity(
-        title: title,
-        author: author,
-        book_type: book_type,
-        existing_books_lookup: existing_books_lookup
-      )
-      if existing_book&.acquired?
+      acquired_book = if existing_book&.acquired?
+        existing_book
+      else
+        find_acquired_by_identity(
+          title:, author:, book_type:, cache: acquired_title_cache || acquired_book_cache(existing_books_lookup)
+        )
+      end
+      if acquired_book
         return Result.new(
           status: BLOCK,
           message: "This #{label_for(book_type)} is already in your library.",
-          existing_book: existing_book,
+          existing_book: acquired_book,
           existing_request: nil
         )
       end
@@ -159,14 +160,14 @@ class DuplicateDetectionService
 
     private
 
-    def find_acquired_by_identity(title:, author:, book_type:, existing_books_lookup:)
+    def find_acquired_by_identity(title:, author:, book_type:, cache:)
       return if title.blank? || author.blank?
 
       forms = title_forms(title)
       names = author_names(author)
       return if forms.empty? || names.empty?
 
-      acquired_copies(book_type, existing_books_lookup, forms).each do |copy|
+      acquired_copies(book_type, cache, forms).each do |copy|
         next if SequenceMarker.conflict?(title, copy.book.title)
 
         return copy.book if same_author?(names, copy.names)
@@ -177,8 +178,8 @@ class DuplicateDetectionService
 
     # Search cards share a lookup. Index each acquired title once, then compare
     # authors and sequence markers only inside that normalized-title bucket.
-    def acquired_copies(book_type, lookup, forms)
-      index = acquired_title_index(book_type, lookup)
+    def acquired_copies(book_type, cache, forms)
+      index = acquired_title_index(book_type, cache)
       seen = {}
       matches = []
       forms.each do |form|
@@ -192,9 +193,8 @@ class DuplicateDetectionService
       matches.sort_by!(&:ordinal)
     end
 
-    def acquired_title_index(book_type, lookup)
+    def acquired_title_index(book_type, cache)
       key = book_type.to_s
-      cache = acquired_book_cache(lookup)
       return cache[key] if cache.key?(key)
 
       index = {}
