@@ -1469,7 +1469,8 @@ class DownloadJobTest < ActiveJob::TestCase
         setup_custom_provider_download(output_path: dir)
         @custom_provider_download.search_result.update!(title: title)
         url = "https://files.test/#{filename}"
-        content = file_fixture("test_ebook.fb2").binread.sub("\n", "\n<!-- #{'x' * 700} -->\n")
+        declaration, document = file_fixture("test_ebook.fb2").binread.split("\n", 2)
+        content = [ declaration, "<!-- #{'x' * 700} -->", document ].join("\n")
 
         VCR.turned_off do
           stub_request(:post, "http://provider.test/acquire").to_return_json(
