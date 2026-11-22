@@ -357,7 +357,6 @@ export class ApiClient {
     const code = envelope.success ? envelope.data.error : null;
     const kind = code ? FAILURE_BY_CODE[code] : undefined;
     if (!verifying && (kind === "signed_out" || kind === "account_changed")) this.deps.guard.lock(kind, askedAt);
-    if (!verifying && kind === "not_found") this.deps.requestVerification?.();
     if (kind === "csrf") this.deps.mutations?.rejected();
     const retry = Number.parseInt(response.headers.get("retry-after") ?? "", 10);
     const retryAfter = Number.isFinite(retry) && retry >= 0 ? retry : null;

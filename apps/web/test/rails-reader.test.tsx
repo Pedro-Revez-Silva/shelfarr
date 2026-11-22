@@ -77,9 +77,9 @@ describe("the reader served by Rails", () => {
   });
 
   test("a book with several files points to the web reader to choose another, and a stored place with a null type is accepted", async () => {
-    const first = { id: "c".repeat(64), filename: "First.epub", format: "epub", media_type: "application/epub+zip", size_bytes: 10, position: 0, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"c".repeat(64)}` };
-    const second = { ...first, id: "d".repeat(64), filename: "Second.epub", position: 1, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"d".repeat(64)}` };
-    const progress = { asset_id: second.id, locator: { href: "OEBPS/one.xhtml", type: null, locations: { progression: 0.25 } }, position_seconds: null, version: 2, observed_at: null, updated_at: "2026-11-22T10:00:00.000Z", client_mutation_id: "m" };
+    const first = { id: "c".repeat(64), filename: "First.pdf", format: "pdf", media_type: "application/pdf", size_bytes: 10, position: 0, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"c".repeat(64)}` };
+    const second = { ...first, id: "d".repeat(64), filename: "Second.pdf", position: 1, url: `${API}/accounts/${ACCOUNT}/library/8/assets/${"d".repeat(64)}` };
+    const progress = { asset_id: second.id, locator: { href: "document.pdf", type: null, locations: { position: 1 } }, position_seconds: null, version: 2, observed_at: null, updated_at: "2026-11-22T10:00:00.000Z", client_mutation_id: "m" };
     const publication = { id: "8", title: "Two Files", author: null, book_type: "ebook", content_kind: "book", reading_status: "in_progress", assets: [first, second], other_formats: [], progress, classic_reader: { url: "/sub/read/8", read_along: false } };
     expect(readerEnvelopeSchema.safeParse({ account: ACCOUNT, publication }).success).toBe(true);
     const server = readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), publication);

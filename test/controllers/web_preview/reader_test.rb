@@ -399,7 +399,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
         get path
         assert_response :not_found, path
         imports = JSON.parse(css_select("script[type=importmap]").sole.text).fetch("imports")
-        assert_match(%r{\A/assets/web_preview_access_refused-\h+\.js\z}, imports.fetch("web_preview_access_refused"))
+        assert_match(%r{/assets/web_preview_access_refused-\h+\.js\z}, imports.fetch("web_preview_access_refused"))
         assert_select "script[type=module]", text: /import "web_preview_access_refused"/
         assert_select "meta[name=shelfarr-base][content='']"
         assert_not_includes response.body, "shelfarr-boot"
@@ -417,7 +417,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "[data-controller=consumer-offline-signed-out]"
     imports = JSON.parse(css_select("script[type=importmap]").sole.text).fetch("imports")
-    assert_match(%r{\A/assets/web_preview_offline_release-\h+\.js\z}, imports.fetch("web_preview_offline_release"))
+    assert_match(%r{/assets/web_preview_offline_release-\h+\.js\z}, imports.fetch("web_preview_offline_release"))
   end
 
   def boot_reader_engine

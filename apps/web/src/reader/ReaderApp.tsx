@@ -1,6 +1,7 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Locator, PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import { failureKind } from "../api/errors";
 import { LockedScreen } from "../components/LockedScreen";
 import { ErrorPanel, Loading } from "../components/States";
 import { useAccountRevalidation } from "../revalidation";
@@ -55,7 +56,7 @@ function MissingReader({ mount }: { mount: string }) {
 }
 
 function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
-  const { api, keys } = useServices();
+  const { api, keys, revalidate } = useServices();
   useAccountRevalidation();
   const reader = useQuery({
     queryKey: [...keys.root, "reader", id],
@@ -65,6 +66,10 @@ function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const refused = reader.isError && failureKind(reader.error) === "not_found";
+  useEffect(() => {
+    if (refused) revalidate();
+  }, [refused, revalidate]);
   useDocumentTitle(reader.data?.title ?? (reader.isError ? "Book unavailable" : "Opening book"));
   if (reader.isPending) {
     return (
