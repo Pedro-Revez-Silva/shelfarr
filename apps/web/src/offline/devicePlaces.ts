@@ -69,7 +69,14 @@ export class DevicePlaces {
             if (edition.replaced || (stored?.asset_id === next.place.asset_id && Date.parse(stored.observedAt) >= observedAt)) return null;
             return {
               ...book,
-              devicePlace: { asset_id: next.place.asset_id, locator: next.place.locator, observedAt: new Date(observedAt).toISOString(), recordedAt: this.now(), upload: pendingUpload() },
+              devicePlace: {
+                asset_id: next.place.asset_id,
+                locator: next.place.locator,
+                observedAt: new Date(observedAt).toISOString(),
+                recordedAt: this.now(),
+                basedOn: book.accountPlace?.version ?? 0,
+                upload: pendingUpload(),
+              },
             };
           },
           this.now(),

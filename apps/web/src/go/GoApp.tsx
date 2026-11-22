@@ -51,7 +51,7 @@ async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmatio
   if ((await hasWorker(boot.offline)) || (await store.accountState()).record) await store.confirm(confirmation);
 }
 
-async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore): Promise<void> {
+async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore, refusedAt: number | null = null): Promise<void> {
   if (!boot.offline) return;
   const askedAt = Date.now();
   let answer: Bootstrap;
@@ -59,6 +59,7 @@ async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: Offl
     answer = await auth.bootstrap();
   } catch (error) {
     if (definitiveRefusal(error)) await store.release(askedAt);
+    else if (refusedAt !== null) await store.release(refusedAt);
     return;
   }
   await keepOfflineAccount(boot, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
@@ -255,7 +256,7 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   useEffect(
     () =>
       services.guard.subscribe(() => {
-        void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+        void refreshOfflineAccount(boot, auth, store, Date.now()).catch(() => undefined);
       }),
     [services, boot, auth, store],
   );

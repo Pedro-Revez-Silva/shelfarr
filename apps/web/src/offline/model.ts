@@ -16,7 +16,7 @@ export type Upload =
   | { state: "superseded"; version: number }
   | { state: "held"; reason: "conflict" | "rejected"; message: string | null };
 
-export type DevicePlace = { asset_id: string; locator: Locator; observedAt: string; recordedAt: number; upload?: Upload };
+export type DevicePlace = { asset_id: string; locator: Locator; observedAt: string; recordedAt: number; basedOn?: number; upload?: Upload };
 
 export type SavedBook = {
   key: string;
@@ -112,7 +112,8 @@ export function openingLocator(book: SavedBook): Locator | null {
   if (device) return device.locator;
   const account = book.accountPlace;
   if (account?.asset_id === book.asset.id) return account.locator;
-  return book.devicePlace?.asset_id === book.asset.id ? book.devicePlace.locator : null;
+  const own = book.devicePlace;
+  return own?.asset_id === book.asset.id && own.upload?.state !== "superseded" ? own.locator : null;
 }
 
 export function describeLocator(locator: Locator | null): string {
@@ -126,8 +127,9 @@ export const pendingUpload = (): PendingUpload => ({ state: "pending", request: 
 
 export function unsentPlace(book: SavedBook): (DevicePlace & { upload: PendingUpload }) | null {
   const device = book.devicePlace;
-  if (device?.upload?.state === "pending") return { ...device, upload: device.upload };
-  if (device && device.upload === undefined && laterDevicePlace(book)) return { ...device, upload: pendingUpload() };
+  if (!device || device.asset_id !== book.asset.id) return null;
+  if (device.upload?.state === "pending") return { ...device, upload: device.upload };
+  if (device.upload === undefined && laterDevicePlace(book)) return { ...device, upload: pendingUpload() };
   return null;
 }
 

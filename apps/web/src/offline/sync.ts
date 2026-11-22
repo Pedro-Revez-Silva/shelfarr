@@ -67,14 +67,14 @@ async function prepare(deps: SyncDeps, id: string, now: () => number, uuid: () =
       const device = unsentPlace(book);
       if (!device) return null;
       const known = book.accountPlace;
-      if (!device.upload.request && known && known.asset_id === device.asset_id && samePlace({ asset_id: device.asset_id, locator: device.locator }, { asset_id: known.asset_id, locator: known.locator })) {
-        return { ...book, devicePlace: { ...device, upload: { state: "synced", version: known.version } } };
-      }
+      const basedOn = device.basedOn ?? 0;
+      const unchanged = known && known.version === basedOn && known.asset_id === device.asset_id && samePlace({ asset_id: device.asset_id, locator: device.locator }, { asset_id: known.asset_id, locator: known.locator });
+      if (!device.upload.request && unchanged) return { ...book, devicePlace: { ...device, upload: { state: "synced", version: known.version } } };
       const request: ProgressRequest = device.upload.request ?? {
         asset_id: device.asset_id,
         locator: device.locator,
         observed_at: device.observedAt,
-        expected_version: known?.version ?? 0,
+        expected_version: basedOn,
         client_mutation_id: uuid(),
       };
       prepared.value = { request, rebases: device.upload.rebases, assetId: device.asset_id };
@@ -114,11 +114,13 @@ async function rebase(deps: SyncDeps, id: string, request: ProgressRequest, remo
 
 async function syncBook(deps: SyncDeps, id: string, now: () => number, uuid: () => string): Promise<"done" | "retry" | "stop"> {
   for (;;) {
+    const current = await deps.store.book(deps.account, id);
+    if (!current || !unsentPlace(current)) return "done";
+    const verified = await deps.verify();
+    if (verified.kind !== "verified") return verified.kind;
     const prepared = await prepare(deps, id, now, uuid);
     if (!prepared) return "done";
     const { request, rebases, assetId } = prepared;
-    const verified = await deps.verify();
-    if (verified.kind !== "verified") return verified.kind;
     let answer: ProgressAnswer;
     try {
       answer = await deps.write(id, request, verified.csrf);

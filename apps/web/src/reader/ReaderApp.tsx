@@ -208,12 +208,25 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
     );
   const epub = savedEpub(publication);
   const tools = epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub.id} load={async () => publication} compact /> : null;
+  const elsewhere = listening ? null : savedCopy.elsewhere(asset?.id ?? null);
+  const openElsewhere = () => {
+    const target = publication.assets.find((candidate) => candidate.id === elsewhere?.assetId);
+    if (target && elsewhere) setOpening({ asset: target, start: elsewhere.locator, savedElsewhere: false });
+  };
   return (
     <ReaderFrame id={publication.id} title={publication.title} author={publication.author} kind={listening ? "Listening" : "Reading"} footer={footer} tools={tools} beforeLeave={beforeLeave}>
       {remoteNote ? (
         <p className="notice reader-notice" role="status">
           {remoteNote}
         </p>
+      ) : null}
+      {elsewhere ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>{elsewhere.text}</p>
+          <button type="button" className="button" onClick={openElsewhere}>
+            {elsewhere.action}
+          </button>
+        </div>
       ) : null}
       {body}
     </ReaderFrame>

@@ -66,6 +66,9 @@ async function centralNames(blob: Blob, start: number, size: number, entries: nu
     const header = await bytesOf(blob, local, local + LOCAL_RECORD_BYTES);
     if (header.byteLength !== LOCAL_RECORD_BYTES || header.getUint32(0, true) !== LOCAL_HEADER || header.getUint16(26, true) !== nameLength) return null;
     if (local + LOCAL_RECORD_BYTES + nameLength + header.getUint16(28, true) > start) return null;
+    const localName = new Uint8Array(await blob.slice(local + LOCAL_RECORD_BYTES, local + LOCAL_RECORD_BYTES + nameLength).arrayBuffer());
+    const centralName = new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength);
+    if (localName.some((byte, index) => byte !== centralName[index])) return null;
     names.push(decoder.decode(new Uint8Array(directory.buffer, directory.byteOffset + offset + CENTRAL_RECORD_BYTES, nameLength)));
     offset = next;
   }

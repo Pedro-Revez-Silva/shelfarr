@@ -983,8 +983,10 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
   confirmation is stored only if it was asked after the latest clearing and is not older than the stored one; a
   signed-out or refused answer clears any record confirmed by an earlier question and is itself ignored for one confirmed
   by a later question; signing out clears against everything asked until then. A sign-in and a page lock each ask
-  `auth/bootstrap` again rather than using the login answer or the moment of the lock, and an expired record is cleared
-  against everything asked until the moment it was found expired. So a slow answer, a stale
+  `auth/bootstrap` again rather than using the login answer or the moment of the lock (when that check cannot reach the
+  server, the lock clears against everything asked until the lock), and an expired record is cleared against every
+  question asked up to its own confirmation; a later question's positive answer is newer truth about the session and is
+  accepted with its own window, so a clock corrected after a jump never locks the account out. So a slow answer, a stale
   save or another tab can neither restore an account that was signed out or replaced, nor erase a newer confirmation, and
   of two pages answering for different accounts the later question wins. A window is measured from when the server was
   asked, so a slow answer never extends it. The record is renewed by every signed-in bootstrap once the browser has the
@@ -1006,26 +1008,31 @@ The edition is the asset id, the same identity Rails and the native apps use. A 
 
 ### Sending places reached offline
 
-Each deliberate move offline marks the saved book's `devicePlace` as `upload: {state:"pending", request:null}` in the same
-IndexedDB write, unless the stored place has a later activity time (another tab's newer move is never replaced by an older
+Each deliberate move offline marks the saved book's `devicePlace` as `upload: {state:"pending", request:null}` and records
+`basedOn`, the account version this browser knew at that moment, in the same IndexedDB write, unless the stored place has a
+later activity time (another tab's newer move is never replaced by an older
 one); a place stored by the earlier candidate without `upload` is treated as pending when it is later than the account
 place. Saving the copy again keeps the stored device place and the higher account version, read inside the commit's own
-transaction. A pending or held device place is where the saved copy opens offline and is offered online; a sent or
-superseded one is not. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
+transaction. A pending or held device place is where the saved copy opens offline and is offered online, also when it is in
+another file of the book than the account's place (the reader offers to open that file at it); a sent or superseded one is
+not. Nothing else is queued: only the newest place per book and account, bound to the saved edition.
 
 * **When.** A page runs one sender at a time (a Web Lock `shelfarr-go-preview-offline-sync|<account>` across tabs; no
   service worker or Background Sync): on the initial verified load of any Go page with `-web-offline`, on focus,
   visibility and `online`, after the offline page's 20 s reachability check finds the same account again, after each
   offline move once connected, and after an uncertain answer at 2, 5, 15, 30 and then every 60 s. The `online` event is
   only a hint: nothing is sent until a real `auth/bootstrap` answer arrives. With nothing pending it makes no request.
-* **Who.** Before every single request (each book and each rebase), the sender asks `auth/bootstrap` again; it sends only
-  when that answer itself names the same signed-in account, with that answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
+* **Who.** Before every single request (each book and each rebase), the sender asks `auth/bootstrap` again and applies that
+  answer to the account record first (another account replaces it, signed out or option off clears it); only then does it
+  build the request from the place stored at that moment, and it sends only when the answer itself names the same
+  signed-in account, with that answer's CSRF token, `X-Shelfarr-Account`, the browser's own `Origin` and the session cookie, through the existing
   `PUT /preview/api/v1/library/:id/progress` at `priority: "low"`. A signed-out, refused, other-account or option-off
-  answer, a page lock or an expired record stops it; the pending place stays. A matching `expected_version` means this
-  browser's knowledge of the account place is current, so the server accepts the offline move as the newer reading action
-  even when that place is undated or in another file of the book, exactly as an online page turn would be.
-* **What.** `{asset_id, locator, observed_at: the original activity time, expected_version: the last account version
-  this browser learned (0 if none), client_mutation_id}`, stored before it is sent, so an uncertain answer (network
+  answer, a page lock or an expired record stops it; the pending place stays. Because `expected_version` is the version the
+  move was based on, any account change made after the move, dated or not, returns a conflict instead of being replaced; a
+  matching version means nothing changed since the move, so the server accepts it as the newer reading action, exactly as
+  an online page turn would be.
+* **What.** Only for the saved edition (a place pending in an edition that was since replaced is never sent).
+  `{asset_id, locator, observed_at: the original activity time, expected_version: basedOn, client_mutation_id}`, stored before it is sent, so an uncertain answer (network
   failure, `5xx`, refused token) resends the identical request later, also after a reload. A place equal to the known
   account place is marked sent without a request.
 * **Answers** (the Rails outbox rules, with the server's own compare-and-set and chronology checks; `resolve_conflict` is
@@ -1096,7 +1103,8 @@ answer racing a newer offline move, two tabs sending the same request, a held lo
 
 Not proven: Safari, Firefox, real devices, screen readers, eviction by a browser under storage pressure, a real
 `QuotaExceededError` (only the estimate check and the unit tests), very large books, and offline audiobooks, PDFs and
-comics, which this slice does not offer.
+comics, which this slice does not offer. Known limit: device places from two tabs are ordered by this device's wall clock,
+so after the clock is set back a new tab's move dated before the stored one is not kept until the clock catches up.
 
 ## Account: display name and password (opt-in)
 

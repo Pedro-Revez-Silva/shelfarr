@@ -154,11 +154,10 @@ describe("the confirmed account", () => {
     expect(await store.touch("5", NOW + DAY)).toBe(false);
     expect((await store.accountState()).record).toBeNull();
     expect(await store.confirm(confirmation())).toBe(false);
-    expect(await store.confirm(confirmation({ confirmedAt: NOW + DAY }))).toBe(false);
-    await confirmed(store, confirmation({ confirmedAt: NOW + DAY + 1 }));
-    expect(await store.touch("5", NOW + DAY + 1 + 30 * DAY)).toBe(false);
+    await confirmed(store, confirmation({ confirmedAt: NOW + 1 }));
+    expect(await store.touch("5", NOW + 1 + 30 * DAY)).toBe(false);
     expect((await store.accountState()).record).toBeNull();
-    expect(await store.confirm(confirmation({ confirmedAt: NOW + 2 * DAY }))).toBe(false);
+    expect(await store.confirm(confirmation({ confirmedAt: NOW + 1 }))).toBe(false);
   });
 
   test("reading the account of a browser that never saved creates nothing", async () => {
@@ -249,6 +248,9 @@ describe("the archive check", () => {
     const overlong = epubBytes();
     new DataView(overlong.buffer).setUint16(26, 65535, true);
     expect(await completeZip(new Blob([overlong]))).toBe(false);
+    const renamed = epubBytes();
+    renamed.set(new TextEncoder().encode("OTHER-IN/container.xml"), 30);
+    expect(await completeZip(new Blob([renamed]))).toBe(false);
     const notEpub = epubBytes();
     notEpub.set(new TextEncoder().encode("OTHER-IN/container.xml"), SIZE - 22 - 22);
     expect(await completeZip(new Blob([notEpub]))).toBe(false);
@@ -480,6 +482,7 @@ describe("places kept on this device", () => {
       locator: locator("b"),
       observedAt: new Date(NOW - 40).toISOString(),
       recordedAt: NOW,
+      basedOn: 0,
       upload: { state: "pending", request: null, rebases: 0 },
     });
     clock += 1_000;

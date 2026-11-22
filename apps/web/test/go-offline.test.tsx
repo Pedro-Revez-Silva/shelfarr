@@ -790,3 +790,77 @@ describe("third review regressions in the app", () => {
     }
   });
 });
+
+describe("fourth review regressions in the app", () => {
+  test("an answer for another account replaces this account's record even when nothing is sent", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5");
+      const book = store.saved.get("5|7")!;
+      store.saved.set("5|7", { ...book, devicePlace: { asset_id: EPUB_ID, locator: { href: "OEBPS/two.xhtml" }, observedAt: "2026-11-20T11:00:00.000Z", recordedAt: Date.now() - 1000, basedOn: 0, upload: { state: "pending", request: null, rebases: 0 } } });
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          return { body: { ...signedIn(calls === 1 ? "5" : "4"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }));
+      renderOffline(server, store, "library", "/preview/library");
+      await waitFor(() => expect(calls).toBeGreaterThanOrEqual(2));
+      await waitFor(() => expect(store.record?.account).toBe("4"));
+      expect(server.called("PUT", /\/progress$/)).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a lost session that cannot be checked again still ends offline access from the moment it was lost", async () => {
+    const restore = withRegisteredWorker();
+    try {
+      const store = storeFor("5", Date.now() - DAY);
+      let calls = 0;
+      const server = new FakeServer()
+        .on("GET", /\/auth\/bootstrap$/, () => {
+          calls += 1;
+          if (calls > 1) throw new TypeError("Failed to fetch");
+          return { body: { ...signedIn("5"), offline_expires_in: 3600 } };
+        })
+        .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+        .on("GET", /\/api\/v1\/continue/, () => ({ body: { account: "5", items: [] } }))
+        .on("GET", /\/api\/v1\/library(\?|$)/, () => error(401, "signed_out"));
+      renderOffline(server, store, "library", "/preview/library");
+      await screen.findByRole("heading", { name: "Your session ended" });
+      await waitFor(() => expect(store.record).toBeNull());
+    } finally {
+      restore();
+    }
+  });
+
+  test("online, a place kept for a choice in another file of the book can be opened from the reader", async () => {
+    const store = storeFor("5");
+    const book = store.saved.get("5|7")!;
+    const place = { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { cfi: "epubcfi(/6/4!/4/2/1:0)", totalProgression: 0.75 } };
+    store.saved.set("5|7", { ...book, devicePlace: { asset_id: EPUB_ID, locator: place, observedAt: "2026-11-20T11:00:00.000Z", recordedAt: Date.now() - 1000, basedOn: 0, upload: { state: "held", reason: "conflict", message: null } } });
+    const other = { ...readerPublication().assets[0]!, id: NEWER_ID, filename: "Other.epub", url: `/preview/api/v1/accounts/5/library/7/assets/${NEWER_ID}` };
+    const server = new FakeServer()
+      .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600 } }))
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: ACCOUNT } }))
+      .on("GET", /\/api\/v1\/library\/7\/reader$/, () => ({
+        body: { account: "5", publication: readerPublication({ assets: [readerPublication().assets[0]!, other], progress: serverProgress({ asset_id: NEWER_ID, version: 6, client_mutation_id: "other" }) }) },
+      }));
+    const network = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("no network in unit tests");
+    }) as unknown as typeof fetch;
+    try {
+      resetFirstPage();
+      window.history.replaceState(null, "", "/preview/library/7/read");
+      render(<GoApp boot={{ ...goBoot("reader"), reader_engine: "/preview/assets/reader-engine.0123456789abcdef.js", offline: OFFLINE }} fetcher={server.fetcher} store={store} />);
+      const open = await screen.findByRole("button", { name: "Open that file at the place on this device" });
+      await act(async () => open.click());
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Open that file at the place on this device" })).toBeNull());
+    } finally {
+      globalThis.fetch = network;
+    }
+  });
+});

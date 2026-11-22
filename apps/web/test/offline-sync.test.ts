@@ -41,7 +41,7 @@ async function storeWith(book: SavedBook, record: ConfirmedAccount = { account: 
 const offlineBook = (overrides: Partial<SavedBook> = {}) =>
   savedBook({
     accountPlace: { asset_id: EPUB_ID, locator: locator("account"), version: 3, observedAt: "2026-11-20T10:00:00.000Z", learnedAt: NOW - 2 * DAY },
-    devicePlace: { asset_id: EPUB_ID, locator: locator("device"), observedAt: OFFLINE_AT, recordedAt: NOW - 1000, upload: { state: "pending", request: null, rebases: 0 } },
+    devicePlace: { asset_id: EPUB_ID, locator: locator("device"), observedAt: OFFLINE_AT, recordedAt: NOW - 1000, basedOn: 3, upload: { state: "pending", request: null, rebases: 0 } },
     ...overrides,
   });
 
@@ -254,7 +254,7 @@ describe("sending places reached offline", () => {
     expect(await first).toEqual({ kind: "settled" });
     expect(run.writes.map((write) => [write.body.locator, write.body.expected_version, write.body.observed_at])).toEqual([
       [locator("device"), 3, OFFLINE_AT],
-      [locator("newer"), 4, "2026-11-20T11:10:00.000Z"],
+      [locator("newer"), 3, "2026-11-20T11:10:00.000Z"],
     ]);
     expect((await store.book("5", "7"))?.devicePlace).toMatchObject({ locator: locator("newer"), upload: { state: "synced", version: 5 } });
   });
@@ -363,10 +363,63 @@ describe("third review regressions", () => {
     expect(book?.devicePlace?.locator).toEqual(locator("device"));
   });
 
-  test("an expired record cannot be revived by an answer asked before it expired", async () => {
+  test("an expired record is never revived by its own or an older answer, while a later genuine answer is accepted after the clock is corrected", async () => {
     const store = await storeWith(offlineBook(), { account: "5", confirmedAt: NOW - 30 * DAY, validForMs: 30 * DAY + 5 });
-    expect(await store.touch("5", NOW + 10)).toBe(false);
-    expect(await store.confirm({ account: "5", confirmedAt: NOW, validForMs: DAY })).toBe(false);
+    expect(await store.touch("5", NOW + 40 * DAY)).toBe(false);
+    expect(await store.confirm({ account: "5", confirmedAt: NOW - 30 * DAY, validForMs: 60 * DAY })).toBe(false);
+    expect(await store.confirm({ account: "5", confirmedAt: NOW, validForMs: DAY })).toBe(true);
+  });
+
+  test("an offline move carries the account version it was based on, so a place learned later turns into a conflict instead of an overwrite", async () => {
+    const store = await storeWith(offlineBook({ devicePlace: null }));
+    const places = new DevicePlaces(store, "5", "7", () => undefined, () => NOW);
+    places.record({ asset_id: EPUB_ID, locator: locator("moved") }, Date.parse(OFFLINE_AT));
+    await places.flush();
+    await store.updateBook("5", "7", (book) => ({ ...book, accountPlace: { asset_id: EPUB_ID, locator: locator("undated"), version: 4, observedAt: null, learnedAt: NOW } }), NOW);
+    const run = harness(store, [conflict(serverProgress({ version: 4, observed_at: null, locator: locator("undated"), client_mutation_id: "other" }))]);
+    await syncPlaces(run.deps);
+    expect(run.writes.map((write) => write.body.expected_version)).toEqual([3]);
+    expect((await store.book("5", "7"))?.devicePlace?.upload).toEqual({ state: "held", reason: "conflict", message: null });
+  });
+
+  test("a superseded device place never becomes where the saved copy opens", () => {
+    const book = offlineBook({
+      accountPlace: { asset_id: NEWER_ID, locator: locator("other-file"), version: 6, observedAt: "2026-11-20T11:30:00.000Z", learnedAt: NOW },
+      devicePlace: { ...offlineBook().devicePlace!, upload: { state: "superseded", version: 5 } },
+    });
+    expect(openingLocator(book)).toBeNull();
+  });
+
+  test("a place pending in an edition that was since replaced is never sent", async () => {
+    const store = await storeWith(offlineBook());
+    await store.begin({ key: "5|7", account: "5", id: "7", title: "Saved Book", assetId: NEWER_ID, token: "update", startedAt: 2, failure: null });
+    expect(await store.commit(savedBook({ asset: { ...savedBook().asset, id: NEWER_ID } }), new Blob([epubBytes()]), "update", NOW)).toBe("saved");
+    const run = harness(store, []);
+    expect(await syncPlaces(run.deps)).toEqual({ kind: "idle" });
+    expect(run.verifications()).toBe(0);
+  });
+
+  test("the request is built only after the account is confirmed, so a removal or newer move during the check is respected", async () => {
+    const removed = await storeWith(offlineBook());
+    const first = harness(removed, []);
+    first.deps.verify = async () => {
+      await removed.remove("5", "7");
+      return { kind: "verified", csrf: "token" };
+    };
+    await syncPlaces(first.deps);
+    expect(first.writes).toEqual([]);
+
+    globalThis.indexedDB = new IDBFactory();
+    const moved = await storeWith(offlineBook());
+    const places = new DevicePlaces(moved, "5", "7", () => undefined, () => NOW);
+    const second = harness(moved, [saved(4)]);
+    second.deps.verify = async () => {
+      places.record({ asset_id: EPUB_ID, locator: locator("newer") }, Date.parse("2026-11-20T11:20:00.000Z"));
+      await places.flush();
+      return { kind: "verified", csrf: "token" };
+    };
+    await syncPlaces(second.deps);
+    expect(second.writes.map((write) => write.body.locator)).toEqual([locator("newer")]);
   });
 
   test("a place held for a choice is offered online and opens offline even after the account place is learned", async () => {

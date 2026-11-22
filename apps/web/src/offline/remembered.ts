@@ -6,7 +6,11 @@ import { announceChange, type Offline } from "./context";
 import { describeLocator, deviceIsLater, rememberAccountPlace, type DevicePlace, type SavedBook } from "./model";
 import { formatMoment, uploadText } from "./text";
 
-export type RememberedPlace = { remember: (progress: StoredProgress) => void; offer: (assetId: string) => OfferedPlace | null };
+export type RememberedPlace = {
+  remember: (progress: StoredProgress) => void;
+  offer: (assetId: string) => OfferedPlace | null;
+  elsewhere: (assetId: string | null) => (OfferedPlace & { assetId: string }) | null;
+};
 
 export function offeredDevicePlace(book: SavedBook, server: StoredProgress | null, now: number): DevicePlace | null {
   const device = book.devicePlace;
@@ -56,5 +60,10 @@ export function useRememberedPlace(offline: Offline | null, account: string, pub
   });
 
   const offered = useMemo(() => (device ? offerFor(device) : null), [device]);
-  return { remember, offer: (assetId) => (offered && device?.asset_id === assetId ? offered : null) };
+  const listed = device !== null && publication.assets.some((asset) => asset.id === device.asset_id);
+  return {
+    remember,
+    offer: (assetId) => (offered && device?.asset_id === assetId ? offered : null),
+    elsewhere: (assetId) => (offered && device && listed && device.asset_id !== assetId ? { ...offered, action: "Open that file at the place on this device", assetId: device.asset_id } : null),
+  };
 }

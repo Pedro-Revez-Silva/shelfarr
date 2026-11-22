@@ -49,7 +49,7 @@ export class MemoryOfflineStore implements OfflineStore {
     if (!usable(this.record, account, now)) {
       if (ownedSince !== null) {
         this.record = null;
-        this.clearedAt = Math.max(this.clearedAt, ownedSince, now);
+        this.clearedAt = Math.max(this.clearedAt, ownedSince);
       }
       return false;
     }

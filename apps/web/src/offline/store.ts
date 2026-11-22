@@ -98,7 +98,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
       const record = current.record;
       const ownedSince = record?.account === account ? record.confirmedAt : null;
       if (!usable(record, account, now)) {
-        if (ownedSince !== null) await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, ownedSince, now) });
+        if (ownedSince !== null) await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, ownedSince) });
         return false;
       }
       if (now > (record.seenAt ?? 0)) await writeAccount(stores, { record: { ...record, seenAt: now }, clearedAt: current.clearedAt });
