@@ -221,20 +221,44 @@ module ServerSettings
         return Outcome.alert("Telegram is not fully configured. Enable it and enter bot token and webhook secret first.")
       end
 
-      Integrations::Telegram::Client.set_webhook!(url: telegram_webhook_url)
-      SettingsService.set(:telegram_update_mode, "webhook")
-      TelegramPollingJob.clear_schedule!
+      previous_mode = SettingsService.get(:telegram_update_mode)
+      begin
+        SettingsService.set(:telegram_update_mode, "webhook")
+      rescue ActiveRecord::ActiveRecordError => e
+        Rails.logger.error("[SettingsController] Could not save the Telegram webhook mode: #{e.class}")
+        return Outcome.alert("Shelfarr could not save the switch to webhook delivery. Nothing was changed; try again in a moment.")
+      end
+
+      begin
+        Integrations::Telegram::Client.set_webhook!(url: telegram_webhook_url)
+      rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
+        return restore_telegram_mode(previous_mode, e.message)
+      rescue ActiveRecord::ActiveRecordError
+        return restore_telegram_mode(previous_mode, "Shelfarr could not read the Telegram settings, so nothing was sent to Telegram.")
+      end
+
+      stop_polling_schedule
       Outcome.notice("Telegram webhook configured: #{telegram_webhook_url}")
-    rescue Integrations::Telegram::Client::ConfigurationError, Integrations::Telegram::Client::DeliveryError => e
-      Outcome.alert(e.message)
-    rescue ActiveRecord::ActiveRecordError => e
-      Rails.logger.error("[SettingsController] Telegram accepted the webhook but Shelfarr could not record it: #{e.class}")
-      Outcome.alert("Telegram now sends updates to the webhook, but Shelfarr could not record the change. Try again in a moment; until it is recorded the bot may not answer.")
     end
 
     private
 
     attr_reader :posted, :telegram_webhook_url
+
+    def restore_telegram_mode(previous_mode, refusal)
+      SettingsService.set(:telegram_update_mode, previous_mode)
+      TelegramPollingJob.ensure_running!
+      Outcome.alert(refusal)
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.error("[SettingsController] Could not restore the Telegram update mode: #{e.class}")
+      Outcome.alert("#{refusal} Shelfarr could not switch back to #{previous_mode} either; save the Telegram card again to restore it.")
+    end
+
+    def stop_polling_schedule
+      TelegramPollingJob.clear_schedule!
+    rescue ActiveRecord::ActiveRecordError => e
+      Rails.logger.warn("[SettingsController] Could not clear the Telegram polling schedule; the polling job stops itself in webhook mode: #{e.class}")
+    end
 
     def submitted_values(posted)
       return posted.to_unsafe_h if posted.respond_to?(:to_unsafe_h)

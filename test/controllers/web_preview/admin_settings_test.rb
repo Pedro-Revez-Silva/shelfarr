@@ -485,22 +485,6 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal false, field_json(body, :auth_disabled).fetch("value")
   end
 
-  test "a refused Telegram webhook registration leaves polling running" do
-    SettingsService.set(:telegram_enabled, true)
-    SettingsService.set(:telegram_update_mode, "polling")
-    SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
-    SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
-    cleared = false
-    sign_in_as(@admin)
-    refuse = ->(url:) { raise Integrations::Telegram::Client::DeliveryError, "Telegram setWebhook failed: HTTPS url must be provided for webhook" }
-    TelegramPollingJob.stub(:clear_schedule!, -> { cleared = true }) do
-      Integrations::Telegram::Client.stub(:set_webhook!, refuse) { probe("telegram_webhook") }
-    end
-    assert_equal({ "tone" => "error", "message" => "Telegram setWebhook failed: HTTPS url must be provided for webhook" }, response.parsed_body.fetch("outcome"))
-    assert_equal "polling", SettingsService.get(:telegram_update_mode)
-    assert_not cleared
-  end
-
   test "a failed webhook test never repeats the saved address or its query" do
     address = "https://ntfy.example/shelf?auth=webhook-secret-7781"
     SettingsService.set(:webhook_enabled, true)
@@ -522,23 +506,6 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal({ "tone" => "success", "message" => "Discord test sent successfully!" }, response.parsed_body.fetch("outcome"))
   end
 
-  test "registering the webhook again while Telegram already uses it keeps webhook delivery" do
-    SettingsService.set(:telegram_enabled, true)
-    SettingsService.set(:telegram_update_mode, "webhook")
-    SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
-    SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
-    deleted = false
-    sign_in_as(@admin)
-    failing_set = ->(*) { raise ActiveRecord::StatementInvalid, "database is locked" }
-    Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { true }) do
-      Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { deleted = true }) do
-        SettingsService.stub(:set, failing_set) { probe("telegram_webhook") }
-      end
-    end
-    assert_not deleted
-    assert_equal "webhook", SettingsService.get(:telegram_update_mode)
-  end
-
   test "whitespace never replaces a write-only address, and an IPv6 address shows its whole host" do
     SettingsService.set(:webhook_url, "https://[2001:db8::1]:8443/hook?auth=x")
     assert_equal "https://[2001:db8::1]", field_json(settings_json, :webhook_url).fetch("shown")
@@ -551,27 +518,81 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
     assert_equal "https://[2001:db8::1]:8443/hook?auth=x", SettingsService.get(:webhook_url)
   end
 
-  test "when Telegram accepts the webhook but Shelfarr cannot record it, nothing is undone and the answer says so" do
+  def telegram_ready(mode)
     SettingsService.set(:telegram_enabled, true)
-    SettingsService.set(:telegram_update_mode, "polling")
+    SettingsService.set(:telegram_update_mode, mode)
     SettingsService.set(:telegram_bot_token, SECRETS[:telegram_bot_token])
     SettingsService.set(:telegram_webhook_secret, "webhook-secret-for-telegram")
-    deleted = false
-    cleared = false
+  end
+
+  def switch_to_webhook(registration:, failing_mode_writes: 0)
+    calls = { cleared: false, restarted: false, deleted: false, registered: false }
     original_set = SettingsService.method(:set)
-    busy_mode = ->(key, value) { key.to_s == "telegram_update_mode" ? raise(ActiveRecord::StatementInvalid, "database is locked") : original_set.call(key, value) }
+    failures = failing_mode_writes
+    set = lambda do |key, value|
+      if key.to_s == "telegram_update_mode" && failures.positive?
+        failures -= 1
+        raise ActiveRecord::StatementInvalid, "database is locked"
+      end
+      original_set.call(key, value)
+    end
+    register = ->(url:) { calls[:registered] = true; registration.call }
     sign_in_as(@admin)
-    TelegramPollingJob.stub(:clear_schedule!, -> { cleared = true }) do
-      Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { true }) do
-        Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { deleted = true }) do
-          SettingsService.stub(:set, busy_mode) { probe("telegram_webhook") }
+    TelegramPollingJob.stub(:clear_schedule!, -> { calls[:cleared] = true }) do
+      TelegramPollingJob.stub(:ensure_running!, -> { calls[:restarted] = true }) do
+        Integrations::Telegram::Client.stub(:delete_webhook!, ->(**) { calls[:deleted] = true }) do
+          Integrations::Telegram::Client.stub(:set_webhook!, register) do
+            SettingsService.stub(:set, set) { probe("telegram_webhook") }
+          end
         end
       end
     end
-    assert_equal "error", response.parsed_body.dig("outcome", "tone")
-    assert_match(/could not record the change/, response.parsed_body.dig("outcome", "message"))
-    assert_not deleted
-    assert_not cleared
+    calls
+  end
+
+  test "a refused Telegram webhook registration puts polling back" do
+    telegram_ready("polling")
+    calls = switch_to_webhook(registration: -> { raise Integrations::Telegram::Client::DeliveryError, "Telegram setWebhook failed: HTTPS url must be provided for webhook" })
+    assert_equal({ "tone" => "error", "message" => "Telegram setWebhook failed: HTTPS url must be provided for webhook" }, response.parsed_body.fetch("outcome"))
+    assert_equal "polling", SettingsService.get(:telegram_update_mode)
+    assert_equal({ cleared: false, restarted: true, deleted: false, registered: true }, calls)
+  end
+
+  test "when the switch to webhook delivery cannot be saved, nothing is sent to Telegram" do
+    telegram_ready("polling")
+    calls = switch_to_webhook(registration: -> { true }, failing_mode_writes: 1)
+    assert_equal({ "tone" => "error", "message" => "Shelfarr could not save the switch to webhook delivery. Nothing was changed; try again in a moment." }, response.parsed_body.fetch("outcome"))
+    assert_equal "polling", SettingsService.get(:telegram_update_mode)
+    assert_equal({ cleared: false, restarted: false, deleted: false, registered: false }, calls)
+  end
+
+  test "registering again while webhook delivery is in use keeps it, even when the save fails" do
+    telegram_ready("webhook")
+    calls = switch_to_webhook(registration: -> { true }, failing_mode_writes: 1)
+    assert_equal "webhook", SettingsService.get(:telegram_update_mode)
+    assert_equal({ cleared: false, restarted: false, deleted: false, registered: false }, calls)
+    calls = switch_to_webhook(registration: -> { true })
+    assert_equal "success", response.parsed_body.dig("outcome", "tone")
+    assert_equal({ cleared: true, restarted: false, deleted: false, registered: true }, calls)
+  end
+
+  test "a refused registration whose mode cannot be put back says how to recover" do
+    telegram_ready("polling")
+    switch_to_webhook(registration: -> { raise Integrations::Telegram::Client::DeliveryError, "Telegram setWebhook failed: Unauthorized" }, failing_mode_writes: 0)
+    assert_equal "polling", SettingsService.get(:telegram_update_mode)
+    original_set = SettingsService.method(:set)
+    writes = 0
+    set_then_fail = lambda do |key, value|
+      if key.to_s == "telegram_update_mode"
+        writes += 1
+        raise ActiveRecord::StatementInvalid, "database is locked" if writes == 2
+      end
+      original_set.call(key, value)
+    end
+    Integrations::Telegram::Client.stub(:set_webhook!, ->(url:) { raise Integrations::Telegram::Client::DeliveryError, "Telegram setWebhook failed: Unauthorized" }) do
+      SettingsService.stub(:set, set_then_fail) { probe("telegram_webhook") }
+    end
+    assert_equal "Telegram setWebhook failed: Unauthorized Shelfarr could not switch back to polling either; save the Telegram card again to restore it.", response.parsed_body.dig("outcome", "message")
   end
 
   test "a card reads the other bound of a size range inside the same write transaction" do
