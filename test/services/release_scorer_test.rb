@@ -565,6 +565,37 @@ class ReleaseScorerTest < ActiveSupport::TestCase
     end
   end
 
+  test "keeps numbered release metadata from being scored as a sequel" do
+    @book.update!(title: "Dune", author: "Frank Herbert")
+    SettingsService.set(:ebook_approved_formats, [])
+    SettingsService.set(:ebook_rejected_formats, [])
+
+    {
+      audiobook: [
+        "Frank Herbert - Dune MP3 320",
+        "Dune - Frank Herbert - MP3 320",
+        "Frank Herbert - Dune [MP3 320]",
+        "Frank Herbert - Dune MP3 2 CDs",
+        "Frank Herbert - Dune M4B 64",
+        "Frank Herbert - Dune English 12 hours M4B"
+      ],
+      ebook: [
+        "Frank Herbert - Dune EPUB 2 files",
+        "Frank Herbert - Dune [EPUB] 1 file",
+        "Frank Herbert - Dune English 2 files EPUB",
+        "Frank Herbert - Dune Retail 1 EPUB"
+      ]
+    }.each do |book_type, release_titles|
+      @book.update!(book_type: book_type)
+      release_titles.each do |release_title|
+        score = ReleaseScorer.score(@request.search_results.new(title: release_title, seeders: 50), @request)
+
+        assert_equal 100, score.breakdown[:title], release_title
+        assert score.breakdown[:auto_select_allowed], release_title
+      end
+    end
+  end
+
   test "scores an author-first cjk release of a short title" do
     @book.update!(title: "三体", author: "刘慈欣", book_type: :audiobook)
     @request.update!(language: "zh")

@@ -51,14 +51,15 @@ class SequenceMarker
   FORMAT_WORDS = %w[
     epub pdf mobi azw azw3 fb2 ebook audiobook m4b mp3 flac cbr cbz retail multi
   ].freeze
-  RELEASE_TAG_WORDS = (ReleaseParserService.language_tokens + FORMAT_WORDS).uniq.freeze
+  LANGUAGE_TAG_WORDS = (ReleaseParserService.language_tokens - FORMAT_WORDS).freeze
+  RELEASE_TAG_WORDS = (LANGUAGE_TAG_WORDS + FORMAT_WORDS).freeze
   FOLLOWER_WORDS = (MARKER_WORDS + RELEASE_TAG_WORDS).uniq.freeze
   FOLLOWER_ALTERNATION = FOLLOWER_WORDS.sort_by { |word| -word.length }.map { |word|
     Regexp.escape(word)
   }.join("|").freeze
   GLUED_VOLUME_PATTERN = /\A(?:#{WORD_ALTERNATION}|t)(0*\d+)\z/
   private_constant :WORD_ALTERNATION, :ROMAN_NUMBER, :NUMBER_WORD, :NUMERIC_NUMBER, :ANY_NUMBER,
-    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
+    :ROMAN_VALUES, :ROMAN_GLYPHS, :AMBIGUOUS_ROMAN_WORDS, :FORMAT_WORDS, :LANGUAGE_TAG_WORDS, :RELEASE_TAG_WORDS, :FOLLOWER_WORDS,
     :FOLLOWER_ALTERNATION,
     :GLUED_VOLUME_PATTERN
 
@@ -177,11 +178,13 @@ class SequenceMarker
     end
 
     def leading_sequel_numeral?(tokens, after_phrase:)
-      words = drop_leading_bitrate(Array(tokens)).drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
+      words = drop_leading_bitrate(Array(tokens))
       return false if words.empty?
+      return true if numeric_sequel_token?(words.first) || language_tagged_sequel_numeral?(words)
 
-      numeric_sequel_token?(words.first) || cjk_volume_prefix?(words) ||
-        (!explicit_volume?(Array(after_phrase)) && neutral_volume?(words[0], words[1]))
+      after_tags = words.drop_while { |word| RELEASE_TAG_WORDS.include?(word) }
+      cjk_volume_prefix?(after_tags) ||
+        (!explicit_volume?(Array(after_phrase)) && neutral_volume?(after_tags[0], after_tags[1]))
     end
 
     def without_recognised_metadata(text, preserve_title: nil)
@@ -429,6 +432,13 @@ class SequenceMarker
 
     def neutral_volume?(word, number)
       word == NEUTRAL_MARKER && number.to_s.match?(/\A\d+\z/)
+    end
+
+    def language_tagged_sequel_numeral?(words)
+      return false unless LANGUAGE_TAG_WORDS.include?(words.first)
+
+      number, *tags = words.drop_while { |word| LANGUAGE_TAG_WORDS.include?(word) }
+      whole_sequel_numeral?(number) && tags.all? { |tag| RELEASE_TAG_WORDS.include?(tag) }
     end
 
     def drop_leading_bitrate(tokens)
