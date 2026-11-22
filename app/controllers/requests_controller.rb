@@ -18,50 +18,15 @@ class RequestsController < ApplicationController
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
   def index
-    @requests = if Current.user.admin?
-      Request.includes(:book, :user, :search_results)
-    else
-      Request.for_user(Current.user).includes(:book, :search_results)
-    end
-
-    if params[:status].present?
-      case params[:status]
-      when "active"
-        # Active tab shows active requests that DON'T need attention
-        @requests = @requests.active.where(attention_needed: false)
-      else
-        @requests = @requests.where(status: params[:status])
-      end
-    end
-
-    @requests = @requests.needs_attention if params[:attention] == "true"
-
-    # Title/author search within the current filtered request list (#407).
-    # SQLite LOWER() is ASCII-only; use a Ruby-backed function for Unicode folds.
-    @request_query = params[:q].to_s.strip.first(200)
-    if @request_query.present?
-      register_request_search_functions!
-      like = "%#{ActiveRecord::Base.sanitize_sql_like(unicode_fold(@request_query))}%"
-      @requests = @requests.joins(:book).where(
-        "shelfarr_request_search_lower(books.title) LIKE :q ESCAPE '\\' OR " \
-        "shelfarr_request_search_lower(books.author) LIKE :q ESCAPE '\\'",
-        q: like
-      )
-    end
-
-    @requests = @requests.order(created_at: :desc)
-
-    base_requests = Current.user.admin? ? Request : Request.for_user(Current.user)
-    @attention_count = base_requests.needs_attention.count
-    @active_count = base_requests.active.where(attention_needed: false).count
-
-    # Pagination to limit fuzzy matching overhead
-    @requests_page = params[:page].to_i.clamp(1, 1_000_000)
-    @requests_per_page = 25
-    @requests_total_count = @requests.count
-    @requests_total_pages = [ (@requests_total_count.to_f / @requests_per_page).ceil, 1 ].max
-    @requests_page = @requests_page.clamp(1, @requests_total_pages)
-    @requests = @requests.limit(@requests_per_page).offset((@requests_page - 1) * @requests_per_page)
+    listing = RequestListing.new(user: Current.user, status: params[:status], attention: params[:attention], query: params[:q], page: params[:page])
+    @requests = listing.requests
+    @request_query = listing.query
+    @attention_count = listing.attention_count
+    @active_count = listing.active_count
+    @requests_page = listing.page
+    @requests_per_page = RequestListing::PER_PAGE
+    @requests_total_count = listing.total_count
+    @requests_total_pages = listing.total_pages
 
     # Preload library matches for admin (used for "In Library" pill on each card).
     # Scope candidates to the library IDs configured for each book type so an
@@ -328,19 +293,6 @@ class RequestsController < ApplicationController
 
   def download_log_context
     "request ##{@request.id}, book ##{@request.book.id}"
-  end
-
-  def register_request_search_functions!
-    database = Request.connection.raw_connection
-    return unless database.respond_to?(:create_function)
-
-    database.create_function("shelfarr_request_search_lower", 1) do |function, value|
-      function.result = unicode_fold(value)
-    end
-  end
-
-  def unicode_fold(value)
-    value.to_s.unicode_normalize(:nfc).downcase
   end
 
   def set_request

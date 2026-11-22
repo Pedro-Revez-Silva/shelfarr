@@ -192,7 +192,8 @@ describe("Requests in the Go preview, against Rails-created requests", () => {
     await page.getByRole("status").filter({ hasText: "28 requests · Page 1 of 2" }).waitFor();
     await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Library" }).click();
     await page.getByRole("heading", { name: "Library", level: 1 }).waitFor();
-    await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Requests" }).click();
+    await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Find" }).click();
+    await page.getByRole("navigation", { name: "Find" }).getByRole("link", { name: "Requests" }).click();
     await page.getByRole("heading", { name: "All Requests", level: 1 }).waitFor();
     expect(new URL(page.url()).search).toBe("");
     await context.close();

@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type RefObject } from "react";
 import { ApiError, failureKind } from "../api/errors";
-import type { Profile } from "../contract";
+import { getRouteApi, Link } from "@tanstack/react-router";
+import type { AccountSettings as AccountSettingsShape, Profile } from "../contract";
 import { useDisplayName, useProfile } from "../queries";
 import { useServices } from "../services";
+import { AboutSection, AccountRail, ApiTokensCard, ConnectionsSection, DevicesSection, isAccountSection, RequestStats, SignOut, SingleSignOnCard, TwoFactorCard, type AccountSection } from "./PersonalSettings";
 import { usePageTitle } from "../title";
 import { describeWriteFailure, fieldMessage, firstInvalid, isBlank, recordRefusal, splitErrors, type FieldErrors, type FormOutcome } from "./accountFields";
 import { PageHeading } from "./PageHeading";
@@ -11,20 +13,94 @@ import { EmptyState, ErrorPanel, Loading } from "./States";
 const NAME_FIELDS = ["name"] as const;
 const PASSWORD_FIELDS = ["current_password", "password", "password_confirmation"] as const;
 
+const sectionRoute = getRouteApi("/account/$section");
+
 export function AccountPage() {
-  const { mode } = useServices();
-  if (mode !== "go") {
+  return <AccountView section="profile" />;
+}
+
+export function AccountSectionPage() {
+  const { section } = sectionRoute.useParams();
+  if (!isAccountSection(section) || section === "profile") {
     return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
+      <EmptyState title="That page is not part of your account">
+        <Link to="/account" className="button">
+          Back to your account
+        </Link>
       </EmptyState>
     );
   }
-  return <AccountSettings />;
+  return <AccountView section={section} />;
+}
+
+const SECTION_TITLES: Record<AccountSection, string> = { profile: "Account", security: "Sign-in and security", devices: "Devices", connections: "Connections", about: "About" };
+
+function AccountView({ section }: { section: AccountSection }) {
+  usePageTitle(SECTION_TITLES[section]);
+  const { mode } = useServices();
+  const profile = useProfile();
+  const settings = profile.data?.settings;
+  if (mode === "go") {
+    return section === "profile" ? (
+      <AccountSettings />
+    ) : (
+      <EmptyState title="This part of your account is not available here">
+        <p>This server shows only your name and password here. Nothing was changed.</p>
+      </EmptyState>
+    );
+  }
+  return (
+    <section className="account" aria-labelledby="account-heading">
+      <PageHeading id="account-heading">{SECTION_TITLES[section]}</PageHeading>
+      <p className="lede">Only you see and change these.</p>
+      <AccountRail current={section} />
+      {profile.data && settings ? (
+        <div className="account-sections">
+          <Section section={section} profile={profile.data} settings={settings} />
+        </div>
+      ) : profile.isError && failureKind(profile.error) === "not_found" ? (
+        <EmptyState title="Account settings are not available here">
+          <p>This server does not offer account settings yet. Nothing was changed.</p>
+        </EmptyState>
+      ) : profile.isError ? (
+        <ErrorPanel error={profile.error} onRetry={() => void profile.refetch()} />
+      ) : (
+        <Loading label="Loading your account…" />
+      )}
+    </section>
+  );
+}
+
+function Section({ section, profile, settings }: { section: AccountSection; profile: Profile; settings: AccountSettingsShape }) {
+  switch (section) {
+    case "profile":
+      return (
+        <>
+          <Identity profile={profile} />
+          <DisplayNameForm profile={profile} />
+          <RequestStats settings={settings} />
+          <SignOut settings={settings} />
+        </>
+      );
+    case "security":
+      return (
+        <>
+          <PasswordForm profile={profile} />
+          <TwoFactorCard settings={settings} />
+          <SingleSignOnCard settings={settings} />
+          <ApiTokensCard settings={settings} />
+        </>
+      );
+    case "devices":
+      return <DevicesSection settings={settings} />;
+    case "connections":
+      return <ConnectionsSection settings={settings} />;
+    case "about":
+      return <AboutSection settings={settings} />;
+  }
 }
 
 function AccountSettings() {
-  usePageTitle("Account");
   const profile = useProfile();
   return (
     <section className="account" aria-labelledby="account-heading">
@@ -62,6 +138,18 @@ function Identity({ profile }: { profile: Profile }) {
           <dt>Username</dt>
           <dd>@{profile.username}</dd>
         </div>
+        {profile.settings ? (
+          <>
+            <div>
+              <dt>Role</dt>
+              <dd>{profile.settings.admin ? "Administrator" : "Member"}</dd>
+            </div>
+            <div>
+              <dt>Member since</dt>
+              <dd>{new Intl.DateTimeFormat("en", { dateStyle: "long" }).format(new Date(profile.settings.member_since))}</dd>
+            </div>
+          </>
+        ) : null}
       </dl>
     </section>
   );

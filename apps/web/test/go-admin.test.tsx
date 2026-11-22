@@ -79,16 +79,16 @@ describe("the server overview contract", () => {
 });
 
 describe("the server overview", () => {
-  test("an admin finds Admin beside Account and sees the build, the Rails counts and every saved health result", async () => {
+  test("an admin finds Server beside Account and sees the build, the Rails counts and every saved health result", async () => {
     const server = adminServer();
     renderAdmin(server);
     expect(await screen.findByRole("heading", { name: "Needs attention", level: 2 })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Server overview", level: 1 })).toBeTruthy();
     expect(document.title).toBe("Server overview · Shelfarr");
     const nav = screen.getByRole("navigation", { name: "Primary" });
-    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Discover", "Requests", "Account", "Admin"]);
-    expect(within(nav).getByRole("link", { name: "Admin" }).getAttribute("href")).toBe("/preview/admin");
-    expect(within(nav).getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
+    expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Find", "Account", "Server"]);
+    expect(within(nav).getByRole("link", { name: "Server" }).getAttribute("href")).toBe("/preview/admin");
+    expect(within(nav).getByRole("link", { name: "Server" }).getAttribute("aria-current")).toBe("page");
     const build = screen.getByText("Build").closest("dl")!;
     expect(build.textContent).toBe("Build1.0.0");
     const tallies = [...document.querySelectorAll(".overview-counts > div")].map((tally) => [tally.querySelector("dt")!.textContent, tally.querySelector("dd")!.textContent]);
@@ -319,11 +319,11 @@ describe("the server overview", () => {
     expect(await screen.findByText("1,234")).toBeTruthy();
   }, 15_000);
 
-  test("the classic preview does not offer this page and keeps its Admin handoff", async () => {
+  test("the classic preview does not offer this page and keeps Server as a handoff", async () => {
     const server = adminServer();
     renderApp({ server, url: "/sub/preview/admin" });
     expect(await screen.findByRole("heading", { name: "That page is not part of this preview", level: 2 })).toBeTruthy();
-    expect(await screen.findByRole("link", { name: "Admin (opens the classic Shelfarr app)" })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Server (opens the classic Shelfarr app)" })).toBeTruthy();
     expect(server.called("GET", OVERVIEW).length).toBe(0);
   });
 

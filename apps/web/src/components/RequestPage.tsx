@@ -3,28 +3,17 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { Acquisition, RequestDetail } from "../contract";
 import { selectionRunning, useAcquisition, useRequest, useSelectionFinished, useSelectResult, useSession } from "../queries";
-import { useServices } from "../services";
 import { usePageTitle } from "../title";
+import { RequestSteps, stageSentence, type StepState } from "./BookPage";
 import { Cover } from "./Cover";
+import { RequestTools } from "./RequestInspector";
 import { PageHeading } from "./PageHeading";
 import { BOOK_TYPE_LABELS, coverOf, DOWNLOAD_LABELS, relativeTime, StatusBadges, Time } from "./requestText";
-import { EmptyState, ErrorPanel, Loading } from "./States";
+import { ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/requests/$requestId");
 
 export function RequestPage() {
-  const { mode } = useServices();
-  if (mode !== "go") {
-    return (
-      <EmptyState title="That page is not part of this preview">
-        <p>Use the navigation to return to your library.</p>
-      </EmptyState>
-    );
-  }
-  return <RequestView />;
-}
-
-function RequestView() {
   const { requestId } = routeApi.useParams();
   const request = useRequest(requestId);
   const session = useSession();
@@ -108,7 +97,7 @@ function stage(request: RequestDetail): string {
     case "failed":
       return "This request was cancelled or failed and is no longer being worked on.";
     case "awaiting_purchase":
-      return "Waiting for a purchase. Store offers are not shown in this preview.";
+      return request.store_offers ? "Waiting for a purchase." : "Waiting for a purchase. Store offers are not shown in this preview.";
     case "unknown":
       return "The server reported a status this preview does not know yet.";
   }
@@ -127,7 +116,7 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
           {request.author ? <p className="details-author">{request.author}</p> : null}
           <StatusBadges request={request} />
 
-          {request.attention_needed ? (
+          {request.attention_needed && !request.actions ? (
             <div className="attention" role="note">
               <h2>Attention Required</h2>
               <p>{request.attention_reason ?? "This request needs your attention."}</p>
@@ -137,8 +126,9 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
 
           {admin && request.acquisition === true ? <ChooseCopy request={request} /> : null}
 
+
           <div className="request-stage" role="status">
-            <p>{stage(request)}</p>
+            <p>{request.actions ? trackedSentence(request, admin) : stage(request)}</p>
             {request.status === "downloading" && request.download_percent !== null ? <progress max={100} value={request.download_percent} aria-label="Download progress" /> : null}
           </div>
 
@@ -173,6 +163,18 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
                 </dd>
               </div>
             ) : null}
+            {request.notes ? (
+              <div>
+                <dt>Notes</dt>
+                <dd>{request.notes}</dd>
+              </div>
+            ) : null}
+            {request.collection_title ? (
+              <div>
+                <dt>Part of</dt>
+                <dd>{request.collection_title}</dd>
+              </div>
+            ) : null}
             {request.next_retry_at && Date.parse(request.next_retry_at) > Date.now() ? (
               <div>
                 <dt>Next retry</dt>
@@ -184,6 +186,9 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
           </dl>
         </div>
       </div>
+
+      {request.actions ? <TrackedSteps request={request} /> : null}
+      <RequestTools request={request} admin={admin} />
 
       {request.downloads.length > 0 ? (
         <section className="request-downloads" aria-labelledby="downloads-heading">
@@ -201,6 +206,36 @@ function Details({ request, admin }: { request: RequestDetail; admin: boolean })
       ) : null}
     </article>
   );
+}
+
+const STAGES: Partial<Record<RequestDetail["status"], StepState["stage"]>> = {
+  pending: "queued",
+  searching: "searching",
+  not_found: "not_found",
+  awaiting_purchase: "awaiting_purchase",
+  downloading: "downloading",
+  processing: "processing",
+  failed: "failed",
+};
+
+function trackedState(request: RequestDetail): (StepState & { download_percent: number | null }) | null {
+  const stage = request.status === "completed" ? (request.library?.state === "available" ? "available" : "completed") : STAGES[request.status];
+  if (!stage) return null;
+  const choiceNeeded = request.choice_needed ?? (request.status === "searching" && request.attention_reason === SELECTION_REASON);
+  return { stage, choice_needed: choiceNeeded, attention_needed: request.attention_needed, download_percent: request.download_percent };
+}
+
+const NOUNS: Record<RequestDetail["book_type"], string> = { ebook: "ebook", audiobook: "audiobook", comicbook: "comic", unknown: "book" };
+
+function trackedSentence(request: RequestDetail, admin: boolean): string {
+  if (request.status === "awaiting_purchase") return stage(request);
+  const state = trackedState(request);
+  return state ? stageSentence(state, admin, NOUNS[request.book_type]) : stage(request);
+}
+
+function TrackedSteps({ request }: { request: RequestDetail }) {
+  const state = trackedState(request);
+  return state ? <RequestSteps request={state} label={`${BOOK_TYPE_LABELS[request.book_type]} request progress`} /> : null;
 }
 
 const SEARCH_NOTES: Record<NonNullable<Acquisition["search"]>["state"], string> = {

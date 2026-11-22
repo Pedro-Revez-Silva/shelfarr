@@ -1,15 +1,15 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
-import { useEffect, useId, useRef, useState, type FormEvent, type MouseEvent } from "react";
-import { ApiError, failureKind, unconfirmed } from "../api/errors";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { failureKind } from "../api/errors";
 import type { BookLocation } from "../api/client";
 import { workSources, type Book, type BookCopy, type BookFormat, type BookRequest, type PublicationSummary, type Session } from "../contract";
 import { useBook, useCancelRequest, useChooseCopy, useRequestBookEbook, useSearchAgain, useSession } from "../queries";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { Cover } from "./Cover";
-import { formatBytes } from "./DetailsPage";
 import { PageHeading } from "./PageHeading";
-import { Time } from "./requestText";
+import { CopyTable } from "./CopyTable";
+import { actionFailure, Time } from "./requestText";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
 const routeApi = getRouteApi("/books/$source/$sourceId");
@@ -72,8 +72,8 @@ function BackLink({ query }: { query: string | undefined }) {
     router.history.back();
   };
   return fromDiscover ? (
-    <Link to="/discover" search={{ q: query }} className="back-link" onClick={goBack}>
-      <span aria-hidden="true">← </span>Discover<span className="sr-only">: results for “{query}”</span>
+    <Link to="/find" search={{ q: query }} className="back-link" onClick={goBack}>
+      <span aria-hidden="true">← </span>Find<span className="sr-only">: results for “{query}”</span>
     </Link>
   ) : (
     <Link to="/library" className="back-link" onClick={goBack}>
@@ -120,7 +120,7 @@ function BookView({ book, location, session, query }: { book: Book; location: Bo
       </div>
 
       {request ? <RequestSteps request={request} /> : null}
-      {ebook ? <EbookPanel format={ebook} location={location} admin={admin} session={session} /> : null}
+      {ebook ? <EbookPanel format={ebook} location={location} admin={admin} /> : null}
 
       {book.description && book.description !== firstParagraph(book.description) ? (
         <section className="about" aria-labelledby="about-heading">
@@ -267,18 +267,13 @@ function RequestEbook({ book, location }: { book: Book; location: BookLocation }
   );
 }
 
-function actionFailure(error: unknown, fallback: string): string {
-  const kind = failureKind(error);
-  if (kind === "csrf") return "The page's security check expired. Reload the page and try again.";
-  if (unconfirmed(error)) return "The server did not confirm this. The page now shows the current state; try again only if nothing changed.";
-  if ((kind === "invalid" || kind === "conflict") && error instanceof ApiError && error.message && error.message !== error.code) return error.message;
-  return fallback;
-}
 
 const AUTOMATIC_STEPS = ["Requested", "Finding a copy", "Getting the file", "In library"] as const;
 const FALLBACK_STEPS = ["Requested", "Copies found", "Choose a copy", "Getting the file", "In library"] as const;
 
-export function requestSteps(request: BookRequest): { steps: readonly string[]; current: number } {
+export type StepState = Pick<BookRequest, "stage" | "choice_needed" | "attention_needed">;
+
+export function requestSteps(request: StepState): { steps: readonly string[]; current: number } {
   if (request.choice_needed) return { steps: FALLBACK_STEPS, current: 2 };
   switch (request.stage) {
     case "queued":
@@ -296,12 +291,12 @@ export function requestSteps(request: BookRequest): { steps: readonly string[]; 
   }
 }
 
-function RequestSteps({ request }: { request: BookRequest }) {
+export function RequestSteps({ request, label = "Ebook request progress" }: { request: StepState; label?: string }) {
   if (request.stage === "available" || request.stage === "completed") return null;
   const { steps, current } = requestSteps(request);
   const stuck = stalled(request) || request.stage === "not_found" || request.stage === "awaiting_purchase" || request.stage === "failed";
   return (
-    <section className="request-steps" aria-label="Ebook request progress">
+    <section className="request-steps" aria-label={label}>
       <p className="request-steps-summary">
         Step {current + 1} of {steps.length} · {steps[current]}
       </p>
@@ -320,7 +315,7 @@ function RequestSteps({ request }: { request: BookRequest }) {
   );
 }
 
-function EbookPanel({ format, location, admin, session }: { format: BookFormat; location: BookLocation; admin: boolean; session: Session | undefined }) {
+function EbookPanel({ format, location, admin }: { format: BookFormat; location: BookLocation; admin: boolean }) {
   if (format.state === "in_library" && format.publication) return <OpenPanel publication={format.publication} />;
   if (format.state === "requested_by_someone") {
     return (
@@ -332,7 +327,7 @@ function EbookPanel({ format, location, admin, session }: { format: BookFormat; 
   }
   const request = format.state === "requested" ? format.request : null;
   if (!request) return null;
-  return <RequestPanel request={request} location={location} admin={admin} session={session} />;
+  return <RequestPanel request={request} location={location} admin={admin} />;
 }
 
 function OpenPanel({ publication }: { publication: PublicationSummary }) {
@@ -362,11 +357,11 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
   );
 }
 
-export function stalled(request: BookRequest): boolean {
+export function stalled(request: Pick<BookRequest, "attention_needed" | "choice_needed">): boolean {
   return request.attention_needed && !request.choice_needed;
 }
 
-function stageSentence(request: BookRequest, admin: boolean): string {
+export function stageSentence(request: Pick<BookRequest, "stage" | "choice_needed" | "attention_needed" | "download_percent">, admin: boolean, noun = "ebook"): string {
   if (stalled(request)) {
     return admin
       ? "Shelfarr stopped working on this request until someone looks at it."
@@ -379,11 +374,11 @@ function stageSentence(request: BookRequest, admin: boolean): string {
       if (!request.choice_needed) return "Looking for a suitable copy. Shelfarr downloads it and adds it to the library by itself; this page updates as it goes.";
       return admin
         ? "Copies were found, but none was picked automatically. Choose one to download."
-        : "Copies were found, but none was picked automatically. An administrator can choose one; this page updates when the ebook is in the library.";
+        : `Copies were found, but none was picked automatically. An administrator can choose one; this page updates when the ${noun} is in the library.`;
     case "not_found":
       return "No suitable copy has been found yet.";
     case "awaiting_purchase":
-      return "Waiting for a purchase. Store offers are shown on the classic request page.";
+      return "Waiting for a purchase. The request details show where to buy it.";
     case "downloading":
       return request.download_percent === null ? "Getting the file. Progress is not known yet." : `Getting the file: ${request.download_percent}% so far.`;
     case "processing":
@@ -396,7 +391,7 @@ function stageSentence(request: BookRequest, admin: boolean): string {
   }
 }
 
-function RequestPanel({ request, location, admin, session }: { request: BookRequest; location: BookLocation; admin: boolean; session: Session | undefined }) {
+function RequestPanel({ request, location, admin }: { request: BookRequest; location: BookLocation; admin: boolean }) {
   const copies = request.copies;
   const choosing = admin && copies?.selectable === true;
   const retrying = request.stage === "not_found" && request.next_retry_at !== null && Date.parse(request.next_retry_at) > Date.now();
@@ -417,18 +412,16 @@ function RequestPanel({ request, location, admin, session }: { request: BookRequ
       </div>
       {admin && request.requested_by !== undefined ? <p className="request-meta">Requested by {request.own ? "you" : request.requested_by || "an account without a name"}</p> : null}
       {admin && request.issue ? <p className="request-meta">{request.issue}</p> : null}
-      {choosing && copies ? <CopyTable request={request} copies={copies.candidates} location={location} /> : null}
-      <RequestActions request={request} location={location} admin={admin} session={session} />
+      {choosing && copies ? <BookCopies requestId={request.id} copies={copies.candidates} location={location} /> : null}
+      <RequestActions request={request} location={location} admin={admin} />
     </section>
   );
 }
 
-function RequestActions({ request, location, admin, session }: { request: BookRequest; location: BookLocation; admin: boolean; session: Session | undefined }) {
+function RequestActions({ request, location, admin }: { request: BookRequest; location: BookLocation; admin: boolean }) {
   const searchAgain = useSearchAgain(location, request.id);
   const canSearch = admin && request.copies?.can_search_again === true;
   const canCancel = request.own && request.can_cancel;
-  const classic = session ? `${session.links.requests}/${encodeURIComponent(request.id)}` : null;
-  if (!canSearch && !canCancel && !(admin && classic)) return null;
   return (
     <div className="copy-actions">
       {canSearch ? (
@@ -436,12 +429,9 @@ function RequestActions({ request, location, admin, session }: { request: BookRe
           {searchAgain.isPending ? "Searching…" : "Search again"}
         </button>
       ) : null}
-      {admin && classic ? (
-        <a className="button button--subtle" href={classic}>
-          Add a link or file
-          <span className="sr-only"> on the classic request page (opens the classic Shelfarr app)</span>
-        </a>
-      ) : null}
+      <Link to="/requests/$requestId" params={{ requestId: request.id }} className="button button--subtle">
+        {admin ? "Request details and tools" : "Request details"}
+      </Link>
       {canCancel ? <CancelRequest request={request} location={location} /> : null}
       {searchAgain.isError ? (
         <p className="field-error" role="alert">
@@ -484,95 +474,7 @@ function CancelRequest({ request, location }: { request: BookRequest; location: 
   );
 }
 
-function firstChoice(copies: BookCopy[]): string {
-  return copies.find((copy) => copy.downloadable && !copy.skipped)?.id ?? copies.find((copy) => copy.downloadable)?.id ?? "";
-}
-
-function CopyTable({ request, copies, location }: { request: BookRequest; copies: BookCopy[]; location: BookLocation }) {
-  const choose = useChooseCopy(location, request.id);
-  const [chosen, setChosen] = useState(() => firstChoice(copies));
-  const [missing, setMissing] = useState(false);
-  const captionId = useId();
-  const errorId = useId();
-  const firstChoosable = useRef<HTMLInputElement>(null);
-  const firstChoosableId = copies.find((copy) => copy.downloadable)?.id;
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (choose.isPending) return;
-    if (!copies.some((copy) => copy.id === chosen && copy.downloadable)) {
-      setMissing(true);
-      firstChoosable.current?.focus();
-      return;
-    }
-    setMissing(false);
-    choose.mutate(chosen);
-  };
-  return (
-    <form className="copy-form" onSubmit={submit} noValidate>
-      <div className="copy-table-wrap" role="region" aria-labelledby={captionId} tabIndex={0}>
-        <table className="copy-table" aria-describedby={missing ? errorId : undefined}>
-          <caption id={captionId} className="sr-only">
-            Copies found for this ebook; choose one to download
-          </caption>
-          <thead>
-            <tr>
-              <th scope="col">
-                <span className="sr-only">Choose</span>
-              </th>
-              <th scope="col">Copy</th>
-              <th scope="col">Format</th>
-              <th scope="col">Size</th>
-              <th scope="col">Language</th>
-              <th scope="col">Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {copies.map((copy) => (
-              <tr key={copy.id} className={chosen === copy.id ? "copy-row copy-row--chosen" : "copy-row"}>
-                <td className="copy-choice">
-                  <input
-                    ref={copy.id === firstChoosableId ? firstChoosable : undefined}
-                    type="radio"
-                    id={`copy-${copy.id}`}
-                    name="copy"
-                    value={copy.id}
-                    checked={chosen === copy.id}
-                    disabled={!copy.downloadable}
-                    onChange={() => {
-                      setChosen(copy.id);
-                      setMissing(false);
-                    }}
-                  />
-                </td>
-                <th scope="row">
-                  <label htmlFor={`copy-${copy.id}`}>{copy.title}</label>
-                  {copy.skipped ? <span className="copy-flag"> · skipped before</span> : null}
-                  {!copy.downloadable ? <span className="copy-flag"> · no download link</span> : null}
-                </th>
-                <td data-label="Format">{copy.format ?? "Unknown"}</td>
-                <td data-label="Size">{copy.size_bytes !== null ? formatBytes(copy.size_bytes) : "Unknown"}</td>
-                <td data-label="Language">{copy.language ?? "Unknown"}</td>
-                <td data-label="Source">{copy.source}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {missing ? (
-        <p id={errorId} className="field-error" role="alert">
-          <span aria-hidden="true">⚠ </span>Choose one copy that can be downloaded first.
-        </p>
-      ) : null}
-      <div className="copy-actions">
-        <button type="submit" className="button button--primary button--large" aria-disabled={choose.isPending ? true : undefined}>
-          {choose.isPending ? "Sending…" : "Download this copy"}
-        </button>
-      </div>
-      {choose.isError ? (
-        <p className="field-error" role="alert">
-          {actionFailure(choose.error, "The choice could not be sent. Nothing was changed.")}
-        </p>
-      ) : null}
-    </form>
-  );
+function BookCopies({ requestId, copies, location }: { requestId: string; copies: BookCopy[]; location: BookLocation }) {
+  const choose = useChooseCopy(location, requestId);
+  return <CopyTable copies={copies} choose={choose} />;
 }

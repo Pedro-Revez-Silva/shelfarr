@@ -108,10 +108,47 @@ export const sessionSchema = z.object({
     account: sitePath,
   }),
   admin: z.object({ url: sitePath }).optional(),
+  notifications: z.object({ url: sitePath, unread: z.number().int().nonnegative() }).optional(),
 });
 export type Session = z.infer<typeof sessionSchema>;
 
-export const profileSchema = z.object({ id: identifier, username: z.string(), name: z.string() });
+export const apiTokenSchema = z.object({
+  id: identifier,
+  name: z.string(),
+  prefix: z.string(),
+  scopes: z.array(z.string()),
+  app: z.boolean(),
+  state: z.enum(["active", "revoked", "expired"]),
+  created_at: timestamp,
+  last_used_at: timestamp.nullable(),
+  expires_at: timestamp.nullable(),
+});
+export type ApiToken = z.infer<typeof apiTokenSchema>;
+
+export const accountSettingsSchema = z.object({
+  admin: z.boolean(),
+  member_since: timestamp,
+  requests: z.object({ total: z.number().int().nonnegative(), completed: z.number().int().nonnegative(), pending: z.number().int().nonnegative() }),
+  two_factor: z.object({ enabled: z.boolean() }),
+  oidc: z.object({ configured: z.boolean(), provider: z.string().nullable(), linked: z.boolean(), link_page: sitePath.nullable(), password_required: z.boolean() }),
+  api_tokens: z.array(apiTokenSchema),
+  token_scopes: z.array(z.object({ scope: z.string(), label: z.string() })),
+  links: z.object({
+    kobo_readers: sitePath,
+    kobo_accounts: sitePath,
+    hardcover: sitePath,
+    sign_out: sitePath,
+    phone_app: sitePath,
+    reading_library: sitePath,
+    kobo_shared: sitePath.optional(),
+    android_app: sitePath.optional(),
+    admin: sitePath.optional(),
+  }),
+  server: z.object({ release: z.string(), beta: z.boolean(), series: z.string() }),
+});
+export type AccountSettings = z.infer<typeof accountSettingsSchema>;
+
+export const profileSchema = z.object({ id: identifier, username: z.string(), name: z.string(), settings: accountSettingsSchema.optional() });
 export type Profile = z.infer<typeof profileSchema>;
 
 export const accountEnvelopeSchema = z.object({ account: identifier, profile: profileSchema }).refine((envelope) => envelope.profile.id === envelope.account, "The profile belongs to another account");
@@ -267,6 +304,45 @@ const percent = z.number().int().min(0).max(100);
 
 export const requestLibrarySchema = z.discriminatedUnion("state", [z.object({ state: z.literal("available"), publication_id: identifier }), z.object({ state: z.literal("unavailable") })]);
 
+export const bookCopySchema = z.object({
+  id: identifier,
+  title: z.string(),
+  format: z.string().nullable(),
+  size_bytes: z.number().int().nonnegative().nullable(),
+  language: z.string().nullable(),
+  source: z.string(),
+  state: z.enum(["pending", "selected", "rejected"]),
+  skipped: z.boolean(),
+  downloadable: z.boolean(),
+});
+export type BookCopy = z.infer<typeof bookCopySchema>;
+
+export const requestActionsSchema = z.object({
+  cancel: z.boolean(),
+  remove: z.enum(["admin_remove", "delete_history"]).nullable(),
+  retry: z.boolean(),
+  search_again: z.boolean(),
+  manual_download: z.boolean(),
+  replaces_library_file: z.boolean(),
+  upload_url: sitePath.nullable(),
+  download_url: sitePath.nullable(),
+});
+export type RequestActions = z.infer<typeof requestActionsSchema>;
+
+export const storeOfferSchema = z.object({
+  id: identifier,
+  title: z.string(),
+  author: z.string().nullable(),
+  provider: z.string(),
+  drm: z.string(),
+  price: z.string().nullable(),
+  formats: z.array(z.string()),
+  language: z.string().nullable(),
+  quoted_at: timestamp.nullable(),
+  url: httpsUrl,
+});
+export type StoreOffer = z.infer<typeof storeOfferSchema>;
+
 export const requestSummarySchema = z.object({
   id: identifier,
   status: z.enum(requestStatuses),
@@ -282,6 +358,7 @@ export const requestSummarySchema = z.object({
   next_retry_at: timestamp.nullable(),
   library: requestLibrarySchema.nullable(),
   requested_by: z.object({ name: z.string(), self: z.boolean() }).optional(),
+  book_page: bookAddressSchema.nullable().optional(),
 });
 export type RequestSummary = z.infer<typeof requestSummarySchema>;
 
@@ -289,6 +366,14 @@ export const requestDetailSchema = requestSummarySchema.extend({
   attention_reason: z.string().nullable(),
   downloads: z.array(z.object({ status: z.enum(downloadStatuses), progress: percent.nullable() })),
   acquisition: z.boolean().optional(),
+  choice_needed: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
+  collection_title: z.string().nullable().optional(),
+  retry_count: z.number().int().nonnegative().optional(),
+  actions: requestActionsSchema.optional(),
+  store_offers: z.array(storeOfferSchema).optional(),
+  copies: z.object({ selectable: z.boolean(), candidates: z.array(bookCopySchema) }).optional(),
+  events: z.array(z.object({ title: z.string(), message: z.string().nullable(), level: z.string(), at: timestamp })).optional(),
 });
 export type RequestDetail = z.infer<typeof requestDetailSchema>;
 
@@ -467,18 +552,6 @@ export const bookFormatTypes = ["ebook", "audiobook"] as const;
 export const bookFormatStates = ["requestable", "requested", "requested_by_someone", "in_library"] as const;
 export const bookRequestStages = ["queued", "searching", "not_found", "awaiting_purchase", "downloading", "processing", "available", "completed", "failed"] as const;
 
-export const bookCopySchema = z.object({
-  id: identifier,
-  title: z.string(),
-  format: z.string().nullable(),
-  size_bytes: z.number().int().nonnegative().nullable(),
-  language: z.string().nullable(),
-  source: z.string(),
-  state: z.enum(["pending", "selected", "rejected"]),
-  skipped: z.boolean(),
-  downloadable: z.boolean(),
-});
-export type BookCopy = z.infer<typeof bookCopySchema>;
 
 export const bookRequestSchema = z.object({
   id: identifier,
@@ -523,7 +596,14 @@ export type Book = z.infer<typeof bookSchema>;
 export const bookEnvelopeSchema = z.object({ account: identifier, book: bookSchema });
 export const bookRequestOutcomeSchema = z.object({ account: identifier, outcome: z.enum(["created", "existing"]), book: bookSchema });
 export type BookRequestOutcome = z.infer<typeof bookRequestOutcomeSchema>;
-export const requestActionSchema = z.object({ account: identifier, request: z.object({ id: identifier, status: z.string() }) });
+export const requestActionSchema = z.object({ account: identifier, request: z.object({ id: identifier, status: z.string() }), message: z.string().optional() });
+export type RequestActionAnswer = z.infer<typeof requestActionSchema>;
+
+export const twoFactorSetupSchema = z.object({ account: identifier, setup: z.object({ secret: z.string().min(1), uri: z.string().startsWith("otpauth://"), qr_svg: z.string().nullable() }) });
+export type TwoFactorSetup = z.infer<typeof twoFactorSetupSchema>["setup"];
+export const backupCodesSchema = z.object({ account: identifier, backup_codes: z.array(z.string().min(1)).min(1) });
+export const createdTokenSchema = z.object({ account: identifier, token: apiTokenSchema, secret: z.string().min(1) });
+export type CreatedToken = z.infer<typeof createdTokenSchema>;
 
 export const catalogueItemSchema = z.object({
   book: bookAddressSchema.extend({ metadata: z.string().regex(/^[A-Za-z0-9_-]{32}$/).nullable().optional() }),

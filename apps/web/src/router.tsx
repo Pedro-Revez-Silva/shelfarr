@@ -1,10 +1,10 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
 import { bookSearchSchema, discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema } from "./contract";
-import { AccountPage } from "./components/AccountPage";
+import { AccountPage, AccountSectionPage } from "./components/AccountPage";
 import { AdminPage } from "./components/AdminPage";
 import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
-import { DiscoverPage } from "./components/DiscoverPage";
+import { DiscoverPage, FindPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
@@ -61,11 +61,24 @@ const accountRoute = createRoute({
   component: AccountPage,
 });
 
+const accountSectionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account/$section",
+  component: AccountSectionPage,
+});
+
 const discoverRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/discover",
   validateSearch: (search: Record<string, unknown>) => discoverSearchSchema.parse(search),
   component: DiscoverPage,
+});
+
+const findRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/find",
+  validateSearch: (search: Record<string, unknown>) => discoverSearchSchema.parse(search),
+  component: FindPage,
 });
 
 const bookRoute = createRoute({
@@ -100,7 +113,7 @@ const serverSettingsRoute = createRoute({
   component: ServerSettingsPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, discoverRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

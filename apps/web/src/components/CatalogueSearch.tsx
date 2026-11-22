@@ -4,11 +4,12 @@ import { ApiError, failureKind } from "../api/errors";
 import type { CatalogueAnswer, CatalogueItem } from "../contract";
 import { useCatalogue, useSession } from "../queries";
 import { Cover } from "./Cover";
+import { FindTabs, YourRequests } from "./FindRequests";
 import { checkQuery, MAX_QUERY_CHARACTERS } from "./DiscoverPage";
 import { PageHeading } from "./PageHeading";
 import { EmptyState, ErrorPanel, Loading } from "./States";
 
-const routeApi = getRouteApi("/discover");
+const routeApi = getRouteApi("/find");
 
 export function CatalogueSearch() {
   const { q } = routeApi.useSearch();
@@ -22,14 +23,15 @@ export function CatalogueSearch() {
     <section className="discover" aria-labelledby="discover-heading">
       <header className="page-heading">
         <p className="eyebrow">Find books</p>
-        <PageHeading id="discover-heading">Discover</PageHeading>
+        <PageHeading id="discover-heading">Find</PageHeading>
         <p className="lede">Search the catalogues this server uses by title or author, see what is already in the library, and open a book to request it.</p>
       </header>
+      <FindTabs />
       <SearchForm
         source={q ?? ""}
         initial={query ?? q ?? ""}
         problem={checked.kind === "too_long" || checked.kind === "invalid" ? checked.kind : null}
-        onSearch={(text) => void navigate({ to: "/discover", search: { q: text } })}
+        onSearch={(text) => void navigate({ to: "/find", search: { q: text } })}
       />
       <p className="result-count" role="status">
         {query === null ? "" : answer.isFetching ? `Searching for “${query}”…` : answer.data ? countText(answer.data) : answer.isError ? `The search for “${query}” did not finish.` : ""}
@@ -45,6 +47,7 @@ export function CatalogueSearch() {
         </p>
       ) : null}
       {answer.data ? <Results answer={answer.data} /> : null}
+      {query === null ? <YourRequests /> : null}
       {session.data ? (
         <p className="discover-note">
           Need series, collections, comics or several formats at once? <a href={session.data.links.discover}>Use the classic search<span className="sr-only"> (opens the classic Shelfarr app)</span></a>.

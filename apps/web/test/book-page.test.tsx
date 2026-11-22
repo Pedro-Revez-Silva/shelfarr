@@ -71,7 +71,7 @@ describe("the Book page", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Middlemarch" })).toBeTruthy();
     expect(screen.getByText("George Eliot", { selector: ".book-author-line" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open Library (opens in a new tab)" }).getAttribute("href")).toBe("https://openlibrary.org/works/OL900W");
-    expect(screen.getByRole("link", { name: /^Discover ?: results for “middlemarch”$/ }).getAttribute("href")).toBe("/sub/preview/discover?q=middlemarch");
+    expect(screen.getByRole("link", { name: /^Find ?: results for “middlemarch”$/ }).getAttribute("href")).toBe("/sub/preview/find?q=middlemarch");
     const card = screen.getByRole("region", { name: "On this server" });
     const rows = within(card).getAllByRole("listitem");
     expect(rows.map((row) => row.textContent)).toEqual(["EbookNot in libraryRequest ebook of Middlemarch", "AudiobookNot in library"]);
@@ -178,7 +178,7 @@ describe("the Book page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Download this copy" }));
     await waitFor(() => expect(server.called("POST", /selection$/)).toHaveLength(1));
     expect(server.called("POST", /selection$/)[0]?.body).toEqual({ result_id: "502" });
-    expect(screen.getByRole("link", { name: "Add a link or file on the classic request page (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/requests/41");
+    expect(screen.getByRole("link", { name: "Request details and tools" }).getAttribute("href")).toBe("/sub/preview/requests/41");
   });
 
   test("a copy that stops being downloadable after a refresh cannot be sent; the error is announced and focus moves to a copy that can", async () => {

@@ -95,11 +95,11 @@ describe("the Go Discover page", () => {
     const { history } = renderDiscover(server, "/preview/library");
     const user = userEvent.setup();
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await user.click(within(nav).getByRole("link", { name: "Discover" }));
-    const heading = await screen.findByRole("heading", { level: 1, name: "Discover" });
+    await user.click(within(nav).getByRole("link", { name: "Find" }));
+    const heading = await screen.findByRole("heading", { level: 1, name: "Find" });
     await waitFor(() => expect(document.activeElement).toBe(heading));
-    expect(document.title).toBe("Discover · Shelfarr");
-    expect(within(nav).getByRole("link", { name: "Discover" }).getAttribute("aria-current")).toBe("page");
+    expect(document.title).toBe("Find · Shelfarr");
+    expect(within(nav).getByRole("link", { name: "Find" }).getAttribute("aria-current")).toBe("page");
     await waitFor(() => expect(searches(server).map(queryOf)).toEqual([null]));
     const input = field();
     expect(input.closest("search")).toBeTruthy();
@@ -112,7 +112,7 @@ describe("the Go Discover page", () => {
     expect(searches(server).map(queryOf)).toEqual([null, "the lord & rings"]);
     expect(history.location.pathname).toBe("/preview/discover");
     expect(new URLSearchParams(history.location.search).get("q")).toBe("the lord & rings");
-    expect(document.title).toBe("Discover: the lord & rings · Shelfarr");
+    expect(document.title).toBe("Find: the lord & rings · Shelfarr");
     expect(server.requests.filter((request) => request.method !== "GET")).toEqual([]);
     expect(screen.getByRole("status").textContent).toBe("2 results from Open Library for “the lord & rings”.");
   });
@@ -445,12 +445,13 @@ describe("the Go Discover page", () => {
     expect(searches(server).map(queryOf)).toEqual(["dune"]);
   });
 
-  test("is not the Rails-served preview's Discover, which searches through Rails instead of Open Library", async () => {
+  test("is not the Rails-served preview's Find, which searches through Rails instead of Open Library", async () => {
     const server = discoverServer();
-    renderApp({ server, url: "/sub/preview/discover" });
+    const { router } = renderApp({ server, url: "/sub/preview/discover" });
     expect(await screen.findByLabelText("Title or author")).toBeTruthy();
+    await waitFor(() => expect(router.state.location.pathname).toBe("/find"));
     const nav = await screen.findByRole("navigation", { name: "Primary" });
-    await waitFor(() => expect(within(nav).getByRole("link", { name: "Discover" }).getAttribute("href")).toBe("/sub/preview/discover"));
+    await waitFor(() => expect(within(nav).getByRole("link", { name: "Find" }).getAttribute("href")).toBe("/sub/preview/find"));
     expect(screen.queryByText(/Open Library/)).toBeNull();
     expect(searches(server)).toEqual([]);
   });

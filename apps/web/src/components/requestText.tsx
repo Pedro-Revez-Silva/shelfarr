@@ -1,3 +1,4 @@
+import { ApiError, failureKind, unconfirmed } from "../api/errors";
 import type { DownloadStatus, RequestStatus, RequestSummary } from "../contract";
 
 export const STATUS_LABELS: Record<RequestStatus, string> = {
@@ -75,4 +76,12 @@ export function StatusBadges({ request }: { request: RequestSummary }) {
       ) : null}
     </ul>
   );
+}
+
+export function actionFailure(error: unknown, fallback: string): string {
+  const kind = failureKind(error);
+  if (kind === "csrf") return "The page's security check expired. Reload the page and try again.";
+  if (unconfirmed(error)) return "The server did not confirm this. The page now shows the current state; try again only if nothing changed.";
+  if ((kind === "invalid" || kind === "conflict") && error instanceof ApiError && error.message && error.message !== error.code) return error.message;
+  return fallback;
 }

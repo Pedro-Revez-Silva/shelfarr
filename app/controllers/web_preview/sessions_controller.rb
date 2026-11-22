@@ -6,7 +6,8 @@ class WebPreview::SessionsController < WebPreview::APIController
     value = {
       account: { id: user.id.to_s, name: user.name },
       server: { name: request.host, version: Consumer::ServerInfo.server_version },
-      links: { legacy_library: consumer_library_path, discover: helpers.discover_entry_path, requests: requests_path, account: profile_path }
+      links: { legacy_library: consumer_library_path, discover: helpers.discover_entry_path, requests: requests_path, account: profile_path },
+      notifications: { url: notifications_path, unread: user.notifications.unread.count }
     }
     value[:admin] = { url: admin_root_path } if user.admin?
     render json: value

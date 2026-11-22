@@ -208,7 +208,7 @@ describe("the Requests page", () => {
     const answers: Record<string, string> = {};
     const server = requestsServer(() => ({ body: list([], { counts: { attention: 0, active: 0 } }) }));
     for (const [url, title, body] of [
-      ["/preview/requests", "No requests yet", "Discover books"],
+      ["/preview/requests", "No requests yet", "Find books"],
       ["/preview/requests?attention=true", "No requests need attention", "All requests are processing normally."],
       ["/preview/requests?q=zola", "No matching requests", "No requests match “zola”."],
       ["/preview/requests?status=failed", "No matching requests", "No requests match your current filter."],
@@ -352,16 +352,15 @@ describe("the Requests page", () => {
     expect(services.queryClient.getQueriesData({ queryKey: services.keys.requestAll }).filter(([, data]) => data !== undefined)).toEqual([]);
   }, 20_000);
 
-  test("the classic preview keeps its page when the role changes, as before", async () => {
+  test("the Rails preview, which now shows role-scoped requests too, stops when the role changes", async () => {
     let admin = true;
     const server = requestsServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session(admin ? { admin: { url: "/admin" } } : {}) }));
     const { services } = renderApp({ server, url: "/sub/preview/library" });
     expect(await screen.findByRole("link", { name: "The Quiet Library" })).toBeTruthy();
     admin = false;
     await act(async () => services.revalidate());
-    await waitFor(() => expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThanOrEqual(2));
-    expect(screen.queryByText("This account's access changed")).toBeNull();
-    expect(screen.getByRole("link", { name: "The Quiet Library" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "This account's access changed", level: 1 })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "The Quiet Library" })).toBeNull();
   });
 
   test("a list or request answer whose reach differs from the verified role locks the page and is never shown", async () => {
@@ -425,9 +424,12 @@ describe("the Requests page", () => {
     expect(lists(server).map(params)).toEqual([{ status: "completed" }]);
   });
 
-  test("the classic preview does not offer the page", async () => {
+  test("the Rails preview offers the same page inside Find", async () => {
     renderApp({ server: requestsServer(), url: "/sub/preview/requests" });
-    expect(await screen.findByRole("heading", { name: "That page is not part of this preview" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "My Requests", level: 1 })).toBeTruthy();
+    const find = within(screen.getByRole("navigation", { name: "Find" }));
+    expect(find.getByRole("link", { name: "Requests" }).getAttribute("aria-current")).toBe("page");
+    expect(within(screen.getByRole("navigation", { name: "Primary" })).getByRole("link", { name: "Find" }).getAttribute("aria-current")).toBe("page");
   });
 });
 

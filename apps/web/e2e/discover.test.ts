@@ -107,7 +107,7 @@ async function openDiscover(page: Page, origin: string, path = "/preview/discove
   await page.goto(`${origin}${path}`);
   await page.getByText("Sign in to find books. You will come straight back to your search.").waitFor();
   await signIn(page, READER, fixture.passwords[READER] ?? "");
-  await page.getByRole("heading", { name: "Discover", level: 1 }).waitFor();
+  await page.getByRole("heading", { name: "Find", level: 1 }).waitFor();
 }
 
 async function search(page: Page, text: string) {
@@ -163,7 +163,7 @@ describe("Discover in the Go preview", () => {
     expect((await (await status).json()).search).toBe("server_off");
     await page.getByRole("heading", { name: "Search is switched off on this server", level: 2 }).waitFor();
     expect(await page.getByRole("searchbox").count()).toBe(0);
-    expect(await page.title()).toBe("Discover: reader sampler · Shelfarr");
+    expect(await page.title()).toBe("Find: reader sampler · Shelfarr");
     expect(fake.journal().length).toBe(before);
     expect(outside).toEqual([]);
     expect(await policyViolations(page)).toEqual([]);
@@ -312,7 +312,7 @@ describe("Discover in the Go preview", () => {
     expect(fake.searches().slice(before).map((entry) => [entry.query?.["q"]?.[0], entry.cancelled ?? false])).toEqual([["hang forever", true]]);
 
     await page.goBack();
-    await page.getByRole("heading", { name: "Discover", level: 1 }).waitFor();
+    await page.getByRole("heading", { name: "Find", level: 1 }).waitFor();
     await page.waitForTimeout(1100);
     const middle = fake.searches().length;
     await search(page, "slow one");

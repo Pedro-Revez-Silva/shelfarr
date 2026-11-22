@@ -207,6 +207,11 @@ Rails.application.routes.draw do
   get "preview/discover", to: "web_preview/shell#show", as: :web_preview_discover
   get "preview/books/:source/:source_id", to: "web_preview/shell#show", as: :web_preview_book,
     constraints: { source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ }
+  get "preview/requests", to: "web_preview/shell#show", as: :web_preview_requests
+  get "preview/requests/:id", to: "web_preview/shell#show", as: :web_preview_request, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/account", to: "web_preview/shell#show", as: :web_preview_account
+  get "preview/account/:section", to: "web_preview/shell#show", as: :web_preview_account_section, constraints: { section: /security|devices|connections|about/ }
+  get "preview/find", to: "web_preview/shell#show", as: :web_preview_find
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
     get "session", to: "sessions#show"
     get "continue", to: "library#continue"
@@ -221,6 +226,21 @@ Rails.application.routes.draw do
     post "requests/:id/selection", to: "requests#selection", as: :request_selection
     post "requests/:id/search", to: "requests#search", as: :request_search
     post "requests/:id/cancel", to: "requests#cancel", as: :request_cancel
+    get "requests", to: "requests#index", as: :requests
+    get "requests/:id", to: "requests#show", as: :request
+    post "requests/:id/retry", to: "requests#retry", as: :request_retry
+    post "requests/:id/remove", to: "requests#remove", as: :request_remove
+    post "requests/:id/manual", to: "requests#manual", as: :request_manual
+    get "account", to: "accounts#show", as: :account
+    put "account/profile", to: "accounts#profile", as: :account_profile
+    post "account/password", to: "accounts#password", as: :account_password
+    post "account/two_factor/setup", to: "account_security#setup_two_factor", as: :account_two_factor_setup
+    post "account/two_factor/enable", to: "account_security#enable_two_factor", as: :account_two_factor_enable
+    post "account/two_factor/disable", to: "account_security#disable_two_factor", as: :account_two_factor_disable
+    post "account/two_factor/backup_codes", to: "account_security#backup_codes", as: :account_backup_codes
+    post "account/api_tokens", to: "account_security#create_api_token", as: :account_api_tokens
+    post "account/api_tokens/:id/revoke", to: "account_security#revoke_api_token", as: :account_api_token_revoke
+    post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
   end
 
   namespace :integrations, defaults: { format: :json } do

@@ -80,8 +80,8 @@ describe("the Go server overview, against the real Rails admin page", () => {
     );
     expect(view.attention).toEqual(cases.rails_page.attention);
     const primary = page.getByRole("navigation", { name: "Primary" });
-    expect(await primary.getByRole("link").allTextContents()).toEqual(["Library", "Discover", "Requests", "Account", "Admin"]);
-    expect(await primary.getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
+    expect(await primary.getByRole("link").allTextContents()).toEqual(["Library", "Find", "Account", "Server"]);
+    expect(await primary.getByRole("link", { name: "Server" }).getAttribute("aria-current")).toBe("page");
 
     await page.reload();
     await page.getByRole("heading", { name: "Needs attention", level: 2 }).waitFor();
@@ -116,7 +116,7 @@ describe("the Go server overview, against the real Rails admin page", () => {
     });
     await signInAt(page, server.origin, "browser_member");
     await page.getByRole("heading", { name: "Only administrators can see this page", level: 2 }).waitFor();
-    expect(await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Admin" }).count()).toBe(0);
+    expect(await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Server" }).count()).toBe(0);
     expect(asked).toEqual([]);
     const member = String(fixture.users["browser_member"]);
     const direct = await page.request.get(`${server.origin}${OVERVIEW}`, { headers: { "X-Shelfarr-Account": member } });
@@ -142,7 +142,7 @@ describe("the Go server overview, against the real Rails admin page", () => {
     expect(await page.locator(".overview-counts, .health-list").count()).toBe(0);
     await page.getByRole("button", { name: "Continue as the current account" }).click();
     await page.getByRole("heading", { name: "Only administrators can see this page", level: 2 }).waitFor();
-    expect(await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Admin" }).count()).toBe(0);
+    expect(await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Server" }).count()).toBe(0);
     expect(unexpectedConsole(seen)).toEqual([]);
     await context.close();
     await server.stop();

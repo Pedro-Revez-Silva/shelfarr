@@ -73,8 +73,8 @@ module WebPreviewFlows
         assert_text "Signed in as User One"
         assert_text "127.0.0.1"
         assert_selector "nav[aria-label=Primary] a[aria-current=page]", text: "Library"
-        %w[Discover Requests Account].each { |name| assert_selector "nav[aria-label=Primary] a.nav-link--handoff", text: name }
-        assert_no_selector "nav[aria-label=Primary] a", text: "Admin"
+        %w[Find Account].each { |name| assert_selector "nav[aria-label=Primary] a.nav-link:not(.nav-link--handoff)", text: name }
+        assert_no_selector "nav[aria-label=Primary] a", text: "Server"
         assert_selector "a[href='#{at('/read')}']", text: "Classic library"
       end
       assert_selector "article.book-card", count: 30
@@ -255,7 +255,7 @@ module WebPreviewFlows
       click_link "Reload as the current account"
       assert_selector "h1", text: "Library"
       assert_text "Signed in as Admin User"
-      assert_selector "nav[aria-label=Primary] a", text: "Admin"
+      assert_selector "nav[aria-label=Primary] a", text: "Server"
     end
 
     test "a stale tab cannot save a status for the account that left" do

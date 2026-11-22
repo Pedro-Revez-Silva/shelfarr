@@ -20,6 +20,7 @@ import { serverOverviewSchema, type ServerOverview } from "../contract";
 import { bookEnvelopeSchema, bookRequestOutcomeSchema, catalogueSchema, requestActionSchema, type Book, type BookAddress, type BookRequestOutcome, type CatalogueAnswer } from "../contract";
 import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema, type MetadataChange, type MetadataRejection, type MetadataSettings } from "../contract";
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
+import { backupCodesSchema, createdTokenSchema, twoFactorSetupSchema, type CreatedToken, type RequestActionAnswer, type TwoFactorSetup } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
 import {
   progressConflictSchema,
@@ -33,6 +34,8 @@ import type { AccountGuard } from "./account-guard";
 import { ApiError, type FailureKind } from "./errors";
 
 export const ACCOUNT_HEADER = "X-Shelfarr-Account";
+
+export type ManualLink = { kind: "magnet" | "nzb"; url: string; replace_library_file: boolean };
 
 export type ApiDependencies = {
   boot: Boot;
@@ -95,6 +98,17 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   cannot_cancel: "conflict",
   request_rejected: "invalid",
   search_unavailable: "busy",
+  cannot_retry: "conflict",
+  cannot_remove: "conflict",
+  manual_rejected: "invalid",
+  invalid_code: "invalid",
+  invalid_password: "invalid",
+  invalid_scopes: "invalid",
+  invalid_token: "invalid",
+  two_factor_enabled: "conflict",
+  two_factor_disabled: "conflict",
+  two_factor_not_started: "conflict",
+  oidc_not_linked: "conflict",
 };
 
 export class ApiClient {
@@ -248,7 +262,20 @@ export class ApiClient {
     return this.requestAction(`/requests/${encodeURIComponent(requestId)}/cancel`, {}, signal);
   }
 
-  private requestAction(path: string, body: unknown, signal: AbortSignal | undefined): Promise<unknown> {
+  retryRequest(requestId: string, signal?: AbortSignal): Promise<RequestActionAnswer> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/retry`, {}, signal);
+  }
+
+  removeRequest(requestId: string, signal?: AbortSignal): Promise<RequestActionAnswer> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/remove`, {}, signal);
+  }
+
+  addManualLink(requestId: string, link: ManualLink, signal?: AbortSignal): Promise<RequestActionAnswer> {
+    const body = link.kind === "magnet" ? { kind: "magnet", magnet_url: link.url } : { kind: "nzb", nzb_url: link.url };
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/manual`, { ...body, replace_library_file: link.replace_library_file }, signal);
+  }
+
+  private requestAction(path: string, body: unknown, signal: AbortSignal | undefined): Promise<RequestActionAnswer> {
     return this.request({ path, schema: requestActionSchema, method: "POST", body, signal, account: (value) => value.account });
   }
 
@@ -287,6 +314,42 @@ export class ApiClient {
 
   changePassword(change: PasswordChange, signal?: AbortSignal): Promise<AccountAnswer> {
     return this.accountWrite("/account/password", "POST", change, signal);
+  }
+
+  async startTwoFactor(signal?: AbortSignal): Promise<TwoFactorSetup> {
+    const answer = await this.request({ path: "/account/two_factor/setup", schema: twoFactorSetupSchema, method: "POST", body: {}, signal, account: (value) => value.account });
+    return answer.setup;
+  }
+
+  async enableTwoFactor(code: string, signal?: AbortSignal): Promise<string[]> {
+    const answer = await this.request({ path: "/account/two_factor/enable", schema: backupCodesSchema, method: "POST", body: { otp_code: code }, signal, account: (value) => value.account });
+    return answer.backup_codes;
+  }
+
+  async newBackupCodes(password: string, signal?: AbortSignal): Promise<string[]> {
+    const answer = await this.request({ path: "/account/two_factor/backup_codes", schema: backupCodesSchema, method: "POST", body: { password }, signal, account: (value) => value.account });
+    return answer.backup_codes;
+  }
+
+  disableTwoFactor(password: string, signal?: AbortSignal): Promise<Profile> {
+    return this.profileAction("/account/two_factor/disable", { password }, signal);
+  }
+
+  createApiToken(name: string, scopes: string[], signal?: AbortSignal): Promise<CreatedToken> {
+    return this.request({ path: "/account/api_tokens", schema: createdTokenSchema, method: "POST", body: { name, scopes }, signal, account: (value) => value.account });
+  }
+
+  revokeApiToken(id: string, signal?: AbortSignal): Promise<Profile> {
+    return this.profileAction(`/account/api_tokens/${encodeURIComponent(id)}/revoke`, {}, signal);
+  }
+
+  unlinkSingleSignOn(currentPassword: string, signal?: AbortSignal): Promise<Profile> {
+    return this.profileAction("/account/oidc/unlink", { current_password: currentPassword }, signal);
+  }
+
+  private async profileAction(path: string, body: unknown, signal: AbortSignal | undefined): Promise<Profile> {
+    const envelope = await this.request({ path, schema: accountEnvelopeSchema, method: "POST", body, signal, account: (value) => value.account });
+    return envelope.profile;
   }
 
   private async accountWrite(path: string, method: "PUT" | "POST", body: unknown, signal: AbortSignal | undefined): Promise<AccountAnswer> {
