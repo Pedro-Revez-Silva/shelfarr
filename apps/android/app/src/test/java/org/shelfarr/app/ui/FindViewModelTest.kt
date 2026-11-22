@@ -121,13 +121,37 @@ class FindViewModelTest {
         searchAnswering(title(requested(request(RequestStage.SEARCHING))))
         listShowing(request(RequestStage.NOT_FOUND))
         backend.discoverAnswer = CompletableDeferred()
-        model.search()
-        runCurrent()
+        searchAnswering(title(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE)))
+        assertEquals(FormatState.REQUESTABLE, shownEbook().state)
+
+        listShowing(request(RequestStage.QUEUED))
+        assertEquals(requested(request(RequestStage.QUEUED)), shownEbook())
 
         listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-1"))
-        backend.discoverAnswer.complete(listOf(title(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE))))
-        runCurrent()
         assertOwned("pub-1", shownEbook())
+    }
+
+    @Test
+    fun `a list answer from the same second never takes an owned copy back to requested`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z"))))
+        listShowing(request(RequestStage.AVAILABLE, "2026-11-22T10:00:00Z", publicationId = "pub-1"))
+
+        listShowing(request(RequestStage.PROCESSING, "2026-11-22T10:00:00Z"))
+
+        assertOwned("pub-1", shownEbook())
+    }
+
+    @Test
+    fun `a new search that finds an owned copy gone shows it requestable`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.PROCESSING))))
+        listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-1"))
+        assertOwned("pub-1", shownEbook())
+
+        backend.discoverAnswer = CompletableDeferred()
+        searchAnswering(title(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE)))
+        listShowing()
+
+        assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE), shownEbook())
     }
 
     @Test

@@ -385,7 +385,7 @@ internal fun FormatOption.following(request: RequestItem): FormatOption {
     val known = this.request
     if (known?.id == request.id && request.isOlderThan(known)) return this
     return when {
-        request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = request)
+        request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
         request.stage in STAGES_HOLDING_THE_FORMAT -> copy(state = FormatState.REQUESTED, request = request)
         else -> copy(state = FormatState.REQUESTABLE, request = request)
     }
@@ -415,8 +415,7 @@ private fun DiscoverItem.updatedBy(latest: Map<String, RequestItem>): DiscoverIt
         formats = formats.map { option ->
             val answered = option.request
             val listed = answered?.let { latest[it.id] }
-            val requestableHere = option.state == FormatState.REQUESTABLE
-            if (listed != null && listed.supersedes(answered) && (!requestableHere || listed.isReady)) option.following(listed) else option
+            if (listed != null && option.state == FormatState.REQUESTED && listed.supersedes(answered)) option.following(listed) else option
         },
     )
 
