@@ -171,7 +171,7 @@ class FindViewModel(
                 val items = backend.discover(query)
                 findState.update { state ->
                     val latest = state.requests.associateBy { it.id }
-                    state.copy(searching = false, searchedFor = query, results = items.map { it.following(latest) })
+                    state.copy(searching = false, searchedFor = query, results = items.map { it.updatedBy(latest) })
                 }
             } catch (error: ApiException) {
                 if (error is ApiException.Forbidden) lostPermission()
@@ -386,7 +386,7 @@ internal fun FormatOption.following(request: RequestItem): FormatOption {
     return when {
         request.isReady -> copy(state = FormatState.IN_LIBRARY, publicationId = request.publicationId, request = null)
         request.stage in STAGES_HOLDING_THE_FORMAT -> copy(state = FormatState.REQUESTED, request = request)
-        else -> copy(state = FormatState.REQUESTABLE, request = request)
+        else -> copy(state = FormatState.REQUESTABLE, request = null)
     }
 }
 
@@ -396,6 +396,7 @@ private val STAGES_HOLDING_THE_FORMAT = setOf(
     RequestStage.AWAITING_PURCHASE,
     RequestStage.DOWNLOADING,
     RequestStage.PROCESSING,
+    RequestStage.AVAILABLE,
     RequestStage.UNKNOWN,
 )
 
@@ -407,6 +408,15 @@ private fun RequestItem.isOlderThan(other: RequestItem): Boolean {
 
 private fun DiscoverItem.following(latest: Map<String, RequestItem>): DiscoverItem =
     copy(formats = formats.map { option -> option.request?.let { latest[it.id] }?.let(option::following) ?: option })
+
+private fun DiscoverItem.updatedBy(latest: Map<String, RequestItem>): DiscoverItem =
+    copy(
+        formats = formats.map { option ->
+            val answered = option.request
+            val listed = answered?.let { latest[it.id] }
+            if (listed != null && answered.isOlderThan(listed)) option.following(listed) else option
+        },
+    )
 
 internal val BookType.word: String get() = if (this == BookType.EBOOK) "ebook" else "audiobook"
 

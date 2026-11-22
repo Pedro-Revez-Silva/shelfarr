@@ -84,24 +84,52 @@ class FindViewModelTest {
     }
 
     @Test
-    fun `a format follows its request as the server would list it, including a retry of the same request`() = runTest(dispatcher) {
+    fun `a format follows its request while the server would list it as requested, then becomes owned or requestable`() = runTest(dispatcher) {
         searchAnswering(title(requested(request(RequestStage.SEARCHING))))
 
-        listShowing(request(RequestStage.NOT_FOUND))
-        assertEquals(FormatState.REQUESTABLE, shownEbook().state)
-
-        listShowing(request(RequestStage.FAILED))
-        assertEquals(FormatState.REQUESTABLE, shownEbook().state)
-
-        listShowing(request(RequestStage.QUEUED))
-        assertEquals(FormatState.REQUESTED, shownEbook().state)
-        assertEquals(RequestStage.QUEUED, shownEbook().request?.stage)
-
         listShowing(request(RequestStage.AWAITING_PURCHASE))
-        assertEquals(FormatState.REQUESTED, shownEbook().state)
+        assertEquals(requested(request(RequestStage.AWAITING_PURCHASE)), shownEbook())
 
         listShowing(request(RequestStage.AVAILABLE, publicationId = "pub-1"))
         assertEquals(FormatOption(BookType.EBOOK, FormatState.IN_LIBRARY, publicationId = "pub-1"), shownEbook())
+    }
+
+    @Test
+    fun `a request that ends without a copy leaves its format requestable, as a new search would show it`() = runTest(dispatcher) {
+        for (ending in listOf(RequestStage.NOT_FOUND, RequestStage.FAILED, RequestStage.COMPLETED)) {
+            searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+            backend.discoverAnswer = CompletableDeferred()
+
+            listShowing(request(ending))
+            assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE), shownEbook())
+
+            listShowing(request(RequestStage.QUEUED))
+            assertEquals(FormatOption(BookType.EBOOK, FormatState.REQUESTABLE), shownEbook())
+        }
+    }
+
+    @Test
+    fun `the server's answer to a new request after a failure outlasts the failed request in the list`() = runTest(dispatcher) {
+        searchAnswering(title(requested(request(RequestStage.SEARCHING))))
+        listShowing(request(RequestStage.FAILED))
+        model.choose(model.find.value.results.single())
+        backend.createAnswer.complete(RequestOutcome.InLibrary("pub-9", "Already in the library."))
+        model.submit()
+        runCurrent()
+
+        listShowing(request(RequestStage.FAILED))
+
+        assertEquals(FormatOption(BookType.EBOOK, FormatState.IN_LIBRARY, publicationId = "pub-9"), model.title.value.item?.format(BookType.EBOOK))
+        assertEquals(FormatState.IN_LIBRARY, shownEbook().state)
+    }
+
+    @Test
+    fun `a fresh search answer wins over a list entry from the same second`() = runTest(dispatcher) {
+        listShowing(request(RequestStage.FAILED, "2026-11-22T10:00:00Z"))
+
+        searchAnswering(title(requested(request(RequestStage.QUEUED, "2026-11-22T10:00:00Z"))))
+
+        assertEquals(requested(request(RequestStage.QUEUED, "2026-11-22T10:00:00Z")), shownEbook())
     }
 
     @Test
