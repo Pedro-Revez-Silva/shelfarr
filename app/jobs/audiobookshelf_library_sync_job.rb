@@ -54,6 +54,19 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY = "library-platform-last-scheduled-sync-at"
 
   class << self
+    def scheduled_due?
+      return false unless LibraryPlatformClient.configured?
+
+      interval = SettingsService.get(:audiobookshelf_library_sync_interval, default: 3600).to_i
+      return false if interval <= 0
+
+      last_attempt = Rails.cache.read(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY)
+      return true unless last_attempt.respond_to?(:beginning_of_minute)
+
+      interval_minutes = [ interval.ceildiv(60), 1 ].max
+      last_attempt.beginning_of_minute <= interval_minutes.minutes.ago.beginning_of_minute
+    end
+
     def discard_legacy_scheduled_chains!
       discarded = 0
       legacy_scheduled_jobs.find_each do |job|
@@ -122,8 +135,7 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   # recurring chain.
   def perform(scheduled: false, **_one_shot_metadata)
     release_unconfigured_integration_connections!
-    return unless LibraryPlatformClient.configured?
-    return if scheduled && !sync_due?
+    return unless scheduled ? self.class.scheduled_due? : LibraryPlatformClient.configured?
 
     record_scheduled_attempt! if scheduled
     AudiobookshelfLibrarySyncService.new.sync!
@@ -154,16 +166,6 @@ class AudiobookshelfLibrarySyncJob < ApplicationJob
   end
 
   private
-
-  def sync_due?
-    interval = SettingsService.get(:audiobookshelf_library_sync_interval, default: 3600).to_i
-    return false if interval <= 0
-
-    IntervalRecurringTasks.due?(
-      Rails.cache.read(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY),
-      interval
-    )
-  end
 
   def record_scheduled_attempt!
     Rails.cache.write(LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY, Time.current)

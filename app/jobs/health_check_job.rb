@@ -4,6 +4,14 @@ class HealthCheckJob < ApplicationJob
   queue_as :default
 
   class << self
+    def scheduled_due?
+      last_checks = SystemHealth.where(service: SystemHealth::SERVICES).pluck(:last_check_at)
+      return true if last_checks.size < SystemHealth::SERVICES.size || last_checks.any?(&:nil?)
+
+      interval = [ SettingsService.get(:health_check_interval, default: 300).to_i, SettingsService::MIN_HEALTH_CHECK_INTERVAL ].max
+      last_checks.min.beginning_of_minute <= interval.ceildiv(60).minutes.ago.beginning_of_minute
+    end
+
     def discard_legacy_scheduled_chains!
       discarded = 0
       legacy_scheduled_jobs.find_each do |job|
@@ -36,7 +44,7 @@ class HealthCheckJob < ApplicationJob
     if service.present?
       run_check_for(service)
     else
-      return if scheduled && !scheduled_health_check_due?
+      return if scheduled && !self.class.scheduled_due?
 
       check_indexer
       check_download_clients
@@ -48,16 +56,6 @@ class HealthCheckJob < ApplicationJob
   end
 
   private
-
-  def scheduled_health_check_due?
-    health_records = SystemHealth.where(service: SystemHealth::SERVICES)
-    return true if health_records.count < SystemHealth::SERVICES.length
-    return true if health_records.where(last_check_at: nil).exists?
-
-    interval = SettingsService.get(:health_check_interval, default: 300).to_i
-    interval = [ interval, SettingsService::MIN_HEALTH_CHECK_INTERVAL ].max
-    IntervalRecurringTasks.due?(health_records.minimum(:last_check_at), interval)
-  end
 
   def run_check_for(service)
     case service.to_s

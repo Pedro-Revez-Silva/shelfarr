@@ -25,20 +25,7 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   setup do
     # Selenium reuses its browser after reset_sessions!, including the window
     # size left by a mobile test. Give each test the declared desktop viewport.
-    resize_browser
-  end
-
-  def resize_browser
-    attempts = 0
-    begin
-      page.current_window.resize_to(1400, 1400)
-    rescue Net::ReadTimeout
-      attempts += 1
-      raise if attempts > 1
-
-      Capybara.reset_sessions!
-      retry
-    end
+    page.current_window.resize_to(1400, 1400)
   end
 
   def sign_in_as(user)

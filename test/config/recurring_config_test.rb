@@ -3,6 +3,8 @@
 require "test_helper"
 
 class RecurringConfigTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   test "schedules book metadata backfill daily" do
     config = YAML.safe_load_file(Rails.root.join("config/recurring.yml"), aliases: true)
 
@@ -62,6 +64,18 @@ class RecurringConfigTest < ActiveSupport::TestCase
       assert_nil jobs["health_check"]
       assert_nil jobs["audiobookshelf_library_sync"]
     end
+  end
+
+  test "scheduler startup enqueues a due health check" do
+    SolidQueue::Record.establish_connection(:queue)
+    SystemHealth.delete_all
+    scheduler = SolidQueue::Scheduler.new(recurring_tasks: [])
+
+    assert_enqueued_with(job: HealthCheckJob, args: [ { scheduled: true } ]) do
+      scheduler.send(:run_start_hooks)
+    end
+  ensure
+    scheduler&.send(:run_stop_hooks)
   end
 
   test "schedules the download monitor class and has no command entry" do

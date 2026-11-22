@@ -109,58 +109,28 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
     sync_service.verify
   end
 
-  test "scheduled syncs follow the interval slot when the previous run started late" do
+  test "scheduled syncs honor the configured interval on minute boundaries" do
     SettingsService.set(:audiobookshelf_library_sync_interval, 600)
-    job = AudiobookshelfLibrarySyncJob.new
-
-    travel_to Time.zone.parse("2026-08-26 11:59:00") do
-      Rails.cache.write(
-        AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
-        Time.zone.parse("2026-08-26 11:51:00")
-      )
-      assert_not job.send(:sync_due?)
-    end
 
     travel_to Time.zone.parse("2026-08-26 12:00:00") do
       Rails.cache.write(
         AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
-        Time.zone.parse("2026-08-26 11:51:00")
+        9.minutes.ago
       )
-      assert job.send(:sync_due?)
+      assert_not AudiobookshelfLibrarySyncJob.scheduled_due?
 
       Rails.cache.write(
         AudiobookshelfLibrarySyncJob::LAST_SCHEDULED_ATTEMPT_AT_CACHE_KEY,
-        Time.zone.parse("2026-08-26 11:50:00")
+        10.minutes.ago
       )
-      assert job.send(:sync_due?)
+      assert AudiobookshelfLibrarySyncJob.scheduled_due?
     end
-  end
-
-  test "a library sync that starts a minute late still runs on the next hour" do
-    SettingsService.set(:audiobookshelf_library_sync_interval, 3600)
-    syncs = 0
-    service = Object.new
-    service.define_singleton_method(:sync!) { syncs += 1 }
-
-    AudiobookshelfLibrarySyncService.stub(:new, service) do
-      travel_to Time.zone.parse("2026-08-26 10:01:00") do
-        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
-      end
-      travel_to Time.zone.parse("2026-08-26 11:00:00") do
-        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
-      end
-      travel_to Time.zone.parse("2026-08-26 11:00:30") do
-        AudiobookshelfLibrarySyncJob.perform_now(scheduled: true)
-      end
-    end
-
-    assert_equal 2, syncs
   end
 
   test "zero interval disables scheduled syncs" do
     SettingsService.set(:audiobookshelf_library_sync_interval, 0)
 
-    assert_not AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
+    assert_not AudiobookshelfLibrarySyncJob.scheduled_due?
   end
 
   test "scheduled syncs record an attempt even when the remote library is empty" do
@@ -175,7 +145,7 @@ class AudiobookshelfLibrarySyncJobTest < ActiveJob::TestCase
 
     sync_service.verify
     assert_empty LibraryItem.all
-    assert_not AudiobookshelfLibrarySyncJob.new.send(:sync_due?)
+    assert_not AudiobookshelfLibrarySyncJob.scheduled_due?
   end
 
   test "post-scan refresh enqueues a delayed one-shot sync" do

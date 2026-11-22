@@ -577,7 +577,7 @@
               <tr><td class="key"><code>audiobookshelf_api_key</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">API token from Audiobookshelf user settings.</td></tr>
               <tr><td class="key"><code>audiobookshelf_audiobook_library_id</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Library ID for audiobooks.</td></tr>
               <tr><td class="key"><code>audiobookshelf_ebook_library_id</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>(empty)</code></td><td class="desc">Library ID for ebooks.</td></tr>
-              <tr><td class="key"><code>audiobookshelf_library_sync_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>3600</code></td><td class="desc">Seconds between automatic library sync jobs. The recurring job follows this interval. Zero disables it.</td></tr>
+              <tr><td class="key"><code>audiobookshelf_library_sync_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>3600</code></td><td class="desc">Seconds between automatic library sync jobs.</td></tr>
             </tbody>
           </table>
         </div>
@@ -745,7 +745,7 @@
         </div>
 
         <h2 id="queue">Queue &amp; Retry <a class="anchor" href="#queue" aria-label="Link to Queue and Retry">#</a></h2>
-        <p class="section-desc">Shelfarr uses dynamic Solid Queue tasks for health checks and Audiobookshelf library sync. When a custom queue configuration disables dynamic tasks, the scheduler checks for these jobs once a minute. Explicitly configured static entries for these jobs keep their own schedules.</p>
+        <p class="section-desc">The scheduler checks the health-check and library-sync intervals each minute and enqueues work when it is due. Custom recurring entries with the same task keys keep their own schedules.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
@@ -872,7 +872,7 @@
           <table>
             <thead><tr><th>Setting</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td class="key"><code>health_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>300</code></td><td class="desc">Seconds between system health checks (minimum: 60; default: 300). The recurring job follows this interval.</td></tr>
+              <tr><td class="key"><code>health_check_interval</code></td><td><span class="badge t-integer">integer</span></td><td class="default"><code>300</code></td><td class="desc">Seconds between system health checks (minimum: 60; default: 300). Scheduled checks are evaluated once per minute.</td></tr>
               <tr><td class="key"><code>github_repo</code></td><td><span class="badge t-string">string</span></td><td class="default"><code>Pedro-Revez-Silva/shelfarr</code></td><td class="desc">Repository used for update-availability checks.</td></tr>
             </tbody>
           </table>
