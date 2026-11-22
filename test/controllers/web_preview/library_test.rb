@@ -244,11 +244,13 @@ class WebPreview::LibraryControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal({ "account" => { "id" => users(:one).id.to_s, "name" => "User One" },
       "server" => { "name" => "www.example.com", "version" => Consumer::ServerInfo.server_version },
-      "links" => { "legacy_library" => "/read", "discover" => "/search", "requests" => "/requests", "account" => "/profile" } }, response.parsed_body)
+      "links" => { "legacy_library" => "/read", "discover" => "/search", "requests" => "/requests", "account" => "/profile" },
+      "capabilities" => { "administrator" => false, "can_upload" => false, "single_sign_on" => false, "hardcover_personal_access" => false } }, response.parsed_body)
     sign_out
     sign_in_as(users(:two))
     preview_get web_preview_api_session_path, user: users(:two)
     assert_equal({ "url" => "/admin" }, response.parsed_body.fetch("admin"))
+    assert_equal({ "administrator" => true, "can_upload" => true }, response.parsed_body.fetch("capabilities").slice("administrator", "can_upload"))
     assert_equal users(:two).id.to_s, response.parsed_body.dig("account", "id")
   end
 end

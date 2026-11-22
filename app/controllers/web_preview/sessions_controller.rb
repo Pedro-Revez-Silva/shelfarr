@@ -9,6 +9,7 @@ class WebPreview::SessionsController < WebPreview::APIController
       links: { legacy_library: consumer_library_path, discover: helpers.discover_entry_path, requests: requests_path, account: profile_path }
     }
     value[:admin] = { url: admin_root_path } if user.admin?
+    value[:capabilities] = WebPreview::SessionCapabilities.for(user)
     render json: value
   end
 end
