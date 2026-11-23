@@ -133,7 +133,7 @@ function overviewFixture() {
       checked_at: service === "indexer" ? "2026-11-22T10:00:00Z" : null,
       ...(service === "indexer" ? { message: "Connection refused", fix: { category: "sources", group: "indexer", label: "Indexer settings" } } : {}),
     })),
-    pending: [{ label: "Activity log", url: "/sub/admin/activity_logs" }],
+    pending: [{ label: "Audible backup", url: "/sub/admin/owned_library_connections" }],
     release: {
       build: "1.0.0",
       channel: "Shelfarr 1.0",
@@ -243,7 +243,7 @@ describe("Server in the Rails preview", () => {
     expect(within(attention).getByRole("link", { name: "Open indexer settings" }).getAttribute("href")).toBe("/sub/preview/server/sources#indexer");
     expect(screen.getByText("You're up to date")).toBeTruthy();
     const pending = screen.getByRole("heading", { name: "Not in this preview yet", level: 2 }).closest("section")!;
-    expect(within(pending).getByRole("link", { name: "Activity log (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/admin/activity_logs");
+    expect(within(pending).getByRole("link", { name: "Audible backup (opens the classic Shelfarr app)" }).getAttribute("href")).toBe("/sub/admin/owned_library_connections");
     const rail = screen.getByRole("navigation", { name: "Server" });
     expect(within(rail).getAllByRole("link").map((entry) => entry.textContent)).toEqual(["Overview", "Request policy", "Catalogues and sources", "Downloads", "Library and files", "Notifications", "People and access", "System"]);
     expect(within(rail).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");

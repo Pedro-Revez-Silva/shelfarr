@@ -13,6 +13,8 @@ import { RequestsPage } from "./components/RequestsPage";
 import { ServerSettingsPage } from "./components/ServerSettingsPage";
 import { ServerCategoryPage } from "./server/ServerCategoryPage";
 import { NewPersonPage, PersonPage } from "./server/people/PersonPages";
+import { ActivityLogPage } from "./server/activity/ActivityLogPage";
+import { activitySearchSchema } from "./server/activity/contract";
 import { LegacySetupRedirect } from "./server/setup/RunSetupAgain";
 import { ServerSetupPage } from "./server/setup/SetupPage";
 import { Shell } from "./components/Shell";
@@ -166,6 +168,13 @@ const serverCategoryRoute = createRoute({
   component: ServerCategoryPage,
 });
 
+const activityRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server/system/activity",
+  validateSearch: (search: Record<string, unknown>) => activitySearchSchema.parse(search),
+  component: ActivityLogPage,
+});
+
 const newPersonRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/server/people/users/new",
@@ -178,7 +187,7 @@ const personRoute = createRoute({
   component: PersonPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, koboReaderRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, koboReaderRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, activityRoute, newPersonRoute, personRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

@@ -143,4 +143,17 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     post "#{BASE}/preview/api/v1/notifications/clear", params: { through: notification.id.to_s }, headers: account_headers(users(:one)), as: :json
     assert_equal [ 0, 0, 1 ], response.parsed_body.values_at("unread", "total", "changed")
   end
+
+  test "the classic activity bookmark, the warm activity page and its API live under the deployment path" do
+    admin = users(:two)
+    ENV[WebPreview::Access::VARIABLE] = admin.id.to_s
+    sign_in_as(admin)
+    entry = ActivityLog.create!(action: "user.login", user: admin)
+    get "#{BASE}/admin/activity_logs?action_filter=user.login"
+    assert_redirected_to "http://www.example.com#{BASE}/preview/server/system/activity?action=user.login"
+    get "#{BASE}/preview/server/system/activity?action=user.login"
+    assert_response :success
+    get "#{BASE}/preview/api/v1/admin/activity?action_filter=user.login", headers: account_headers(admin)
+    assert_equal [ entry.id.to_s ], response.parsed_body.fetch("entries").map { |item| item.fetch("id") }
+  end
 end

@@ -1,0 +1,125 @@
+.activity-back {
+  margin: 0;
+}
+.activity-back a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.activity-filters form {
+  display: grid;
+  gap: 16px;
+  padding: 20px clamp(16px, 4vw, 24px);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+.activity-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  gap: 16px;
+}
+.activity-fields input[type="date"] {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 12px;
+  background: var(--surface);
+  color: inherit;
+  border: 1px solid var(--muted);
+  border-radius: 12px;
+  font: inherit;
+  font-size: max(1rem, 16px);
+}
+.activity-fields .field-hint {
+  margin: 0;
+}
+.activity-count {
+  margin: 0;
+}
+.activity-table {
+  container-type: inline-size;
+  max-inline-size: 100%;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+.activity-table table {
+  inline-size: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.activity-table th,
+.activity-table td {
+  padding: 12px 16px;
+  text-align: start;
+  vertical-align: top;
+  border-block-start: 1px solid var(--line);
+}
+.activity-table thead th {
+  border-block-start: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.activity-table tbody th {
+  font-weight: 400;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.activity-table a {
+  color: var(--accent);
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.activity-action {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+.activity-details {
+  display: grid;
+  gap: 2px;
+  overflow-wrap: anywhere;
+}
+.activity-fact {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+@container (width < 34rem) {
+  .activity-table table,
+  .activity-table tbody,
+  .activity-table tr,
+  .activity-table th,
+  .activity-table td {
+    display: block;
+  }
+  .activity-table thead {
+    display: none;
+  }
+  .activity-table tbody tr {
+    display: grid;
+    gap: 6px;
+    padding: 14px 16px;
+    border-block-start: 1px solid var(--line);
+  }
+  .activity-table tbody tr:first-child {
+    border-block-start: 0;
+  }
+  .activity-table tbody th,
+  .activity-table td {
+    padding: 0;
+    border: 0;
+    white-space: normal;
+  }
+  .activity-table td:empty {
+    display: none;
+  }
+  .activity-table td::before {
+    content: attr(data-label) ": ";
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+}

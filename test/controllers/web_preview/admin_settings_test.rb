@@ -548,7 +548,7 @@ class WebPreview::AdminSettingsTest < ActionDispatch::IntegrationTest
 
   test "the overview lists the administration screens that are not in the preview yet" do
     admin_get web_preview_api_admin_overview_path
-    assert_equal [ "Audible backup", "Activity log" ],
+    assert_equal [ "Audible backup" ],
       response.parsed_body.fetch("pending").map { |entry| entry.fetch("label") }
     assert_equal admin_owned_library_connections_path, response.parsed_body.dig("pending", 0, "url")
     indexer = settings_json.fetch("categories").flat_map { |category| category["groups"] }.find { |group| group["id"] == "indexer" }

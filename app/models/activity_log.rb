@@ -12,6 +12,7 @@ class ActivityLog < ApplicationRecord
     settings.updated
     admin.user_created admin.user_updated admin.user_deleted
   ].freeze
+  LIST_LIMIT = 100
 
   validates :action, presence: true
 
@@ -19,6 +20,14 @@ class ActivityLog < ApplicationRecord
   scope :for_action, ->(action) { where(action: action) }
   scope :by_user, ->(user) { where(user: user) }
   scope :for_trackable, ->(obj) { where(trackable: obj) }
+
+  def self.listing(user_id: nil, action: nil, from: nil)
+    logs = recent
+    logs = logs.by_user(user_id) if user_id.present?
+    logs = logs.for_action(action) if action.present?
+    logs = logs.where("created_at >= ?", from) if from.present?
+    logs
+  end
 
   def self.track(action:, user: nil, trackable: nil, details: {}, ip_address: nil, controller: nil)
     create!(

@@ -281,12 +281,14 @@ Rails.application.routes.draw do
   get "preview/server", to: "web_preview/shell#show", as: :web_preview_server
   get "preview/server/setup", to: "web_preview/shell#show", as: :web_preview_server_setup
   get "preview/admin/setup_wizard", to: "web_preview/shell#show", as: :web_preview_admin_setup_wizard
+  get "preview/server/system/activity", to: "web_preview/shell#show", as: :web_preview_server_activity
   get "preview/server/people/users/new", to: "web_preview/shell#show", as: :web_preview_server_new_person
   get "preview/server/people/users/:id", to: "web_preview/shell#show", as: :web_preview_server_person, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/server/:category", to: "web_preview/shell#show", as: :web_preview_server_category,
     constraints: { category: /policy|sources|downloads|library|notifications|people|system/ }
   scope "preview/api/v1/admin", module: "web_preview/admin", as: :web_preview_api_admin, defaults: { format: :json } do
     get "overview", to: "overview#show"
+    get "activity", to: "activity#index", as: :activity
     get "setup", to: "setup#show"
     put "setup/steps/:step", to: "setup#update", as: :setup_step, constraints: { step: /[a-z_]{1,40}/ }
     post "setup/skip", to: "setup#skip", as: :setup_skip
