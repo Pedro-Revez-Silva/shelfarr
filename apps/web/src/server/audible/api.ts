@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ApiClient } from "../../api/client";
 import { failureKind } from "../../api/errors";
 import { useServices } from "../../services";
@@ -113,11 +113,18 @@ export function useIdleRevision(current: Audible | undefined) {
     staleTime: 0,
   });
   const changed = idle && latest.data !== undefined && latest.data !== current.revision;
+  const denied = latest.isError && failureKind(latest.error) === "not_found";
   useEffect(() => {
-    if (!changed) return;
+    if (!changed && !denied) return;
     void client.invalidateQueries({ queryKey: keys.state });
     void client.invalidateQueries({ queryKey: keys.catalogue });
-  }, [changed, client, keys.state, keys.catalogue]);
+  }, [changed, denied, client, keys.state, keys.catalogue]);
+  const working = current?.working ?? false;
+  const wasWorking = useRef(working);
+  useEffect(() => {
+    if (wasWorking.current && !working) void client.invalidateQueries({ queryKey: keys.catalogue });
+    wasWorking.current = working;
+  }, [working, client, keys.catalogue]);
 }
 
 export function useCatalogue(query: string, page: number, working: boolean) {
@@ -144,6 +151,7 @@ export function useAudibleCommand() {
     onSuccess: async (answer) => {
       if (!guard.isActive() || answer.kind !== "done") return;
       await client.cancelQueries({ queryKey: keys.state });
+      await client.cancelQueries({ queryKey: keys.revision });
       const state = audibleSchema.parse(answer.action);
       client.setQueryData<Audible>(keys.state, state);
       client.setQueryData<string>(keys.revision, state.revision);

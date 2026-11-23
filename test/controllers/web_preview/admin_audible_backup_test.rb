@@ -818,4 +818,29 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
     assert_equal "Bridge value [hidden] was rejected", response.parsed_body.dig("items", 0, "detail")
   end
+
+  test "a mounted token that was rotated away stays hidden in an old diagnostic, and a token in an account label is hidden" do
+    file = File.join(@audiobook_output_path, "bridge.token")
+    old_token = "old-mounted-token-#{'a' * 24}"
+    File.write(file, "#{old_token}\n")
+    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
+      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true, last_synced_at: 1.hour.ago)
+      item = connection.owned_library_items.create!(external_id: "B0FAIL0001", title: "Dune", ownership_type: "purchased")
+      item.owned_media_imports.create!(status: "failed", requested_by: @admin, error_message: "Bearer #{old_token} was rejected")
+      File.write(file, "new-mounted-token-#{'b' * 24}\n")
+      sign_in_as(@admin)
+      preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+      assert_equal "Bearer [hidden] was rejected", response.parsed_body.dig("items", 0, "detail")
+      assert_not_includes response.body, old_token
+    end
+
+    custom = OwnedLibraryConnection.sole
+    custom.update_columns(url: COMPANION, bridge_token: "custom-label-token", allow_private_network: false)
+    VCR.turned_off do
+      stub_request(:get, "#{COMPANION}/v1/accounts")
+        .to_return(status: 200, body: { accounts: [ { account: "reader@example.com", locale: "us", authenticated: true, name: "Reader custom-label-token" } ] }.to_json)
+      body = state
+      assert_equal "Reader [hidden]", body.dig("sign_in", "accounts", 0, "label")
+    end
+  end
 end

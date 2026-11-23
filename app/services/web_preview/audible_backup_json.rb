@@ -4,6 +4,7 @@ module WebPreview
   class AudibleBackupJson
     SIGN_IN_PURPOSE = "web_preview/audible_sign_in"
     SIGN_IN_ADDRESS_BYTES = 16.kilobytes
+    BEARER_SHAPED = /[^\s\[\]]{#{OwnedLibraryConnectionWorkflow::SHORTEST_COMPANION_BEARER},}/
     ADDRESS = %r{[a-z][a-z0-9+.-]*://[^\s"'<>]+}i
     ACTIVE_LABELS = { "queued" => "Queued", "starting" => "Starting", "downloading" => "Backing up", "processing" => "Importing" }.freeze
 
@@ -79,11 +80,15 @@ module WebPreview
     def redact(text)
       return nil if text.nil?
 
-      masked = companion_secrets.reduce(text.to_s) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
-      SecretRedaction.call(masked.gsub(ADDRESS) { |address| shown_address(address) })
+      masked = without_secrets(text).gsub(ADDRESS) { |address| shown_address(address) }
+      SecretRedaction.call(masked.gsub(BEARER_SHAPED, SecretRedaction::MASK))
     end
 
     private
+
+    def without_secrets(text)
+      companion_secrets.reduce(text.to_s) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
+    end
 
     def shown_version(value)
       OwnedLibraryConnectionWorkflow.reportable_version(value, @connection.client.secret_values)
@@ -163,7 +168,7 @@ module WebPreview
 
     def account_json(account)
       {
-        label: account.name.presence || account.account,
+        label: without_secrets(account.name.presence || account.account),
         marketplace: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(account.locale.to_s.downcase, account.locale.to_s),
         authenticated: account.authenticated == true
       }

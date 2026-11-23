@@ -484,4 +484,36 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(await within(sync).findByRole("progressbar", { name: "Library sync in progress" })).toBeTruthy();
     expect(server.called("GET", /admin\/audible\/revision$/).length).toBeGreaterThan(0);
   });
+  test("when work ends the catalogue is read again so a failed backup shows its retry", async () => {
+    const running = state({ active_backups: { total: 1, counts: [{ status: "downloading", count: 1 }] }, working: true });
+    let finished = false;
+    const server = adminServer(running, () =>
+      catalogue({
+        pages: 1,
+        items: [finished ? item({ state: "failed", detail: "Libation said no", action: { label: "Retry backup", separate_edition: false, available: true } }) : item({ state: "downloading", action: { label: "Backing up…", separate_edition: false, available: false } })],
+      }),
+    ).on("GET", /\/api\/v1\/admin\/audible$/, () => {
+      if (server.called("GET", /admin\/audible$/).length > 1) {
+        finished = true;
+        current = state();
+      }
+      return { body: current };
+    });
+    await openLibrary(server);
+    const list = section("audible-catalogue");
+    expect(await within(list).findByRole("button", { name: "Backing up… Dune" })).toBeTruthy();
+    expect(await within(list).findByRole("button", { name: "Retry backup Dune" }, { timeout: 9000 })).toBeTruthy();
+  }, 15000);
+
+  test("a revision refused for a demoted administrator shows the administrators-only state", async () => {
+    let demoted = false;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible\/revision$/, () => {
+        demoted = true;
+        return { status: 404, body: { error: "not_found" } };
+      })
+      .on("GET", /\/api\/v1\/admin\/audible$/, () => (demoted ? { status: 404, body: { error: "not_found" } } : { body: current }));
+    await openLibrary(server);
+    expect(await within(section("audible")).findByText("Only administrators can manage Audible backup.")).toBeTruthy();
+  });
 });
