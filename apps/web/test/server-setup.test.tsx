@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SettingField } from "../src/server/contract";
 import { setupStateSchema, type SetupCard, type SetupState, type SetupStepId } from "../src/server/setup/contract";
-import { ACCOUNT, FakeServer, renderApp, session, standardServer } from "./helpers";
+import { ACCOUNT, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
 
 afterEach(cleanup);
 
@@ -308,7 +308,7 @@ describe("Setup in the Rails preview", () => {
       account: ACCOUNT,
       counts: { users: 1, books: 0, active_requests: 0, attention_requests: 0 },
       services: ["indexer", "download_client", "download_paths", "output_paths", "audiobookshelf", "hardcover"].map((service) => ({ service, status: null, checked_at: null })),
-      setup: { pending },
+      setup: { pending, completed: !pending },
     });
     let pending = true;
     const server = setupServer().on("GET", /\/api\/v1\/admin\/overview$/, () => ({ body: overview(pending) }));
@@ -324,5 +324,80 @@ describe("Setup in the Rails preview", () => {
     renderApp({ server, url: "/sub/preview/server" });
     expect(await screen.findByRole("heading", { name: "System health", level: 2 })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Shelfarr is not set up yet" })).toBeNull();
+  });
+
+  test("a background read of the same step keeps what is being typed", async () => {
+    const server = setupServer();
+    const { services } = renderApp({ server, url: "/sub/preview/server/setup" });
+    const prowlarrCard = await waitFor(() => cardSection("prowlarr"));
+    await userEvent.type(within(prowlarrCard).getByLabelText("Prowlarr address"), "/typed");
+
+    await services.queryClient.invalidateQueries();
+    await waitFor(() => expect(server.called("GET", /\/admin\/setup/).length).toBe(2));
+
+    expect((within(cardSection("prowlarr")).getByLabelText("Prowlarr address") as HTMLInputElement).value).toBe("http://prowlarr:9696/typed");
+    expect(within(cardSection("prowlarr")).getByText("Unsaved changes")).toBeTruthy();
+  });
+
+  test("while a step is being saved, nothing else on the page can write", async () => {
+    const held = deferred<{ body: unknown }>();
+    const server = setupServer()
+      .on("PUT", /\/admin\/setup\/steps\/prowlarr$/, () => held.promise)
+      .on("POST", /\/admin\/setup\/skip$/, () => ({ body: { account: ACCOUNT, completed: true, setup: null } }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/setup" });
+    const prowlarrCard = await waitFor(() => cardSection("prowlarr"));
+    await userEvent.click(within(prowlarrCard).getByRole("button", { name: "Test and continue" }));
+
+    await waitFor(() => expect((screen.getByRole("button", { name: "Skip setup" }) as HTMLButtonElement).disabled).toBe(true));
+    expect((screen.getByRole("button", { name: "Skip this step" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole("button", { name: "Skip setup" }));
+    expect(server.called("POST", /skip$/)).toEqual([]);
+
+    held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: qbittorrent() } });
+    await waitFor(() => expect(router.state.location.search).toEqual({ step: "qbittorrent" }));
+    expect(server.called("PUT", /prowlarr$/).length).toBe(1);
+  });
+
+  test("skipping with typed changes asks first, and only leaving sends the skip", async () => {
+    const server = setupServer().on("POST", /\/admin\/setup\/skip$/, () => ({ body: { account: ACCOUNT, completed: true, setup: null } }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/setup" });
+    const prowlarrCard = await waitFor(() => cardSection("prowlarr"));
+    await userEvent.type(within(prowlarrCard).getByLabelText("Prowlarr address"), "/typed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Skip setup" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Leave without saving?" })).getByRole("button", { name: "Stay and keep editing" }));
+    expect(server.called("POST", /skip$/)).toEqual([]);
+    expect((within(cardSection("prowlarr")).getByLabelText("Prowlarr address") as HTMLInputElement).value).toBe("http://prowlarr:9696/typed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Skip setup" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Leave and discard" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/library"));
+    expect(server.called("POST", /skip$/)[0]!.body).toEqual({ step: "prowlarr", exit: true });
+  });
+
+  test("System offers Continue setup instead while setup is unfinished", async () => {
+    const settings = {
+      account: ACCOUNT,
+      categories: [{ id: "system", title: "System", summary: "Health checks.", groups: [] }],
+      notes: { path_variables: "", hardcover_app: { create_url: "https://hardcover.app/x", scopes: "", redirect_uri: "", redirect_uri_acceptable: true } },
+      roles: [],
+    };
+    const overview = {
+      account: ACCOUNT,
+      counts: { users: 1, books: 0, active_requests: 0, attention_requests: 0 },
+      services: ["indexer", "download_client", "download_paths", "output_paths", "audiobookshelf", "hardcover"].map((service) => ({ service, status: null, checked_at: null })),
+      setup: { pending: false, completed: false },
+    };
+    const server = setupServer()
+      .on("GET", /\/api\/v1\/admin\/settings$/, () => ({ body: settings }))
+      .on("GET", /\/api\/v1\/admin\/overview$/, () => ({ body: overview }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/system" });
+
+    const setupCard = await waitFor(() => cardSection("Setup"));
+    const link = await within(setupCard).findByRole("link", { name: "Continue setup" });
+    expect(within(setupCard).queryByRole("button", { name: "Run setup again" })).toBeNull();
+    await userEvent.click(link);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/server/setup"));
+    expect(server.called("POST", /restart$/)).toEqual([]);
   });
 });

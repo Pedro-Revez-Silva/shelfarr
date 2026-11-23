@@ -39,7 +39,7 @@ class RegistrationsController < ApplicationController
   end
 
   def first_setup_path
-    warm_entry? && WebPreview::Access.current.allows?(@user) ? web_preview_server_setup_path : admin_setup_wizard_path
+    WebPreview::Access.current.allows?(@user) && WarmEntry.stylesheet_built? ? web_preview_server_setup_path : admin_setup_wizard_path
   end
 
   def first_user?

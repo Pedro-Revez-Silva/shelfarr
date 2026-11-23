@@ -29,7 +29,7 @@ class SetupWizard
       @library_error = nil
       client = SetupWizard.qbittorrent_client
 
-      @url = text_field(:url, saved_url(client))
+      @url = text_field(:url, SetupWizard.saved_url(step))
       @api_key = submitted_value(:api_key)
       @username = text_field(:username, client&.username.to_s)
       @password = submitted_value(:password)
@@ -82,15 +82,6 @@ class SetupWizard
       return saved if saved.present? || !@suggest_libraries
 
       SetupWizard.suggested_library_id(@libraries, output_path).to_s
-    end
-
-    def saved_url(client)
-      case step
-      when "prowlarr" then SettingsService.get(:prowlarr_url)
-      when "qbittorrent" then client&.url.to_s
-      when "audiobookshelf" then SettingsService.get(:audiobookshelf_url)
-      else ""
-      end
     end
 
     def saved_remote_path

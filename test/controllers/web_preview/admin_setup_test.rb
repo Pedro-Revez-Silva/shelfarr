@@ -224,13 +224,13 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
       sign_in_as(@admin)
 
       assert_no_difference "DownloadClient.count" do
-        save_step("qbittorrent", { url: "http://qbittorrent:8080", api_key: "not-a-key", category: "" })
+        save_step("qbittorrent", { url: "http://qbittorrent:8080", username: "", password: "", api_key: "not-a-key", category: "" })
       end
       assert_response :unprocessable_entity
       assert_equal "qBittorrent API key must start with qbt_ and contain 28 characters after the prefix.", response.parsed_body.fetch("message")
 
       assert_difference "DownloadClient.count", 1 do
-        save_step("qbittorrent", { url: "http://qbittorrent:8080", username: "admin", password: "secret-pass-1", category: "" })
+        save_step("qbittorrent", { url: "http://qbittorrent:8080", username: "admin", password: "secret-pass-1", api_key: "", category: "" })
       end
       assert_equal "folders", response.parsed_body.dig("setup", "step")
 
@@ -241,7 +241,7 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
       assert_not_includes response.body, "secret-pass-1"
 
       assert_no_difference "DownloadClient.count" do
-        save_step("qbittorrent", { url: "http://qbittorrent:8080", username: "admin", password: "", category: "" })
+        save_step("qbittorrent", { url: "http://qbittorrent:8080", username: "admin", password: "", api_key: "", category: "" })
       end
       assert_equal "secret-pass-1", DownloadClient.qbittorrent.sole.password
     end
@@ -356,6 +356,98 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
     assert_equal false, SettingsService.get(:setup_wizard_completed)
   end
 
+  test "a step's write needs every one of its values, each as text or a switch, and otherwise saves nothing" do
+    SettingsService.set(:audiobook_output_path, "/books/audio")
+    SettingsService.set(:ebook_output_path, "/books/ebooks")
+    SettingsService.set(:immediate_search_enabled, false)
+    SettingsService.set(:auto_select_enabled, true)
+    folders = { audiobook_output_path: "/a", ebook_output_path: "/e", download_local_path: "/d", download_remote_path: "" }
+    sign_in_as(@admin)
+
+    [
+      [ "folders", folders.except(:ebook_output_path) ],
+      [ "folders", folders.merge(audiobook_output_path: { nested: "/a" }) ],
+      [ "folders", folders.merge(immediate_search_enabled: true) ],
+      [ "search", {} ],
+      [ "search", { immediate_search_enabled: "true", auto_select_enabled: false } ],
+      [ "search", { immediate_search_enabled: true } ],
+      [ "audiobookshelf", { phase: "elsewhere", url: "http://abs", api_key: "" } ],
+      [ "audiobookshelf", { phase: "libraries", url: "http://abs", api_key: "" } ],
+      [ "prowlarr", { url: [ "http://prowlarr:9696" ], api_key: "" } ]
+    ].each do |step, values|
+      save_step(step, values)
+      assert_response :bad_request, "#{step} #{values}"
+      assert_equal "invalid_request", response.parsed_body.fetch("error")
+    end
+    put web_preview_api_admin_setup_step_path(step: "search"), params: {}, headers: account_headers(@admin), as: :json
+    assert_response :bad_request
+
+    assert_equal [ "/books/audio", "/books/ebooks", false, true, false ],
+      %i[audiobook_output_path ebook_output_path immediate_search_enabled auto_select_enabled setup_wizard_completed].map { |key| SettingsService.get(key) }
+  end
+
+  test "a saved address keeps its sign-in part on the server, and errors never repeat a typed secret" do
+    DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbuser:qb-pass-7781@qbittorrent:8080", username: "admin", password: "secret", category: "", enabled: true)
+    SettingsService.set(:audiobookshelf_url, "http://absuser:abs-pass-4410@audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_api_key, "abs-token")
+    VCR.turned_off do
+      stub_qbittorrent_connection("http://qbittorrent:8080")
+      stub_request(:get, "http://audiobookshelf:13378/api/libraries")
+        .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: LIBRARIES.to_json)
+      sign_in_as(@admin)
+
+      state = setup_state("qbittorrent")
+      assert_equal "http://[hidden]@qbittorrent:8080", field(state, "qbittorrent", "url").fetch("value")
+      assert_not_includes response.body, "qb-pass-7781"
+
+      state = setup_state("audiobookshelf")
+      assert_equal "Connected to http://[hidden]@audiobookshelf:13378. Choose the libraries Shelfarr should scan.", card(state, "audiobookshelf_libraries").fetch("summary")
+      assert_not_includes response.body, "abs-pass-4410"
+
+      save_step("qbittorrent", { url: "http://[hidden]@qbittorrent:8080", username: "admin", password: "", api_key: "", category: "" })
+      assert_response :success
+      assert_equal "http://qbuser:qb-pass-7781@qbittorrent:8080", DownloadClient.qbittorrent.sole.url
+    end
+
+    save_step("audiobookshelf", { phase: "connection", url: "http://someone:typed-pass-5521@bad host", api_key: "typed-token-3390" })
+    assert_response :unprocessable_entity
+    message = response.parsed_body.fetch("message")
+    assert_not_includes message, "typed-pass-5521"
+    assert_not_includes message, "typed-token-3390"
+    assert_equal "http://absuser:abs-pass-4410@audiobookshelf:13378", SettingsService.get(:audiobookshelf_url)
+  end
+
+  test "the old setup address takes a preview administrator to the same step here, and stays classic for everyone else" do
+    sign_in_as(@admin)
+    get admin_setup_wizard_path(step: "folders")
+    assert_redirected_to web_preview_server_setup_path(step: "folders")
+    get admin_setup_wizard_path(step: "bogus")
+    assert_redirected_to web_preview_server_setup_path
+
+    with_env(WebPreview::Access::VARIABLE => @member.id.to_s) do
+      get admin_setup_wizard_path(step: "folders")
+      assert_response :success
+      assert_select "h2", "Folders"
+    end
+    with_env(WebPreview::Access::VARIABLE => nil) do
+      get admin_setup_wizard_path
+      assert_response :success
+    end
+    WarmEntry.stub(:stylesheet_built?, false) do
+      get admin_setup_wizard_path
+      assert_response :success
+      assert_select "h1", "Set up Shelfarr"
+    end
+
+    post skip_admin_setup_wizard_path(step: "prowlarr")
+    assert_redirected_to admin_setup_wizard_path(step: "qbittorrent")
+    follow_redirect!
+    assert_redirected_to web_preview_server_setup_path(step: "qbittorrent")
+
+    get "/admin/setup_wizard?step=folders", env: { "SCRIPT_NAME" => "/shelf" }
+    assert_redirected_to "http://www.example.com/shelf/preview/server/setup?step=folders"
+  end
+
   test "an existing setup can run again here and keeps the saved settings" do
     SettingsService.set(:setup_wizard_completed, true)
     SettingsService.set(:indexer_provider, "prowlarr")
@@ -376,11 +468,11 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
   test "the overview asks for setup only while nothing is configured or finished" do
     sign_in_as(@admin)
     preview_get web_preview_api_admin_overview_path, user: @admin
-    assert_equal({ "pending" => true }, response.parsed_body.fetch("setup"))
+    assert_equal({ "pending" => true, "completed" => false }, response.parsed_body.fetch("setup"))
 
     SetupWizard.complete!
     preview_get web_preview_api_admin_overview_path, user: @admin
-    assert_equal({ "pending" => false }, response.parsed_body.fetch("setup"))
+    assert_equal({ "pending" => false, "completed" => true }, response.parsed_body.fetch("setup"))
   end
 
   test "the setup page and the old setup address open the preview" do

@@ -13,7 +13,7 @@ import { AdministratorsOnly, LeaveDialog, NotInThisRuntime } from "../ServerCate
 import { ServerShell } from "../ServerShell";
 import type { SetupSaveAnswer, SetupValues } from "./api";
 import type { SetupCard, SetupState, SetupStepId } from "./contract";
-import { useSaveSetupStep, useSetupMoves, useSetupState, useSkipSetup } from "./queries";
+import { useSaveSetupStep, useSetupMoves, useSetupState, useSetupWriting, useSkipSetup } from "./queries";
 
 type Said = { state: SetupState; notice: string; alert: string | null };
 type DirtyCards = { has: () => boolean; set: (id: string, dirty: boolean) => void; clear: () => void };
@@ -44,6 +44,7 @@ function SetupView() {
   const admin = useIsAdministrator();
   const setup = useSetupState(step);
   const [said, setSaid] = useState<Said | null>(null);
+  const [revision, setRevision] = useState(0);
   const shown = useRef(false);
   useEffect(() => {
     if (setup.data) shown.current = true;
@@ -57,7 +58,15 @@ function SetupView() {
     ) : !admin || (setup.isError && failureKind(setup.error) === "not_found") ? (
       <AdministratorsOnly />
     ) : setup.data ? (
-      <SetupStep key={setup.data.step} state={setup.data} version={setup.dataUpdatedAt} moveFocus={shown.current} said={said?.state === setup.data ? said : null} onSaid={setSaid} />
+      <SetupStep
+        key={setup.data.step}
+        state={setup.data}
+        revision={revision}
+        moveFocus={shown.current}
+        said={said?.state === setup.data ? said : null}
+        onSaid={setSaid}
+        onReplaced={() => setRevision((current) => current + 1)}
+      />
     ) : setup.isError ? (
       <ErrorPanel error={setup.error} onRetry={() => void setup.refetch()} />
     ) : (
@@ -94,13 +103,18 @@ function useDirtyCards(): DirtyCards {
   return cards;
 }
 
-function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupState; version: number; moveFocus: boolean; said: Said | null; onSaid: (said: Said | null) => void }) {
+type StepProps = { state: SetupState; revision: number; moveFocus: boolean; said: Said | null; onSaid: (said: Said | null) => void; onReplaced: () => void };
+
+function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: StepProps) {
   const navigate = useNavigate();
   const moved = useSetupMoves();
   const skip = useSkipSetup();
+  const writing = useSetupWriting();
   const dirty = useDirtyCards();
   const [skipError, setSkipError] = useState<string | null>(null);
+  const [confirmingSkip, setConfirmingSkip] = useState<{ exit: boolean } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const stepList = useRef<HTMLOListElement>(null);
   const position = state.steps.findIndex((entry) => entry.id === state.step) + 1;
   const blocker = useBlocker({
     shouldBlockFn: ({ current, next }) => dirty.has() && (current.pathname !== next.pathname || stepOf(current.search) !== stepOf(next.search)),
@@ -113,11 +127,18 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
     const active = document.activeElement;
     if (arrived.current && (!active || active === document.body || active.closest(".server-content"))) heading.current?.focus();
     arrived.current = true;
-  }, [version]);
+  }, [revision]);
+
+  useEffect(() => {
+    const list = stepList.current;
+    const current = list?.querySelector<HTMLElement>('[aria-current="step"]');
+    if (list && current && list.scrollWidth > list.clientWidth) list.scrollLeft = current.offsetLeft - list.offsetLeft - 16;
+  }, []);
 
   const go = (next: SetupState | null) => {
     dirty.clear();
     moved(next);
+    onReplaced();
     if (next) void navigate({ to: "/server/setup", search: { step: next.step } });
     else void navigate({ to: "/library" });
   };
@@ -128,8 +149,14 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
     go(next);
   };
 
+  const askToSkip = (exit: boolean) => {
+    if (writing) return;
+    if (dirty.has()) setConfirmingSkip({ exit });
+    else skipStep(exit);
+  };
+
   const skipStep = (exit: boolean) => {
-    if (skip.isPending) return;
+    if (writing) return;
     setSkipError(null);
     skip.mutate(
       { step: state.step, exit },
@@ -146,7 +173,7 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
   return (
     <div className="setup">
       <nav className="setup-steps" aria-label="Setup steps">
-        <ol>
+        <ol ref={stepList}>
           {state.steps.map((entry, index) => (
             <li key={entry.id}>
               {entry.id === state.step ? (
@@ -182,7 +209,7 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
         </p>
       ) : null}
       {state.cards.map((card) => (
-        <SetupStepCard key={`${card.id}-${version}`} step={state.step} card={card} dirty={dirty} onSaved={saved} />
+        <SetupStepCard key={`${card.id}-${revision}`} step={state.step} card={card} dirty={dirty} writing={writing} onSaved={saved} />
       ))}
       <div className="setup-moves">
         {state.previous ? (
@@ -191,11 +218,11 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
           </Link>
         ) : null}
         {state.last ? null : (
-          <button type="button" className="button" disabled={skip.isPending} onClick={() => skipStep(false)}>
+          <button type="button" className="button" disabled={writing} onClick={() => askToSkip(false)}>
             Skip this step
           </button>
         )}
-        <button type="button" className="button button--subtle" disabled={skip.isPending} onClick={() => skipStep(true)}>
+        <button type="button" className="button button--subtle" disabled={writing} onClick={() => askToSkip(true)}>
           Skip setup
         </button>
       </div>
@@ -204,7 +231,26 @@ function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupSt
         Jackett, Newznab, other download clients and other library platforms are in <Link to="/server/$category" params={{ category: "sources" }}>Catalogues and sources</Link>,{" "}
         <Link to="/server/$category" params={{ category: "downloads" }}>Downloads</Link> and <Link to="/server/$category" params={{ category: "library" }}>Library and files</Link>.
       </p>
-      {blocker.status === "blocked" ? <LeaveDialog count={1} onStay={blocker.reset} onLeave={() => { dirty.clear(); blocker.proceed(); }} /> : null}
+      {blocker.status === "blocked" ? (
+        <LeaveDialog
+          count={1}
+          onStay={blocker.reset}
+          onLeave={() => {
+            dirty.clear();
+            blocker.proceed();
+          }}
+        />
+      ) : null}
+      {confirmingSkip ? (
+        <LeaveDialog
+          count={1}
+          onStay={() => setConfirmingSkip(null)}
+          onLeave={() => {
+            setConfirmingSkip(null);
+            skipStep(confirmingSkip.exit);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -256,7 +302,9 @@ function submittedValue(draft: DraftValue): string | boolean {
   return Array.isArray(draft) ? draft.join(",") : "";
 }
 
-function SetupStepCard({ step, card, dirty, onSaved }: { step: SetupStepId; card: SetupCard; dirty: DirtyCards; onSaved: (answer: Extract<SetupSaveAnswer, { kind: "saved" }>) => void }) {
+type CardProps = { step: SetupStepId; card: SetupCard; dirty: DirtyCards; writing: boolean; onSaved: (answer: Extract<SetupSaveAnswer, { kind: "saved" }>) => void };
+
+function SetupStepCard({ step, card, dirty, writing, onSaved }: CardProps) {
   const scope = useScope();
   const [edits, setEdits] = useState<Drafts>({});
   const [error, setError] = useState<{ text: string; serial: number } | null>(null);
@@ -276,7 +324,7 @@ function SetupStepCard({ step, card, dirty, onSaved }: { step: SetupStepId; card
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (save.isPending) return;
+    if (writing) return;
     setError(null);
     const values: SetupValues = Object.fromEntries(card.fields.map((field) => [field.key, submittedValue(drafts[field.key] ?? "")]));
     if (card.phase) values.phase = card.phase;
@@ -307,7 +355,7 @@ function SetupStepCard({ step, card, dirty, onSaved }: { step: SetupStepId; card
         />
       ))}
       <CardActions unsaved={changed}>
-        <button type="submit" className={card.collapsed ? "button" : "button button--primary"} disabled={save.isPending} aria-busy={save.isPending}>
+        <button type="submit" className={card.collapsed ? "button" : "button button--primary"} disabled={writing} aria-busy={save.isPending}>
           {save.isPending ? (card.submit.startsWith("Test") ? "Testing…" : "Saving…") : card.submit}
         </button>
       </CardActions>

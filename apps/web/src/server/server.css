@@ -677,6 +677,9 @@
   gap: 24px;
   min-width: 0;
 }
+.setup-steps {
+  min-width: 0;
+}
 .setup-steps ol {
   display: flex;
   gap: 8px;

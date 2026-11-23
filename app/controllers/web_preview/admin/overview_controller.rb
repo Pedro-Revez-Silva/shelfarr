@@ -43,7 +43,7 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
       services: SystemHealth::SERVICES.map { |service| service_json(service, health[service]) },
       release: release_json(update_check),
       pending: pending_screens,
-      setup: { pending: SetupWizard.pending? }
+      setup: { pending: SetupWizard.pending?, completed: SetupWizard.completed? }
     }
   end
 

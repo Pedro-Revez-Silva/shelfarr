@@ -1,16 +1,19 @@
 import { Link, Navigate, useNavigate, useSearch } from "@tanstack/react-router";
 import { useState } from "react";
+import { useServerOverview } from "../../queries";
 import { SettingsCard } from "../primitives";
 import { setupFailureText } from "./SetupPage";
-import { useRestartSetup, useSetupMoves } from "./queries";
+import { useRestartSetup, useSetupMoves, useSetupWriting } from "./queries";
 
 export function RunSetupAgainCard() {
   const navigate = useNavigate();
   const restart = useRestartSetup();
+  const writing = useSetupWriting();
   const moved = useSetupMoves();
+  const unfinished = useServerOverview().data?.setup?.completed === false;
   const [error, setError] = useState<string | null>(null);
   const run = () => {
-    if (restart.isPending) return;
+    if (writing) return;
     setError(null);
     restart.mutate(undefined, {
       onSuccess: (answer) => {
@@ -22,10 +25,17 @@ export function RunSetupAgainCard() {
   };
   return (
     <SettingsCard id="setup" headingId="run-setup-heading" title="Setup" summary="Go through the first-run steps again: Prowlarr, qBittorrent, folders, Audiobookshelf and how requests start. Saved settings are kept and shown on each step.">
+      {unfinished ? <p className="field-hint">Setup has not been finished. Your saved settings are shown on each step.</p> : null}
       <div className="settings-card-actions">
-        <button type="button" className="button" disabled={restart.isPending} aria-busy={restart.isPending} onClick={run}>
-          {restart.isPending ? "Starting…" : "Run setup again"}
-        </button>
+        {unfinished ? (
+          <Link to="/server/setup" className="button button--primary">
+            Continue setup
+          </Link>
+        ) : (
+          <button type="button" className="button" disabled={writing} aria-busy={restart.isPending} onClick={run}>
+            {restart.isPending ? "Starting…" : "Run setup again"}
+          </button>
+        )}
       </div>
       <div role="status">{error ? <p className="form-error">{error}</p> : null}</div>
     </SettingsCard>

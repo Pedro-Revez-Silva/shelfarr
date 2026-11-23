@@ -543,7 +543,7 @@ export const serverOverviewSchema = z
       })
       .optional(),
     pending: z.array(z.object({ label: z.string(), url: sitePath })).optional(),
-    setup: z.object({ pending: z.boolean() }).optional(),
+    setup: z.object({ pending: z.boolean(), completed: z.boolean() }).optional(),
   })
   .refine((overview) => overview.services.length === healthServices.length && overview.services.every((entry, index) => entry.service === healthServices[index]), "Every health service must be listed once, in order");
 export type ServerOverview = z.infer<typeof serverOverviewSchema>;

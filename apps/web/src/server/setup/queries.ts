@@ -1,10 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServices } from "../../services";
 import { useIsAdministrator, useServerKeys } from "../queries";
 import * as setupApi from "./api";
 import type { SetupState, SetupStepId } from "./contract";
 
 const SETUP_FRESH_MS = 60_000;
+const SETUP_WRITE = ["setup-write"] as const;
 
 export function useSetupKeys() {
   const root = [...useServerKeys().root, "setup"] as const;
@@ -40,15 +41,19 @@ export function useSetupMoves() {
 
 export function useSaveSetupStep(step: SetupStepId) {
   const { api } = useServices();
-  return useMutation({ mutationFn: (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values) });
+  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values) });
 }
 
 export function useSkipSetup() {
   const { api } = useServices();
-  return useMutation({ mutationFn: ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit) });
+  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit) });
 }
 
 export function useRestartSetup() {
   const { api } = useServices();
-  return useMutation({ mutationFn: () => setupApi.restartSetup(api) });
+  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: () => setupApi.restartSetup(api) });
+}
+
+export function useSetupWriting(): boolean {
+  return useIsMutating({ mutationKey: SETUP_WRITE }) > 0;
 }

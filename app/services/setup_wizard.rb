@@ -79,6 +79,15 @@ class SetupWizard
       DownloadClient.qbittorrent.order(:priority, :id).first
     end
 
+    def saved_url(step)
+      case normalize_step(step)
+      when "prowlarr" then SettingsService.get(:prowlarr_url).to_s
+      when "qbittorrent" then qbittorrent_client&.url.to_s
+      when "audiobookshelf" then SettingsService.get(:audiobookshelf_url).to_s
+      else ""
+      end
+    end
+
     # Overrides let a step check the values on its form before they are saved.
     def path_warnings(overrides = {})
       paths = saved_paths.merge(overrides.compact)

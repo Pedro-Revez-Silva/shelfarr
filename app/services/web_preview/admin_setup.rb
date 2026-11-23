@@ -10,7 +10,22 @@ module WebPreview
       "search" => "What happens straight after someone asks for a book."
     }.freeze
 
+    ADDRESS_CREDENTIALS = %r{([a-z][a-z0-9+.\-]*://)[^/@\s?#]+@}i
+    HIDDEN_CREDENTIALS = "[hidden]"
+
     attr_reader :form
+
+    def self.mask_address(address)
+      address.to_s.gsub(ADDRESS_CREDENTIALS, "\\1#{HIDDEN_CREDENTIALS}@")
+    end
+
+    def self.redact(text, extra_secrets = [])
+      return nil if text.nil?
+
+      client = SetupWizard.qbittorrent_client
+      secrets = [ *extra_secrets, client&.password, client&.api_key ].map(&:to_s).select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
+      mask_address(secrets.reduce(SecretRedaction.call(text)) { |result, secret| result.gsub(secret, SecretRedaction::MASK) })
+    end
 
     def initialize(form)
       @form = form
@@ -25,8 +40,8 @@ module WebPreview
         completed: SetupWizard.completed?,
         title: SetupWizard::STEP_LABELS.fetch(form.step),
         summary: SUMMARIES.fetch(form.step),
-        warnings: form.warnings.map { |warning| SecretRedaction.call(warning) },
-        library_error: SecretRedaction.call(form.library_error.presence),
+        warnings: form.warnings.map { |warning| self.class.redact(warning) },
+        library_error: self.class.redact(form.library_error.presence),
         cards: cards
       }
     end
@@ -85,7 +100,7 @@ module WebPreview
       return [ connection ] unless form.connected_to_library_platform?
 
       libraries = card("audiobookshelf_libraries", phase: "libraries", title: "Libraries", submit: "Save and continue",
-        summary: "Connected to #{SettingsService.get(:audiobookshelf_url)}. Choose the libraries Shelfarr should scan.",
+        summary: "Connected to #{self.class.mask_address(SettingsService.get(:audiobookshelf_url))}. Choose the libraries Shelfarr should scan.",
         fields: [
           library_field(:audiobook_library_id, "Audiobook library", form.audiobook_library_id),
           library_field(:ebook_library_id, "Ebook library", form.ebook_library_id)
@@ -107,7 +122,7 @@ module WebPreview
     end
 
     def url_field(label, placeholder, description)
-      { key: "url", label: label, description: description, input: "url", value: form.url.to_s, placeholder: placeholder }
+      { key: "url", label: label, description: description, input: "url", value: self.class.mask_address(form.url), placeholder: placeholder }
     end
 
     def text_field(key, label, value, description, placeholder: nil)
