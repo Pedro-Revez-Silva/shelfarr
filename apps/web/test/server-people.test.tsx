@@ -358,6 +358,33 @@ describe("People in the Rails preview", () => {
     expect((within(profile).getByLabelText("Name") as HTMLInputElement).value).toBe("Rowan Oak");
   });
 
+  test("an edit made while a save is on its way is kept and saved against the new version", async () => {
+    const held = deferred<{ status: number; body: unknown }>();
+    const saved = { ...ROWAN, name: "Rowan Oak", version: "v-5-2" };
+    let writes = 0;
+    const server = peopleServer().on("PUT", /\/admin\/users\/5$/, () => {
+      writes += 1;
+      return writes === 1 ? held.promise : { body: envelope({ ...ROWAN, version: "v-5-3" }) };
+    });
+    renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    const profile = card("Name, username and role");
+    await typeInto(profile, "Name", "Rowan Oak");
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+    await typeInto(profile, "Name", "Rowan Ash");
+    held.resolve({ status: 200, body: envelope(saved) });
+
+    expect(await within(profile).findByText("Changes saved.")).toBeTruthy();
+    expect((within(profile).getByLabelText("Name") as HTMLInputElement).value).toBe("Rowan Ash");
+    expect(within(profile).getByText("Unsaved changes")).toBeTruthy();
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+    await eventually(() => writes === 2);
+    expect(server.called("PUT", /\/admin\/users\/5$/).map((request) => request.body)).toEqual([
+      { name: "Rowan Oak", username: "rowan", role: "member", version: "v-5-1" },
+      { name: "Rowan Ash", username: "rowan", role: "member", version: "v-5-2" },
+    ]);
+  });
+
   test("leaving with an unsaved edit asks first", async () => {
     renderApp({ server: peopleServer(), url: "/sub/preview/server/people/users/5" });
     await screen.findByRole("heading", { name: "Details", level: 3 });

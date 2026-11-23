@@ -399,6 +399,45 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
     assert_not other.reload.deleted?
   end
 
+  test "an administrator demoted while adding someone learns nothing about the username" do
+    taken = other_person(username: "taken")
+    sign_in_as(@admin)
+
+    changing_while(:create, change: -> { User.find(@admin.id).update!(role: :user) }) { create_person(username: taken.username) }
+
+    assert_response :not_found
+    assert_equal({ "error" => "not_found" }, response.parsed_body)
+  end
+
+  test "making yourself a member is checked against your role inside the write, not the one read before it" do
+    second = other_person(username: "second", role: :admin)
+    before = admin_get(web_preview_api_admin_user_path(@admin))
+    changing_while(:set_user, change: -> { User.find(@admin.id).update!(role: :user) }) do
+      changing_while(:update, change: -> { User.find(@admin.id).update!(role: :admin); second.update!(role: :user) }) do
+        save_profile(@admin, version: before.dig("user", "version"), role: "member", administrators: before.fetch("administrators"))
+      end
+    end
+
+    assert_response :conflict
+    assert_equal 1, User.active.admin.count
+    assert @admin.reload.admin?
+  end
+
+  test "a body that is not valid JSON is refused without writing its contents to the log" do
+    target = other_person
+    sign_in_as(@admin)
+    marker = "Synthetic-Unparsed-61"
+    log = StringIO.new
+    logger = ActiveSupport::Logger.new(log).tap { |entry| entry.level = :info }
+
+    put web_preview_api_admin_user_password_path(target), params: %({,"password":"#{marker}"}), headers: json_headers, env: { "action_dispatch.logger" => logger }
+
+    assert_response :bad_request
+    assert_equal({ "error" => "invalid_request" }, response.parsed_body)
+    assert_not_includes log.string, marker
+    assert target.reload.authenticate(OLD_PASSWORD)
+  end
+
   test "values are read only from the request body, never from the address" do
     target = other_person
     sign_in_as(@admin)

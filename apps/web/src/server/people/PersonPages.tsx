@@ -450,6 +450,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   const [startedOn, setStartedOn] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [sending, setSending] = useState(false);
   const { said, say, clear } = useSay();
   const values: ProfileValues = { name: edits.name ?? base.name, username: edits.username ?? base.username, role: edits.role ?? base.role };
   const dirty = PROFILE_FIELDS.some((field) => values[field] !== base[field]);
@@ -461,30 +462,30 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => {
-    if (dirty) return;
-    if (startedOn !== null) setStartedOn(null);
-    if (Object.keys(edits).length > 0) setEdits({});
-  }, [dirty, startedOn, edits]);
+    if (Object.keys(edits).length === 0 && startedOn !== null && !sending) setStartedOn(null);
+  }, [startedOn, edits, sending]);
   useEffect(() => {
     if (confirmation !== null && !confirming) setConfirmation(null);
   }, [confirmation, confirming]);
 
   const edit = (field: keyof ProfileValues, value: string) => {
     setStartedOn((current) => current ?? base.version);
-    setEdits(({ [field]: _replaced, ...rest }) => (value === base[field] ? rest : { ...rest, [field]: value }));
+    setEdits(({ [field]: _replaced, ...rest }) => (value === base[field] && !sending ? rest : { ...rest, [field]: value }));
     clear();
     if (errors[field]) setErrors(({ [field]: _cleared, ...rest }) => rest);
   };
 
   const send = (sent: ProfileValues, sentVersion: string, administrators: number | null) => {
     setConfirmation(null);
+    setSending(true);
     save.mutate(
       { values: sent, version: sentVersion, administrators },
       {
+        onSettled: () => setSending(false),
         onSuccess: (answer) => {
           if (answer.kind === "saved") {
             setErrors({});
-            setStartedOn(null);
+            setStartedOn(answer.person.user.version);
             setEdits((current) => Object.fromEntries(Object.entries(current).filter(([field, value]) => sent[field as keyof ProfileValues] !== value)));
             say("success", "Changes saved.");
             return;

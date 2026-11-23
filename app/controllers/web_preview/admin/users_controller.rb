@@ -18,6 +18,7 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
   }.freeze
 
   before_action :set_user, only: %i[show update password remove]
+  rescue_from ActionDispatch::Http::Parameters::ParseError, with: -> { render_error("invalid_request", :bad_request) }
 
   def index
     users = User.active.order(created_at: :desc, id: :desc).to_a
@@ -34,12 +35,10 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
     return render_error("invalid_request", :bad_request) unless role
 
     user = User.new(values.slice("name", "username", *PASSWORD_FIELDS).merge(role: role))
-    return render_rejection(user) unless acceptable?(user, values["password"])
-
     outcome = User.transaction do
       next :forbidden unless acting_administrator?
 
-      user.save ? :saved : :rejected
+      acceptable?(user, values["password"]) && user.save ? :saved : :rejected
     end
     @user = user
     answer_write(outcome, status: :created)
@@ -51,14 +50,13 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
     return render_error("invalid_request", :bad_request) unless role
 
     administrators_seen = request.request_parameters["administrators"]
-    demoting_self = @user == Current.user && @user.admin? && role == "user"
-    return render_error("invalid_request", :bad_request) if demoting_self && !administrators_seen.is_a?(Integer)
+    return render_error("invalid_request", :bad_request) if demoting_self?(role) && !administrators_seen.is_a?(Integer)
 
     outcome = @user.with_lock do
       next :forbidden unless acting_administrator?
       next :removed if @user.deleted?
       next :changed unless values["version"] == version(@user)
-      next :changed if demoting_self && administrators_seen != User.active.admin.count
+      next :changed if demoting_self?(role) && administrators_seen != User.active.admin.count
 
       @user.update(name: values["name"], username: values["username"], role: role) ? :saved : :rejected
     end
@@ -105,6 +103,10 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
     body = request.request_parameters
     values = fields.index_with { |field| body[field] }
     values if values.values.all?(String)
+  end
+
+  def demoting_self?(role)
+    @user == Current.user && @user.admin? && role == "user"
   end
 
   def acting_administrator?
