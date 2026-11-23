@@ -38,6 +38,7 @@ export type CommitOutcome = "saved" | "account" | "removed" | "space";
 export type UpdateOutcome = "updated" | "unchanged" | "refused";
 
 export type OfflineStore = {
+  readonly name: string;
   exists(): Promise<boolean>;
   prepare(): Promise<void>;
   accountState(): Promise<AccountState>;

@@ -7,7 +7,7 @@ import type { ProgressRequest, StoredProgress } from "../src/contract";
 import { DevicePlaces } from "../src/offline/devicePlaces";
 import { openingLocator, rememberAccountPlace, type ConfirmedAccount, type SavedBook } from "../src/offline/model";
 import { offeredDevicePlace } from "../src/offline/remembered";
-import { IndexedDbOfflineStore } from "../src/offline/store";
+import { databaseNameFor, IndexedDbOfflineStore } from "../src/offline/store";
 import { createSyncRunner, reconcileOffline, syncPlaces, type SyncDeps, type Verification } from "../src/offline/sync";
 import { DAY, EPUB_ID, NEWER_ID, epubBytes, savedBook, serverProgress } from "./offline-helpers";
 
@@ -29,8 +29,8 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "indexedDB");
 });
 
-async function storeWith(book: SavedBook, record: ConfirmedAccount = { account: "5", confirmedAt: NOW - DAY, validForMs: 30 * DAY }) {
-  const store = new IndexedDbOfflineStore();
+async function storeWith(book: SavedBook, record: ConfirmedAccount = { account: "5", confirmedAt: NOW - DAY, validForMs: 30 * DAY }, name?: string) {
+  const store = new IndexedDbOfflineStore(name);
   await store.prepare();
   await store.confirm(record);
   await store.begin({ key: book.key, account: "5", id: book.id, title: book.title, assetId: book.asset.id, token: "seed", startedAt: 1, failure: null });
@@ -305,6 +305,22 @@ describe("the sync runner", () => {
     runner.request();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(calls).toBe(2);
+  });
+
+  test("each runtime and deployment sends its own places under its own sync lock", async () => {
+    const names: string[] = [];
+    const go = await storeWith(offlineBook());
+    const rails = await storeWith(offlineBook(), undefined, databaseNameFor("/preview", "rails"));
+    const shelf = await storeWith(offlineBook(), undefined, databaseNameFor("/shelf/preview", "rails"));
+    const held = new Set(["shelfarr-go-preview-offline-sync|5"]);
+    const locks = { request: (async (name: string, _options: LockOptions, work: (lock: Lock | null) => unknown) => (names.push(name), work(held.has(name) ? null : ({ name, mode: "exclusive" } as Lock)))) as unknown as LockManager["request"] };
+    const runs = [go, rails, shelf].map((store) => harness(store, [saved(4)]));
+    const runners = runs.map((run) => createSyncRunner(run.deps, locks, [10_000]));
+    for (const runner of runners) runner.request();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(names).toEqual(["shelfarr-go-preview-offline-sync|5", "shelfarr-rails-preview-offline-sync|5", "shelfarr-rails-preview-offline|/shelf/preview-sync|5"]);
+    expect(runs.map((run) => run.writes.length)).toEqual([0, 1, 1]);
+    for (const runner of runners) runner.stop();
   });
 
   test("another tab holding the sync lock means this tab does not send", async () => {

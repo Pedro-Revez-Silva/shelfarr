@@ -92,7 +92,7 @@ export async function completeZip(blob: Blob): Promise<boolean> {
   return false;
 }
 
-export const saveLockName = (account: string, id: string): string => `shelfarr-go-preview-offline|${bookKey(account, id)}`;
+export const saveLockName = (store: Pick<OfflineStore, "name">, account: string, id: string): string => `${store.name}|${bookKey(account, id)}`;
 
 function classify(error: unknown): FailureKind {
   if (error instanceof SaveFailure) return error.kind;
@@ -199,7 +199,7 @@ export async function saveCopy(inputs: SaveInputs): Promise<void> {
   }
   const work = () => transfer(inputs, account);
   if (!inputs.locks) return work();
-  const ran = await inputs.locks.request(saveLockName(account, publication.id), { ifAvailable: true }, (lock) => (lock ? work().then(() => true) : false));
+  const ran = await inputs.locks.request(saveLockName(inputs.store, account, publication.id), { ifAvailable: true }, (lock) => (lock ? work().then(() => true) : false));
   if (!ran) throw new SaveFailure("busy");
 }
 

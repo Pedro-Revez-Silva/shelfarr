@@ -20,13 +20,13 @@ type Props = { id: string; title: string; currentAsset: string | null; load: (si
 
 const PROGRESS_INTERVAL_MS = 250;
 
-async function lockHeld(account: string, id: string): Promise<boolean> {
+async function lockHeld(offline: Offline, account: string, id: string): Promise<boolean> {
   const held = await navigator.locks?.query?.().catch(() => null);
-  return Boolean(held?.held?.some((lock) => lock.name === saveLockName(account, id)));
+  return Boolean(held?.held?.some((lock) => lock.name === saveLockName(offline.store, account, id)));
 }
 
 async function readState(offline: Offline, account: string, id: string): Promise<CopyState> {
-  const [book, attempts, busy] = await Promise.all([offline.store.book(account, id), offline.store.attempts(account), lockHeld(account, id)]);
+  const [book, attempts, busy] = await Promise.all([offline.store.book(account, id), offline.store.attempts(account), lockHeld(offline, account, id)]);
   const attempt = attempts.find((candidate) => candidate.key === bookKey(account, id));
   if (busy) return { kind: "saving", received: 0, total: 0, here: false };
   if (attempt?.failure) return { kind: "failed", failure: attempt.failure, previous: book };

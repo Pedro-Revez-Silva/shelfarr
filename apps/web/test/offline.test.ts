@@ -16,7 +16,7 @@ import {
   type SavedBook,
 } from "../src/offline/model";
 import { offeredDevicePlace } from "../src/offline/remembered";
-import { completeZip, saveCopy, SaveFailure, type SaveInputs } from "../src/offline/save";
+import { completeZip, saveCopy, SaveFailure, saveLockName, type SaveInputs } from "../src/offline/save";
 import { DATABASE_NAME, IndexedDbOfflineStore, RAILS_DATABASE_NAME, databaseNameFor } from "../src/offline/store";
 import { previewDatabaseName, releasePreviewAccount } from "../../../app/javascript/web_preview_offline_release.js";
 import { WorkerFailure } from "../src/offline/worker";
@@ -559,6 +559,25 @@ describe("one origin, several deployments", () => {
     expect([await go.books("5"), await go.open("5", "7"), await go.book("5", "7"), await go.others("4")]).toEqual([[], null, null, { books: 0, bytes: 0 }]);
     await go.removeOthers("4");
     expect((await rails.books("5")).map((book) => book.key)).toEqual([savedBook().key]);
+  });
+
+  test("a save in progress in one runtime or deployment never makes another one's save of the same book busy", async () => {
+    const go = new IndexedDbOfflineStore(databaseNameFor("/preview", "go"));
+    const rails = new IndexedDbOfflineStore(databaseNameFor("/preview", "rails"));
+    const shelf = new IndexedDbOfflineStore(databaseNameFor("/shelf/preview", "rails"));
+    expect([saveLockName(go, "5", "7"), saveLockName(rails, "5", "7"), saveLockName(shelf, "5", "7")]).toEqual([
+      "shelfarr-go-preview-offline|5|7",
+      "shelfarr-rails-preview-offline|5|7",
+      "shelfarr-rails-preview-offline|/shelf/preview|5|7",
+    ]);
+    const held = new Set([saveLockName(go, "5", "7")]);
+    const locks = { request: (async (name: string, _options: LockOptions, work: (lock: Lock | null) => unknown) => work(held.has(name) ? null : ({ name, mode: "exclusive" } as Lock))) as unknown as LockManager["request"] };
+    expect(await failure(saveCopy(inputs(go, async () => respond(epubBytes()), { locks }).base))).toBe("busy");
+    for (const store of [rails, shelf]) {
+      await saveCopy(inputs(store, async () => respond(epubBytes()), { locks }).base);
+      expect((await store.open("5", "7"))?.blob.size).toBe(SIZE);
+    }
+    expect(await go.open("5", "7")).toBeNull();
   });
 
   test("the Rails sign-in page releases only this deployment's confirmed account, in the format the reader reads, and creates nothing", async () => {

@@ -74,7 +74,7 @@ export function databaseNameFor(mount: string, runtime: OfflineRuntime = "go"): 
 
 export class IndexedDbOfflineStore implements OfflineStore {
   private opened: Promise<IDBDatabase> | null = null;
-  private readonly name: string;
+  readonly name: string;
   private readonly continuity: Continuity | null;
 
   constructor(name: string = DATABASE_NAME, continuity: Continuity | null = null) {
