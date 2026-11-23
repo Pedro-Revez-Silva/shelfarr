@@ -114,9 +114,6 @@ export function useAudibleCommand() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (command: AudibleCommand) => runAudibleCommand(api, command),
-    onMutate: async () => {
-      await client.cancelQueries({ queryKey: keys.state });
-    },
     onSuccess: async (answer) => {
       if (!guard.isActive() || answer.kind !== "done") return;
       await client.cancelQueries({ queryKey: keys.state });

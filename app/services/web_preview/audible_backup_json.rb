@@ -3,6 +3,7 @@
 module WebPreview
   class AudibleBackupJson
     SIGN_IN_PURPOSE = "web_preview/audible_sign_in"
+    SIGN_IN_ADDRESS_BYTES = 16.kilobytes
     ADDRESS = %r{[a-z][a-z0-9+.-]*://[^\s"'<>]+}i
     ACTIVE_LABELS = { "queued" => "Queued", "starting" => "Starting", "downloading" => "Backing up", "processing" => "Importing" }.freeze
 
@@ -16,11 +17,16 @@ module WebPreview
         ActiveSupport::SecurityUtils.secure_compare(sign_in_token(connection, user, session_id), submitted)
     end
 
+    def self.sign_in_host?(host)
+      host = host.to_s.downcase
+      LibationCompanionClient::AUTH_HOST_SUFFIXES.any? { |suffix| host == suffix || host.end_with?(".#{suffix}") }
+    end
+
     def self.safe_sign_in_link(value)
-      uri = URI.parse(value.to_s)
-      host = uri.host.to_s.downcase
-      trusted = LibationCompanionClient::AUTH_HOST_SUFFIXES.any? { |suffix| host == suffix || host.end_with?(".#{suffix}") }
-      uri.to_s if uri.is_a?(URI::HTTPS) && trusted && uri.userinfo.nil?
+      return nil unless value.is_a?(String) && value.bytesize <= SIGN_IN_ADDRESS_BYTES
+
+      uri = URI.parse(value)
+      uri.to_s if uri.is_a?(URI::HTTPS) && sign_in_host?(uri.host) && uri.userinfo.nil?
     rescue URI::InvalidURIError
       nil
     end
@@ -61,21 +67,25 @@ module WebPreview
     def redact(text)
       return nil if text.nil?
 
-      token = @connection.bridge_token.to_s
-      text = text.to_s
-      text = text.gsub(token, SecretRedaction::MASK) if token.length >= SecretRedaction::MIN_SECRET_LENGTH
-      SecretRedaction.call(text.gsub(ADDRESS) { |address| without_query(address) })
+      masked = companion_secrets.reduce(text.to_s) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
+      SecretRedaction.call(masked.gsub(ADDRESS) { |address| shown_address(address) })
     end
 
     private
 
-    def without_query(address)
+    def companion_secrets
+      @companion_secrets ||= @connection.client.secret_values.select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
+    end
+
+    def shown_address(address)
       uri = URI.parse(address)
       return SecretRedaction::MASK if uri.userinfo.present? || uri.host.blank?
 
-      hidden = uri.query.present? || uri.fragment.present?
+      origin = uri.class.new(uri.scheme, nil, uri.host, uri.port, nil, nil, nil, nil, nil).to_s
+      return "#{origin}/#{SecretRedaction::MASK}" if self.class.sign_in_host?(uri.host)
+
       shown = uri.class.new(uri.scheme, nil, uri.host, uri.port, nil, uri.path, nil, nil, nil).to_s
-      hidden ? "#{shown}?#{SecretRedaction::MASK}" : shown
+      uri.query.present? || uri.fragment.present? ? "#{shown}?#{SecretRedaction::MASK}" : shown
     rescue URI::Error
       SecretRedaction::MASK
     end

@@ -74,12 +74,16 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     token, response_url = body.values_at("sign_in_token", "response_url")
     raise Malformed, "Send the sign-in token and the final address as text" unless token.is_a?(String) && response_url.is_a?(String)
 
-    result = workflow.complete_sign_in(response_url: response_url, single_use: true) do |session_id|
+    unless WebPreview::AudibleBackupJson.safe_sign_in_link(response_url.strip)
+      return render json: answer(outcome: failure("Paste the full https address the Amazon or Audible tab ends on. Nothing was sent to Libation."))
+    end
+
+    result = workflow.complete_sign_in_once(response_url: response_url) do |session_id|
       WebPreview::AudibleBackupJson.sign_in_token_matches?(connection, Current.user, session_id, token)
     end
     outcome = case result.status
     when :expired then failure("This Audible sign-in has expired or was already used. Start again.")
-    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)}")
+    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)} Start the sign-in again.")
     else success("Audible account connected through Libation.")
     end
     render json: answer(outcome: outcome)

@@ -5,7 +5,7 @@ import { ErrorPanel, Loading } from "../../components/States";
 import { Time } from "../../components/requestText";
 import type { SettingField } from "../contract";
 import type { DraftValue } from "../draft";
-import { Said, useSay } from "../extras";
+import { Said, type Said as SaidMessage } from "../extras";
 import { CardActions, SettingControl, SettingsCard, TestResult, useScope, type TestOutcome } from "../primitives";
 import { CardBody, commandFailureText, FormProblem, focusSoon, useRevalidateAccessWhenDenied, type DirtyReporter } from "../downloads/DownloadManagement";
 import { useAudible, useAudibleCommand, useCatalogue, type AudibleCommand, type CompanionValues } from "./api";
@@ -18,7 +18,7 @@ const SECTION_IDS = ["audible-connection", "audible-account", "audible-sync", "a
 const TOKEN_FILE_VARIABLE = "SHELFARR_LIBATION_TOKEN_FILE";
 
 type SectionId = (typeof SECTION_IDS)[number];
-type Outcome = { where: SectionId | null; said: ReturnType<typeof useSay>["said"] };
+type Outcome = { where: SectionId; said: SaidMessage };
 const OutcomeContext = createContext<Outcome | null>(null);
 
 function outcomeSection(command: AudibleCommand, data: Audible | undefined): SectionId | null {
@@ -94,29 +94,31 @@ function plural(count: number, word: string): string {
 export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter }) {
   const query = useAudible();
   const scope = useScope();
-  const { said, say } = useSay();
   const command = useAudibleCommand();
   const denied = query.isError && failureKind(query.error) === "not_found";
   useRevalidateAccessWhenDenied(denied);
   useArrival(query.data !== undefined);
-  const [where, setWhere] = useState<SectionId | null>(null);
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const serial = useRef(0);
+  const tell = (where: SectionId | null, tone: SaidMessage["tone"], text: string) => {
+    serial.current += 1;
+    setOutcome(where ? { where, said: { tone, text, serial: serial.current } } : null);
+  };
   const run: Run = (next, then, rejected) => {
     if (command.isPending) return;
-    setWhere(outcomeSection(next, query.data));
+    const where = outcomeSection(next, query.data);
+    setOutcome(null);
     command.mutate(next, {
       onSuccess: (answer) => {
         if (answer.kind === "rejected") {
-          say("error", "Nothing was saved. Correct the highlighted fields and save again.");
+          tell(where, "error", "Nothing was saved. Correct the highlighted fields and save again.");
           rejected?.(answer.errors);
           return;
         }
-        say(answer.action.outcome.tone, answer.action.outcome.message);
+        tell(where, answer.action.outcome.tone, answer.action.outcome.message);
         then?.(answer.action);
       },
-      onError: (error) => {
-        setWhere(outcomeSection(next, query.data) ?? "audible-connection");
-        say("error", commandFailureText(error));
-      },
+      onError: (error) => tell(where ?? "audible-connection", "error", commandFailureText(error)),
     });
   };
   return (
@@ -129,7 +131,7 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
     >
       <CardBody query={query} label="Loading Audible backup…" denied="Only administrators can manage Audible backup.">
         {(data) => (
-          <OutcomeContext.Provider value={denied ? null : { where, said }}>
+          <OutcomeContext.Provider value={denied ? null : outcome}>
             <p className="field-warning audible-shared">
               <span aria-hidden="true">⚠ </span>Imported backups join this server's shared library and may be available to other people here. Only give library access to people allowed to use the connected account holder's purchases.
             </p>
@@ -195,7 +197,7 @@ function Section({ id, title, summary, children }: { id: SectionId; title: strin
       <h4 id={`${id}-heading`}>{title}</h4>
       {summary ? <p className="field-hint">{summary}</p> : null}
       {children}
-      {outcome ? <Said said={outcome.where === id ? outcome.said : null} /> : null}
+      <Said said={outcome?.where === id ? outcome.said : null} />
     </section>
   );
 }
@@ -230,7 +232,15 @@ function sameCompanion(left: CompanionValues, right: CompanionValues): boolean {
   return left.url === right.url && left.bridge_token === right.bridge_token && left.enabled === right.enabled && left.allow_private_network === right.allow_private_network && left.timeout_seconds === right.timeout_seconds;
 }
 
-function useDraft<T>(saved: T, same: (left: T, right: T) => boolean, key: string, onDirtyChange: DirtyReporter) {
+function keepLaterEdits<T extends object>(current: T, submitted: T, next: T): T {
+  const merged = { ...next };
+  for (const key of Object.keys(next) as (keyof T)[]) {
+    if (current[key] !== submitted[key]) merged[key] = current[key];
+  }
+  return merged;
+}
+
+function useDraft<T extends object>(saved: T, same: (left: T, right: T) => boolean, key: string, onDirtyChange: DirtyReporter) {
   const [draft, setDraft] = useState(saved);
   const [base, setBase] = useState(saved);
   const dirty = !same(draft, base);
@@ -248,7 +258,7 @@ function useDraft<T>(saved: T, same: (left: T, right: T) => boolean, key: string
   };
   const adopt = (next: T, submitted: T) => {
     setBase(next);
-    setDraft((current) => (same(current, submitted) ? next : current));
+    setDraft((current) => keepLaterEdits(current, submitted, next));
   };
   return { draft, setDraft, dirty, reset, adopt };
 }

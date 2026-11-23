@@ -393,4 +393,73 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(router.state.location.hash).toBe("audible");
     expect(document.activeElement === filter).toBe(true);
   });
+
+  test("a token saved while other edits were made is not kept in the form or sent again", async () => {
+    const user = userEvent.setup();
+    const reply = deferred<{ body: unknown }>();
+    let puts = 0;
+    const server = adminServer().on("PUT", /\/admin\/audible\/companion$/, () => {
+      puts += 1;
+      return puts === 1 ? reply.promise : answer(current, "Audible backup connection saved.");
+    });
+    await openLibrary(server);
+    const connection = section("audible-connection");
+    await user.click(within(connection).getByRole("button", { name: "Replace" }));
+    await user.type(connection.querySelector<HTMLInputElement>('input[name="bridge_token"]')!, "new-token-5521");
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(puts).toBe(1));
+    const timeout = within(connection).getByLabelText("Request timeout") as HTMLInputElement;
+    await user.clear(timeout);
+    await user.type(timeout, "90");
+    reply.resolve(answer(state(), "Audible backup connection saved."));
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
+    expect(connection.querySelector<HTMLInputElement>('input[name="bridge_token"]')?.value ?? "").toBe("");
+    expect(timeout.value).toBe("90");
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(puts).toBe(2));
+    expect(server.called("PUT", /companion$/)[1]!.body).toEqual({ companion: { url: "http://shelfarr-libation:8080", bridge_token: "", enabled: true, allow_private_network: true, timeout_seconds: "90" } });
+  });
+
+  test("a rejected save does not cancel the read that reconciles an earlier failed action", async () => {
+    const user = userEvent.setup();
+    const late = deferred<{ body: Audible }>();
+    const syncing = state({ sync: { ...state().sync, state: "syncing", started_at: "2026-11-23T09:30:00Z", action: "Syncing…", available: false }, working: true });
+    let reads = 0;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible$/, () => {
+        reads += 1;
+        return reads === 1 ? { body: state() } : reads === 2 ? late.promise : { body: syncing };
+      })
+      .on("POST", /\/admin\/audible\/sync$/, () => ({ status: 500, body: { error: "server_error" } }))
+      .on("PUT", /\/admin\/audible\/companion$/, () => ({ status: 422, body: { account: ACCOUNT, error: "invalid_record", errors: [{ field: "timeout_seconds", message: "Request timeout must be less than or equal to 120" }] } }));
+    await openLibrary(server);
+    const sync = section("audible-sync");
+    await user.click(within(sync).getByRole("button", { name: "Sync library" }));
+    await waitFor(() => expect(reads).toBe(2));
+    const connection = section("audible-connection");
+    const timeout = within(connection).getByLabelText("Request timeout");
+    await user.clear(timeout);
+    await user.type(timeout, "500");
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    expect(await within(connection).findByText("Request timeout must be less than or equal to 120")).toBeTruthy();
+    late.resolve({ body: syncing });
+    expect(await within(sync).findByRole("button", { name: "Syncing…" })).toBeTruthy();
+    expect(within(sync).getByRole("progressbar", { name: "Library sync in progress" })).toBeTruthy();
+  });
+
+  test("an earlier outcome is not shown in the next action's section while that action runs", async () => {
+    const user = userEvent.setup();
+    const reply = deferred<{ body: unknown }>();
+    const server = adminServer()
+      .on("POST", /\/admin\/audible\/test$/, () => answer(current, "Connected to the Libation companion."))
+      .on("POST", /\/admin\/audible\/sync$/, () => reply.promise);
+    await openLibrary(server);
+    await user.click(within(section("audible-connection")).getByRole("button", { name: "Test" }));
+    expect(await within(section("audible-connection")).findByText(/Connected to the Libation companion\./)).toBeTruthy();
+    await user.click(within(section("audible-sync")).getByRole("button", { name: "Sync library" }));
+    await waitFor(() => expect(server.called("POST", /sync$/)).toHaveLength(1));
+    expect(section("audible-sync").textContent).not.toContain("Connected to the Libation companion");
+    reply.resolve(answer(current, "Audible library sync queued."));
+    expect(await within(section("audible-sync")).findByText("Audible library sync queued.")).toBeTruthy();
+  });
 });

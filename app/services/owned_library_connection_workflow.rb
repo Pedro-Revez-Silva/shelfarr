@@ -224,18 +224,25 @@ class OwnedLibraryConnectionWorkflow
     SignInStart.new(status: :failed, login_url: nil, error: e)
   end
 
-  def complete_sign_in(response_url:, single_use: false, &proof)
+  def complete_sign_in(response_url:, &proof)
     auth_state = auth_state_for_completion(proof)
     return SignInCompletion.new(status: :expired, error: nil) unless auth_state
 
-    claim = single_use ? claim_completion(auth_state) : auth_state
-    return SignInCompletion.new(status: :expired, error: nil) unless claim
-
     connection.client.complete_auth(session_id: auth_state.fetch(:session_id), response_url: response_url)
-    invalidate_account_bound_catalog_after_auth!(claim)
+    invalidate_account_bound_catalog_after_auth!(auth_state)
     SignInCompletion.new(status: :connected, error: nil)
   rescue ArgumentError, LibationCompanionClient::Error => e
-    restore_completion_claim(claim, auth_state) if single_use && claim
+    SignInCompletion.new(status: :failed, error: e)
+  end
+
+  def complete_sign_in_once(response_url:, &proof)
+    pending_state, claim = claim_completion(proof)
+    return SignInCompletion.new(status: :expired, error: nil) unless claim
+
+    connection.client.complete_auth(session_id: pending_state.fetch(:session_id), response_url: response_url)
+    finish_completion(claim)
+  rescue ArgumentError, LibationCompanionClient::Error => e
+    abandon_completion(claim) if claim
     SignInCompletion.new(status: :failed, error: e)
   end
 
@@ -484,30 +491,35 @@ class OwnedLibraryConnectionWorkflow
     end
   end
 
-  def claim_completion(pending_state)
+  def claim_completion(proof)
     connection.with_lock do
       connection.reload
-      next unless connection.auth_state_snapshot == pending_state
+      next unless connection.auth_pending? && proof.call(connection.auth_session_id.to_s)
 
+      pending_state = connection.auth_state_snapshot
       connection.update!(
         auth_session_id: "#{OwnedLibraryConnection::AUTH_START_PREFIX}#{SecureRandom.hex(16)}",
         auth_login_url: nil,
         auth_expires_at: OwnedLibraryConnection::AUTH_START_TIMEOUT.from_now
       )
-      connection.auth_state_snapshot
+      [ pending_state, connection.auth_state_snapshot ]
     end
   end
 
-  def restore_completion_claim(claim, pending_state)
+  def finish_completion(claim)
     connection.with_lock do
       connection.reload
-      next unless connection.auth_state_snapshot == claim
+      next SignInCompletion.new(status: :expired, error: nil) unless connection.auth_state_snapshot == claim
 
-      connection.update!(
-        auth_session_id: pending_state.fetch(:session_id),
-        auth_login_url: pending_state.fetch(:login_url),
-        auth_expires_at: pending_state.fetch(:expires_at)
-      )
+      reset_account_bound_catalog!
+      SignInCompletion.new(status: :connected, error: nil)
+    end
+  end
+
+  def abandon_completion(claim)
+    connection.with_lock do
+      connection.reload
+      connection.clear_auth_state! if connection.auth_state_snapshot == claim
     end
   end
 
