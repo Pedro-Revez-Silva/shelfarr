@@ -289,6 +289,25 @@ class WebPreview::KoboAccountsTest < ActionDispatch::IntegrationTest
     assert_equal 0, KoboDelivery.count
   end
 
+  test "a reader disconnected while a copy is being sent says the reader is gone" do
+    share_with
+    device, = recipient_device
+    file = prepare_copy
+    shown = WebPreview::KoboAccountJson.copy_version(file)
+    sign_in_as(@recipient)
+    original = WebPreview::KoboAccountJson.method(:copy_version)
+    gone = lambda { |copy|
+      KoboDevice.where(id: device.id).delete_all
+      original.call(copy)
+    }
+    body = WebPreview::KoboAccountJson.stub(:copy_version, gone) do
+      send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: shown)
+    end
+    assert_response :not_found
+    assert_equal "reader_not_found", body.fetch("error")
+    assert_equal 0, KoboDelivery.count
+  end
+
   test "an existing copy stays sendable while a newer one is being prepared" do
     share_with
     device, = recipient_device

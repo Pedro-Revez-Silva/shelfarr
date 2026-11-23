@@ -282,6 +282,8 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await tick(5000);
     await until(() => expect(screen.getByText("This connection could not be checked. Reload the page to continue.")).toBeTruthy());
     expect(screen.queryByRole("button", { name: /Check connection/ })).toBeNull();
+    expect(screen.queryByTestId("kobo-activation-code")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Open Kobo activation/ })).toBeNull();
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
@@ -372,12 +374,26 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await user.selectOptions(select, "9");
     await user.click(within(sharing).getByRole("button", { name: "Share catalogue" }));
     expect(api.called("POST", /\/shares$/)).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Refresh catalogue" }));
+    expect(api.called("POST", /\/refresh$/)).toHaveLength(0);
     select.focus();
     await act(async () => {
       held.resolve({ body: { account: ACCOUNT, notice: "Sam Sharer can no longer see this catalogue or receive its books.", kobo_account: koboAccount({ shared_with: 0, sharing: { people: [], candidates: [{ id: "9", label: "Tess Tester (tess)" }] } }) } });
     });
     expect(await within(sharing).findByText("Sam Sharer can no longer see this catalogue or receive its books.")).toBeTruthy();
     expect(document.activeElement).toBe(select);
+  });
+
+  test("removing a person whose place is taken by a new share in the same answer still keeps focus on the sharing card", async () => {
+    const tess = { id: "10", name: "Tess Tester", username: "tess", shared_at: "2026-11-22T10:00:00.000Z", inactive: false };
+    const api = server().on("POST", /\/kobo_accounts\/5\/shares\/8\/remove$/, () => ({ body: { account: ACCOUNT, notice: "Sam Sharer can no longer see this catalogue or receive its books.", kobo_account: koboAccount({ sharing: { people: [tess], candidates: [] } }) } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    const sharing = (await screen.findByRole("heading", { name: "Household sharing" })).closest("section") as HTMLElement;
+    const user = userEvent.setup();
+    await user.click(within(sharing).getByRole("button", { name: "Stop sharing with Sam Sharer" }));
+    await user.click(within(sharing).getByRole("button", { name: "Stop sharing" }));
+    expect(await within(sharing).findByRole("button", { name: "Stop sharing with Tess Tester" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(within(sharing).getByRole("heading", { name: "Household sharing" })));
   });
 
   test("the copy already prepared can be sent while a newer one is prepared", async () => {

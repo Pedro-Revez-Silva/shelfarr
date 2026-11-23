@@ -11,7 +11,7 @@ import { ConfirmAction } from "../kobo/KoboParts";
 import * as api from "./api";
 import type { CatalogueSearch, KoboAccount } from "./contract";
 import { CatalogueCard } from "./KoboCatalogue";
-import { isMissing, koboAccountFailure, useAccountWrite, useActivationPoll, useCatalogueFollowsRefresh, useKoboAccount, usePublishAccount } from "./queries";
+import { isMissing, koboAccountFailure, useAccountBusy, useAccountWrite, useActivationPoll, useCatalogueFollowsRefresh, useKoboAccount, usePublishAccount } from "./queries";
 import "./kobo-accounts.css";
 
 const routeApi = getRouteApi("/account/devices/kobo-accounts/$accountId");
@@ -116,6 +116,14 @@ function Activation({ account }: { account: KoboAccount }) {
   const poller = useActivationPoll(account);
   const activation = account.activation;
   if (!activation) return null;
+  if (poller.ended) {
+    return (
+      <section className="account-card" aria-labelledby={headingId}>
+        <h2 id={headingId}>Approval can't continue here</h2>
+        <p role="status">{poller.problem}</p>
+      </section>
+    );
+  }
   return (
     <section className="account-card" aria-labelledby={headingId}>
       <h2 id={headingId}>Approve this connection on Kobo</h2>
@@ -132,13 +140,11 @@ function Activation({ account }: { account: KoboAccount }) {
         Return here after approving. This code expires <Time iso={activation.expires_at} relative />. Keep it private.
       </p>
       <p role="status">{poller.problem ?? "Waiting for approval…"}</p>
-      {poller.ended ? null : (
-        <div className="form-actions">
-          <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
-            {poller.checking ? "Checking…" : "Check connection"}
-          </button>
-        </div>
-      )}
+      <div className="form-actions">
+        <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
+          {poller.checking ? "Checking…" : "Check connection"}
+        </button>
+      </div>
     </section>
   );
 }
@@ -147,9 +153,10 @@ function Connection({ account }: { account: KoboAccount }) {
   const headingId = useId();
   const { api: client } = useServices();
   const { said, say } = useSay();
-  const refresh = useAccountWrite(() => api.refresh(client, account.id));
+  const refresh = useAccountWrite(account.id, () => api.refresh(client, account.id));
+  const busy = useAccountBusy(account.id);
   const start = () => {
-    if (refresh.isPending) return;
+    if (busy) return;
     refresh.mutate(undefined, {
       onSuccess: (answer) => say(answer.kind === "done" ? "success" : "error", answer.kind === "done" ? (answer.notice ?? "Catalogue refresh queued.") : answer.message),
       onError: (error) => say("error", koboAccountFailure(error, "Shelfarr could not confirm whether a refresh was queued. The page shows the current state.")),
@@ -168,7 +175,7 @@ function Connection({ account }: { account: KoboAccount }) {
         </p>
       ) : account.can_refresh ? (
         <div className="form-actions">
-          <button type="button" className="button button--primary" aria-disabled={refresh.isPending ? true : undefined} aria-busy={refresh.isPending} onClick={start}>
+          <button type="button" className="button button--primary" aria-disabled={busy ? true : undefined} aria-busy={refresh.isPending} onClick={start}>
             {refresh.isPending ? "Queuing…" : "Refresh catalogue"}
           </button>
         </div>
@@ -190,19 +197,20 @@ function Sharing({ account }: { account: KoboAccount }) {
   const { said, say } = useSay();
   const select = useRef<HTMLSelectElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
-  const people = account.sharing?.people.length ?? 0;
+  const people = (account.sharing?.people ?? []).map((person) => person.id).join(" ");
   const shownPeople = useRef(people);
   useEffect(() => {
-    const fewer = people < shownPeople.current;
+    const now = new Set(people.split(" "));
+    const removed = shownPeople.current.split(" ").some((id) => id !== "" && !now.has(id));
     shownPeople.current = people;
-    if (fewer && (document.activeElement === null || document.activeElement === document.body)) heading.current?.focus();
+    if (removed && (document.activeElement === null || document.activeElement === document.body)) heading.current?.focus();
   }, [people]);
   const [recipient, setRecipient] = useState("");
   const [missing, setMissing] = useState(false);
-  const add = useAccountWrite((recipientId: string) => api.share(client, account.id, recipientId));
-  const remove = useAccountWrite((shareId: string) => api.stopSharing(client, account.id, shareId));
+  const add = useAccountWrite(account.id, (recipientId: string) => api.share(client, account.id, recipientId));
+  const remove = useAccountWrite(account.id, (shareId: string) => api.stopSharing(client, account.id, shareId));
   const sharing = account.sharing;
-  const busy = add.isPending || remove.isPending;
+  const busy = useAccountBusy(account.id);
   if (!sharing) return null;
   const settle = (fallback: string) => ({
     onSuccess: (answer: api.AccountAnswer) => say(answer.kind === "done" ? "success" : "error", answer.kind === "done" ? (answer.notice ?? fallback) : answer.message),

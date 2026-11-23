@@ -56,6 +56,8 @@ class WebPreview::KoboBooksController < WebPreview::APIController
   rescue KoboPublication::Unavailable => error
     render_refusal("deliver_refused", error.message)
   rescue ActiveRecord::InvalidForeignKey, ActiveRecord::RecordNotFound
+    return render_error("reader_not_found", :not_found) unless Current.user.kobo_devices.exists?(device&.id)
+
     still_granted? ? render_copy_changed : render_error("kobo_book_not_found", :not_found)
   end
 

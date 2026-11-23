@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { failureKind, isApiError } from "../../api/errors";
 import { describeWriteFailure } from "../../components/accountFields";
@@ -16,6 +16,7 @@ export function useKoboAccountKeys() {
       root,
       list: [...root, "list"] as const,
       account: (id: string) => [...root, "account", id] as const,
+      writes: (id: string) => [...root, "write", id] as const,
       catalogues: (id: string) => [...root, "catalogue", id] as const,
       catalogue: (id: string, search: CatalogueSearch) => [...root, "catalogue", id, search.filter ?? "all", search.page ?? "1"] as const,
       book: (id: string) => [...root, "book", id] as const,
@@ -132,9 +133,14 @@ export function useCatalogueFollowsRefresh(account: KoboAccount | undefined) {
   }, [client, id, keys, synced]);
 }
 
-export function useAccountWrite<Input>(write: (input: Input) => Promise<api.AccountAnswer>) {
+export function useAccountBusy(id: string): boolean {
+  return useIsMutating({ mutationKey: useKoboAccountKeys().writes(id) }) > 0;
+}
+
+export function useAccountWrite<Input>(id: string, write: (input: Input) => Promise<api.AccountAnswer>) {
   const publish = usePublishAccount();
   return useMutation({
+    mutationKey: useKoboAccountKeys().writes(id),
     mutationFn: write,
     onSuccess: (answer) => {
       if (publish.active()) publish.account(answer.kobo_account);
