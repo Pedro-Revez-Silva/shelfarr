@@ -39,8 +39,8 @@ export function startCode(api: ApiClient, version: Version): Promise<HardcoverAn
   return write(api, "/device", { version });
 }
 
-export function cancelCode(api: ApiClient): Promise<HardcoverAnswer> {
-  return write(api, "/device/cancel", {});
+export function cancelCode(api: ApiClient, userCode: string): Promise<HardcoverAnswer> {
+  return write(api, "/device/cancel", { user_code: userCode });
 }
 
 export function disconnect(api: ApiClient, version: string): Promise<HardcoverAnswer> {

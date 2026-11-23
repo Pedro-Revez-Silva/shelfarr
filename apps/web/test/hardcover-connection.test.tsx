@@ -316,6 +316,7 @@ describe("Hardcover in Account ▸ Connections", () => {
     await press(within(hardcover).getByRole("button", { name: "Cancel" }));
     expect(await until(() => within(hardcover).getByRole("button", { name: "Sign in with Hardcover" }))).toBeTruthy();
     expect(api.called("POST", /device\/cancel$/)).toHaveLength(1);
+    expect(api.called("POST", /device\/cancel$/)[0]!.body).toEqual({ user_code: "WXYZ-9876" });
     await tick(30_000);
     expect(api.called("POST", /device\/poll$/)).toHaveLength(1);
   });

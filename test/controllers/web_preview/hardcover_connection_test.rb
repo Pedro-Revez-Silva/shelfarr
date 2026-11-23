@@ -105,7 +105,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     SettingsService.set(:hardcover_enabled, false)
     [ [ web_preview_api_hardcover_api_key_path, { api_key: "hc_pat_value", version: version } ], [ web_preview_api_hardcover_authorize_path, { version: version } ],
       [ web_preview_api_hardcover_device_path, { version: version } ], [ web_preview_api_hardcover_device_poll_path, {} ],
-      [ web_preview_api_hardcover_device_cancel_path, {} ], [ web_preview_api_hardcover_disconnect_path, { version: version } ] ].each do |path, body|
+      [ web_preview_api_hardcover_device_cancel_path, { user_code: "ABCD-1234" } ], [ web_preview_api_hardcover_disconnect_path, { version: version } ] ].each do |path, body|
       answer = send_json(path, **body)
       assert_response :conflict
       assert_equal [ "hardcover_unavailable", "Hardcover is disabled on this Shelfarr instance." ], answer.values_at("error", "message"), path
@@ -481,8 +481,26 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stub_device
     send_json(web_preview_api_hardcover_device_path, version: nil)
     generation = @member.reload.hardcover_sign_in_generation
-    send_json(web_preview_api_hardcover_device_cancel_path)
+    send_json(web_preview_api_hardcover_device_cancel_path, user_code: "ABCD-1234")
     assert_equal generation + 1, @member.reload.hardcover_sign_in_generation
+  end
+
+  test "Cancel ends only the warm code the card showed and leaves a newer classic code usable" do
+    stub_device
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    stub_request(:post, DEVICE_URL).to_return(status: 200, body: { device_code: "classic-device", user_code: "CLAS-1234", verification_uri: "https://hardcover.app/link", expires_in: 900, interval: 5 }.to_json)
+    post device_hardcover_connection_path
+    generation = @member.reload.hardcover_sign_in_generation
+
+    answer = send_json(web_preview_api_hardcover_device_cancel_path, user_code: "ABCD-1234")
+    assert_response :success
+    assert_nil answer.dig("hardcover", "device")
+    send_json(web_preview_api_hardcover_device_cancel_path)
+    assert_response :bad_request
+    assert_equal generation, @member.reload.hardcover_sign_in_generation
+    get device_hardcover_connection_path
+    assert_response :success
+    assert_select "p", text: "CLAS-1234"
   end
 
   test "an API key checked while another connection is made does not replace it" do
@@ -562,7 +580,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     end
 
     send_json(web_preview_api_hardcover_device_path, version: nil)
-    answer = send_json(web_preview_api_hardcover_device_cancel_path)
+    answer = send_json(web_preview_api_hardcover_device_cancel_path, user_code: "ABCD-1234")
     assert_nil answer.dig("hardcover", "device")
     assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
     assert_requested token, times: 2

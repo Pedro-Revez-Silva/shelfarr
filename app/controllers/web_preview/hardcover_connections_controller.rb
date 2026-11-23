@@ -70,8 +70,14 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
   end
 
   def cancel_device
-    sign_in.forget_device
-    Hardcover::ConnectionManager.end_sign_ins!(Current.user)
+    user_code = request.request_parameters["user_code"]
+    return render_error("invalid_request", :bad_request) unless user_code.is_a?(String)
+
+    pending = sign_in.pending_device(warm: true)
+    if pending && ActiveSupport::SecurityUtils.secure_compare(pending["user_code"].to_s, user_code)
+      sign_in.forget_device
+      Hardcover::ConnectionManager.end_sign_ins!(Current.user)
+    end
     render_state
   end
 

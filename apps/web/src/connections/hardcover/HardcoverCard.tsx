@@ -208,7 +208,7 @@ function CodePanel({ device, say }: { device: HardcoverDevice; say: Say }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const ended = (outcome: CodeOutcome) => say(outcome.tone, outcome.message);
   const poll = useCodePoll(device, ended);
-  const cancel = useHardcoverWrite(() => api.cancelCode(client));
+  const cancel = useHardcoverWrite(() => api.cancelCode(client, device.user_code));
   useEffect(() => {
     if (document.activeElement === null || document.activeElement === document.body) heading.current?.focus();
   }, [device.user_code]);
