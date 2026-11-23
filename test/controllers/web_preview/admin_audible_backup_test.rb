@@ -10,6 +10,11 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
   COMPANION = "https://libation.test"
   LOGIN = "https://www.amazon.com/ap/signin?openid.return_to=private-callback-3311"
   LANDING = "https://www.amazon.com/ap/maplanding?openid.oa2.authorization_code=private-code-8842"
+  IMMEDIATE_REFRESH = Class.new { def debounce = yield }.new
+
+  def run
+    Turbo::StreamsChannel.stub(:refresh_debouncer_for, IMMEDIATE_REFRESH) { super }
+  end
 
   setup do
     @member = users(:one)

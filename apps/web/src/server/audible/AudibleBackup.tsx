@@ -738,7 +738,7 @@ function CatalogueBody({ data, run, busy }: { data: Audible; run: Run; busy: boo
       to: "/server/$category",
       params: { category: "library" },
       search: { audible_q: nextQuery.trim() === "" ? undefined : nextQuery, audible_page: nextPage > 1 ? String(nextPage) : undefined },
-      hash: "audible-catalogue",
+      hash: true,
       resetScroll: false,
     });
   };
