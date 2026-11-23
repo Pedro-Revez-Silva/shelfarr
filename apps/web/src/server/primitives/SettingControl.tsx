@@ -239,7 +239,7 @@ function CheckboxGroupField({ field, value, onChange, error, scope, options }: C
     onChange(options.map((entry) => entry.value).filter((entry) => next.includes(entry)));
   };
   return (
-    <fieldset className="field choice-field" aria-describedby={describedBy(`${id}-hint`, error && `${id}-error`)}>
+    <fieldset className="field choice-field" aria-describedby={describedBy(`${id}-hint`, error && `${id}-error`)} aria-invalid={error ? true : undefined}>
       <legend>{field.label}</legend>
       <Hint id={`${id}-hint`} field={field} />
       <div className="choice-options">

@@ -67,7 +67,7 @@ module Admin
     end
 
     def open_warm_page
-      return unless flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+      return unless request.get? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
 
       redirect_to web_preview_server_category_path(category: "sources", anchor: warm_anchor)
     end

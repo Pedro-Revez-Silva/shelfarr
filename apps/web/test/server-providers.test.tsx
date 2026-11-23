@@ -242,6 +242,7 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await user.click(within(local).getByRole("button", { name: "Save" }));
     const types = await within(local).findByRole("group", { name: "Book types" });
     expect(within(types).getByText("Provider must support ebooks, audiobooks, or Comics & Manga")).toBeTruthy();
+    expect(types.getAttribute("aria-invalid")).toBe("true");
     await waitFor(() => expect(document.activeElement).toBe(within(local).getByLabelText("Ebooks")));
     expect(server.called("PUT", /acquisition_providers\/1$/)[0]!.body).toEqual({ version: VERSION, provider: { supports_ebooks: false, supports_audiobooks: false, supports_comicbooks: false } });
   });
@@ -276,14 +277,14 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
   });
 
   test("Test answers inside the row with the time and says when it did not use unsaved changes", async () => {
-    const server = adminServer().on("POST", /acquisition_providers\/1\/test$/, () => action(providersFixture(), "Connection to “Local provider” failed: Connection refused.", { tested: "1" }, "error"));
+    const server = adminServer().on("POST", /acquisition_providers\/1\/test$/, () => action(providersFixture(), "Connection failed: Connection refused.", { tested: "1" }, "error"));
     await openSources(server);
     const user = userEvent.setup();
     const local = row("Local provider");
     await user.click(within(local).getByRole("button", { name: "Edit" }));
     await user.type(within(local).getByLabelText("Address"), "/v2");
     await user.click(within(local).getByRole("button", { name: "Test" }));
-    expect(await within(local).findByText(/Connection to “Local provider” failed: Connection refused\./)).toBeTruthy();
+    expect(await within(local).findByText(/Connection failed: Connection refused\./)).toBeTruthy();
     expect(within(local).getByText("This tested the saved settings, not your unsaved changes.")).toBeTruthy();
     expect(local.querySelector(".record-status time")).toBeTruthy();
     const sent = server.called("POST", /test$/)[0]!;
@@ -374,6 +375,18 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     release();
     await screen.findByRole("heading", { name: "Local provider", level: 5 });
     await waitFor(() => expect(document.activeElement?.id).toBe("acquisition_providers"));
+    cleanup();
+
+    let late = () => {};
+    const slower = adminServer().on("GET", /\/api\/v1\/admin\/acquisition_providers$/, () => new Promise((resolve) => (late = () => resolve({ body: current }))));
+    renderApp({ server: slower, url: "/sub/preview/server/sources#acquisition_providers" });
+    await screen.findByRole("heading", { name: "Custom providers", level: 3 });
+    const system = within(screen.getByRole("navigation", { name: "Server" })).getByRole("link", { name: "System" });
+    system.focus();
+    late();
+    await screen.findByRole("heading", { name: "Local provider", level: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.activeElement).toBe(system);
   });
 
   test("leaving with an unsaved provider edit asks first", async () => {

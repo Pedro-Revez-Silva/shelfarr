@@ -31,7 +31,7 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
       raise Forbidden unless acting_administrator?
 
       provider.priority = AcquisitionProvider.next_priority
-      provider.save
+      without_database_debug_log { provider.save }
     end
     return render_rejected_record(provider) unless saved
 
@@ -47,7 +47,7 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
     attributes.delete("api_key") if attributes["api_key"].blank?
     saved = AcquisitionProvider.transaction do
       current!(provider, expected)
-      provider.update(attributes)
+      without_database_debug_log { provider.update(attributes) }
     end
     return render_rejected_record(provider) unless saved
 
@@ -74,6 +74,27 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
   end
 
   private
+
+  def process_action(*)
+    read_body_without_debug_log
+    super
+  end
+
+  def read_body_without_debug_log
+    quietly(request.logger) { request.request_parameters }
+  rescue ActionDispatch::Http::Parameters::ParseError
+    nil
+  end
+
+  def without_database_debug_log(&block)
+    quietly(ActiveRecord::Base.logger, &block)
+  end
+
+  def quietly(logger, &block)
+    return yield unless logger.respond_to?(:silence)
+
+    logger.silence(Logger::INFO, &block)
+  end
 
   def presenter
     @presenter ||= WebPreview::AcquisitionProviders.new
@@ -128,20 +149,16 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
 
   def test_outcome(provider)
     result = provider.test_connection
-    return tested(provider, "success", "Connection to “#{provider.name}” successful.") if RemoteResult.succeeded?(result)
+    return { tone: "success", message: "Connection successful." } if RemoteResult.succeeded?(result)
 
-    tested(provider, "error", "Connection to “#{provider.name}” failed: #{failure_reason(result)}.")
+    { tone: "error", message: "Connection failed: #{failure_reason(result)}." }
   rescue StandardError => error
     Rails.logger.warn "[WebPreview::Admin::AcquisitionProvidersController] Provider test failed: #{error.class}"
-    tested(provider, "error", "Connection to “#{provider.name}” failed: the provider did not answer as expected.")
-  end
-
-  def tested(provider, tone, text)
-    { tone: tone, message: WebPreview::SecretRedaction.call(redacted(provider, text)) }
+    { tone: "error", message: "Connection failed: the provider did not answer as expected." }
   end
 
   def failure_reason(result)
-    return "GET /health did not answer with success" unless RemoteResult.failed?(result)
+    return "the health check did not answer with success" unless RemoteResult.failed?(result)
 
     error = result.error
     message = error.message.to_s
@@ -150,22 +167,6 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
     return ConnectionErrorClassifier::MESSAGES.fetch(:dns) if message.match?(UNRESOLVED_ADDRESS)
 
     ConnectionErrorClassifier.classify(error)&.message || "the provider could not be reached"
-  end
-
-  def redacted(provider, text)
-    secrets = ([ provider.api_key.to_s ] + address_secrets(provider.url))
-      .select { |value| value.length >= WebPreview::SecretRedaction::MIN_SECRET_LENGTH }
-      .uniq
-      .sort_by { |value| -value.length }
-    secrets.reduce(text) { |result, secret| result.gsub(secret, WebPreview::SecretRedaction::MASK) }
-  end
-
-  def address_secrets(url)
-    address = URI.parse(url.to_s)
-    parts = [ address.query, address.fragment, address.userinfo ].compact
-    parts + parts.flat_map { |part| part.split(/[&=:;]/) }
-  rescue URI::InvalidURIError
-    [ url.to_s ]
   end
 
   def render_rejected_record(provider)

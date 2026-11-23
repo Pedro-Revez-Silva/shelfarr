@@ -34,10 +34,16 @@ function rowId(provider: AcquisitionProvider): string {
   return `acquisition-provider-${provider.id}`;
 }
 
+function focusStillUnclaimed(target: HTMLElement): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body || active === target || active === document.getElementById(CARD_ID);
+}
+
 function bringIntoView(id: string) {
   const target = document.getElementById(id);
-  target?.scrollIntoView({ block: "start" });
-  target?.focus({ preventScroll: true });
+  if (!target || !focusStillUnclaimed(target)) return;
+  target.scrollIntoView({ block: "start" });
+  target.focus({ preventScroll: true });
 }
 
 function useArrival(ready: boolean, onNew: () => void): Arrival {

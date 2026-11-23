@@ -251,11 +251,8 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     post "#{web_preview_api_admin_acquisition_providers_path}?#{{ provider: { name: "From the address", url: "http://q.test" } }.to_query}", params: "{}", headers: account_headers(@admin).merge("Content-Type" => "application/json")
     assert_response :bad_request
 
-    log = with_log do
-      post web_preview_api_admin_acquisition_providers_path, params: %({,"api_key":"#{REPLACEMENT}"}), headers: account_headers(@admin).merge("Content-Type" => "application/json")
-    end
+    post web_preview_api_admin_acquisition_providers_path, params: %({,"api_key":"#{REPLACEMENT}"}), headers: account_headers(@admin).merge("Content-Type" => "application/json")
     assert_response :bad_request
-    assert_not_includes log.lines.reject { |line| line.include?("DEBUG") }.join, REPLACEMENT
     assert_equal before, snapshot
   end
 
@@ -365,24 +362,24 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
       assert_response :success
       assert_requested health
       assert_not_requested :get, "http://elsewhere.test/health"
-      assert_equal({ "tone" => "success", "message" => "Connection to “Local provider” successful." }, response.parsed_body.fetch("outcome"))
+      assert_equal({ "tone" => "success", "message" => "Connection successful." }, response.parsed_body.fetch("outcome"))
       assert_equal @local.id.to_s, response.parsed_body.fetch("tested")
 
       stub_request(:get, "http://provider.test/health").to_return(status: 500)
       write :post, probe_path(@local)
-      assert_equal({ "tone" => "error", "message" => "Connection to “Local provider” failed: GET /health did not answer with success." }, response.parsed_body.fetch("outcome"))
+      assert_equal({ "tone" => "error", "message" => "Connection failed: the health check did not answer with success." }, response.parsed_body.fetch("outcome"))
 
       stub_request(:get, "http://provider.test/health").to_raise(Errno::ECONNREFUSED)
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: Connection refused.", response.parsed_body.dig("outcome", "message")
+      assert_equal "Connection failed: Connection refused.", response.parsed_body.dig("outcome", "message")
 
       stub_request(:get, "http://provider.test/health").to_timeout
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: Connection timed out.", response.parsed_body.dig("outcome", "message")
+      assert_equal "Connection failed: Connection timed out.", response.parsed_body.dig("outcome", "message")
 
       stub_request(:get, "http://provider.test/health").to_raise(Net::HTTPBadResponse.new("bad #{TOKEN}"))
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: the provider did not answer as expected.", response.parsed_body.dig("outcome", "message")
+      assert_equal "Connection failed: the provider did not answer as expected.", response.parsed_body.dig("outcome", "message")
     end
     assert_not_includes response.body, TOKEN
   end
@@ -393,7 +390,7 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     VCR.turned_off do
       OutboundUrlGuard.resolver = ->(_host) { [ "10.0.0.5" ] }
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: the address is on a private network. Turn on Allow private network if this provider runs on your local network.",
+      assert_equal "Connection failed: the address is on a private network. Turn on Allow private network if this provider runs on your local network.",
         response.parsed_body.dig("outcome", "message")
 
       @local.update!(allow_private_network: true)
@@ -403,41 +400,49 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
 
       OutboundUrlGuard.resolver = ->(_host) { [ "169.254.169.254" ] }
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: Shelfarr does not contact that address.", response.parsed_body.dig("outcome", "message")
+      assert_equal "Connection failed: Shelfarr does not contact that address.", response.parsed_body.dig("outcome", "message")
 
       OutboundUrlGuard.resolver = ->(_host) { [] }
       write :post, probe_path(@local)
-      assert_equal "Connection to “Local provider” failed: Could not resolve host.", response.parsed_body.dig("outcome", "message")
+      assert_equal "Connection failed: Could not resolve host.", response.parsed_body.dig("outcome", "message")
     end
   ensure
     OutboundUrlGuard.resolver = previous
   end
 
-  test "a saved token or address secret in the provider's name is hidden before the answer is shortened" do
-    @local.update_columns(name: "#{"n" * 470}#{TOKEN}#{QUERY_SECRET}")
-    @local.update_columns(url: "http://provider.test/?k=#{QUERY_SECRET}")
+  test "Test answers never repeat the provider's name, so a token copied into it cannot come back" do
+    @local.update_columns(name: "Local abc #{QUERY_SECRET}")
+    @local.update!(api_key: "abc", url: "http://provider.test/?k=#{QUERY_SECRET}")
     sign_in_as(@admin)
     VCR.turned_off do
-      stub_request(:get, %r{\Ahttp://provider\.test/}).to_return(status: 204)
+      stub_request(:get, %r{\Ahttp://provider\.test/}).to_return(status: 500)
       write :post, probe_path(@local)
     end
-    message = response.parsed_body.dig("outcome", "message")
-    assert_equal WebPreview::SecretRedaction::MAX_LENGTH, message.length
-    assert_equal "Connection to “#{"n" * 470}[hidden][hidden]” successful.".first(WebPreview::SecretRedaction::MAX_LENGTH), message
-    [ TOKEN, QUERY_SECRET.first(7), TOKEN.first(8) ].each { |secret| assert_not_includes message, secret }
+    assert_equal({ "tone" => "error", "message" => "Connection failed: the health check did not answer with success." }, response.parsed_body.fetch("outcome"))
   end
 
-  test "tokens and addresses are not written to the log" do
+  test "tokens and addresses are not written to the log, even at debug level" do
     sign_in_as(@admin)
+    file = Rails.root.join("log/test.log")
+    start = File.size?(file).to_i
     log = with_log do
       write :post, web_preview_api_admin_acquisition_providers_path, { provider: { name: "Logged", url: "http://logged.test/?k=#{QUERY_SECRET}", api_key: REPLACEMENT, supports_ebooks: true } }
       write :put, provider_path(@local), { version: version(@local), provider: { api_key: REPLACEMENT, url: "http://changed.test/?k=#{QUERY_SECRET}" } }
+      assert_response :success
+      post web_preview_api_admin_acquisition_providers_path, params: %({,"api_key":"#{REPLACEMENT}"}),
+        headers: account_headers(@admin).merge("Content-Type" => "application/json")
+      assert_response :bad_request
+      post "#{web_preview_api_admin_acquisition_providers_path}?provider%5Burl%5D=http%3A%2F%2Fq.test%2F%3Fk%3D#{QUERY_SECRET}&provider[url]=#{QUERY_SECRET}", params: "{}",
+        headers: account_headers(@admin).merge("Content-Type" => "application/json")
+      assert_response :bad_request
     end
-    assert_response :success
     assert_includes log, "WebPreview::Admin::AcquisitionProvidersController#create"
     assert_includes log, "WebPreview::Admin::AcquisitionProvidersController#update"
+    assert_equal [ "http://logged.test/?k=#{QUERY_SECRET}", "http://changed.test/?k=#{QUERY_SECRET}" ], [ AcquisitionProvider.find_by!(name: "Logged").url, @local.reload.url ]
+    application_log = File.binread(file, nil, start).to_s
     assert_not_includes log, REPLACEMENT
-    assert_not_includes log.lines.grep(/Parameters:/).join, QUERY_SECRET
+    assert_not_includes log, QUERY_SECRET
+    assert_not_includes application_log, REPLACEMENT
   end
 
   test "old provider addresses open the matching card for preview administrators" do
@@ -471,6 +476,8 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
       assert_response :success
       assert_select "h1", "Edit Acquisition Provider"
     end
+    head admin_acquisition_provider_path(@local)
+    assert_response :success
     WarmEntry.stub(:stylesheet_built?, false) do
       get new_admin_acquisition_provider_path
       assert_response :success
