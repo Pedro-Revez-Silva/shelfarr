@@ -2573,7 +2573,6 @@ thead th {
   flex: 1 1 100%;
   flex-direction: column;
   align-items: flex-start;
-  max-width: 44rem;
 }
 .withdraw-confirm p,
 .withdraw-consequence {
@@ -2585,6 +2584,7 @@ thead th {
 .withdraw-consequence {
   display: grid;
   gap: 8px;
+  max-width: 44rem;
 }
 .withdraw-buttons {
   display: flex;
