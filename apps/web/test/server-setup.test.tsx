@@ -489,18 +489,19 @@ describe("Setup in the Rails preview", () => {
       card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true }),
     ]);
     const heldRead = deferred<{ body: unknown }>();
+    const heldSave = deferred<{ body: unknown }>();
     let reads = 0;
     const server = setupServer()
       .on("GET", /\/admin\/setup\?step=audiobookshelf/, () => (++reads === 2 ? heldRead.promise : { body: disconnected }))
-      .on("PUT", /\/admin\/setup\/steps\/audiobookshelf$/, () => ({
-        body: { account: ACCOUNT, outcome: { tone: "success", message: "Audiobookshelf connected. Choose the libraries Shelfarr should scan." }, alert: null, completed: false, setup: connected },
-      }));
+      .on("PUT", /\/admin\/setup\/steps\/audiobookshelf$/, () => heldSave.promise);
     const { services } = renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
     await screen.findByText(/did not list libraries/);
 
+    await userEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+    await waitFor(() => expect(server.called("PUT", /audiobookshelf$/).length).toBe(1));
     void services.queryClient.invalidateQueries();
     await waitFor(() => expect(reads).toBe(2));
-    await userEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+    heldSave.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Audiobookshelf connected. Choose the libraries Shelfarr should scan." }, alert: null, completed: false, setup: connected } });
     expect(await screen.findByLabelText("Audiobook library")).toBeTruthy();
 
     heldRead.resolve({ body: disconnected });
@@ -531,5 +532,59 @@ describe("Setup in the Rails preview", () => {
 
     held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Audiobookshelf connected." }, alert: null, completed: false, setup: connected } });
     expect(await screen.findByLabelText("Audiobook library")).toBeTruthy();
+  });
+
+  test("a restart that lands while the bare setup address is loading still shows the first step", async () => {
+    const heldRestart = deferred<{ body: unknown }>();
+    const heldRead = deferred<{ body: unknown }>();
+    let bareReads = 0;
+    const server = setupServer()
+      .on("GET", /\/admin\/setup$/, () => (++bareReads === 1 ? heldRead.promise : { body: prowlarr() }))
+      .on("GET", /\/api\/v1\/admin\/settings$/, () => ({
+        body: { account: ACCOUNT, categories: [{ id: "system", title: "System", summary: "Health checks.", groups: [] }], notes: { path_variables: "", hardcover_app: { create_url: "https://hardcover.app/x", scopes: "", redirect_uri: "", redirect_uri_acceptable: true } }, roles: [] },
+      }))
+      .on("POST", /\/admin\/setup\/restart$/, () => heldRestart.promise);
+    const { router } = renderApp({ server, url: "/sub/preview/server/system" });
+    await userEvent.click(await within(await waitFor(() => cardSection("Setup"))).findByRole("button", { name: "Run setup again" }));
+    await waitFor(() => expect(server.called("POST", /restart$/).length).toBe(1));
+    await router.navigate({ to: "/server/setup" });
+    await waitFor(() => expect(bareReads).toBe(1));
+
+    heldRestart.resolve({ body: { account: ACCOUNT, completed: false, setup: prowlarr() } });
+    expect(await screen.findByRole("heading", { name: "Prowlarr", level: 2 })).toBeTruthy();
+    expect(bareReads).toBe(2);
+    heldRead.resolve({ body: prowlarr() });
+  });
+
+  test("returning to a step whose save is still pending shows what the save stored, and cannot resend the old form meanwhile", async () => {
+    const heldSave = deferred<{ body: unknown }>();
+    const heldReread = deferred<{ body: unknown }>();
+    let saved = false;
+    const server = setupServer({ qbittorrent: qbittorrent() })
+      .on("GET", /\/admin\/setup\?step=prowlarr/, () => (saved ? heldReread.promise : { body: prowlarr() }))
+      .on("PUT", /\/admin\/setup\/steps\/prowlarr$/, () => heldSave.promise);
+    const { router } = renderApp({ server, url: "/sub/preview/server/setup?step=prowlarr" });
+    const address = await screen.findByLabelText("Prowlarr address");
+    await userEvent.clear(address);
+    await userEvent.type(address, "http://new:9696");
+    await userEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+    await waitFor(() => expect(server.called("PUT", /prowlarr$/).length).toBe(1));
+
+    void router.navigate({ to: "/server/setup", search: { step: "qbittorrent" } });
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Leave and discard" }));
+    await screen.findByRole("heading", { name: "qBittorrent", level: 2 });
+    await router.navigate({ to: "/server/setup", search: { step: "prowlarr" } });
+    await screen.findByRole("heading", { name: "Prowlarr", level: 2 });
+
+    saved = true;
+    heldSave.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: qbittorrent() } });
+    await waitFor(() => expect(server.called("GET", /step=prowlarr/).length).toBe(2));
+    await waitFor(() => expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(true));
+    expect((screen.getByRole("button", { name: "Skip setup" }) as HTMLButtonElement).disabled).toBe(true);
+
+    heldReread.resolve({ body: state("prowlarr", [card("prowlarr", [field("url", { label: "Prowlarr address", input: "url", value: "http://new:9696" })])]) });
+    await waitFor(() => expect((screen.getByLabelText("Prowlarr address") as HTMLInputElement).value).toBe("http://new:9696"));
+    expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(false);
+    expect(server.called("PUT", /prowlarr$/).length).toBe(1);
   });
 });

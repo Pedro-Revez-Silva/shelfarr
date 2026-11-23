@@ -1,4 +1,4 @@
-import { useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hashKey, useIsMutating, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServices } from "../../services";
 import { useIsAdministrator, useServerKeys } from "../queries";
 import * as setupApi from "./api";
@@ -24,9 +24,7 @@ export function useSetupState(step: string | undefined) {
   });
 }
 
-type Written = { step: SetupStepId | null; next: SetupState | null };
-
-function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, written: (input: Input, answer: Answer) => Written) {
+function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, answered: (answer: Answer) => SetupState | null) {
   const { guard } = useServices();
   const keys = useSetupKeys();
   const serverKeys = useServerKeys();
@@ -34,14 +32,14 @@ function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, 
   return useMutation({
     mutationKey: SETUP_WRITE,
     mutationFn: write,
-    onSuccess: async (answer, input) => {
+    onSuccess: async (answer) => {
       if (!guard.isActive()) return;
-      const { step, next } = written(input, answer);
+      const next = answered(answer);
+      const published = next ? hashKey(keys.step(next.step)) : null;
       await client.cancelQueries({ queryKey: keys.root });
       await client.invalidateQueries({ queryKey: keys.root, refetchType: "none" });
       if (next) client.setQueryData(keys.step(next.step), next);
-      const current = new Set([step, next?.step]);
-      void client.refetchQueries({ queryKey: keys.root, type: "active", predicate: (query) => !current.has((query.state.data as SetupState | undefined)?.step ?? null) });
+      void client.refetchQueries({ queryKey: keys.root, type: "active", predicate: (query) => query.queryHash !== published });
       for (const queryKey of [serverKeys.settings, serverKeys.library, serverKeys.overview]) void client.invalidateQueries({ queryKey });
     },
   });
@@ -51,7 +49,7 @@ export function useSaveSetupStep(step: SetupStepId) {
   const { api } = useServices();
   return useSetupWrite(
     (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values),
-    (_values, answer) => ({ step, next: answer.kind === "saved" ? answer.saved.setup : null }),
+    (answer) => (answer.kind === "saved" ? answer.saved.setup : null),
   );
 }
 
@@ -59,7 +57,7 @@ export function useSkipSetup() {
   const { api } = useServices();
   return useSetupWrite(
     ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit),
-    ({ step }, answer) => ({ step, next: answer.setup }),
+    (answer) => answer.setup,
   );
 }
 
@@ -67,7 +65,7 @@ export function useRestartSetup() {
   const { api } = useServices();
   return useSetupWrite(
     () => setupApi.restartSetup(api),
-    (_input, answer) => ({ step: null, next: answer.setup }),
+    (answer) => answer.setup,
   );
 }
 

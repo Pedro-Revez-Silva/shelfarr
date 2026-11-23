@@ -62,6 +62,7 @@ function SetupView() {
         state={setup.data}
         revision={revision}
         moveFocus={shown.current}
+        rereading={setup.isFetching && setup.isStale}
         said={said?.step === setup.data.step && said.revision === revision ? said : null}
         onSaid={setSaid}
         onReplaced={() => setRevision((current) => current + 1)}
@@ -107,13 +108,13 @@ function submittedValue(draft: DraftValue): string | boolean {
 }
 
 type CardError = { text: string; serial: number };
-type StepProps = { state: SetupState; revision: number; moveFocus: boolean; said: Said | null; onSaid: (said: Said | null) => void; onReplaced: () => void };
+type StepProps = { state: SetupState; revision: number; moveFocus: boolean; rereading: boolean; said: Said | null; onSaid: (said: Said | null) => void; onReplaced: () => void };
 
-function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: StepProps) {
+function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onReplaced }: StepProps) {
   const navigate = useNavigate();
   const save = useSaveSetupStep(state.step);
   const skip = useSkipSetup();
-  const writing = useSetupWriting();
+  const writing = useSetupWriting() || rereading;
   const [edits, setEdits] = useState<Record<string, Drafts>>({});
   const [errors, setErrors] = useState<Record<string, CardError>>({});
   const [skipError, setSkipError] = useState<string | null>(null);
