@@ -366,6 +366,18 @@ class WebPreview::UploadsTest < ActionDispatch::IntegrationTest
     assert_includes response.parsed_body.fetch("books").map { |book| book.fetch("id") }, other.id.to_s
   end
 
+  test "manual match choices keep long titles whole so different books stay distinct" do
+    upload = failed_manual_upload
+    shared = "Volume " + ("x" * 220)
+    first = Book.create!(title: "#{shared} one", author: "Same Author", book_type: :audiobook)
+    second = Book.create!(title: "#{shared} two", author: "Same Author", book_type: :audiobook)
+
+    admin_write(:get, web_preview_api_admin_upload_matches_path(upload, q: "Volume"))
+
+    titles = response.parsed_body.fetch("books").to_h { |book| [ book.fetch("id"), book.fetch("title") ] }
+    assert_equal({ first.id.to_s => first.title, second.id.to_s => second.title }, titles)
+  end
+
   test "manual matching creates a corrected book and reports invalid choices" do
     upload = failed_manual_upload
 

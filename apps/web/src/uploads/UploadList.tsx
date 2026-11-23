@@ -91,7 +91,7 @@ function UploadRow({ upload, admin, level, say, onRemoved }: { upload: Upload; a
   const by = upload.uploaded_by_you ? "by you" : admin && upload.uploaded_by ? `by ${upload.uploaded_by}` : null;
   return (
     <article className="upload-row" aria-labelledby={titleId}>
-      <Heading level={level} id={titleId} className="upload-name">
+      <Heading level={level} id={titleId} className="upload-name" focusable>
         {upload.filename}
       </Heading>
       <ul className="request-badges" aria-label="Upload state">
@@ -151,12 +151,12 @@ function UploadRow({ upload, admin, level, say, onRemoved }: { upload: Upload; a
       ) : null}
       {upload.failure ? <p className="upload-failure">{upload.failure}</p> : null}
       {upload.reserved_file ? <p className="request-note">This upload has a reserved library file. Use Retry to reconcile it before changing the matched book.</p> : null}
-      {admin && upload.actions ? <UploadActions upload={upload} say={say} onRemoved={onRemoved} /> : null}
+      {admin && upload.actions ? <UploadActions upload={upload} say={say} onRemoved={onRemoved} onChanged={() => document.getElementById(titleId)?.focus()} /> : null}
     </article>
   );
 }
 
-function UploadActions({ upload, say, onRemoved }: { upload: Upload; say: Say; onRemoved: () => void }) {
+function UploadActions({ upload, say, onRemoved, onChanged }: { upload: Upload; say: Say; onRemoved: () => void; onChanged: () => void }) {
   const command = useUploadCommand();
   const [matching, setMatching] = useState(false);
   const panelId = useId();
@@ -167,6 +167,7 @@ function UploadActions({ upload, say, onRemoved }: { upload: Upload; say: Say; o
       onSuccess: (outcome) => {
         say(outcome.tone, outcome.message);
         if (next.kind === "remove" && outcome.tone === "success") onRemoved();
+        else onChanged();
       },
       onError: (error) => say("error", actionFailure(error, fallback)),
     });
@@ -196,14 +197,14 @@ function UploadActions({ upload, say, onRemoved }: { upload: Upload; say: Say; o
       </div>
       {actions.match && matching ? (
         <div id={panelId}>
-          <MatchPanel upload={upload} say={say} />
+          <MatchPanel upload={upload} say={say} onMatched={onChanged} />
         </div>
       ) : null}
     </>
   );
 }
 
-function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
+function MatchPanel({ upload, say, onMatched }: { upload: Upload; say: Say; onMatched: () => void }) {
   const [query, setQuery] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [draft, setDraft] = useState<string | null>(null);
@@ -218,7 +219,10 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
   const choose = (next: UploadCommand) => {
     setError(null);
     command.mutate(next, {
-      onSuccess: (outcome) => say(outcome.tone, outcome.message),
+      onSuccess: (outcome) => {
+        say(outcome.tone, outcome.message);
+        onMatched();
+      },
       onError: (failure) => setError(actionFailure(failure, "The match could not be saved. Nothing was changed.")),
     });
   };
@@ -258,7 +262,7 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
           <p className="field-hint">Only books of the same format with no library file or download in progress are shown.</p>
         </form>
       </search>
-      {matches.isPending ? <Loading label="Looking for books…" /> : null}
+      {matches.isPending || (matches.isFetching && matches.isPlaceholderData) ? <Loading label="Looking for books…" /> : null}
       {matches.isError ? (
         <p className="form-error" role="alert">
           {failureKind(matches.error) === "conflict" ? actionFailure(matches.error, "This upload can't be matched now.") : "The books could not be loaded. Try the search again."}
@@ -274,7 +278,7 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
                   {book.title}
                   {book.author ? ` by ${book.author}` : ""}
                 </span>
-                <button type="button" className="button button--subtle" disabled={command.isPending} onClick={() => choose({ kind: "match_book", id: upload.id, bookId: book.id })}>
+                <button type="button" className="button button--subtle" disabled={command.isPending || matches.isPlaceholderData} onClick={() => choose({ kind: "match_book", id: upload.id, bookId: book.id })}>
                   Select and retry<span className="sr-only"> with {book.title}</span>
                 </button>
               </li>

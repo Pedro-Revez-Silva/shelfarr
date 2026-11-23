@@ -67,7 +67,6 @@ export function useUploadKeys() {
   const { keys } = useServices();
   const root = [...keys.root, "uploads"] as const;
   return {
-    root,
     lists: [...root, "list"] as const,
     list: (page: number) => [...root, "list", page] as const,
     request: (id: string) => [...root, "request", id] as const,
@@ -100,7 +99,8 @@ export function useUploadRequest(requestId: string | undefined) {
     queryFn: ({ signal }) => uploadRequest(api, requestId ?? "", signal),
     enabled: requestId !== undefined,
     retry: false,
-    staleTime: 0,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
   });
 }
 

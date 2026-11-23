@@ -60,25 +60,31 @@ function RailsUploads() {
 }
 
 function AddBooks({ requestId, formats, maxBytes }: { requestId: string | undefined; formats: UploadFormats; maxBytes: number }) {
-  const context = useUploadRequest(requestId);
+  const valid = requestId === undefined || REQUEST_ID.test(requestId);
+  const context = useUploadRequest(valid ? requestId : undefined);
   if (requestId === undefined) return <UploadForm request={null} formats={formats} maxBytes={maxBytes} />;
+  if (!valid) return <RequestNotFound />;
   if (context.isPending) return <Loading label="Loading the request…" />;
   if (context.isError) {
     const kind = failureKind(context.error);
-    if (kind === "not_found") {
-      return (
-        <div className="upload-context upload-context--closed" role="alert">
-          <p>That request can't be found, or it belongs to another account.</p>
-          <Link to="/library/uploads" search={{}} className="button button--subtle">
-            Upload a book instead
-          </Link>
-        </div>
-      );
-    }
+    if (kind === "not_found") return <RequestNotFound />;
     if (kind === "conflict") return <p className="request-note upload-disabled">{actionFailure(context.error, "Uploads are not currently enabled.")}</p>;
     return <ErrorPanel error={context.error} onRetry={() => void context.refetch()} />;
   }
   return <UploadForm request={context.data} formats={formats} maxBytes={maxBytes} />;
+}
+
+const REQUEST_ID = /^[1-9]\d{0,18}$/;
+
+function RequestNotFound() {
+  return (
+    <div className="upload-context upload-context--closed" role="alert">
+      <p>That request can't be found, or it belongs to another account.</p>
+      <Link to="/library/uploads" search={{}} className="button button--subtle">
+        Upload a book instead
+      </Link>
+    </div>
+  );
 }
 
 function RequestContext({ request }: { request: UploadRequest }) {
@@ -115,6 +121,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
   const [skipped, setSkipped] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const scan = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const problemRef = useRef<HTMLParagraphElement>(null);
@@ -134,6 +141,8 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
   }
 
   const choose = (next: Selection) => {
+    scan.current += 1;
+    setScanning(false);
     setResult(null);
     setSkipped(null);
     setProblem(null);
@@ -166,11 +175,10 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
     setSelection(null);
     setNote(null);
     setScanning(true);
-    try {
-      choose(await droppedSelection(event.dataTransfer));
-    } finally {
-      setScanning(false);
-    }
+    scan.current += 1;
+    const current = scan.current;
+    const dropped = await droppedSelection(event.dataTransfer);
+    if (scan.current === current) choose(dropped);
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -188,11 +196,10 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
     const submission: UploadSubmission = { files: fitting, folder: selection.folder, requestId: request?.id ?? null };
     setProblem(null);
     setResult(null);
-    setSkipped(null);
+    setSkipped(oversized.length > 0 ? `${oversizedText(oversized, maxBytes)} and ${oversized.length === 1 ? "was" : "were"} not sent.` : null);
     send.mutate(submission, {
       onSuccess: (answer) => {
         setResult(answer);
-        setSkipped(oversized.length > 0 ? `${oversizedText(oversized, maxBytes)} and ${oversized.length === 1 ? "was" : "were"} not sent.` : null);
         setSelection(null);
         clearInputs();
       },
@@ -227,7 +234,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
                 multiple={bulk}
                 accept={acceptList(formats)}
                 aria-describedby={ids.hint}
-                disabled={send.isPending}
+                disabled={send.isPending || scanning}
                 onChange={(event) => {
                   if (folderInput.current) folderInput.current.value = "";
                   choose({ files: Array.from(event.target.files ?? []), folder: false });
@@ -244,7 +251,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
                   className="sr-only"
                   multiple
                   aria-describedby={ids.hint}
-                  disabled={send.isPending}
+                  disabled={send.isPending || scanning}
                   {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
                   onChange={(event) => {
                     if (fileInput.current) fileInput.current.value = "";
@@ -311,7 +318,7 @@ function Outcome({ result, skipped }: { result: UploadCreated | null; skipped: s
         </p>
       ) : null}
       {result?.alert ? <p className="form-error">{result.alert}</p> : null}
-      {result && skipped ? <p className="form-error">{skipped}</p> : null}
+      {skipped ? <p className="form-error">{skipped}</p> : null}
     </div>
   );
 }

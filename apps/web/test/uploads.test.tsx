@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { focusManager } from "@tanstack/react-query";
 import type { ServerSettings } from "../src/server/contract";
 import { uploadsSchema, type Upload, type Uploads } from "../src/uploads/contract";
 import { formatBytes, selectionText, supported } from "../src/uploads/files";
-import { ACCOUNT, boot, FakeServer, renderApp, session, standardServer } from "./helpers";
+import { ACCOUNT, boot, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
 
 afterEach(cleanup);
 
@@ -184,6 +185,16 @@ describe("Library ▸ Uploads for a member", () => {
     expect(server.called("POST", /uploads$/)).toHaveLength(0);
   });
 
+  test("keeps naming a file left out for its size when the server refuses the rest", async () => {
+    const server = memberServer(() => listing([], { max_bytes: 10 })).on("POST", /\/api\/v1\/uploads$/, () => ({ status: 422, body: { error: "upload_rejected", message: "1 file failed to upload: Small.txt: Unsupported file type" } }));
+    renderApp({ server, url: "/sub/preview/library/uploads" });
+    const user = userEvent.setup({ applyAccept: false });
+    await user.upload(await screen.findByLabelText("Choose files"), [file("Small.txt", "text/plain", 8), file("Big.epub", "application/epub+zip", 12)]);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    expect(await screen.findByText("1 file failed to upload: Small.txt: Unsupported file type")).toBeTruthy();
+    expect(screen.getByText("Big.epub is larger than Shelfarr's 10 bytes limit and was not sent.")).toBeTruthy();
+  });
+
   test("sends the files within the size limit and names the ones left out, as classic queues the rest", async () => {
     const server = memberServer(() => listing([], { max_bytes: 10 })).on("POST", /\/api\/v1\/uploads$/, () => ({ status: 201, body: { account: ACCOUNT, notice: "1 file uploaded successfully. Processing started.", uploads: ["5"] } }));
     renderApp({ server, url: "/sub/preview/library/uploads" });
@@ -217,6 +228,8 @@ describe("Library ▸ Uploads for a member", () => {
     fireEvent.drop(document.querySelector(".upload-drop")!, { dataTransfer: { items: [{ webkitGetAsEntry: () => folder }], files: [] } });
     const button = await screen.findByRole("button", { name: "Reading the folder…" });
     expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Choose files") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Choose a folder") as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByText("Selected: Previous.epub")).toBeNull();
     fireEvent.submit(button.closest("form")!);
     expect(server.called("POST", /uploads$/)).toHaveLength(0);
@@ -261,6 +274,10 @@ describe("uploading for a request", () => {
     expect(form.has("files[]")).toBe(false);
     expect(form.has("upload_mode")).toBe(false);
     await waitFor(() => expect(server.called("GET", /\/api\/v1\/uploads$/).length).toBeGreaterThan(1));
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/uploads$/).length).toBeGreaterThan(2));
+    focusManager.setFocused(undefined);
     expect(screen.getByText(/File uploaded successfully/)).toBeTruthy();
     expect(server.called("GET", /uploads\/requests\/7$/)).toHaveLength(1);
   });
@@ -270,6 +287,14 @@ describe("uploading for a request", () => {
     renderApp({ server, url: "/sub/preview/library/uploads?request=7" });
     expect(await screen.findByText("This request is already completed.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
+  });
+
+  test("a malformed request address reads as not found instead of opening the standalone form", async () => {
+    const server = memberServer(() => listing([]));
+    renderApp({ server, url: "/sub/preview/library/uploads?request=abc" });
+    expect(await screen.findByText("That request can't be found, or it belongs to another account.")).toBeTruthy();
+    expect(screen.queryByLabelText("Choose files")).toBeNull();
+    expect(server.called("GET", /uploads\/requests/)).toHaveLength(0);
   });
 
   test("a request that is not yours reads as not found", async () => {
@@ -304,6 +329,7 @@ describe("upload administration", () => {
     await user.click(within(screen.getByRole("article", { name: "unrecognized.m4b" })).getByRole("button", { name: "Retry unrecognized.m4b" }));
     expect(await screen.findByText("Upload queued for retry.")).toBeTruthy();
     await waitFor(() => expect(screen.getByText("Waiting to process")).toBeTruthy());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "unrecognized.m4b" }));
     expect(screen.queryByRole("button", { name: "Retry unrecognized.m4b" })).toBeNull();
   });
 
@@ -371,6 +397,26 @@ describe("upload administration", () => {
     expect(server.called("POST", /match$/)[1]?.body).toEqual({ book_id: "21" });
     await waitFor(() => expect(screen.queryByRole("region", { name: "Correct the match and retry" })).toBeNull());
     expect(screen.getByText("Matched by hand")).toBeTruthy();
+  });
+
+  test("earlier search results cannot be chosen while a new search is loading", async () => {
+    const slow = deferred<{ body: unknown }>();
+    const first = { account: ACCOUNT, book_type: "audiobook" as const, query: "Unrecognized", page: 1, more: false, books: [{ id: "21", title: "Unrecognized Saga", author: null }], manual_book: { title: "Unrecognized", author: "" } };
+    const server = adminServer(() => listing([failedUpload()])).on("GET", /\/admin\/uploads\/9\/matches/, (request) => (request.path.includes("q=Other") ? slow.promise : { body: first }));
+    renderApp({ server, url: "/sub/preview/library/uploads" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Correct the match for unrecognized.m4b" }));
+    const panel = (await screen.findByRole("region", { name: "Correct the match and retry" })) as HTMLElement;
+    await within(panel).findByText("Unrecognized Saga");
+    const search = within(panel).getByLabelText("Search local books by title or author");
+    await user.clear(search);
+    await user.type(search, "Other");
+    await user.click(within(panel).getByRole("button", { name: "Search books" }));
+    expect(await within(panel).findByText("Looking for books…")).toBeTruthy();
+    expect((within(panel).getByRole("button", { name: "Select and retry with Unrecognized Saga" }) as HTMLButtonElement).disabled).toBe(true);
+    slow.resolve({ body: { ...first, query: "Other", books: [] } });
+    expect(await within(panel).findByText("No available books found. Try another search or create a book below.")).toBeTruthy();
+    expect(server.called("POST", /match$/)).toHaveLength(0);
   });
 
   test("losing the administrator role hides the actions after the server refuses", async () => {

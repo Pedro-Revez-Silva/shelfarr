@@ -72,7 +72,6 @@ export const uploadMatchesSchema = z.object({
 export type UploadMatches = z.infer<typeof uploadMatchesSchema>;
 
 export const uploadsSearchSchema = z.object({
-  request: identifier.optional().catch(undefined),
+  request: z.string().max(64).optional().catch(undefined),
   page: z.string().regex(/^[1-9]\d{0,5}$/).optional().catch(undefined),
 });
-export type UploadsSearch = z.infer<typeof uploadsSearchSchema>;

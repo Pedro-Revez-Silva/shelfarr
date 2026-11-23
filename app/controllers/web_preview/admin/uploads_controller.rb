@@ -2,7 +2,6 @@
 
 class WebPreview::Admin::UploadsController < WebPreview::Admin::BaseController
   IDENTIFIER = /\A[1-9]\d{0,18}\z/
-  TEXT_LIMIT = 200
 
   before_action :set_upload
 
@@ -24,7 +23,7 @@ class WebPreview::Admin::UploadsController < WebPreview::Admin::BaseController
       query: choices.query,
       page: choices.page,
       more: choices.books.size > UploadAdministration::MATCHES_PER_PAGE,
-      books: choices.books.first(UploadAdministration::MATCHES_PER_PAGE).map { |book| { id: book.id.to_s, title: book.title.to_s.first(TEXT_LIMIT), author: book.author.presence&.first(TEXT_LIMIT) } },
+      books: choices.books.first(UploadAdministration::MATCHES_PER_PAGE).map { |book| { id: book.id.to_s, title: book.title.to_s, author: book.author.presence } },
       manual_book: { title: choices.manual_book.title.to_s, author: choices.manual_book.author.to_s }
     }
   end
