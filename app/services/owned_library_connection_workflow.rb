@@ -242,11 +242,18 @@ class OwnedLibraryConnectionWorkflow
   end
 
   def self.same_marketplace?(login_url, response_url)
-    roots = marketplace_roots(URI.parse(login_url.to_s).host)
-    host = URI.parse(response_url.to_s.strip).host.to_s.downcase
-    roots.any? { |root| host == root || host.end_with?(".#{root}") }
-  rescue URI::InvalidURIError
-    false
+    login = parse_address(login_url.to_s)
+    response = parse_address(response_url.to_s.strip)
+    return false if RemoteResult.failed?(login) || RemoteResult.failed?(response)
+
+    host = response.host.to_s.downcase
+    marketplace_roots(login.host).any? { |root| host == root || host.end_with?(".#{root}") }
+  end
+
+  def self.parse_address(value)
+    URI.parse(value)
+  rescue URI::InvalidURIError => error
+    RemoteResult::Failed.new(error)
   end
 
   def self.marketplace_roots(login_host)
@@ -538,10 +545,16 @@ class OwnedLibraryConnectionWorkflow
   end
 
   def audiobook_storage_ready?
-    OwnedMediaImportFileService.verify_filesystem_capabilities!
-    true
-  rescue OwnedMediaImportFileService::Error => e
-    connection.errors.add(:base, "Audiobook storage is not ready: #{e.message}")
+    probe = probe_audiobook_storage
+    return true unless RemoteResult.failed?(probe)
+
+    connection.errors.add(:base, "Audiobook storage is not ready: #{probe.error.message}")
     false
+  end
+
+  def probe_audiobook_storage
+    OwnedMediaImportFileService.verify_filesystem_capabilities!
+  rescue OwnedMediaImportFileService::Error => e
+    RemoteResult::Failed.new(e)
   end
 end

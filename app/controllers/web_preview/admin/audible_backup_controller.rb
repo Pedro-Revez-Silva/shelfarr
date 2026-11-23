@@ -31,18 +31,20 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     raise Malformed, "Send the filter as text" unless [ query, page ].all? { |value| value.nil? || value.is_a?(String) }
     raise Malformed, "Send the page as a positive number" unless page.blank? || page.match?(/\A[1-9]\d{0,8}\z/)
 
-    render json: { account: web_preview_account_id, **presenter.catalogue(workflow.catalogue(query: query, page: page)) }
+    generation = WebPreview::AudibleBackupJson.catalogue_generation(connection)
+    render json: { account: web_preview_account_id, **presenter.catalogue(workflow.catalogue(query: query, page: page), generation: generation) }
   end
 
   def update_connection
     status = workflow.save_connection(submitted_connection)
     return render_rejected if status.in?(%i[invalid storage_not_ready])
 
-    render json: answer(outcome: case status
+    outcome = case status
     when :busy then failure("Wait for the current Libation operation or Audible sign-in to finish before changing the connection.")
     when :pending_backups then failure("Finish queued Audible backups and resolve recoverable ones before changing the companion address or token.")
     else success("Audible backup connection saved.")
-    end)
+    end
+    render json: answer(outcome: outcome)
   end
 
   def test
@@ -176,8 +178,9 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
 
   def answer(auth_pending: false, **extra)
     revision = WebPreview::AudibleBackupJson.revision(connection)
+    generation = WebPreview::AudibleBackupJson.catalogue_generation(connection)
     summary = workflow.summary(auth_pending: auth_pending, quiet_during_backlog: true)
-    { account: web_preview_account_id, **presenter.state(summary, revision: revision), **extra }
+    { account: web_preview_account_id, **presenter.state(summary, revision: revision, catalogue_generation: generation), **extra }
   end
 
   def body

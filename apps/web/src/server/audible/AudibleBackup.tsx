@@ -8,7 +8,7 @@ import type { DraftValue } from "../draft";
 import { Said, type Said as SaidMessage } from "../extras";
 import { CardActions, SettingControl, SettingsCard, TestResult, useScope, type TestOutcome } from "../primitives";
 import { CardBody, commandFailureText, FormProblem, focusSoon, useRevalidateAccessWhenDenied, type DirtyReporter } from "../downloads/DownloadManagement";
-import { useAudible, useAudibleCommand, useCatalogue, useIdleRevision, type AudibleCommand, type CompanionValues } from "./api";
+import { useAudible, useAudibleCommand, useCatalogue, useCurrentCatalogue, useIdleRevision, type AudibleCommand, type CompanionValues } from "./api";
 import { audibleSearchSchema, type Audible, type AudibleAction, type AudibleRejection, type Catalogue, type CatalogueItem } from "./contract";
 import "./audible.css";
 
@@ -736,6 +736,7 @@ function CatalogueBody({ data, run, busy }: { data: Audible; run: Run; busy: boo
   const query = search.audible_q ?? "";
   const page = Number(search.audible_page ?? "1");
   const catalogue = useCatalogue(query, page, data.working);
+  const currency = useCurrentCatalogue(catalogue, data.catalogue_generation);
   const [text, setText] = useState(query);
   const [shownQuery, setShownQuery] = useState(query);
   if (shownQuery !== query) {
@@ -792,13 +793,27 @@ function CatalogueBody({ data, run, busy }: { data: Audible; run: Run; busy: boo
       ) : !catalogue.data ? (
         <Loading label="Loading the Audible catalogue…" />
       ) : (
-        <CatalogueList catalogue={catalogue.data} stale={catalogue.isPlaceholderData} run={run} busy={busy} onPage={(next) => go(query, next)} onShowAll={() => go("", 1)} />
+        <>
+          {currency.current ? null : currency.stuck ? (
+            <p className="refresh-problem" role="alert">
+              <span aria-hidden="true">⚠ </span>The catalogue changed and has not been read again. These titles may be out of date, so they cannot be backed up.{" "}
+              <button type="button" className="button button--subtle" onClick={currency.retry}>
+                Try again
+              </button>
+            </p>
+          ) : (
+            <p className="field-hint" role="status">
+              The catalogue changed. Reading it again…
+            </p>
+          )}
+          <CatalogueList catalogue={catalogue.data} stale={catalogue.isPlaceholderData} current={currency.current} run={run} busy={busy} onPage={(next) => go(query, next)} onShowAll={() => go("", 1)} />
+        </>
       )}
     </Section>
   );
 }
 
-function CatalogueList({ catalogue, stale, run, busy, onPage, onShowAll }: { catalogue: Catalogue; stale: boolean; run: Run; busy: boolean; onPage: (page: number) => void; onShowAll: () => void }) {
+function CatalogueList({ catalogue, stale, current, run, busy, onPage, onShowAll }: { catalogue: Catalogue; stale: boolean; current: boolean; run: Run; busy: boolean; onPage: (page: number) => void; onShowAll: () => void }) {
   if (catalogue.items.length === 0) {
     return (
       <p className="field-hint" role="status">
@@ -836,7 +851,7 @@ function CatalogueList({ catalogue, stale, run, busy, onPage, onShowAll }: { cat
           </thead>
           <tbody>
             {catalogue.items.map((item) => (
-              <CatalogueRow key={item.id} item={item} run={run} busy={busy} />
+              <CatalogueRow key={item.id} item={item} run={run} busy={busy || !current} />
             ))}
           </tbody>
         </table>

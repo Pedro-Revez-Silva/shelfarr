@@ -1,5 +1,5 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../../api/client";
 import { failureKind } from "../../api/errors";
 import { useServices } from "../../services";
@@ -146,6 +146,33 @@ export function useCatalogue(query: string, page: number, working: boolean) {
   });
 }
 
+export function useCurrentCatalogue(catalogue: UseQueryResult<Catalogue>, generation: string) {
+  const client = useQueryClient();
+  const keys = useAudibleKeys();
+  const shown = catalogue.data?.generation;
+  const outdated = shown !== undefined && shown !== generation;
+  const pair = `${shown ?? ""}|${generation}`;
+  const requested = useRef<string | null>(null);
+  const [settled, setSettled] = useState<string | null>(null);
+  const { isError, isFetching, refetch } = catalogue;
+  const readBoth = (target: string) => {
+    requested.current = target;
+    void client.invalidateQueries({ queryKey: keys.state });
+    void refetch({ cancelRefetch: false }).finally(() => setSettled(target));
+  };
+  useEffect(() => {
+    if (outdated && !isError && requested.current !== pair) readBoth(pair);
+  });
+  return {
+    current: !outdated,
+    stuck: outdated && !isFetching && (isError || settled === pair),
+    retry: () => {
+      setSettled(null);
+      readBoth(pair);
+    },
+  };
+}
+
 export function useAudibleCommand() {
   const { api, guard, keys: appKeys } = useServices();
   const serverKeys = useServerKeys();
@@ -160,7 +187,7 @@ export function useAudibleCommand() {
       const state = audibleSchema.parse(answer.action);
       client.setQueryData<Audible>(keys.state, state);
       client.setQueryData<string>(keys.revision, state.revision);
-      await readAgain(client, keys.catalogue);
+      void readAgain(client, keys.catalogue);
     },
     onError: (error) => {
       if (!guard.isActive()) return;

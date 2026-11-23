@@ -54,6 +54,7 @@ function state(overrides: Partial<Audible> = {}): Audible {
     ],
     working: false,
     revision: "0000000000000000",
+    catalogue_generation: "1111111111111111",
     ...overrides,
   };
 }
@@ -70,6 +71,7 @@ function catalogue(overrides: Partial<Catalogue> = {}): Catalogue {
     pages: 2,
     total: 3,
     synced: true,
+    generation: "1111111111111111",
     items: [
       item(),
       item({ id: "6", title: "Dune Local", state: "possible_match", action: { label: "Back up separately", separate_edition: true, available: true } }),
@@ -558,5 +560,78 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     const list = section("audible-catalogue");
     expect(await within(list).findByText("No Audible catalogue has been synced yet.", { exact: false })).toBeTruthy();
     expect(within(list).queryByRole("button", { name: "Back up Dune" })).toBeNull();
+  });
+  test("titles from before a token replacement cannot be backed up while the catalogue cannot be read again", async () => {
+    const user = userEvent.setup();
+    let failing = false;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => (failing ? { status: 500, body: { error: "server_error" } } : { body: catalogue({ generation: current.catalogue_generation }) }))
+      .on("PUT", /\/admin\/audible\/companion$/, () => {
+        failing = true;
+        return answer(state({ revision: "4444444444444444", catalogue_generation: "5555555555555555" }), "Audible backup connection saved.");
+      });
+    await openLibrary(server);
+    const list = section("audible-catalogue");
+    const backUp = () => within(list).getByRole("button", { name: "Back up Dune" }) as HTMLButtonElement;
+    await within(list).findByRole("button", { name: "Back up Dune" });
+    expect(backUp().disabled).toBe(false);
+    const connection = section("audible-connection");
+    await user.click(within(connection).getByRole("button", { name: "Replace" }));
+    await user.type(connection.querySelector<HTMLInputElement>('input[name="bridge_token"]')!, "b".repeat(40));
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
+    expect(backUp().disabled).toBe(true);
+    expect(await within(list).findByText(/has not been read again/, {}, { timeout: 8000 })).toBeTruthy();
+    expect(backUp().disabled).toBe(true);
+    failing = false;
+    await user.click(within(list).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(backUp().disabled).toBe(false));
+    expect(within(list).queryByText(/has not been read again/)).toBeNull();
+  }, 20000);
+
+  test("cached titles for a filter seen before a save stay unavailable until they are read again", async () => {
+    const user = userEvent.setup();
+    const later = deferred<{ body: Catalogue }>();
+    let saved = false;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, (request) => (saved && request.path.includes("q=Dune") ? later.promise : { body: catalogue({ generation: current.catalogue_generation }) }))
+      .on("PUT", /\/admin\/audible\/companion$/, () => {
+        saved = true;
+        return answer(state({ revision: "4444444444444444", catalogue_generation: "5555555555555555" }), "Audible backup connection saved.");
+      });
+    await openLibrary(server, "?audible_q=Dune");
+    const list = section("audible-catalogue");
+    const backUp = () => within(list).getByRole("button", { name: "Back up Dune" }) as HTMLButtonElement;
+    await within(list).findByRole("button", { name: "Back up Dune" });
+    await user.click(within(list).getByRole("button", { name: "Clear filter" }));
+    await waitFor(() => expect(server.called("GET", /audible\/catalogue$/).length).toBeGreaterThan(0));
+    const connection = section("audible-connection");
+    await user.click(within(connection).getByRole("button", { name: "Replace" }));
+    await user.type(connection.querySelector<HTMLInputElement>('input[name="bridge_token"]')!, "b".repeat(40));
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
+    await waitFor(() => expect(backUp().disabled).toBe(false));
+    await user.type(within(list).getByLabelText("Title or author"), "Dune");
+    await user.click(within(list).getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(server.called("GET", /audible\/catalogue\?q=Dune/).length).toBeGreaterThan(1));
+    expect(within(list).getByText("The catalogue changed. Reading it again…")).toBeTruthy();
+    expect(backUp().disabled).toBe(true);
+    later.resolve({ body: catalogue({ generation: "5555555555555555" }) });
+    await waitFor(() => expect(backUp().disabled).toBe(false));
+  });
+
+  test("a catalogue newer than the card's state reads the state again once instead of repeating", async () => {
+    let reads = 0;
+    const server = adminServer(state(), () => {
+      reads += 1;
+      return catalogue({ generation: "9999999999999999" });
+    });
+    await openLibrary(server);
+    const list = section("audible-catalogue");
+    expect(await within(list).findByText(/has not been read again/, {}, { timeout: 4000 })).toBeTruthy();
+    expect((within(list).getByRole("button", { name: "Back up Dune" }) as HTMLButtonElement).disabled).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(reads).toBe(2);
+    expect(server.called("GET", /admin\/audible$/)).toHaveLength(2);
   });
 });

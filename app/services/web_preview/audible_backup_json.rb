@@ -29,6 +29,15 @@ module WebPreview
       Digest::SHA256.hexdigest(marks.join("|")).first(16)
     end
 
+    def self.catalogue_generation(connection)
+      return "unsaved" unless connection.persisted?
+
+      titles = connection.owned_library_items.active
+      marks = [ connection.last_synced_at, titles.count, titles.maximum(:updated_at) ]
+        .map { |mark| mark.respond_to?(:utc) ? mark.utc.iso8601(6) : mark.to_s }
+      Digest::SHA256.hexdigest(marks.join("|")).first(16)
+    end
+
     def self.sign_in_host?(host)
       host = host.to_s.downcase
       LibationCompanionClient::AUTH_HOST_SUFFIXES.any? { |suffix| host == suffix || host.end_with?(".#{suffix}") }
@@ -37,10 +46,16 @@ module WebPreview
     def self.safe_sign_in_link(value)
       return nil unless value.is_a?(String) && value.bytesize <= SIGN_IN_ADDRESS_BYTES
 
-      uri = URI.parse(value)
+      uri = parse_address(value)
+      return nil if RemoteResult.failed?(uri)
+
       uri.to_s if uri.is_a?(URI::HTTPS) && sign_in_host?(uri.host) && uri.userinfo.nil?
-    rescue URI::InvalidURIError
-      nil
+    end
+
+    def self.parse_address(value)
+      URI.parse(value)
+    rescue URI::InvalidURIError => error
+      RemoteResult::Failed.new(error)
     end
 
     def initialize(workflow, user:)
@@ -49,7 +64,7 @@ module WebPreview
       @user = user
     end
 
-    def state(summary, revision:)
+    def state(summary, revision:, catalogue_generation:)
       {
         connection: connection_json(summary),
         sign_in: sign_in_json(summary),
@@ -60,11 +75,12 @@ module WebPreview
         automation: automation_json,
         marketplaces: LibationCompanionClient::AUDIBLE_MARKETPLACES.map { |value| { value: value, label: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(value) } },
         working: working?(summary),
-        revision: revision
+        revision: revision,
+        catalogue_generation: catalogue_generation
       }
     end
 
-    def catalogue(listing)
+    def catalogue(listing, generation:)
       purchased = listing.items.select { |item| item.purchased? && !item.book&.acquired? }
       resolutions = purchased.any? ? OwnedLibraryBookMatcher.new.resolve_many(purchased) : {}
       {
@@ -73,6 +89,7 @@ module WebPreview
         pages: listing.total_pages,
         total: listing.total_items,
         synced: @connection.last_synced_at.present?,
+        generation: generation,
         items: listing.items.map { |item| item_json(item, resolutions[item.id]) }
       }
     end
