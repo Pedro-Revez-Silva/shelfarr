@@ -460,7 +460,7 @@ describe("Setup in the Rails preview", () => {
     expect(within(cardSection("Change the Audiobookshelf connection")).getByRole("alert").textContent).toBe("⚠ Could not connect to Audiobookshelf.");
   });
 
-  test("a step left while its save was pending is read again when the save lands", async () => {
+  test("a step left while its save was pending shows the state the save answered with", async () => {
     const held = deferred<{ body: unknown }>();
     const server = setupServer({ qbittorrent: qbittorrent() }).on("PUT", /\/admin\/setup\/steps\/prowlarr$/, () => held.promise);
     renderApp({ server, url: "/sub/preview/server/setup" });
@@ -470,7 +470,66 @@ describe("Setup in the Rails preview", () => {
     await screen.findByRole("heading", { name: "qBittorrent", level: 2 });
     expect(server.called("GET", /step=qbittorrent/).length).toBe(1);
 
-    held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: qbittorrent() } });
-    await waitFor(() => expect(server.called("GET", /step=qbittorrent/).length).toBe(2));
+    const answered = state("qbittorrent", [card("qbittorrent", [field("url", { label: "qBittorrent address", input: "url", value: "http://answered:8080" })])]);
+    held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: answered } });
+    await waitFor(() => expect((screen.getByLabelText("qBittorrent address") as HTMLInputElement).value).toBe("http://answered:8080"));
+  });
+
+  test("an older read that lands after a successful connection does not hide the libraries", async () => {
+    const disconnected = state("audiobookshelf", [card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Audiobookshelf" })], {
+      library_error: "Connection refused",
+    });
+    const connected = state("audiobookshelf", [
+      card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value: "lib-audio", placeholder: "Not now" })], {
+        phase: "libraries",
+        title: "Libraries",
+        submit: "Save and continue",
+        libraries: [{ id: "lib-audio", name: "Audiobooks", media_type: "book" }],
+      }),
+      card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true }),
+    ]);
+    const heldRead = deferred<{ body: unknown }>();
+    let reads = 0;
+    const server = setupServer()
+      .on("GET", /\/admin\/setup\?step=audiobookshelf/, () => (++reads === 2 ? heldRead.promise : { body: disconnected }))
+      .on("PUT", /\/admin\/setup\/steps\/audiobookshelf$/, () => ({
+        body: { account: ACCOUNT, outcome: { tone: "success", message: "Audiobookshelf connected. Choose the libraries Shelfarr should scan." }, alert: null, completed: false, setup: connected },
+      }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+    await screen.findByText(/did not list libraries/);
+
+    void services.queryClient.invalidateQueries();
+    await waitFor(() => expect(reads).toBe(2));
+    await userEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+    expect(await screen.findByLabelText("Audiobook library")).toBeTruthy();
+
+    heldRead.resolve({ body: disconnected });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByLabelText("Audiobook library")).toBeTruthy();
+    expect(screen.queryByText(/did not list libraries/)).toBeNull();
+  });
+
+  test("a connection saved after moving away still shows its libraries on return", async () => {
+    const connect = state("audiobookshelf", [card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Audiobookshelf" })]);
+    const connected = state("audiobookshelf", [
+      card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value: "", placeholder: "Not now" })], {
+        phase: "libraries",
+        title: "Libraries",
+        submit: "Save and continue",
+        libraries: [{ id: "lib-audio", name: "Audiobooks", media_type: "book" }],
+      }),
+    ]);
+    const held = deferred<{ body: unknown }>();
+    const server = setupServer({ audiobookshelf: connect, search: search() }).on("PUT", /\/admin\/setup\/steps\/audiobookshelf$/, () => held.promise);
+    renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+    await userEvent.click(await screen.findByRole("button", { name: "Test and continue" }));
+    const steps = screen.getByRole("navigation", { name: "Setup steps" });
+    await userEvent.click(within(steps).getByRole("link", { name: "Search" }));
+    await screen.findByRole("heading", { name: "Search", level: 2 });
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Setup steps" })).getByRole("link", { name: "Audiobookshelf" }));
+    await screen.findByRole("heading", { name: "Audiobookshelf", level: 3 });
+
+    held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Audiobookshelf connected." }, alert: null, completed: false, setup: connected } });
+    expect(await screen.findByLabelText("Audiobook library")).toBeTruthy();
   });
 });

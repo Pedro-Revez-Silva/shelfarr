@@ -24,16 +24,9 @@ export function useSetupState(step: string | undefined) {
   });
 }
 
-export function useSetupMoves() {
-  const { guard } = useServices();
-  const keys = useSetupKeys();
-  const client = useQueryClient();
-  return (next: SetupState | null) => {
-    if (guard.isActive() && next) client.setQueryData(keys.step(next.step), next);
-  };
-}
+type Written = { step: SetupStepId | null; next: SetupState | null };
 
-function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, writtenStep: (input: Input) => SetupStepId | null) {
+function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, written: (input: Input, answer: Answer) => Written) {
   const { guard } = useServices();
   const keys = useSetupKeys();
   const serverKeys = useServerKeys();
@@ -41,11 +34,14 @@ function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, 
   return useMutation({
     mutationKey: SETUP_WRITE,
     mutationFn: write,
-    onSuccess: async (_answer, input) => {
+    onSuccess: async (answer, input) => {
       if (!guard.isActive()) return;
-      const written = writtenStep(input);
+      const { step, next } = written(input, answer);
+      await client.cancelQueries({ queryKey: keys.root });
       await client.invalidateQueries({ queryKey: keys.root, refetchType: "none" });
-      void client.refetchQueries({ queryKey: keys.root, type: "active", predicate: (query) => (query.state.data as SetupState | undefined)?.step !== written });
+      if (next) client.setQueryData(keys.step(next.step), next);
+      const current = new Set([step, next?.step]);
+      void client.refetchQueries({ queryKey: keys.root, type: "active", predicate: (query) => !current.has((query.state.data as SetupState | undefined)?.step ?? null) });
       for (const queryKey of [serverKeys.settings, serverKeys.library, serverKeys.overview]) void client.invalidateQueries({ queryKey });
     },
   });
@@ -55,7 +51,7 @@ export function useSaveSetupStep(step: SetupStepId) {
   const { api } = useServices();
   return useSetupWrite(
     (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values),
-    () => step,
+    (_values, answer) => ({ step, next: answer.kind === "saved" ? answer.saved.setup : null }),
   );
 }
 
@@ -63,7 +59,7 @@ export function useSkipSetup() {
   const { api } = useServices();
   return useSetupWrite(
     ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit),
-    ({ step }) => step,
+    ({ step }, answer) => ({ step, next: answer.setup }),
   );
 }
 
@@ -71,7 +67,7 @@ export function useRestartSetup() {
   const { api } = useServices();
   return useSetupWrite(
     () => setupApi.restartSetup(api),
-    () => null,
+    (_input, answer) => ({ step: null, next: answer.setup }),
   );
 }
 

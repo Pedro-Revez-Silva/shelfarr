@@ -11,6 +11,8 @@ module WebPreview
     }.freeze
 
     SENSITIVE_ADDRESS = /[@?#]/
+    ADDRESS_USERINFO = %r{(://)[^/\s"'@]*@}
+    ADDRESS_QUERY_VALUE = /([?&][^=\s"'&#]+=)[^&\s"'#]+/
     SAVED_ADDRESS = "the saved address"
 
     attr_reader :form
@@ -32,7 +34,7 @@ module WebPreview
       address = address.to_s
       return [] unless sensitive_address?(address)
 
-      [ address, address[%r{://(.*)@}m, 1] ].compact.flat_map { |value| [ value, value.inspect[1..-2] ] }
+      [ address, address.strip, address[%r{://(.*)@}m, 1] ].compact.flat_map { |value| [ value, value.inspect[1..-2] ] }
     end
 
     def self.redact(text, extra_secrets = [])
@@ -41,7 +43,8 @@ module WebPreview
       client = SetupWizard.qbittorrent_client
       saved = %w[prowlarr qbittorrent audiobookshelf].flat_map { |step| address_secrets(SetupWizard.saved_url(step)) }
       secrets = [ *extra_secrets, *saved, client&.password, client&.api_key ].map(&:to_s).select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
-      secrets.sort_by { |secret| -secret.length }.reduce(SecretRedaction.call(text)) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
+      redacted = secrets.sort_by { |secret| -secret.length }.reduce(text.to_s) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
+      SecretRedaction.call(redacted.gsub(ADDRESS_USERINFO, "\\1#{SecretRedaction::MASK}@").gsub(ADDRESS_QUERY_VALUE, "\\1#{SecretRedaction::MASK}"))
     end
 
     def initialize(form)

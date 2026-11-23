@@ -3,13 +3,12 @@ import { useState } from "react";
 import { useServerOverview } from "../../queries";
 import { SettingsCard } from "../primitives";
 import { setupFailureText } from "./SetupPage";
-import { useRestartSetup, useSetupMoves, useSetupWriting } from "./queries";
+import { useRestartSetup, useSetupWriting } from "./queries";
 
 export function RunSetupAgainCard() {
   const navigate = useNavigate();
   const restart = useRestartSetup();
   const writing = useSetupWriting();
-  const moved = useSetupMoves();
   const unfinished = useServerOverview().data?.setup?.completed === false;
   const [error, setError] = useState<string | null>(null);
   const run = () => {
@@ -17,7 +16,6 @@ export function RunSetupAgainCard() {
     setError(null);
     restart.mutate(undefined, {
       onSuccess: (answer) => {
-        moved(answer.setup);
         void navigate({ to: "/server/setup", search: { step: answer.setup?.step } });
       },
       onError: (failure) => setError(setupFailureText(failure)),

@@ -13,7 +13,7 @@ import { AdministratorsOnly, LeaveDialog, NotInThisRuntime } from "../ServerCate
 import { ServerShell } from "../ServerShell";
 import type { SetupValues } from "./api";
 import type { SetupCard, SetupState } from "./contract";
-import { useSaveSetupStep, useSetupMoves, useSetupState, useSetupWriting, useSkipSetup } from "./queries";
+import { useSaveSetupStep, useSetupState, useSetupWriting, useSkipSetup } from "./queries";
 
 type Said = { step: SetupState["step"]; revision: number; notice: string; alert: string | null };
 
@@ -111,7 +111,6 @@ type StepProps = { state: SetupState; revision: number; moveFocus: boolean; said
 
 function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: StepProps) {
   const navigate = useNavigate();
-  const moved = useSetupMoves();
   const save = useSaveSetupStep(state.step);
   const skip = useSkipSetup();
   const writing = useSetupWriting();
@@ -148,7 +147,6 @@ function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: Ste
     dirty.current = false;
     setEdits({});
     setErrors({});
-    moved(next);
     onReplaced();
     if (next) void navigate({ to: "/server/setup", search: { step: next.step } });
     else void navigate({ to: "/library" });

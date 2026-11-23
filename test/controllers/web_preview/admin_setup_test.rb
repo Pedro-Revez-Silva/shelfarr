@@ -413,9 +413,16 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
       assert_not_includes response.body, "qb-pass-7781"
     end
 
-    [ "http://someone:typed-pass-5521@bad host", "http://someone:typed pass 5521@audiobookshelf:13378" ].each do |address|
+    [
+      "http://someone:typed-pass-5521@bad host",
+      "http://someone:typed pass 5521@audiobookshelf:13378",
+      "  http://bad host/?access_token=typed-pass-5521  ",
+      "  http://someone:typed-pass-5521@bad host/#{"x" * 600}  ",
+      "http://bad host/#{"y" * 480}?access_token=typed-pass-5521"
+    ].each do |address|
       save_step("audiobookshelf", { phase: "connection", url: address, api_key: "typed-token-3390" })
       assert_response :unprocessable_entity
+      assert_match(/\ACould not connect to Audiobookshelf: /, response.parsed_body.fetch("message"))
       assert_no_match(/typed.pass.5521|typed-token-3390|abs-query-6620/, response.body)
     end
     assert_equal "http://audiobookshelf:13378/?access_token=abs-query-6620", SettingsService.get(:audiobookshelf_url)
