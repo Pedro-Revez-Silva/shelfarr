@@ -279,6 +279,31 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_equal COMPANION, connection.reload.url
   end
 
+  test "Test keeps only version numbers and known health words, so no token rotated during it can be shown" do
+    file = File.join(@audiobook_output_path, "bridge.token")
+    File.write(file, "first-token-4411aa\n")
+    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
+      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
+      sign_in_as(@admin)
+      VCR.turned_off do
+        stub_request(:get, "#{connection.url}/health").to_return do
+          File.write(file, "second-token-5522bb\n")
+          { status: 200, body: { status: "first-token-4411aa" }.to_json }
+        end
+        stub_request(:get, "#{connection.url}/version").to_return do
+          File.write(file, "third-token-6633cc\n")
+          { status: 200, body: { companionVersion: "v1.4.0-beta.2", libationVersion: "14.2.0-second-token-5522bb" }.to_json }
+        end
+        stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
+        write :post, web_preview_api_admin_audible_test_path
+        assert_equal "Connected to the Libation companion (v1.4.0-beta.2).", response.parsed_body.dig("outcome", "message")
+        assert_equal [ "v1.4.0-beta.2", nil ], [ connection.reload.companion_version, connection.provider_version ]
+        state
+      end
+      %w[first-token-4411aa second-token-5522bb third-token-6633cc].each { |secret| assert_not_includes response.body, secret }
+    end
+  end
+
   test "Test reports versions and health, records them, and keeps the token out of a failure" do
     connection = create_connection
     sign_in_as(@admin)
@@ -748,6 +773,21 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_raises(ActiveRecord::RecordNotFound) do
       OwnedLibraryConnectionWorkflow.new(connection, user: @admin).back_up_item(item_id: previous.id, separate_edition: false)
     end
+  end
+
+  test "a completion waits for a confirmed existing-library batch instead of cancelling it" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    title = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Queued purchase", ownership_type: "purchased")
+    waiting = title.owned_media_imports.create!(status: "pending", requested_by: @admin, automatic: true)
+    proof = pending_sign_in(connection)
+    calls = []
+    client = Object.new
+    client.define_singleton_method(:complete_auth) { |**arguments| calls << arguments }
+    assert_equal :backups_waiting, completing_with(client, connection, proof).status
+    assert_empty calls
+    assert connection.reload.auth_pending?
+    assert title.reload.active?
+    assert_equal "pending", waiting.reload.status
   end
 
   test "an address that is not an https Amazon or Audible page is refused before anything is claimed or sent" do

@@ -13,6 +13,8 @@ class OwnedLibraryConnectionWorkflow
   CONNECTION_ATTRIBUTES = %i[url bridge_token enabled allow_private_network timeout_seconds].freeze
   AUTOMATION_ATTRIBUTES = %i[scheduled_sync_enabled scheduled_sync_interval_minutes automatic_backup_enabled].freeze
   BACKUP_ENQUEUE_FAILURE = "Shelfarr could not queue the Libation backup"
+  VERSION_FORMAT = /\Av?\d{1,6}(?:\.\d{1,6}){0,3}(?:-(?:alpha|beta|rc|preview|dev)(?:\.\d{1,6})?)?\z/
+  HEALTH_WORDS = %w[ok healthy ready degraded busy starting unhealthy].freeze
 
   CompletionClaim = Data.define(:pending_state, :auth_state, :endpoint)
   ConnectionTest = Data.define(:status, :companion_version, :libation_version, :health_status, :error)
@@ -190,19 +192,16 @@ class OwnedLibraryConnectionWorkflow
   def test_connection
     return ConnectionTest.new(status: :busy, companion_version: nil, libation_version: nil, health_status: nil, error: nil) if active_operation?
 
-    client = connection.client
-    health = client.health
-    secrets = client.secret_values
-    version = client.version
-    secrets |= client.secret_values
-    companion_version = reportable(version.companion_version, secrets)
-    libation_version = reportable(version.libation_version, secrets)
+    health = connection.client.health
+    version = connection.client.version
+    companion_version = reportable_version(version.companion_version)
+    libation_version = reportable_version(version.libation_version)
     connection.update!(companion_version: companion_version, provider_version: libation_version)
     ConnectionTest.new(
       status: :connected,
       companion_version: companion_version,
       libation_version: libation_version,
-      health_status: reportable(health.is_a?(Hash) ? health["status"].presence&.to_s : nil, secrets),
+      health_status: health.is_a?(Hash) ? HEALTH_WORDS.find { |word| word == health["status"] } : nil,
       error: nil
     )
   rescue LibationCompanionClient::Error => e
@@ -524,6 +523,7 @@ class OwnedLibraryConnectionWorkflow
       connection.reload
       next :expired unless connection.auth_pending? && proof.call(connection.auth_session_id.to_s)
       next :wrong_marketplace unless self.class.same_marketplace?(connection.auth_login_url, response_url)
+      next :backups_waiting if account_bound_backup_state?
 
       pending_state = connection.auth_state_snapshot
       reset_account_bound_catalog!(clear_auth_state: false)
@@ -568,10 +568,8 @@ class OwnedLibraryConnectionWorkflow
     [ connection.url, connection.bridge_token ]
   end
 
-  def reportable(value, secrets)
-    return nil if value.nil? || value.include?("://") || secrets.any? { |secret| value.include?(secret) }
-
-    value
+  def reportable_version(value)
+    value if value.is_a?(String) && value.match?(VERSION_FORMAT)
   end
 
   def create_queued_import(item, poll_token:, separate_edition:, request_id:)
