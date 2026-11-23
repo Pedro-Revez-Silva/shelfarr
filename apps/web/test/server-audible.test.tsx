@@ -516,4 +516,24 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await openLibrary(server);
     expect(await within(section("audible")).findByText("Only administrators can manage Audible backup.")).toBeTruthy();
   });
+  test("a catalogue read still on its way when work ends is replaced, so the failure and Retry appear", async () => {
+    const running = state({ active_backups: { total: 1, counts: [{ status: "downloading", count: 1 }] }, working: true });
+    const first = deferred<{ body: Catalogue }>();
+    let reads = 0;
+    const server = adminServer(running)
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => {
+        reads += 1;
+        if (reads === 1) return first.promise;
+        return { body: catalogue({ pages: 1, items: [item({ state: "failed", detail: "Libation said no", action: { label: "Retry backup", separate_edition: false, available: true } })] }) };
+      })
+      .on("GET", /\/api\/v1\/admin\/audible$/, () => {
+        if (server.called("GET", /admin\/audible$/).length > 1) current = state();
+        return { body: current };
+      });
+    await openLibrary(server);
+    const list = section("audible-catalogue");
+    await waitFor(() => expect(server.called("GET", /admin\/audible$/).length).toBeGreaterThan(1), { timeout: 9000 });
+    first.resolve({ body: catalogue({ pages: 1, items: [item({ state: "downloading", action: { label: "Backing up…", separate_edition: false, available: false } })] }) });
+    expect(await within(list).findByRole("button", { name: "Retry backup Dune" }, { timeout: 4000 })).toBeTruthy();
+  }, 20000);
 });

@@ -1,4 +1,4 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import type { ApiClient } from "../../api/client";
 import { failureKind } from "../../api/errors";
@@ -99,6 +99,11 @@ export function useAudible() {
   });
 }
 
+async function readAgain(client: QueryClient, queryKey: readonly unknown[]) {
+  await client.cancelQueries({ queryKey });
+  await client.invalidateQueries({ queryKey });
+}
+
 export function useIdleRevision(current: Audible | undefined) {
   const { api } = useServices();
   const keys = useAudibleKeys();
@@ -117,12 +122,12 @@ export function useIdleRevision(current: Audible | undefined) {
   useEffect(() => {
     if (!changed && !denied) return;
     void client.invalidateQueries({ queryKey: keys.state });
-    void client.invalidateQueries({ queryKey: keys.catalogue });
+    void readAgain(client, keys.catalogue);
   }, [changed, denied, client, keys.state, keys.catalogue]);
   const working = current?.working ?? false;
   const wasWorking = useRef(working);
   useEffect(() => {
-    if (wasWorking.current && !working) void client.invalidateQueries({ queryKey: keys.catalogue });
+    if (wasWorking.current && !working) void readAgain(client, keys.catalogue);
     wasWorking.current = working;
   }, [working, client, keys.catalogue]);
 }

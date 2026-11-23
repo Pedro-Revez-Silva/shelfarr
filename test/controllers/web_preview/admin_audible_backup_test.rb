@@ -843,4 +843,30 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
       assert_equal "Reader [hidden]", body.dig("sign_in", "accounts", 0, "label")
     end
   end
+
+  test "companion text in every field is sanitised: a bracketed rotated token, a token as a locale, a token in a title" do
+    file = File.join(@audiobook_output_path, "bridge.token")
+    bracketed = "[old]-mounted-token-#{'c' * 20}"
+    File.write(file, "#{bracketed}\n")
+    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
+      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true, last_synced_at: 1.hour.ago)
+      item = connection.owned_library_items.create!(external_id: "B0FAIL0001", title: "Dune #{bracketed}", ownership_type: "purchased")
+      item.owned_media_imports.create!(status: "failed", requested_by: @admin, error_message: "Bearer #{bracketed} was rejected")
+      File.write(file, "new-mounted-token-#{'d' * 24}\n")
+      sign_in_as(@admin)
+      preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+      assert_equal [ "Dune [hidden]", "Bearer [hidden] was rejected" ], response.parsed_body.fetch("items").first.values_at("title", "detail")
+      assert_not_includes response.body, "mounted-token"
+    end
+
+    custom = OwnedLibraryConnection.sole
+    custom.update_columns(url: COMPANION, bridge_token: "locale-token-1", allow_private_network: false)
+    VCR.turned_off do
+      stub_request(:get, "#{COMPANION}/v1/accounts")
+        .to_return(status: 200, body: { accounts: [ { account: "reader@example.com", locale: "locale-token-1", authenticated: true, name: "Reader" } ] }.to_json)
+      body = state
+      assert_equal({ "label" => "Reader", "marketplace" => "Unknown marketplace", "authenticated" => true }, body.dig("sign_in", "accounts", 0))
+      assert_not_includes response.body, "locale-token-1"
+    end
+  end
 end
