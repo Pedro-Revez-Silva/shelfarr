@@ -50,6 +50,21 @@ class SetupWizard
       SettingsService.set(:setup_wizard_completed, false)
     end
 
+    def skip(step, exit_setup: false)
+      step = normalize_step(step)
+      return next_step(step) unless exit_setup || step == STEPS.last
+
+      complete!
+      nil
+    end
+
+    def step_after_save(step, result)
+      step = normalize_step(step)
+      return step if result.stay?
+
+      next_step(step) unless step == STEPS.last
+    end
+
     def save(step, params)
       case normalize_step(step)
       when "prowlarr" then save_prowlarr(params)

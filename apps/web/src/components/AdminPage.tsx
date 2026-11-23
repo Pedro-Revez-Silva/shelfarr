@@ -2,6 +2,7 @@ import { Link, Navigate } from "@tanstack/react-router";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { failureKind } from "../api/errors";
 import { OverviewOutcome, PendingScreens, ReleaseCard, RunHealthCheck, ServerOverviewShell, useOverviewOutcome } from "../server/OverviewParts";
+import { SetupReminder } from "../server/setup/RunSetupAgain";
 import type { HealthService, HealthStatus, ServerOverview, ServiceHealth } from "../contract";
 import { useServerOverview, useSession } from "../queries";
 import { useServices } from "../services";
@@ -85,6 +86,7 @@ function Overview() {
     return (
       <ServerOverviewShell rail={admin}>
         <OverviewOutcome outcome={outcome.outcome} />
+        {current?.setup?.pending ? <SetupReminder /> : null}
         {body}
         {current?.release ? <ReleaseCard release={current.release} say={outcome.say} /> : null}
         {current?.pending ? <PendingScreens pending={current.pending} /> : null}

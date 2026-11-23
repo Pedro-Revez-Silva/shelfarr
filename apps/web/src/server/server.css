@@ -668,3 +668,108 @@
   border-radius: 14px;
   color: var(--danger);
 }
+
+.server-layout:has(> .server-content > .setup) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.setup {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+.setup-steps ol {
+  display: flex;
+  gap: 8px;
+  margin: 0 calc(var(--gutter) * -1);
+  padding: 4px var(--gutter) 8px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  list-style: none;
+  counter-reset: none;
+}
+.setup-steps li {
+  flex: none;
+}
+.setup-step-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 16px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 550;
+  white-space: nowrap;
+}
+.setup-step-link:hover {
+  color: var(--ink);
+}
+.setup-step-number {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 28px;
+  block-size: 28px;
+  border-radius: 50%;
+  background: var(--sunken);
+  font-size: 0.85rem;
+}
+.setup-step-link[aria-current="step"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+  box-shadow: inset 0 -3px 0 var(--accent);
+}
+.setup-step-link[aria-current="step"] .setup-step-number {
+  background: var(--accent);
+  color: var(--paper);
+}
+.setup-step-header {
+  display: grid;
+  gap: 6px;
+}
+.setup-step-header .eyebrow {
+  margin: 0;
+}
+.setup-step-title {
+  margin: 0;
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 1.8rem;
+}
+.setup-step-title:focus {
+  outline: none;
+}
+.setup-step-title:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 4px;
+}
+.setup-said,
+.setup-warnings {
+  display: grid;
+  gap: 12px;
+}
+.setup-collapsed > summary {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  cursor: pointer;
+}
+.setup-collapsed > summary h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.setup-collapsed[open] > summary {
+  margin-bottom: 4px;
+}
+.setup-moves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.setup-reminder {
+  border-color: var(--accent);
+}

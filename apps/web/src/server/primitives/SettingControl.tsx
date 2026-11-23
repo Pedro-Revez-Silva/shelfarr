@@ -266,7 +266,7 @@ function LibrarySelect({ field, value, onChange, error, scope, libraries }: Cont
     <div className="field">
       <label htmlFor={id}>{field.label}</label>
       <select id={id} name={field.key} value={current} aria-invalid={error ? true : undefined} aria-describedby={describedBy(`${id}-hint`, error && `${id}-error`)} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Choose a library</option>
+        <option value="">{field.placeholder ?? "Choose a library"}</option>
         {libraries.map((library) => (
           <option key={library.id} value={library.id}>
             {library.name} ({library.media_type})

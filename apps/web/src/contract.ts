@@ -282,6 +282,10 @@ export const discoverSchema = z.object({
 });
 export type DiscoverAnswer = z.infer<typeof discoverSchema>;
 
+export const setupSearchSchema = z.object({
+  step: z.string().max(40).optional().catch(undefined),
+});
+
 export const discoverSearchSchema = z.object({
   q: z.string().optional().catch(undefined),
 });
@@ -539,6 +543,7 @@ export const serverOverviewSchema = z
       })
       .optional(),
     pending: z.array(z.object({ label: z.string(), url: sitePath })).optional(),
+    setup: z.object({ pending: z.boolean() }).optional(),
   })
   .refine((overview) => overview.services.length === healthServices.length && overview.services.every((entry, index) => entry.service === healthServices[index]), "Every health service must be listed once, in order");
 export type ServerOverview = z.infer<typeof serverOverviewSchema>;

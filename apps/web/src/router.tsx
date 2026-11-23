@@ -1,5 +1,5 @@
 import { createRootRoute, createRoute, createRouter, redirect, type RouterHistory } from "@tanstack/react-router";
-import { bookSearchSchema, discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema } from "./contract";
+import { bookSearchSchema, discoverSearchSchema, libraryFiltersSchema, requestFiltersSchema, setupSearchSchema } from "./contract";
 import { AccountPage, AccountSectionPage } from "./components/AccountPage";
 import { AdminPage, ServerHomePage } from "./components/AdminPage";
 import { BookPage } from "./components/BookPage";
@@ -10,6 +10,8 @@ import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
 import { ServerSettingsPage } from "./components/ServerSettingsPage";
 import { ServerCategoryPage } from "./server/ServerCategoryPage";
+import { LegacySetupRedirect } from "./server/setup/RunSetupAgain";
+import { ServerSetupPage } from "./server/setup/SetupPage";
 import { Shell } from "./components/Shell";
 import { EmptyState } from "./components/States";
 
@@ -120,13 +122,27 @@ const serverRoute = createRoute({
   component: ServerHomePage,
 });
 
+const serverSetupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server/setup",
+  validateSearch: (search: Record<string, unknown>) => setupSearchSchema.parse(search),
+  component: ServerSetupPage,
+});
+
+const legacySetupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/admin/setup_wizard",
+  validateSearch: (search: Record<string, unknown>) => setupSearchSchema.parse(search),
+  component: LegacySetupRedirect,
+});
+
 const serverCategoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/server/$category",
   component: ServerCategoryPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverCategoryRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

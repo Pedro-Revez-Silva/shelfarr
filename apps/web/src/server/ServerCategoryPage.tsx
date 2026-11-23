@@ -9,6 +9,7 @@ import type { SettingCategory, SettingGroup } from "./contract";
 import { SettingsGroupCard } from "./SettingsGroupCard";
 import { CATEGORY_LABELS, isCategory, ServerShell } from "./ServerShell";
 import { useIsAdministrator, useServerSettings } from "./queries";
+import { RunSetupAgainCard } from "./setup/RunSetupAgain";
 
 export function AdministratorsOnly() {
   return (
@@ -63,6 +64,7 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
             />
           ) : null}
           <CategoryCards category={found} settings={settings.data} />
+          {category === "system" ? <RunSetupAgainCard /> : null}
         </>
       ) : settings.isError ? (
         <ErrorPanel error={settings.error} onRetry={() => void settings.refetch()} />
@@ -145,7 +147,7 @@ function useScrollToCard(categoryId: string) {
   }, [hash, categoryId]);
 }
 
-function LeaveDialog({ count, onStay, onLeave }: { count: number; onStay: () => void; onLeave: () => void }) {
+export function LeaveDialog({ count, onStay, onLeave }: { count: number; onStay: () => void; onLeave: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const stay = useRef<HTMLButtonElement>(null);
   useEffect(() => {

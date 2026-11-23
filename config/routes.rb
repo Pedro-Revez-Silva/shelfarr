@@ -246,10 +246,16 @@ Rails.application.routes.draw do
   get "preview/admin", to: "web_preview/shell#show", as: :web_preview_admin
   get "preview/admin/settings", to: "web_preview/shell#show", as: :web_preview_admin_settings
   get "preview/server", to: "web_preview/shell#show", as: :web_preview_server
+  get "preview/server/setup", to: "web_preview/shell#show", as: :web_preview_server_setup
+  get "preview/admin/setup_wizard", to: "web_preview/shell#show", as: :web_preview_admin_setup_wizard
   get "preview/server/:category", to: "web_preview/shell#show", as: :web_preview_server_category,
     constraints: { category: /policy|sources|downloads|library|notifications|people|system/ }
   scope "preview/api/v1/admin", module: "web_preview/admin", as: :web_preview_api_admin, defaults: { format: :json } do
     get "overview", to: "overview#show"
+    get "setup", to: "setup#show"
+    put "setup/steps/:step", to: "setup#update", as: :setup_step, constraints: { step: /[a-z_]{1,40}/ }
+    post "setup/skip", to: "setup#skip", as: :setup_skip
+    post "setup/restart", to: "setup#restart", as: :setup_restart
     post "overview/health_check", to: "overview#health_check", as: :health_check
     post "overview/update_check", to: "overview#update_check", as: :update_check
     get "settings", to: "settings#show"

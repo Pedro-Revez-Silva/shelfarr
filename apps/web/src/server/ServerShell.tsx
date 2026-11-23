@@ -26,7 +26,7 @@ export function isCategory(value: string): value is ServerCategoryId {
   return (serverCategoryIds as readonly string[]).includes(value);
 }
 
-export function railItems(current: ServerCategoryId | "overview", settings: ServerSettings | undefined): RailItem[] {
+export function railItems(current: ServerCategoryId | "overview" | "setup", settings: ServerSettings | undefined): RailItem[] {
   const titles = new Map(settings?.categories.map((category) => [category.id, category.title]));
   return [
     { id: "overview", label: "Overview", to: "/server", current: current === "overview" },
@@ -43,7 +43,7 @@ export function ServerShell({
   rail,
   children,
 }: {
-  current: ServerCategoryId | "overview";
+  current: ServerCategoryId | "overview" | "setup";
   settings: ServerSettings | undefined;
   headingId: string;
   title: string;

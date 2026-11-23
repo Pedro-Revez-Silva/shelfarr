@@ -15,7 +15,7 @@ class RegistrationsController < ApplicationController
     if @user.save
       if first_user?
         start_new_session_for(@user)
-        redirect_to admin_setup_wizard_path, notice: "Welcome! You are the admin. Let's set up Shelfarr."
+        redirect_to first_setup_path, notice: "Welcome! You are the admin. Let's set up Shelfarr."
       else
         redirect_to admin_users_path, notice: "User created successfully."
       end
@@ -36,6 +36,10 @@ class RegistrationsController < ApplicationController
 
   def warm_entry_page?
     User.active.none?
+  end
+
+  def first_setup_path
+    warm_entry? && WebPreview::Access.current.allows?(@user) ? web_preview_server_setup_path : admin_setup_wizard_path
   end
 
   def first_user?
