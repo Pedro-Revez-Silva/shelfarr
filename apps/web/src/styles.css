@@ -2482,6 +2482,35 @@ thead th {
   color: var(--muted);
   font-size: 13px;
 }
+.copy-flag--chosen {
+  color: var(--accent);
+  font-weight: 600;
+}
+.copy-flag--warn {
+  color: var(--danger);
+}
+.copy-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.copies-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+.copies-heading .request-meta {
+  margin: 0;
+}
 @container (width < 600px) {
   .copy-table,
   .copy-table tbody,
@@ -2505,7 +2534,7 @@ thead th {
     padding: 0;
   }
   .copy-table .copy-choice {
-    grid-row: span 5;
+    grid-row: span 9;
     padding-top: 2px;
   }
   .copy-table td[data-label] {

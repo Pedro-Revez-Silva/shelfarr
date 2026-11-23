@@ -12,6 +12,9 @@ class WebPreview::RequestsController < WebPreview::APIController
     superseded: "Another recovery attempt took over this request."
   }.freeze
   NOT_RETRYABLE = "This request can't be retried in its current state."
+  NOT_CHOOSABLE = "This copy can no longer be chosen. The page shows what can be chosen now."
+  COPIES_CHANGED = "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one."
+  REPLACEMENT_UNCONFIRMED = "This book is already in the library. Confirm that this copy replaces the library file, then choose it again."
 
   before_action :require_admin, only: [ :selection, :search, :retry, :manual ]
 
@@ -38,13 +41,12 @@ class WebPreview::RequestsController < WebPreview::APIController
   def selection
     request = Request.find(identifier(params[:id]))
     result = request.search_results.find(identifier(params[:result_id]))
-    request.with_lock do
+    refusal = request.with_lock do
       result.reload
-      raise ArgumentError, "This copy can no longer be chosen. The page shows what can be chosen now." unless WebPreview::BookPage.choosing_allowed?(request) && result.downloadable?
-
-      request.select_result!(result)
+      params.key?(:expected_selected_id) ? choose_copy(request, result) : choose_waiting_copy(request, result)
     end
-    render_action(request)
+    code, status, message = refusal
+    code ? render_error(code, status, message: message) : render_action(request)
   rescue ArgumentError => error
     render_error("not_selectable", :conflict, message: error.message.first(300))
   end
@@ -107,6 +109,27 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   private
+
+  def choose_waiting_copy(request, result)
+    raise ArgumentError, NOT_CHOOSABLE unless WebPreview::BookPage.choosing_allowed?(request) && result.downloadable?
+
+    request.select_result!(result)
+    nil
+  end
+
+  def choose_copy(request, result)
+    expected = params[:expected_selected_id]
+    return [ "invalid_request", :bad_request ] unless expected.nil? || expected.is_a?(String)
+    return if result.selected?
+    return [ "copies_changed", :conflict, COPIES_CHANGED ] unless request.search_results.selected.ids.map(&:to_s) == [ expected ].compact
+
+    replace = params[:replace_library_file] == true
+    return [ "replacement_unconfirmed", :conflict, REPLACEMENT_UNCONFIRMED ] if request.book.acquired? && !replace
+    raise ArgumentError, NOT_CHOOSABLE unless result.downloadable?
+
+    request.select_result!(result, replace_library_file: replace)
+    nil
+  end
 
   def require_admin
     render_error("not_found", :not_found) unless Current.user.admin?

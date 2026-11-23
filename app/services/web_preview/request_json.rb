@@ -7,6 +7,7 @@ module WebPreview
     BOOK_TYPES = %w[ebook audiobook comicbook].freeze
     TEXT_LIMIT = 500
     EVENT_LIMIT = 10
+    COPY_STRUCTURES = { single_file: "single_file", multi_file: "multi_file" }.freeze
 
     def initialize(request, viewer:, routes:, opens_in_browser:)
       @request = request
@@ -125,11 +126,50 @@ module WebPreview
     end
 
     def copies
-      candidates = @request.search_results.best_first.to_a
+      candidates = @request.search_results.best_first.includes(:acquisition_provider).to_a
       {
         selectable: BookPage.choosing_allowed?(@request) && candidates.any?(&:downloadable?),
-        candidates: candidates.map { |result| BookPage.candidate(result) }
+        looking_for: @request.language_display_name.to_s.first(TEXT_LIMIT),
+        search_blocked: @request.search_refresh_allowed? ? nil : @request.search_refresh_blocked_message,
+        candidates: candidates.map { |result| BookPage.candidate(result).merge(details: copy_details(result)) }
       }
+    end
+
+    def copy_details(result)
+      {
+        choice: copy_choice(result),
+        indexer: (result.indexer.to_s.first(TEXT_LIMIT).presence unless result.indexer == result.source_display_name),
+        seeders: count(result.seeders),
+        leechers: count(result.leechers),
+        score: result.confidence_score&.clamp(0, 100),
+        high_confidence: result.high_confidence?,
+        language_matches: result.language_matches_request?,
+        structure: COPY_STRUCTURES[result.audiobook_structure],
+        bitrate_kbps: count(result.audio_bitrate_kbps)&.nonzero?,
+        preference_adjustment: result.preference_adjustment,
+        size_limit: size_limit(result),
+        manual_review: !result.auto_select_allowed_by_preferences?,
+        blocklist_reason: result.blocklisted? ? result.blocklist_reason.to_s.first(TEXT_LIMIT).presence : nil,
+        info_url: result.safe_info_url
+      }
+    end
+
+    def copy_choice(result)
+      return "selected" if result.selected?
+      return result.rejected? ? "skipped" : "no_link" unless result.downloadable?
+      return "retry_anyway" if result.blocklisted?
+
+      result.rejected? ? "select_instead" : "select"
+    end
+
+    def count(value)
+      value.to_i if value.present? && value.to_i >= 0
+    end
+
+    def size_limit(result)
+      return if result.file_size_adjustment.zero?
+
+      { label: result.file_size_adjustment_label, explanation: result.file_size_limit_explanation }
     end
 
     def events

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { AccountSettings, Profile, RequestDetail, RequestList, RequestSummary } from "../src/contract";
+import type { AccountSettings, CopyDetails, Profile, RequestCopy, RequestDetail, RequestList, RequestSummary } from "../src/contract";
 import { placeOf } from "../src/components/Navigation";
 import { ACCOUNT, FakeServer, page, renderApp, session, summary } from "./helpers";
 
@@ -25,6 +25,30 @@ function request(overrides: Partial<RequestSummary> = {}): RequestSummary {
     book_page: { source: "openlibrary", id: "OL5004W" },
     ...overrides,
   };
+}
+
+function copyDetails(overrides: Partial<CopyDetails> = {}): CopyDetails {
+  return {
+    choice: "select",
+    indexer: null,
+    seeders: null,
+    leechers: null,
+    score: null,
+    high_confidence: false,
+    language_matches: true,
+    structure: null,
+    bitrate_kbps: null,
+    preference_adjustment: 0,
+    size_limit: null,
+    manual_review: false,
+    blocklist_reason: null,
+    info_url: null,
+    ...overrides,
+  };
+}
+
+function copy(id: string, overrides: Partial<RequestCopy> = {}, details: Partial<CopyDetails> = {}): RequestCopy {
+  return { id, title: `Copy ${id}.epub`, format: "EPUB", size_bytes: 1000, language: "English", source: "Prowlarr", state: "pending", skipped: false, downloadable: true, details: copyDetails(details), ...overrides };
 }
 
 const memberActions = { cancel: true, remove: null, retry: false, search_again: false, manual_download: false, replaces_library_file: false, upload_url: null, download_url: null } as const;
@@ -144,7 +168,7 @@ describe("one request in the Rails preview", () => {
   });
 
   test("an administrator chooses a copy, adds a magnet link and sees the model's refusal", async () => {
-    const copies = { selectable: true, candidates: [{ id: "31", title: "Dispossessed.epub", format: "EPUB", size_bytes: 1000, language: "English", source: "Project Gutenberg", state: "pending" as const, skipped: false, downloadable: true }] };
+    const copies = { selectable: true, looking_for: "English", search_blocked: null, candidates: [copy("31", { title: "Dispossessed.epub", source: "Project Gutenberg" })] };
     const adminActions = { ...memberActions, cancel: false, remove: "admin_remove" as const, retry: true, search_again: true, manual_download: true };
     const server = railsServer(detail({ requested_by: { name: "Rae Reader", self: false }, attention_reason: "No copies after 3 searches", actions: adminActions, copies, events: [{ title: "Dispatch Failed", message: "Client down", level: "error", at: "2026-11-20T09:00:00.000Z" }] }), true)
       .on("POST", /\/requests\/7\/selection$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } }))
@@ -153,7 +177,7 @@ describe("one request in the Rails preview", () => {
     const tools = await screen.findByRole("region", { name: "Administrator tools" });
     const user = userEvent.setup();
     await user.click(within(tools).getByRole("button", { name: "Download this copy" }));
-    await waitFor(() => expect(server.called("POST", /selection$/)[0]?.body).toEqual({ result_id: "31" }));
+    await waitFor(() => expect(server.called("POST", /selection$/)[0]?.body).toEqual({ result_id: "31", expected_selected_id: null, replace_library_file: false }));
     await user.click(within(tools).getByText("Add a link or file"));
     await user.type(within(tools).getByLabelText("Magnet link", { exact: true }), "http://nope");
     await user.click(within(tools).getByRole("button", { name: "Add magnet link" }));
@@ -192,6 +216,122 @@ describe("one request in the Rails preview", () => {
     await user.click(screen.getByRole("button", { name: "Yes, delete it" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
     expect(server.called("POST", /remove$/)).toHaveLength(1);
+  });
+});
+
+describe("a request's copies for an administrator", () => {
+  const adminActions = { ...memberActions, cancel: false, remove: "admin_remove" as const, retry: false, search_again: true, manual_download: true };
+
+  function copiesServer(found: RequestDetail): FakeServer {
+    return railsServer({ requested_by: { name: "Rae", self: false }, ...found }, true);
+  }
+
+  test("an old Manage Results link opens the Copies section with every fact the classic screen showed, and choosing another copy names the one it replaces", async () => {
+    const candidates = [
+      copy("40", { title: "Dispossessed.Retail.epub", state: "selected" }, { choice: "selected", score: 96, high_confidence: true, seeders: 40, leechers: 2 }),
+      copy(
+        "41",
+        { title: "Dispossessed.de.epub", state: "rejected", language: "German", source: "Jackett" },
+        { choice: "select_instead", indexer: "TorrentLeech", score: 71, seeders: 12, leechers: 3, language_matches: false, preference_adjustment: -5, size_limit: { label: "Size -20 (too large)", explanation: "Larger than the configured maximum file size" }, manual_review: true, info_url: "https://tracker.example/t/41" },
+      ),
+      copy("42", { title: "Dispossessed.m4b", state: "rejected", format: "M4B", skipped: true }, { choice: "retry_anyway", structure: "single_file", bitrate_kbps: 128, blocklist_reason: "Import failed: not a book" }),
+      copy("43", { title: "Dispossessed.nolink", state: "rejected", downloadable: false }, { choice: "skipped" }),
+    ];
+    const found = detail({ status: "downloading", requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: false, looking_for: "English", search_blocked: "Cannot refresh search while an acquisition or library import is active or awaiting recovery.", candidates } });
+    const server = copiesServer({ ...found, actions: { ...adminActions, search_again: false } }).on("POST", /\/requests\/7\/selection$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } }));
+    renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    const section = (await screen.findByText("Copies (4)")).closest("details");
+    if (!section) throw new Error("Copies section missing");
+    await waitFor(() => expect(section.open).toBe(true));
+    expect(document.activeElement?.textContent).toBe("Copies (4)");
+    const view = within(section);
+    expect(view.getByText("Looking for English · 4 copies found, best first")).toBeTruthy();
+    expect(view.getByText("Cannot refresh search while an acquisition or library import is active or awaiting recovery.")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Search again" })).toBeNull();
+    const rows = view.getAllByRole("row").slice(1);
+    expect(rows.map((row) => row.querySelector("th")?.textContent)).toEqual([
+      "Dispossessed.Retail.epub · chosen",
+      "Dispossessed.de.epubTorrentLeechPreference −5Size -20 (too large): Larger than the configured maximum file sizeFormat preferences ask for a manual choiceRelease page for Dispossessed.de.epub (opens in a new tab)",
+      "Dispossessed.m4b · skipped beforeSingle file128 kbpsSkipped because: Import failed: not a book",
+      "Dispossessed.nolink · no download link",
+    ]);
+    expect(rows.map((row) => [...row.querySelectorAll("td[data-label]")].map((cell) => cell.textContent))).toEqual([
+      ["EPUB", "1000 B", "English", "Prowlarr", "96% (high)", "40 seeding, 2 leeching"],
+      ["EPUB", "1000 B", "German · not English", "Jackett", "71%", "12 seeding, 3 leeching"],
+      ["M4B", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"],
+      ["EPUB", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"],
+    ]);
+    expect(view.getByRole("link", { name: "Release page for Dispossessed.de.epub (opens in a new tab)" }).getAttribute("href")).toBe("https://tracker.example/t/41");
+    const radios = view.getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((radio) => [radio.disabled, radio.checked])).toEqual([
+      [true, false],
+      [false, false],
+      [false, false],
+      [true, false],
+    ]);
+    const user = userEvent.setup();
+    await user.click(view.getByRole("button", { name: "Download this copy" }));
+    expect(view.getByRole("alert").textContent).toContain("Choose one copy that can be downloaded first.");
+    expect(server.called("POST", /selection$/)).toHaveLength(0);
+    await user.click(view.getByLabelText("Dispossessed.m4b"));
+    expect(view.getByRole("button", { name: "Try this copy again anyway" })).toBeTruthy();
+    await user.click(view.getByLabelText("Dispossessed.de.epub"));
+    await user.click(view.getByRole("button", { name: "Download this copy instead" }));
+    await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "41", expected_selected_id: "40", replace_library_file: false }]));
+    expect(await view.findByText("Download queued. This page updates as it goes.")).toBeTruthy();
+  });
+
+  test("choosing a copy for a book already in the library asks before replacing its file", async () => {
+    const found = detail({ status: "completed", actions: { ...adminActions, replaces_library_file: true }, copies: { selectable: false, looking_for: "English", search_blocked: "Cannot refresh search for a completed request.", candidates: [copy("50", { state: "selected" }, { choice: "selected" }), copy("51", { state: "rejected" }, { choice: "select_instead" })] } });
+    const server = copiesServer(found).on("POST", /\/requests\/7\/selection$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } }));
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Copies (2)"));
+    await user.click(screen.getByLabelText("Copy 51.epub"));
+    await user.click(screen.getByRole("button", { name: "Download this copy instead" }));
+    const prompt = "Replace the existing library file? The current file stays until the new download imports successfully. A failed download leaves it unchanged.";
+    const ask = screen.getByRole("group", { name: prompt });
+    expect(document.activeElement?.textContent).toBe("Keep the current file");
+    await user.click(within(ask).getByRole("button", { name: "Keep the current file" }));
+    expect(screen.queryByRole("group", { name: prompt })).toBeNull();
+    expect(server.called("POST", /selection$/)).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Download this copy instead" }));
+    await user.click(screen.getByRole("button", { name: "Yes, replace the file" }));
+    await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "51", expected_selected_id: "50", replace_library_file: true }]));
+  });
+
+  test("a choice the server refuses because the copies changed says so and reads the request again", async () => {
+    const found = detail({ actions: adminActions, copies: { selectable: true, looking_for: "English", search_blocked: null, candidates: [copy("60"), copy("61")] } });
+    const server = copiesServer(found).on("POST", /\/requests\/7\/selection$/, () => ({
+      status: 409,
+      body: { error: "copies_changed", message: "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one." },
+    }));
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const section = (await screen.findByText("Copies (2)")).closest("details");
+    if (!section) throw new Error("Copies section missing");
+    await waitFor(() => expect(section.open).toBe(true));
+    expect((within(section).getByLabelText("Copy 60.epub") as HTMLInputElement).checked).toBe(true);
+    const reads = server.called("GET", /\/requests\/7$/).length;
+    const user = userEvent.setup();
+    await user.click(within(section).getByRole("button", { name: "Download this copy" }));
+    expect(await within(section).findByText("The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one.")).toBeTruthy();
+    await waitFor(() => expect(server.called("GET", /\/requests\/7$/).length).toBeGreaterThan(reads));
+    expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "60", expected_selected_id: null, replace_library_file: false }]);
+  });
+
+  test("Search again sits in the Copies section, which explains an empty search", async () => {
+    const found = detail({ status: "not_found", actions: adminActions, copies: { selectable: false, looking_for: "Portuguese", search_blocked: null, candidates: [] } });
+    const server = copiesServer(found).on("POST", /\/requests\/7\/search$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "pending" } } }));
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("Copies (0)"));
+    const section = screen.getByText("Copies (0)").closest("details");
+    if (!section) throw new Error("Copies section missing");
+    expect(within(section).getByText("No copies found yet. The search may still be running.")).toBeTruthy();
+    expect(within(section).getByText("Looking for Portuguese · 0 copies found, best first")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Search again" })).toHaveLength(1);
+    await user.click(within(section).getByRole("button", { name: "Search again" }));
+    await waitFor(() => expect(server.called("POST", /\/requests\/7\/search$/)).toHaveLength(1));
   });
 });
 
