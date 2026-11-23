@@ -11,7 +11,7 @@ import { ConfirmAction } from "../kobo/KoboParts";
 import * as api from "./api";
 import type { CatalogueSearch, KoboAccount } from "./contract";
 import { CatalogueCard } from "./KoboCatalogue";
-import { isMissing, koboAccountFailure, useAccountBusy, useAccountWrite, useActivationPoll, useCatalogueFollowsRefresh, useKoboAccount, usePublishAccount } from "./queries";
+import { isMissing, koboAccountFailure, useAccountBusy, useAccountWrite, useActivationPoll, useCatalogueFollowsRefresh, useKoboAccount, useKoboAccountKeys, usePublishAccount } from "./queries";
 import "./kobo-accounts.css";
 
 const routeApi = getRouteApi("/account/devices/kobo-accounts/$accountId");
@@ -115,36 +115,43 @@ function Activation({ account }: { account: KoboAccount }) {
   const headingId = useId();
   const poller = useActivationPoll(account);
   const activation = account.activation;
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (poller.ended && (document.activeElement === null || document.activeElement === document.body)) heading.current?.focus();
+  }, [poller.ended]);
   if (!activation) return null;
-  if (poller.ended) {
-    return (
-      <section className="account-card" aria-labelledby={headingId}>
-        <h2 id={headingId}>Approval can't continue here</h2>
-        <p role="status">{poller.problem}</p>
-      </section>
-    );
-  }
+  const ended = poller.ended;
   return (
     <section className="account-card" aria-labelledby={headingId}>
-      <h2 id={headingId}>Approve this connection on Kobo</h2>
-      <p>Open Kobo's activation page, sign in to the account you want to connect, and enter this code:</p>
-      <p className="kobo-activation-code" data-testid="kobo-activation-code">
-        {activation.code}
-      </p>
-      <p>
-        <a className="button button--primary" href={activation.page} target="_blank" rel="noopener noreferrer">
-          Open Kobo activation<span className="sr-only"> (opens in a new tab)</span>
-        </a>
-      </p>
-      <p className="muted">
-        Return here after approving. This code expires <Time iso={activation.expires_at} relative />. Keep it private.
-      </p>
+      <h2 id={headingId} ref={heading} tabIndex={-1}>
+        {ended ? "Approval can't continue here" : "Approve this connection on Kobo"}
+      </h2>
+      {ended ? null : <p>Open Kobo's activation page, sign in to the account you want to connect, and enter this code:</p>}
+      {ended ? null : (
+        <p className="kobo-activation-code" data-testid="kobo-activation-code">
+          {activation.code}
+        </p>
+      )}
+      {ended ? null : (
+        <p>
+          <a className="button button--primary" href={activation.page} target="_blank" rel="noopener noreferrer">
+            Open Kobo activation<span className="sr-only"> (opens in a new tab)</span>
+          </a>
+        </p>
+      )}
+      {ended ? null : (
+        <p className="muted">
+          Return here after approving. This code expires <Time iso={activation.expires_at} relative />. Keep it private.
+        </p>
+      )}
       <p role="status">{poller.problem ?? "Waiting for approval…"}</p>
-      <div className="form-actions">
-        <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
-          {poller.checking ? "Checking…" : "Check connection"}
-        </button>
-      </div>
+      {ended ? null : (
+        <div className="form-actions">
+          <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
+            {poller.checking ? "Checking…" : "Check connection"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -323,10 +330,12 @@ function Disconnect({ account, onDisconnected }: { account: KoboAccount; onDisco
   const headingId = useId();
   const { api: client } = useServices();
   const publish = usePublishAccount();
+  const keys = useKoboAccountKeys();
+  const writing = useAccountBusy(account.id);
   const { said, say } = useSay();
   const [busy, setBusy] = useState(false);
   const confirm = async (version: string) => {
-    if (busy) return;
+    if (busy || writing) return;
     setBusy(true);
     try {
       const answer = await api.disconnect(client, account.id, version);
@@ -337,6 +346,7 @@ function Disconnect({ account, onDisconnected }: { account: KoboAccount; onDisco
         return;
       }
       publish.account(answer.kobo_account);
+      publish.reread(keys.account(account.id));
       say("error", answer.message);
     } catch (error) {
       say("error", koboAccountFailure(error, "Shelfarr could not confirm whether the connection was removed. Reload the page to see its current state."));
@@ -351,7 +361,7 @@ function Disconnect({ account, onDisconnected }: { account: KoboAccount; onDisco
         Remove this connection's saved credentials, private catalogue, prepared copies and shares from Shelfarr. People you shared with stop receiving its books. This does not sign out or reset a physical Kobo, remove books already on readers, or revoke credentials at Kobo.
       </p>
       <div className="form-actions">
-        <ConfirmAction label="Disconnect Kobo account" question="Remove this connection and its catalogue from Shelfarr?" confirmLabel="Disconnect" busy={busy} danger subject={account.version} onConfirm={(version) => void confirm(version)} />
+        <ConfirmAction label="Disconnect Kobo account" question="Remove this connection and its catalogue from Shelfarr?" confirmLabel="Disconnect" busy={busy || writing} danger subject={account.version} onConfirm={(version) => void confirm(version)} />
       </div>
       <Said said={said} />
     </section>

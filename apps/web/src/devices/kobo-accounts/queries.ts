@@ -114,6 +114,9 @@ export function usePublishAccount() {
       void client.cancelQueries({ queryKey: keys.book(book.id), exact: true }, { revert: false, silent: true });
       client.setQueryData(keys.book(book.id), book);
     },
+    reread: (queryKey: readonly unknown[]) => {
+      if (guard.isActive()) void client.invalidateQueries({ queryKey, exact: true });
+    },
   };
 }
 
@@ -139,22 +142,22 @@ export function useAccountBusy(id: string): boolean {
 
 export function useAccountWrite<Input>(id: string, write: (input: Input) => Promise<api.AccountAnswer>) {
   const publish = usePublishAccount();
+  const keys = useKoboAccountKeys();
   return useMutation({
-    mutationKey: useKoboAccountKeys().writes(id),
+    mutationKey: keys.writes(id),
     mutationFn: write,
-    onSuccess: (answer) => {
-      if (publish.active()) publish.account(answer.kobo_account);
-    },
+    onSuccess: (answer) => publish.account(answer.kobo_account),
+    onSettled: () => publish.reread(keys.account(id)),
   });
 }
 
-export function useBookWrite<Input>(write: (input: Input) => Promise<api.BookAnswer>) {
+export function useBookWrite<Input>(id: string, write: (input: Input) => Promise<api.BookAnswer>) {
   const publish = usePublishAccount();
+  const keys = useKoboAccountKeys();
   return useMutation({
     mutationFn: write,
-    onSuccess: (answer) => {
-      if (publish.active()) publish.book(answer.book);
-    },
+    onSuccess: (answer) => publish.book(answer.book),
+    onSettled: () => publish.reread(keys.book(id)),
   });
 }
 

@@ -121,7 +121,7 @@ function settle(say: Say, fallback: string) {
 function PrivateCopy({ book, say }: { book: KoboBook; say: Say }) {
   const headingId = useId();
   const { api: client } = useServices();
-  const prepare = useBookWrite((copy: string | null) => api.prepare(client, book.id, copy));
+  const prepare = useBookWrite(book.id, (copy: string | null) => api.prepare(client, book.id, copy));
   const copy = book.copy;
   if (!copy) return null;
   const start = () => {
@@ -176,7 +176,7 @@ function PrivateCopy({ book, say }: { book: KoboBook; say: Say }) {
 function SendToReaders({ book, say }: { book: KoboBook; say: Say }) {
   const headingId = useId();
   const { api: client } = useServices();
-  const deliver = useBookWrite(({ readerId, copy }: { readerId: string; copy: string | null }) => api.deliver(client, book.id, readerId, copy));
+  const deliver = useBookWrite(book.id, ({ readerId, copy }: { readerId: string; copy: string | null }) => api.deliver(client, book.id, readerId, copy));
   const ready = Boolean(book.copy?.ready);
   const owner = book.kobo_account.owner;
   return (

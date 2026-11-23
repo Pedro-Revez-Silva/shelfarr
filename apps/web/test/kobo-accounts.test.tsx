@@ -92,15 +92,28 @@ function book(overrides: Partial<KoboBook> = {}): KoboBook {
   };
 }
 
-function server(record: KoboAccount | null = koboAccount()): FakeServer {
-  return standardServer()
+type Live = { account: KoboAccount | null; book: KoboBook | null };
+
+function server(record: KoboAccount | null = koboAccount(), live: Live = { account: record, book: null }): FakeServer {
+  const api = standardServer()
     .on("GET", /\/api\/v1\/account$/, () => ({ body: { account: ACCOUNT, profile } }))
     .on("GET", /\/account\/kobo_readers$/, () => ({ body: { account: ACCOUNT, readers: [], new_reader: { base_url: "https://shelf.test/sub", store_coexistence: true, share_progress: true, receive_progress: false } } }))
     .on("GET", /\/account\/kobo_accounts$/, () => ({
       body: { account: ACCOUNT, kobo_accounts: [{ id: "5", name: "Family purchases", state: "connected", status_label: "Connected", shared_with: 1 }], received: [{ id: "6", name: "Sam's books", owner_name: "Sam Sharer", sendable_count: 1 }], new_account: { name: "My Kobo account" } },
     }))
-    .on("GET", /\/account\/kobo_accounts\/\d+$/, () => (record ? { body: { account: ACCOUNT, kobo_account: record } } : { status: 404, body: { error: "kobo_account_not_found" } }))
-    .on("GET", /\/kobo_catalogues\/\d+/, () => ({ body: { account: ACCOUNT, catalogue: catalogue() } }));
+    .on("GET", /\/account\/kobo_accounts\/\d+$/, () => (live.account ? { body: { account: ACCOUNT, kobo_account: live.account } } : { status: 404, body: { error: "kobo_account_not_found" } }))
+    .on("GET", /\/kobo_catalogues\/\d+/, () => ({ body: { account: ACCOUNT, catalogue: catalogue() } }))
+    .on("GET", /\/kobo_books\/\d+$/, () => (live.book ? { body: { account: ACCOUNT, book: live.book } } : { status: 404, body: { error: "kobo_book_not_found" } }));
+  const on = api.on.bind(api);
+  api.on = (method, pattern, handler) =>
+    on(method, pattern, async (request) => {
+      const result = await handler(request);
+      const body = result.body as { kobo_account?: KoboAccount; book?: KoboBook } | undefined;
+      if (method === "POST" && body?.kobo_account) live.account = body.kobo_account;
+      if (method === "POST" && body?.book) live.book = body.book;
+      return result;
+    });
+  return api;
 }
 
 async function tick(ms = 0) {
@@ -299,10 +312,11 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     let reads = 0;
     const refreshing = koboAccount({ refreshing: true, can_refresh: false });
     const withTess = koboAccount({ refreshing: true, can_refresh: false, shared_with: 2, sharing: { people: [...refreshing.sharing!.people, { id: "10", name: "Tess Tester", username: "tess", shared_at: "2026-11-22T10:00:00.000Z", inactive: false }], candidates: [] } });
-    const api = server(refreshing)
+    const live: Live = { account: refreshing, book: null };
+    const api = server(refreshing, live)
       .on("GET", /\/account\/kobo_accounts\/5$/, () => {
         reads += 1;
-        return reads === 1 ? { body: { account: ACCOUNT, kobo_account: refreshing } } : held.promise;
+        return reads === 2 ? held.promise : { body: { account: ACCOUNT, kobo_account: live.account } };
       })
       .on("POST", /\/kobo_accounts\/5\/shares$/, () => ({ body: { account: ACCOUNT, notice: "Shared with Tess Tester.", kobo_account: withTess } }));
     renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
@@ -396,6 +410,61 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await waitFor(() => expect(document.activeElement).toBe(within(sharing).getByRole("heading", { name: "Household sharing" })));
   });
 
+  test("two account changes answered out of order still end on what the server holds", async () => {
+    const held = deferred<{ body: unknown }>();
+    const final = koboAccount({ refreshing: true, can_refresh: false, shared_with: 0, sharing: { people: [], candidates: [{ id: "8", label: "Sam Sharer (sam)" }] } });
+    let reads = 0;
+    const api = server()
+      .on("GET", /\/account\/kobo_accounts\/5$/, () => {
+        reads += 1;
+        return { body: { account: ACCOUNT, kobo_account: reads === 1 ? koboAccount() : final } };
+      })
+      .on("POST", /\/shares\/8\/remove$/, () => held.promise)
+      .on("POST", /\/refresh$/, () => ({ body: { account: ACCOUNT, notice: "Catalogue refresh queued.", kobo_account: koboAccount({ refreshing: true, can_refresh: false }) } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    const sharing = (await screen.findByRole("heading", { name: "Household sharing" })).closest("section") as HTMLElement;
+    await userEvent.setup().click(within(sharing).getByRole("button", { name: "Stop sharing with Sam Sharer" }));
+    act(() => {
+      within(sharing).getByRole("button", { name: "Stop sharing" }).click();
+      screen.getByRole("button", { name: "Refresh catalogue" }).click();
+    });
+    await waitFor(() => expect(api.called("POST", /\/refresh$/)).toHaveLength(1));
+    await act(async () => {
+      held.resolve({ body: { account: ACCOUNT, notice: "Sam Sharer can no longer see this catalogue or receive its books.", kobo_account: koboAccount({ shared_with: 0, sharing: { people: [], candidates: [] } }) } });
+    });
+    await waitFor(() => expect(screen.getByText("Refreshing your catalogue… This page will update when it finishes.")).toBeTruthy());
+    expect(within(sharing).queryByRole("button", { name: "Stop sharing with Sam Sharer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh catalogue" })).toBeNull();
+  });
+
+  test("a reader removed during a send disappears from the page", async () => {
+    const live: Live = { account: koboAccount(), book: book({ copy: ready("c1") }) };
+    const api = server(live.account, live).on("POST", /\/kobo_books\/21\/deliver$/, () => {
+      live.book = book({ copy: ready("c1"), readers: [] });
+      return { status: 404, body: { error: "reader_not_found" } };
+    });
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-books/21" });
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Send to Clara" }));
+    expect(await screen.findByText("That Kobo reader is no longer connected to your account. Nothing was sent.")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("kobo-no-reader")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Send to Clara" })).toBeNull();
+  });
+
+  test("an approval that ends while its link is focused keeps focus and the same status line", async () => {
+    jest.useFakeTimers();
+    const api = server(pending()).on("POST", /\/kobo_accounts\/5\/poll$/, () => ({ status: 404, body: { error: "kobo_account_not_found" } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    await until(() => expect(screen.getByRole("link", { name: /Open Kobo activation/ })).toBeTruthy());
+    const status = screen.getByText("Waiting for approval…");
+    act(() => screen.getByRole("link", { name: /Open Kobo activation/ }).focus());
+    await tick(5000);
+    await until(() => expect(screen.getByRole("heading", { name: "Approval can't continue here" })).toBeTruthy());
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Approval can't continue here" }));
+    expect(screen.getByText("This connection could not be checked. Reload the page to continue.")).toBe(status);
+    await tick();
+    jest.useRealTimers();
+  });
+
   test("the copy already prepared can be sent while a newer one is prepared", async () => {
     const api = server().on("GET", /\/kobo_books\/21$/, () => ({ body: { account: ACCOUNT, book: book({ copy: { ...ready("c1"), preparing: true } }) } }));
     renderApp({ server: api, url: "/sub/preview/account/devices/kobo-books/21" });
@@ -428,17 +497,14 @@ describe("Kobo accounts in Account ▸ Devices", () => {
   });
 
   test("a recipient prepares a private copy, waits for it without overlapping checks, and sends it with the copy it saw", async () => {
-    let state: KoboBook = book();
+    const live: Live = { account: koboAccount(), book: book() };
     let reads = 0;
-    const api = server()
+    const api = server(live.account, live)
       .on("GET", /\/kobo_books\/21$/, () => {
         reads += 1;
-        return { body: { account: ACCOUNT, book: state } };
+        return { body: { account: ACCOUNT, book: live.book } };
       })
-      .on("POST", /\/kobo_books\/21\/prepare$/, () => {
-        state = book({ copy: { ...book().copy!, preparing: true, explanation: null } });
-        return { body: { account: ACCOUNT, book: state, notice: "Preparing a private copy. This usually takes under a minute." } };
-      })
+      .on("POST", /\/kobo_books\/21\/prepare$/, () => ({ body: { account: ACCOUNT, book: book({ copy: { ...book().copy!, preparing: true, explanation: null } }), notice: "Preparing a private copy. This usually takes under a minute." } }))
       .on("POST", /\/kobo_books\/21\/deliver$/, (request) =>
         (request.body as { copy: string }).copy === "c1"
           ? { status: 409, body: { account: ACCOUNT, error: "copy_changed", message: "This book's private copy changed after the page was shown. Review it and choose again.", book: book({ copy: { ...ready("c2") } }) } }
@@ -457,8 +523,9 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     });
     await until(() => expect(screen.getByText("Preparing a private copy from Kobo… This page updates when it finishes.")).toBeTruthy());
     expect(api.called("POST", /\/prepare$/)[0]!.body).toEqual({ copy: null });
+    await until(() => expect(reads).toBe(2));
     const before = reads;
-    state = book({ copy: ready("c1") });
+    live.book = book({ copy: ready("c1") });
     await tick(5000);
     await until(() => expect(screen.getByTestId("kobo-copy-status").textContent).toMatch(/^Ready · EPUB3 3\.0, 2 KB, prepared /));
     expect(reads).toBe(before + 1);
