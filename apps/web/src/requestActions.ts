@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ManualLink, RequestCopyChoice } from "./api/client";
+import type { ManualLink, RequestCopyChoice, RequestWithdrawal } from "./api/client";
 import { useServices } from "./services";
 
 function useRequestChange<V, T>(requestId: string, send: (variables: V) => Promise<T>) {
@@ -29,6 +29,11 @@ export function useRetryRequest(requestId: string) {
 export function useRemoveRequest(requestId: string) {
   const { api } = useServices();
   return useRequestChange(requestId, () => api.removeRequest(requestId));
+}
+
+export function useWithdrawRequest(requestId: string) {
+  const { api } = useServices();
+  return useRequestChange(requestId, (withdrawal: RequestWithdrawal) => api.withdrawRequest(requestId, withdrawal));
 }
 
 export function useSearchRequestAgain(requestId: string) {

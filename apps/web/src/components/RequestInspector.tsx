@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
-import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
+import type { RequestActions, RequestCopies, RequestDetail, RequestWithdrawalOffer, StoreOffer } from "../contract";
+import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain, useWithdrawRequest } from "../requestActions";
 import { CopyTable, focusLeftThePage, keepsFocus } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
@@ -25,7 +25,9 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
   const searchHere = admin && actions.search_again && !request.copies;
   const memberUpload = !admin && actions.upload_url !== null && (request.store_offers ?? []).length === 0;
   const memberRemoval = !admin && actions.remove === "delete_history" ? actions.remove : null;
-  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || searchHere));
+  const withdraw = useWithdrawRequest(request.id);
+  const withdrawal = admin ? null : actions.withdraw;
+  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || withdrawal || withdraw.isError || (admin && (actions.retry || searchHere));
   if (!shown) return null;
   return (
     <div className="copy-actions request-actions">
@@ -42,6 +44,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
       {searchHere ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
       {actions.cancel ? <CancelTracked request={request} /> : null}
+      {withdrawal ? <WithdrawRequest offer={withdrawal} withdraw={withdraw} /> : null}
       {memberUpload ? (
         <Link className="button" to="/library/uploads" search={{ request: request.id }}>
           Upload a file for this request
@@ -51,6 +54,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       {retry.data?.message ? <p role="status">{retry.data.message}</p> : null}
       {retry.isError ? <Failure error={retry.error} fallback="The request could not be retried. Nothing was changed." /> : null}
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
+      {withdraw.isError ? <Failure error={withdraw.error} fallback="The request could not be removed. Nothing was changed." /> : null}
     </div>
   );
 }
@@ -104,6 +108,81 @@ function CancelTracked({ request }: { request: RequestDetail }) {
     <>
       <Confirm ask="Cancel request" question="Cancel this request? If a download is running, it is stopped and its files are deleted from the download client." confirm="Yes, cancel it" busy="Cancelling…" state={cancel} onConfirm={() => cancel.mutate(undefined)} />
       {cancel.isError ? <Failure error={cancel.error} fallback="The request could not be cancelled. Nothing was changed." /> : null}
+    </>
+  );
+}
+
+function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; withdraw: ReturnType<typeof useWithdrawRequest> }) {
+  const navigate = useNavigate();
+  const [askedOn, setAskedOn] = useState<string | null>(null);
+  const [removeTorrent, setRemoveTorrent] = useState(false);
+  const ask = useRef<HTMLButtonElement>(null);
+  const keep = useRef<HTMLButtonElement>(null);
+  const wasAsking = useRef(false);
+  const questionId = useId();
+  const consequenceId = useId();
+  const torrentId = useId();
+  const torrentHintId = useId();
+  const asking = askedOn !== null && (askedOn === offer.revision || withdraw.isPending);
+  const lapsed = askedOn !== null && !asking;
+  const torrent = offer.torrents === 1 ? "the torrent" : `its ${offer.torrents} torrents`;
+  const choosesTorrent = offer.torrents > 0 && removeTorrent;
+
+  useEffect(() => {
+    if (asking) keep.current?.focus();
+    else if (wasAsking.current && focusLeftThePage()) ask.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
+
+  const open = () => {
+    withdraw.reset();
+    setRemoveTorrent(false);
+    setAskedOn(offer.revision);
+  };
+  const confirm = () => {
+    if (withdraw.isPending) return;
+    withdraw.mutate(
+      { expected_revision: offer.revision, remove_torrent: choosesTorrent },
+      { onSuccess: (answer) => (answer.request.status === "removed" ? void navigate({ to: "/requests", replace: true }) : undefined) },
+    );
+  };
+
+  return (
+    <>
+      {asking ? (
+        <div className="cancel-confirm withdraw-confirm" role="group" aria-labelledby={questionId} aria-describedby={consequenceId}>
+          <p id={questionId}>Remove this request?</p>
+          <div id={consequenceId} className="withdraw-consequence">
+            <p>It leaves your requests and Shelfarr stops working on it. Files already in the library stay.</p>
+            {offer.torrents > 0 ? (
+              <div className="check-field">
+                <input id={torrentId} type="checkbox" checked={removeTorrent} aria-describedby={torrentHintId} onChange={(event) => setRemoveTorrent(event.currentTarget.checked)} />
+                <label htmlFor={torrentId}>Also remove {torrent} from the download client</label>
+                <p id={torrentHintId} className="field-hint">
+                  {choosesTorrent
+                    ? `Shelfarr asks the download client to remove ${torrent}. The files already downloaded stay on disk. If the client can't be reached, the request is still removed and ${torrent} stays.`
+                    : `The download client keeps ${torrent} and the files already downloaded.`}
+                </p>
+              </div>
+            ) : (
+              <p>No download client is contacted.</p>
+            )}
+          </div>
+          <span className="withdraw-buttons">
+            <button type="button" className="button button--danger" aria-disabled={withdraw.isPending ? true : undefined} onClick={confirm}>
+              {withdraw.isPending ? "Removing…" : choosesTorrent ? `Yes, remove it and ${torrent}` : "Yes, remove it"}
+            </button>
+            <button ref={keep} type="button" className="button button--subtle" onClick={() => setAskedOn(null)}>
+              Keep it
+            </button>
+          </span>
+        </div>
+      ) : (
+        <button ref={ask} type="button" className="button button--subtle" onClick={open}>
+          Remove request
+        </button>
+      )}
+      {lapsed && !withdraw.isError ? <p role="status">This request changed while you were deciding. Check what removing it does now and ask again.</p> : null}
     </>
   );
 }

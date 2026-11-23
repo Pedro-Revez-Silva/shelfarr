@@ -67,6 +67,19 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_equal "requested", response.parsed_body.fetch("book").fetch("formats").find { |format| format.fetch("book_type") == "audiobook" }.fetch("state")
   end
 
+  test "a requester's unfinished request is read and removed through the API under the deployment path" do
+    sign_in_as(users(:one))
+    mine = Request.create!(book: Book.create!(title: "Subpath removal", book_type: :ebook), user: users(:one), status: :pending)
+    get "#{BASE}/preview/requests/#{mine.id}"
+    assert_response :success
+    get "#{BASE}/preview/api/v1/requests/#{mine.id}", headers: account_headers(users(:one))
+    revision = response.parsed_body.dig("request", "actions", "withdraw", "revision")
+    post "#{BASE}/preview/api/v1/requests/#{mine.id}/withdraw", params: { expected_revision: revision, remove_torrent: false }, headers: account_headers(users(:one)), as: :json
+    assert_response :success
+    assert_equal "removed", response.parsed_body.dig("request", "status")
+    assert_not Request.exists?(mine.id)
+  end
+
   test "an account the allowlist refuses gets a release page that names this deployment's path" do
     sign_in_as(users(:one))
     with_env(WebPreview::Access::VARIABLE => users(:two).id.to_s) do

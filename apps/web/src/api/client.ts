@@ -37,6 +37,7 @@ import { ApiError, type FailureKind } from "./errors";
 export const ACCOUNT_HEADER = "X-Shelfarr-Account";
 
 export type ManualLink = { kind: "magnet" | "nzb"; url: string; replace_library_file: boolean };
+export type RequestWithdrawal = { expected_revision: string; remove_torrent: boolean };
 export type RequestCopyChoice = { result_id: string } | { result_id: string; expected_revision: string; replace_library_file: boolean };
 
 export type ApiDependencies = {
@@ -105,6 +106,7 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   search_unavailable: "busy",
   cannot_retry: "conflict",
   cannot_remove: "conflict",
+  request_changed: "conflict",
   manual_rejected: "invalid",
   invalid_code: "invalid",
   invalid_password: "invalid",
@@ -294,6 +296,10 @@ export class ApiClient {
 
   removeRequest(requestId: string, signal?: AbortSignal): Promise<RequestActionAnswer> {
     return this.requestAction(`/requests/${encodeURIComponent(requestId)}/remove`, {}, signal);
+  }
+
+  withdrawRequest(requestId: string, withdrawal: RequestWithdrawal, signal?: AbortSignal): Promise<RequestActionAnswer> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/withdraw`, withdrawal, signal);
   }
 
   addManualLink(requestId: string, link: ManualLink, signal?: AbortSignal): Promise<RequestActionAnswer> {

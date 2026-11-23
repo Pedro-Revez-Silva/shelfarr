@@ -3,6 +3,8 @@
 class WebPreview::RequestsController < WebPreview::APIController
   include ConsumerWebPublication
 
+  class WithdrawalChanged < StandardError; end
+
   IDENTIFIER = /\A[1-9]\d{0,18}\z/
   FILTER_STATUSES = %w[active pending searching not_found downloading processing completed failed awaiting_purchase].freeze
   MANUAL_FIELDS = { "magnet" => :magnet_url, "nzb" => :nzb_url }.freeze
@@ -16,6 +18,7 @@ class WebPreview::RequestsController < WebPreview::APIController
   READ_ATTEMPTS = 3
   NOT_CHOOSABLE = "This copy can no longer be chosen. The page shows what can be chosen now."
   COPIES_CHANGED = "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one."
+  WITHDRAWAL_CHANGED = "This request changed since the page was read. The page now shows it as it is; check what removing it does and choose again."
   REPLACEMENT_UNCONFIRMED = "This book is already in the library. Confirm that this copy replaces the library file, then choose it again."
 
   before_action :require_admin, only: [ :selection, :search, :retry, :manual ]
@@ -92,6 +95,27 @@ class WebPreview::RequestsController < WebPreview::APIController
       return render_error("cannot_remove", :conflict, message: "Only finished requests can be deleted.")
     end
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: "removed" } }
+  rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
+    message = error.respond_to?(:record) ? error.record.errors.full_messages.to_sentence : error.message
+    render_error("cannot_remove", :conflict, message: message.to_s.first(300).presence || request.upload_cancellation_blocked_message)
+  end
+
+  def withdraw
+    return render_error("request_changed", :conflict, message: WITHDRAWAL_CHANGED) if Current.user.admin?
+
+    revision = params[:expected_revision]
+    remove_torrent = params[:remove_torrent]
+    return render_error("invalid_request", :bad_request) unless revision.is_a?(String) && [ true, false ].include?(remove_torrent)
+
+    request = Request.for_user(Current.user).find(identifier(params[:id]))
+    outcome = RequestWithdrawal.call(request, remove_torrents: remove_torrent) do |locked|
+      raise WithdrawalChanged unless revision == WebPreview::RequestJson.withdrawal_revision(locked)
+    end
+    return render_action(request) unless outcome == :removed
+
+    render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: "removed" } }
+  rescue WithdrawalChanged
+    render_error("request_changed", :conflict, message: WITHDRAWAL_CHANGED)
   rescue ActiveRecord::RecordNotDestroyed, Request::CancellationBlockedError => error
     message = error.respond_to?(:record) ? error.record.errors.full_messages.to_sentence : error.message
     render_error("cannot_remove", :conflict, message: message.to_s.first(300).presence || request.upload_cancellation_blocked_message)

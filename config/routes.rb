@@ -250,6 +250,7 @@ Rails.application.routes.draw do
     get "requests/:id", to: "requests#show", as: :request
     post "requests/:id/retry", to: "requests#retry", as: :request_retry
     post "requests/:id/remove", to: "requests#remove", as: :request_remove
+    post "requests/:id/withdraw", to: "requests#withdraw", as: :request_withdraw
     post "requests/:id/manual", to: "requests#manual", as: :request_manual
     get "notifications", to: "notifications#index", as: :notifications
     post "notifications/read", to: "notifications#mark_all_read", as: :notifications_read
