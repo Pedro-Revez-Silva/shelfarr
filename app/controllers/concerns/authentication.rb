@@ -1,5 +1,6 @@
 module Authentication
   extend ActiveSupport::Concern
+  include OfflineContinuity
 
   included do
     before_action :require_authentication
@@ -29,22 +30,24 @@ module Authentication
       return nil unless cookies.signed[:session_id]
 
       session = Session.find_by(id: cookies.signed[:session_id])
-      return nil unless session
+      return session_not_found unless session
 
       max_age_days = SettingsService.get(:session_max_age_days, default: 30)
-      if session.created_at < max_age_days.days.ago
-        session.destroy
-        cookies.delete(:session_id)
-        return nil
-      end
-
-      if session.user&.deleted?
-        session.destroy
-        cookies.delete(:session_id)
-        return nil
-      end
+      return end_cookie_session(session) if session.created_at < max_age_days.days.ago || session.user&.deleted?
 
       session
+    end
+
+    def session_not_found
+      rotate_offline_continuity
+      nil
+    end
+
+    def end_cookie_session(session)
+      session.destroy
+      cookies.delete(:session_id)
+      rotate_offline_continuity
+      nil
     end
 
     def request_authentication
@@ -73,11 +76,13 @@ module Authentication
           # Note: secure flag intentionally omitted for self-hosted HTTP access
           # If using HTTPS via reverse proxy, the proxy handles secure transport
         }
+        rotate_offline_continuity
       end
     end
 
     def terminate_session
       Current.session.destroy
       cookies.delete(:session_id)
+      rotate_offline_continuity
     end
 end

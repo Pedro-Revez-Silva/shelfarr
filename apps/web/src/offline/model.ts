@@ -5,7 +5,7 @@ export const ACCOUNT_LIMIT_BYTES = 256 * 1024 * 1024;
 export const RESERVE_BYTES = 32 * 1024 * 1024;
 export const CLOCK_TOLERANCE_MS = 5 * 60_000;
 
-export type ConfirmedAccount = { account: string; confirmedAt: number; validForMs: number; seenAt?: number };
+export type ConfirmedAccount = { account: string; confirmedAt: number; validForMs: number; seenAt?: number; continuity?: string };
 export type AccountState = { record: ConfirmedAccount | null; clearedAt: number };
 
 export type SavedAsset = { id: string; filename: string; media_type: string; size_bytes: number };

@@ -33,6 +33,7 @@ module WebPreviewReaderShells
   end
 
   def web_preview_offline_boot
-    { worker: web_preview_offline_worker_path, scope: "#{web_preview_library_path}/", downloads: web_preview_downloads_path }
+    { worker: web_preview_offline_worker_path, scope: "#{web_preview_library_path}/", downloads: web_preview_downloads_path,
+      continuity_cookie: offline_continuity_cookie }
   end
 end

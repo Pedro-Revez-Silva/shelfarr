@@ -20,8 +20,12 @@ export function useOffline(): Offline | null {
   return useContext(OfflineContext);
 }
 
-export function confirmationFrom(account: string, expiresIn: number | undefined, now: number): ConfirmedAccount | null {
-  return expiresIn === undefined ? null : { account, confirmedAt: now, validForMs: expiresIn * 1000 };
+type Confirmable = { account: string; offline_expires_in?: number | undefined; offline_continuity?: string | undefined };
+
+export function confirmationFrom({ account, offline_expires_in: expiresIn, offline_continuity: continuity }: Confirmable, now: number): ConfirmedAccount | null {
+  if (expiresIn === undefined) return null;
+  const confirmation: ConfirmedAccount = { account, confirmedAt: now, validForMs: expiresIn * 1000 };
+  return continuity === undefined ? confirmation : { ...confirmation, continuity };
 }
 
 const CHANNEL = "shelfarr-go-preview-offline";

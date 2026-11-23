@@ -168,7 +168,7 @@ export type PasswordChange = { current_password: string; password: string; passw
 
 export const errorEnvelopeSchema = z.object({ error: z.string(), message: z.string().optional() });
 
-export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath });
+export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath, continuity_cookie: z.string().regex(/^[A-Za-z0-9_]{1,64}$/).optional() });
 export type OfflineBoot = z.infer<typeof offlineBootSchema>;
 
 export const bootSchema = z.object({
@@ -218,7 +218,7 @@ export type Boot = {
 };
 
 export const bootstrapSchema = z.discriminatedUnion("authenticated", [
-  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative(), offline_expires_in: z.number().int().nonnegative().optional() }),
+  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative(), offline_expires_in: z.number().int().nonnegative().optional(), offline_continuity: z.string().min(1).optional() }),
   z.object({
     authenticated: z.literal(false),
     csrf_token: z.string().min(1),

@@ -9,7 +9,7 @@ import { offlineStoreFor } from "./store";
 
 type Props = { services: Services; store?: OfflineStore; fetcher?: typeof fetch; children: ReactNode };
 
-export function RailsOffline({ services, store = offlineStoreFor(services.boot.mount), fetcher, children }: Props) {
+export function RailsOffline({ services, store = offlineStoreFor(services.boot.mount, services.boot.offline?.continuity_cookie), fetcher, children }: Props) {
   const { boot, guard } = services;
   const [auth] = useState(() => new AuthClient(boot.api, fetcher));
   const [offline, setOffline] = useState<Offline | null>(null);
@@ -26,7 +26,7 @@ export function RailsOffline({ services, store = offlineStoreFor(services.boot.m
     const askedAt = Date.now();
     auth.bootstrap().then(
       async (answer) => {
-        const confirmation = answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null;
+        const confirmation = answer.authenticated ? confirmationFrom(answer, askedAt) : null;
         await keepOfflineAccount(target.offline, store, confirmation, askedAt);
         if (!current || !confirmation || confirmation.account !== guard.account || !guard.isActive()) return;
         setOffline(createOnlineOffline({ server: target, auth, store, guard, confirmation, fetcher }));

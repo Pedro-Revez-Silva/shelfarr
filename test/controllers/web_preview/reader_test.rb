@@ -64,7 +64,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     assert_equal %w[api classic_downloads mount offline page_engine reader_engine reader_formats runtime version view], reader_boot.keys.sort
     assert_equal [ 1, "rails", "reader", "/preview", "/preview/api/v1", "/read/downloads", %w[cbz epub pdf] ],
       reader_boot.values_at("version", "runtime", "view", "mount", "api", "classic_downloads", "reader_formats")
-    assert_equal({ "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads" }, reader_boot.fetch("offline"))
+    assert_equal({ "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") }, reader_boot.fetch("offline"))
     assert_match(%r{\A/assets/consumer_reader_engine-\h+\.js\z}, reader_boot.fetch("reader_engine"))
     page_engine = reader_boot.fetch("page_engine")
     assert_match(%r{\A/assets/consumer_pdf_engine-\h+\.js\z}, page_engine.fetch("engine"))
@@ -137,7 +137,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
       Session.where(user: users(:one)).update_all(created_at: 10.days.ago)
       get web_preview_api_auth_bootstrap_path
       body = response.parsed_body
-      assert_equal({ "authenticated" => true, "account" => users(:one).id.to_s, "expires_in" => 7200, "offline_expires_in" => 20.days.to_i }, body.except("csrf_token"))
+      assert_equal({ "authenticated" => true, "account" => users(:one).id.to_s, "expires_in" => 7200, "offline_expires_in" => 20.days.to_i }, body.except("csrf_token", "offline_continuity"))
       SettingsService.set(:session_max_age_days, 90)
       get web_preview_api_auth_bootstrap_path
       assert_equal 30.days.to_i, response.parsed_body.fetch("offline_expires_in")
@@ -428,7 +428,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
   test "the Library shell tells the app which formats the reader opens and where offline copies live" do
     sign_in_as(users(:one))
     get web_preview_library_path
-    assert_equal [ %w[cbz epub pdf], { "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads" } ],
+    assert_equal [ %w[cbz epub pdf], { "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") } ],
       boot.values_at("reader_formats", "offline")
   end
 end

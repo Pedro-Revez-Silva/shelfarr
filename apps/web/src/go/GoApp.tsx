@@ -60,7 +60,7 @@ function describeUnavailable(error: unknown): { message: string; retry: boolean 
   return { message: "The server answered with something these screens do not understand. Reload the page to try again.", retry: true };
 }
 
-export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
+export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount, boot.offline?.continuity_cookie) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
   const auth = useMemo(() => new AuthClient(boot.api, fetcher), [boot.api, fetcher]);
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [epoch, setEpoch] = useState(0);
@@ -94,7 +94,7 @@ export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount) }: { 
     (result: LoginResult) => {
       markPageNavigated();
       setEpoch((value) => value + 1);
-      const confirmation = confirmationFrom(result.account, result.offline_expires_in, Date.now());
+      const confirmation = confirmationFrom(result, Date.now());
       void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
       setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in, confirmation });
     },
@@ -169,7 +169,7 @@ function fromBootstrap(result: Bootstrap, options: Load, sentAt: number): AuthSt
       account: result.account,
       token: result.csrf_token,
       expiresIn: result.expires_in,
-      confirmation: confirmationFrom(result.account, result.offline_expires_in, sentAt),
+      confirmation: confirmationFrom(result, sentAt),
     };
   }
   return {

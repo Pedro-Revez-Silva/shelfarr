@@ -72,7 +72,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
       return;
     }
     if (!guard.isActive()) return;
-    const confirmation = answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, sentAt) : null;
+    const confirmation = answer.authenticated ? confirmationFrom(answer, sentAt) : null;
     if (!answer.authenticated || !confirmation) {
       await ended();
       return;

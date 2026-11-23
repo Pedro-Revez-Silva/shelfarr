@@ -29,7 +29,7 @@ export async function refreshOfflineAccount(offline: OfflineBoot | undefined, au
     if (definitiveRefusal(error)) await store.release(askedAt);
     return;
   }
-  await keepOfflineAccount(offline, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
+  await keepOfflineAccount(offline, store, answer.authenticated ? confirmationFrom(answer, askedAt) : null, askedAt);
 }
 
 type OnlineInputs = { server: Server; auth: AuthClient; store: OfflineStore; guard: AccountGuard; confirmation: ConfirmedAccount | null; fetcher?: typeof fetch | undefined };
@@ -63,7 +63,7 @@ export function createOnlineOffline({ server, auth, store, guard, confirmation, 
         guard.lock("account_changed", sentAt);
         throw new SaveFailure("signed_out");
       }
-      const fresh = confirmationFrom(answer.account, answer.offline_expires_in, sentAt);
+      const fresh = confirmationFrom(answer, sentAt);
       if (!fresh) throw new SaveFailure("unsupported");
       if (!(await store.confirm(fresh))) throw new SaveFailure("signed_out");
       return fresh;

@@ -76,8 +76,22 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the offline marker belongs to this deployment's preview path and name, never the root deployment's" do
+    name = OfflineContinuity.cookie_name("#{BASE}/preview")
+    assert_not_equal OfflineContinuity.cookie_name("/preview"), name
+    assert_not_equal OfflineContinuity.cookie_name("#{BASE}/preview/preview"), name
+    users(:one).update!(failed_login_count: 0, locked_until: nil)
+    post "#{BASE}/session", params: { username: users(:one).username, password: "Password123!" }
+    assert_redirected_to "http://www.example.com#{BASE}/"
+    line = Array(response.headers["Set-Cookie"]).flat_map { |header| header.split("\n") }.select { |cookie| cookie.start_with?("shelfarr_offline_") }.sole
+    assert line.start_with?("#{name}=")
+    assert_includes line.split(";").map(&:strip), "path=#{BASE}/preview"
+    get "#{BASE}/preview/api/v1/auth/bootstrap"
+    assert_equal line.split(";").first.delete_prefix("#{name}="), response.parsed_body.fetch("offline_continuity")
+  end
+
   def offline_boot
-    { "worker" => "#{BASE}/preview/offline-worker.js", "scope" => "#{BASE}/preview/library/", "downloads" => "#{BASE}/preview/library/downloads" }
+    { "worker" => "#{BASE}/preview/offline-worker.js", "scope" => "#{BASE}/preview/library/", "downloads" => "#{BASE}/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("#{BASE}/preview") }
   end
 
   test "the reader, its media, its worker and Downloads live under the deployment path" do

@@ -30,9 +30,24 @@ function completed<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-async function readAccount(stores: Stores): Promise<AccountState> {
+type Continuity = () => string | null;
+
+async function readAccount(stores: Stores, continuity: Continuity | null): Promise<AccountState> {
   const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
-  return { record: stored?.record ?? null, clearedAt: stored?.clearedAt ?? 0 };
+  const record = stored?.record ?? null;
+  return { record: record && continuous(record, continuity) ? record : null, clearedAt: stored?.clearedAt ?? 0 };
+}
+
+export function continuous(record: ConfirmedAccount, continuity: Continuity | null): boolean {
+  return continuity === null || (record.continuity ?? null) === continuity();
+}
+
+export function cookieValue(cookies: string, name: string): string | null {
+  for (const pair of cookies.split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator >= 0 && pair.slice(0, separator).trim() === name) return pair.slice(separator + 1).trim() || null;
+  }
+  return null;
 }
 
 function writeAccount(stores: Stores, state: AccountState): Promise<IDBValidKey> {
@@ -56,9 +71,11 @@ export function databaseNameFor(mount: string): string {
 export class IndexedDbOfflineStore implements OfflineStore {
   private opened: Promise<IDBDatabase> | null = null;
   private readonly name: string;
+  private readonly continuity: Continuity | null;
 
-  constructor(name: string = DATABASE_NAME) {
+  constructor(name: string = DATABASE_NAME, continuity: Continuity | null = null) {
     this.name = name;
+    this.continuity = continuity;
   }
 
   async exists(): Promise<boolean> {
@@ -73,12 +90,13 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async accountState(): Promise<AccountState> {
     if (!(await this.exists())) return { record: null, clearedAt: 0 };
-    return this.run(["account"], "readonly", readAccount);
+    return this.run(["account"], "readonly", (stores) => readAccount(stores, this.continuity));
   }
 
-  confirm(value: ConfirmedAccount): Promise<boolean> {
+  async confirm(value: ConfirmedAccount): Promise<boolean> {
+    if (!continuous(value, this.continuity)) return false;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = confirmedState(await readAccount(stores), value);
+      const next = confirmedState(await readAccount(stores, this.continuity), value);
       if (next) await writeAccount(stores, next);
       return next !== null;
     });
@@ -87,7 +105,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
   async release(askedAt: number): Promise<boolean> {
     if (!(await this.exists())) return true;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = releasedState(await readAccount(stores), askedAt);
+      const next = releasedState(await readAccount(stores, this.continuity), askedAt);
       await writeAccount(stores, next);
       return next.record === null;
     });
@@ -96,7 +114,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
   async forget(account?: string, at: number = Date.now()): Promise<void> {
     if (!(await this.exists())) return;
     await this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
+      const current = await readAccount(stores, this.continuity);
       if (account !== undefined && current.record?.account !== account) return;
       await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, at, current.record?.confirmedAt ?? 0) });
     });
@@ -104,7 +122,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   touch(account: string, now: number): Promise<boolean> {
     return this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
+      const current = await readAccount(stores, this.continuity);
       const record = current.record;
       const ownedSince = record?.account === account ? record.confirmedAt : null;
       if (!usable(record, account, now)) {
@@ -158,7 +176,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   commit(book: SavedBook, blob: Blob, token: string, now: number): Promise<CommitOutcome> {
     return this.run(["account", "books", "files", "attempts"], "readwrite", async (stores): Promise<CommitOutcome> => {
-      if (!usable((await readAccount(stores)).record, book.account, now)) return "account";
+      if (!usable((await readAccount(stores, this.continuity)).record, book.account, now)) return "account";
       const attempt = await completed<Attempt | undefined>(stores.attempts.get(book.key));
       if (!attempt || attempt.token !== token || attempt.assetId !== book.asset.id) return "removed";
       const saved = await completed<SavedBook[]>(stores.books.index("account").getAll(book.account));
@@ -175,7 +193,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
   updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook | null, now: number): Promise<UpdateOutcome> {
     return this.run(["account", "books"], "readwrite", async (stores): Promise<UpdateOutcome> => {
       const book = await completed<SavedBook | undefined>(stores.books.get(bookKey(account, id)));
-      if (!usable((await readAccount(stores)).record, account, now) || !book) return "refused";
+      if (!usable((await readAccount(stores, this.continuity)).record, account, now) || !book) return "refused";
       const next = change(book);
       if (!next || next === book) return "unchanged";
       await completed(stores.books.put(next));
@@ -266,11 +284,11 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
 const stores = new Map<string, OfflineStore>();
 
-export function offlineStoreFor(mount: string): OfflineStore {
+export function offlineStoreFor(mount: string, continuityCookie?: string): OfflineStore {
   const name = databaseNameFor(mount);
   const known = stores.get(name);
   if (known) return known;
-  const created = new IndexedDbOfflineStore(name);
+  const created = new IndexedDbOfflineStore(name, continuityCookie === undefined ? null : () => cookieValue(document.cookie, continuityCookie));
   stores.set(name, created);
   return created;
 }

@@ -94,7 +94,7 @@ class WebPreview::AccessControllerTest < ActionDispatch::IntegrationTest
       assert_select "[style]", count: 0
       boot = JSON.parse(css_select("script#shelfarr-boot").sole.text)
       assert_equal({ "version" => 1, "account" => users(:one).id.to_s, "mount" => "/preview", "api" => "/preview/api/v1", "classic_library" => "/read", "reader_formats" => %w[cbz epub pdf],
-        "offline" => { "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads" } }, boot)
+        "offline" => { "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") } }, boot)
       assert_select "meta[name=csrf-token]"
       assert_select "script[type=module][src*='web/preview']"
       assert_select "link[rel=stylesheet][href*='web/preview']"
