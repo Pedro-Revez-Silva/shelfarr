@@ -152,11 +152,12 @@ export function ManageReaderLink({ id }: { id: string }) {
   );
 }
 
-export function ConfirmAction({ label, question, confirmLabel, busy, danger = false, onConfirm }: { label: ReactNode; question: string | null; confirmLabel: string; busy: boolean; danger?: boolean; onConfirm: () => void }) {
-  const [asking, setAsking] = useState(false);
+export function ConfirmAction({ label, question, confirmLabel, busy, danger = false, subject, onConfirm }: { label: ReactNode; question: string | null; confirmLabel: string; busy: boolean; danger?: boolean; subject: string; onConfirm: (subject: string) => void }) {
+  const [opened, setOpened] = useState<string | null>(null);
   const confirm = useRef<HTMLButtonElement>(null);
   const start = useRef<HTMLButtonElement>(null);
   const wasAsking = useRef(false);
+  const asking = opened !== null && opened === subject;
   useEffect(() => {
     if (asking) confirm.current?.focus();
     else if (wasAsking.current) start.current?.focus();
@@ -165,14 +166,14 @@ export function ConfirmAction({ label, question, confirmLabel, busy, danger = fa
   const startClass = danger ? "button button--subtle button--danger" : "button";
   if (question === null) {
     return (
-      <button type="button" className={startClass} aria-disabled={busy ? true : undefined} aria-busy={busy} onClick={() => (busy ? undefined : onConfirm())}>
+      <button type="button" className={startClass} aria-disabled={busy ? true : undefined} aria-busy={busy} onClick={() => (busy ? undefined : onConfirm(subject))}>
         {label}
       </button>
     );
   }
   if (!asking) {
     return (
-      <button ref={start} type="button" className={startClass} onClick={() => setAsking(true)}>
+      <button ref={start} type="button" className={startClass} onClick={() => setOpened(subject)}>
         {label}
       </button>
     );
@@ -188,13 +189,13 @@ export function ConfirmAction({ label, question, confirmLabel, busy, danger = fa
         aria-busy={busy}
         onClick={() => {
           if (busy) return;
-          setAsking(false);
-          onConfirm();
+          setOpened(null);
+          onConfirm(opened);
         }}
       >
         {confirmLabel}
       </button>
-      <button type="button" className="button button--subtle" onClick={() => setAsking(false)}>
+      <button type="button" className="button button--subtle" onClick={() => setOpened(null)}>
         Keep it
       </button>
     </span>

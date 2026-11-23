@@ -118,6 +118,7 @@ describe("Kobo readers in Account ▸ Devices", () => {
 
     await user.click(within(setup).getByRole("button", { name: "Hide the address" }));
     expect(screen.queryByText(`api_endpoint=${ENDPOINT}`)).toBeNull();
+    expect(document.activeElement).toBe(card);
     expect(within(card).getByRole("button", { name: "Create connection" })).toBeTruthy();
     await waitFor(() => expect(server.called("GET", /\/account\/kobo_readers$/).length).toBeGreaterThan(1));
   });
@@ -261,6 +262,35 @@ describe("a Kobo reader's page", () => {
     expect(await screen.findByText("Kobo connection revoked. Books already on the reader are kept.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Kobo connection revoked", level: 1 })).toBeTruthy();
     expect(server.called("POST", /\/revoke$/).map((request) => request.body)).toEqual([{ version: "v1" }]);
+  });
+
+  test("an open confirmation closes when the reader or the place it was opened on changes, and sends only what was confirmed", async () => {
+    const server = koboServer()
+      .on("POST", /\/revoke$/, () => ({ body: { account: ACCOUNT, revoked: "3", notice: "Kobo connection revoked. Books already on the reader are kept." } }))
+      .on("POST", /\/places\/kobo$/, () => ({ body: { account: ACCOUNT, reader: reader({ version: "v2", deliveries: [delivery({ choice: "c3", place: null })] }), notice: "Shelfarr now resumes The Quiet Library at the Kobo place." } }));
+    const { services } = renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Use Kobo place" }));
+    expect(screen.getByRole("group", { name: /Resume The Quiet Library/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Revoke connection" }));
+    expect(screen.getByRole("group", { name: /Revoke this Kobo connection/ })).toBeTruthy();
+    await act(async () => {
+      services.queryClient.setQueryData(["account", ACCOUNT, "kobo", "reader", "3"], reader({ name: "Clara two", version: "v2", deliveries: [delivery({ choice: "c2" })] }));
+    });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(screen.getByRole("heading", { name: "Clara two", level: 1 })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: /Resume The Quiet Library/ })).toBeNull();
+    expect(screen.queryByRole("group", { name: /Revoke this Kobo connection/ })).toBeNull();
+    expect(server.called("POST", /places|revoke/)).toEqual([]);
+
+    await user.click(screen.getByRole("button", { name: "Use Kobo place" }));
+    await user.click(within(screen.getByRole("group", { name: /Resume The Quiet Library/ })).getByRole("button", { name: "Use Kobo place" }));
+    await screen.findByText("Shelfarr now resumes The Quiet Library at the Kobo place.");
+    expect(server.called("POST", /places\/kobo$/)[0]?.body).toEqual({ entitlement_id: "11111111-2222-3333-4444-555555555555", choice: "c2" });
+    await user.click(screen.getByRole("button", { name: "Revoke connection" }));
+    await user.click(within(screen.getByRole("group", { name: /Revoke this Kobo connection/ })).getByRole("button", { name: "Revoke connection" }));
+    await screen.findByRole("heading", { name: "Kobo connection revoked", level: 1 });
+    expect(server.called("POST", /revoke$/)[0]?.body).toEqual({ version: "v2" });
   });
 
   test("a reader changed elsewhere is not revoked from an old page", async () => {

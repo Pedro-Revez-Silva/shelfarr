@@ -6,7 +6,6 @@ import { PageHeading } from "../../components/PageHeading";
 import { AccountRail } from "../../components/PersonalSettings";
 import { EmptyState, ErrorPanel, Loading } from "../../components/States";
 import { Said, useSay } from "../../server/extras";
-import { RemoveZone } from "../../server/primitives";
 import { LeaveDialog } from "../../server/ServerCategoryPage";
 import { useServices } from "../../services";
 import { useDocumentTitle } from "../../title";
@@ -138,9 +137,9 @@ function DeliveryRow({ reader, delivery, say }: { reader: KoboReader; delivery: 
   );
   const row = useRef<HTMLDivElement>(null);
   const busy = choose.isPending || resend.isPending;
-  const pick = (place: "kobo" | "shelfarr") =>
+  const pick = (place: "kobo" | "shelfarr", choice: string) =>
     choose.mutate(
-      { delivery, place },
+      { delivery: { entitlement_id: delivery.entitlement_id, choice }, place },
       {
         onSuccess: (answer) => {
           say(answer.kind === "chosen" ? "success" : "error", answer.kind === "chosen" ? answer.notice : answer.message);
@@ -169,10 +168,10 @@ function DeliveryRow({ reader, delivery, say }: { reader: KoboReader; delivery: 
       </div>
       <div className="form-actions">
         {delivery.outbound?.choosable ? (
-          <ConfirmAction label="Send Shelfarr place" question={`Move ${delivery.title} on ${reader.name} to the Shelfarr place at its next sync?`} confirmLabel="Send Shelfarr place" busy={busy} onConfirm={() => pick("shelfarr")} />
+          <ConfirmAction label="Send Shelfarr place" question={`Move ${delivery.title} on ${reader.name} to the Shelfarr place at its next sync?`} confirmLabel="Send Shelfarr place" busy={busy} subject={delivery.choice} onConfirm={(choice) => pick("shelfarr", choice)} />
         ) : null}
         {delivery.place?.choosable ? (
-          <ConfirmAction label="Use Kobo place" question={`Resume ${delivery.title} at the Kobo place in Shelfarr's web and mobile readers?`} confirmLabel="Use Kobo place" busy={busy} onConfirm={() => pick("kobo")} />
+          <ConfirmAction label="Use Kobo place" question={`Resume ${delivery.title} at the Kobo place in Shelfarr's web and mobile readers?`} confirmLabel="Use Kobo place" busy={busy} subject={delivery.choice} onConfirm={(choice) => pick("kobo", choice)} />
         ) : null}
         {delivery.send_again ? (
           <ConfirmAction
@@ -184,8 +183,9 @@ function DeliveryRow({ reader, delivery, say }: { reader: KoboReader; delivery: 
             question={delivery.send_again.confirmation}
             confirmLabel="Send again"
             busy={busy}
-            onConfirm={() => {
-              const bookId = delivery.send_again?.book_id;
+            subject={`${delivery.send_again.book_id}:${delivery.send_again.confirmation ?? ""}`}
+            onConfirm={(subject) => {
+              const bookId = subject.split(":")[0];
               if (!bookId) return;
               resend.mutate(bookId, {
                 onSuccess: (answer) => say("success", answer.notice),
@@ -294,11 +294,11 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
     };
   }, []);
 
-  const makeAddress = async () => {
+  const makeAddress = async (version: string) => {
     if (making) return;
     setMaking(true);
     try {
-      const answer = await koboApi.newAddress(api, reader.id, reader.version);
+      const answer = await koboApi.newAddress(api, reader.id, version);
       if (!mounted.current || !publish.active()) return;
       if (answer.kind === "created") {
         client.setQueryData<KoboReader>(keys.reader(reader.id), (now) => (now ? { ...now, ...answer.setup.reader } : now));
@@ -353,17 +353,20 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
               question="Make a new address? The current one stops working at once, so this reader cannot sync until you edit its configuration."
               confirmLabel={making ? "Making address…" : "Make a new address"}
               busy={making}
-              onConfirm={() => void makeAddress()}
+              subject={reader.version}
+              onConfirm={(version) => void makeAddress(version)}
             />
           </div>
           <div className="form-actions">
-            <RemoveZone
+            <ConfirmAction
               label="Revoke connection"
               confirmLabel={revoke.isPending ? "Revoking…" : "Revoke connection"}
               question="Revoke this Kobo connection? The reader will stop syncing with Shelfarr."
               busy={revoke.isPending}
-              onRemove={() =>
-                revoke.mutate(reader.version, {
+              danger
+              subject={reader.version}
+              onConfirm={(version) =>
+                revoke.mutate(version, {
                   onSuccess: (answer) => {
                     if (answer.kind === "revoked") onRevoked(answer.notice);
                     else say("error", "This reader was changed somewhere else, so it was not revoked. Review it, then revoke it again if you still want to.");

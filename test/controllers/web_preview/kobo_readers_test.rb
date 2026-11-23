@@ -341,6 +341,12 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_equal [ "choice", true ], outbound.values_at("tone", "choosable")
     assert_match(/Shelfarr's place \(chapter 2 of 3, 40% of the book\) has no reading time/, outbound.fetch("text"))
 
+    delivery.update_columns(reading_state: { "CurrentBookmark" => { "ProgressPercent" => 90, "Location" => { "Value" => "kobo.9.1" } } })
+    read_on = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id, choice: shown.fetch("choice"))
+    assert_response :conflict
+    assert_equal "This book's reading places changed after the page was shown. Review them and choose again.", read_on.fetch("message")
+    assert_not_equal "queued", delivery.reload.progress_outbound["status"]
+
     progress = @member.consumer_progresses.sole
     Consumer::ProgressWriter.new(user: @member, book: @book).call("asset_id" => asset, "expected_version" => progress.version,
       "client_mutation_id" => SecureRandom.uuid, "locator" => { "href" => "OEBPS/Text/ch3.xhtml", "locations" => { "progression" => 0.5, "totalProgression" => 0.6 } })

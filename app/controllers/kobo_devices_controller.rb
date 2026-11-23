@@ -17,6 +17,7 @@ class KoboDevicesController < ApplicationController
     if @device.save
       show_setup(token)
     else
+      @device.base_url = @device.base_url.to_s.sub(KoboDevice::CONNECTION_PATH, "")
       @devices = Current.user.kobo_devices.order(:name)
       render :index, status: :unprocessable_entity
     end

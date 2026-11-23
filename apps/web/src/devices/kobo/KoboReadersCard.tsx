@@ -33,7 +33,11 @@ export function KoboReadersCard() {
         <>
           <ReaderList readers={readers.data.readers} />
           {setup ? (
-            <SetupInstructions setup={setup.setup} name={setup.reader.name} storeCoexistence={setup.reader.store_coexistence} done={<ManageReaderLink id={setup.reader.id} />} onDone={() => setSetup(null)} />
+            <SetupInstructions setup={setup.setup} name={setup.reader.name} storeCoexistence={setup.reader.store_coexistence} done={<ManageReaderLink id={setup.reader.id} />} onDone={() => {
+                setSetup(null);
+                section.current?.focus();
+              }}
+            />
           ) : (
             <ConnectReader defaults={readers.data.new_reader} onCreated={setSetup} />
           )}
