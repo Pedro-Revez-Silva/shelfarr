@@ -1,4 +1,4 @@
-import { getRouteApi, useNavigate } from "@tanstack/react-router";
+import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import type { LibraryFilters } from "../contract";
 import { flattenLibrary, useContinueReading, useLibrary, useSession } from "../queries";
@@ -56,6 +56,13 @@ export function LibraryPage() {
         <p className="eyebrow">On {serverName ?? "your server"}</p>
         <PageHeading id="library-heading">Library</PageHeading>
         <p className="lede">The books and audiobooks stored on this server, ready to read or listen to.</p>
+        {mode === "rails" && boot.offline ? (
+          <div className="state-actions">
+            <a className="button button--subtle" href={boot.offline.downloads}>
+              Downloads
+            </a>
+          </div>
+        ) : null}
       </header>
 
       {showContinue && reading.data ? <ContinueShelf items={reading.data.items} /> : null}
@@ -77,12 +84,11 @@ export function LibraryPage() {
             </EmptyState>
           ) : (
             <EmptyState title="Nothing on this server yet">
-              <p>{mode === "go" ? "Acquired ebooks and audiobooks appear here." : "Acquired ebooks, comics and audiobooks appear here. To find something new, use Discover in the classic app."}</p>
-              {session.data && mode === "rails" ? (
-                <a className="button" href={session.data.links.discover}>
-                  Discover books
-                  <span className="sr-only"> (opens the classic Shelfarr app)</span>
-                </a>
+              <p>{mode === "go" ? "Acquired ebooks and audiobooks appear here." : "Acquired ebooks, comics and audiobooks appear here."}</p>
+              {mode === "rails" ? (
+                <Link className="button" to="/find">
+                  Find books
+                </Link>
               ) : null}
             </EmptyState>
           )

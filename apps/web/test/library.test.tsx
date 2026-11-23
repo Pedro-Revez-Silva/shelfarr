@@ -122,11 +122,26 @@ describe("the library page", () => {
     const empty = libraryServer({ "": page([]) });
     const { view } = renderApp({ server: empty });
     await screen.findByText("Nothing on this server yet");
-    expect(screen.getByRole("link", { name: /Discover books/ }).getAttribute("href")).toBe("/sub/search");
+    const find = screen.getByRole("link", { name: "Find books" });
+    expect(find.getAttribute("href")).toBe("/sub/preview/find");
+    expect(screen.queryByRole("link", { name: "Downloads" })).toBeNull();
     view.unmount();
     renderApp({ server: empty, url: "/sub/preview/library?q=zzz" });
     await screen.findByText("No books match these filters");
     expect(screen.getByRole("button", { name: "Clear filters" })).toBeTruthy();
+  });
+
+  test("the Rails library links to Downloads under the preview reader's scope", async () => {
+    const server = libraryServer({ "": page([summary()]) });
+    const offline = {
+      worker: "/sub/preview/read/offline-worker.js",
+      scope: "/sub/preview/read/",
+      downloads: "/sub/preview/read/downloads",
+    };
+    renderApp({ server, boot: { ...boot, offline } });
+    const downloads = await screen.findByRole("link", { name: "Downloads" });
+    expect(downloads.getAttribute("href")).toBe(offline.downloads);
+    expect(within(screen.getByRole("navigation", { name: "Primary" })).queryByRole("link", { name: "Downloads" })).toBeNull();
   });
 
   test("a failing server shows a retryable error without losing the page", async () => {
