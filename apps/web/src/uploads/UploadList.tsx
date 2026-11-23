@@ -262,7 +262,7 @@ function MatchPanel({ upload, say, onMatched }: { upload: Upload; say: Say; onMa
           <p className="field-hint">Only books of the same format with no library file or download in progress are shown.</p>
         </form>
       </search>
-      {matches.isPending || (matches.isFetching && matches.isPlaceholderData) ? <Loading label="Looking for books…" /> : null}
+      {matches.isFetching ? <Loading label="Looking for books…" /> : null}
       {matches.isError ? (
         <p className="form-error" role="alert">
           {failureKind(matches.error) === "conflict" ? actionFailure(matches.error, "This upload can't be matched now.") : "The books could not be loaded. Try the search again."}
@@ -278,8 +278,8 @@ function MatchPanel({ upload, say, onMatched }: { upload: Upload; say: Say; onMa
                   {book.title}
                   {book.author ? ` by ${book.author}` : ""}
                 </span>
-                <button type="button" className="button button--subtle" disabled={command.isPending || matches.isPlaceholderData} onClick={() => choose({ kind: "match_book", id: upload.id, bookId: book.id })}>
-                  Select and retry<span className="sr-only"> with {book.title}</span>
+                <button type="button" className="button button--subtle" disabled={command.isPending || matches.isFetching} onClick={() => choose({ kind: "match_book", id: upload.id, bookId: book.id })}>
+                  Select and retry<span className="sr-only"> with {book.title}{book.author ? ` by ${book.author}` : ""}</span>
                 </button>
               </li>
             ))}

@@ -46,12 +46,12 @@ class WebPreview::UploadsController < WebPreview::APIController
     return render_error("upload_closed", :conflict, message: refusal.message) if refusal
 
     result = UploadCreator.call_many(user: Current.user, uploaded_files: files, request: request, skip_unsupported: params[:upload_mode] == "folder")
-    return render_error("upload_rejected", :unprocessable_entity, message: result.alert.to_s.first(2_000)) unless result.success?
+    return render_error("upload_rejected", :unprocessable_entity, message: result.alert.to_s) unless result.success?
 
     uploads = result.uploads || [ result.upload ].compact
     render status: :created, json: {
       account: web_preview_account_id,
-      notice: result.notice, alert: result.alert&.first(2_000),
+      notice: result.notice, alert: result.alert,
       uploads: uploads.map { |upload| upload.id.to_s },
       request_id: request&.id&.to_s
     }.compact

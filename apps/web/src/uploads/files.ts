@@ -87,10 +87,16 @@ async function filesOf(entries: FileSystemEntry[]): Promise<File[]> {
   return nested.flat();
 }
 
-export async function droppedSelection(transfer: DataTransfer): Promise<Selection> {
+export type Dropped = { entries: FileSystemEntry[]; files: File[]; folder: boolean };
+
+export function dropped(transfer: DataTransfer): Dropped {
   const entries = Array.from(transfer.items ?? [])
     .map((item) => item.webkitGetAsEntry())
     .filter((entry): entry is FileSystemEntry => entry !== null);
-  if (entries.some((entry) => entry.isDirectory)) return { files: await filesOf(entries), folder: true };
-  return { files: Array.from(transfer.files), folder: false };
+  return { entries, files: Array.from(transfer.files), folder: entries.some((entry) => entry.isDirectory) };
+}
+
+export async function droppedSelection(drop: Dropped): Promise<Selection> {
+  if (drop.folder) return { files: await filesOf(drop.entries), folder: true };
+  return { files: drop.files, folder: false };
 }

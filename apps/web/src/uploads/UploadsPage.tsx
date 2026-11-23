@@ -9,7 +9,7 @@ import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { useSendUpload, useUploadRequest, useUploads, type UploadSubmission } from "./api";
 import type { UploadCreated, UploadFormats, UploadRequest } from "./contract";
-import { acceptList, bySize, droppedSelection, formatBytes, oversizedText, selectionText, supported, type Selection } from "./files";
+import { acceptList, bySize, dropped as readDrop, droppedSelection, formatBytes, oversizedText, selectionText, supported, type Selection } from "./files";
 import { BOOK_TYPE_LABELS, UploadList } from "./UploadList";
 import "./uploads.css";
 
@@ -171,14 +171,19 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
     event.preventDefault();
     setDragging(false);
     if (send.isPending || scanning) return;
+    const incoming = readDrop(event.dataTransfer);
     clearInputs();
+    if (!bulk && (incoming.folder || incoming.entries.length > 1 || incoming.files.length > 1)) {
+      choose({ files: incoming.files, folder: incoming.folder });
+      return;
+    }
     setSelection(null);
     setNote(null);
-    setScanning(true);
+    setScanning(incoming.folder);
     scan.current += 1;
     const current = scan.current;
-    const dropped = await droppedSelection(event.dataTransfer);
-    if (scan.current === current) choose(dropped);
+    const selection = await droppedSelection(incoming);
+    if (scan.current === current) choose(selection);
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {

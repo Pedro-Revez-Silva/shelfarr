@@ -99,7 +99,7 @@ export function useUploadRequest(requestId: string | undefined) {
     queryFn: ({ signal }) => uploadRequest(api, requestId ?? "", signal),
     enabled: requestId !== undefined,
     retry: false,
-    staleTime: Infinity,
+    staleTime: 0,
     refetchOnWindowFocus: false,
   });
 }

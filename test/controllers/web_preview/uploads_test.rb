@@ -202,9 +202,11 @@ class WebPreview::UploadsTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_equal [ "upload_rejected", "No supported ebook or audiobook files found in the selected folder" ], response.parsed_body.values_at("error", "message")
 
-    upload_files({ files: [ fixture_file_upload("test_ebook.epub"), fixture_file_upload("test.txt", "text/plain") ] }, user: @admin)
+    unsupported = Array.new(12) { fixture_file_upload("test.txt", "text/plain") }
+    upload_files({ files: [ fixture_file_upload("test_ebook.epub"), *unsupported ] }, user: @admin)
     assert_response :created
-    assert_match(/1 file failed to upload: test.txt: Unsupported file type/, response.parsed_body.fetch("alert"))
+    rejection = "test.txt: Unsupported file type. Supported: #{Upload::SUPPORTED_EXTENSIONS.join(', ')}"
+    assert_equal "12 files failed to upload: #{Array.new(12, rejection).join('; ')}", response.parsed_body.fetch("alert")
 
     upload_files({ file: fixture_file_upload("test.txt", "text/plain") }, user: @admin)
     assert_response :unprocessable_entity

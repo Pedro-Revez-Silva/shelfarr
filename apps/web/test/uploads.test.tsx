@@ -297,6 +297,36 @@ describe("uploading for a request", () => {
     expect(server.called("GET", /uploads\/requests/)).toHaveLength(0);
   });
 
+  test("an overlong request address reads as not found", async () => {
+    const server = memberServer(() => listing([]));
+    renderApp({ server, url: `/sub/preview/library/uploads?request=${"1".repeat(65)}` });
+    expect(await screen.findByText("That request can't be found, or it belongs to another account.")).toBeTruthy();
+    expect(screen.queryByLabelText("Choose files")).toBeNull();
+  });
+
+  test("a request reopened since the last visit offers the form on the next visit", async () => {
+    let open = false;
+    const server = memberServer(() => listing([])).on("GET", /\/api\/v1\/uploads\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: open ? context : { ...context, open: false, message: "This request is no longer open for file fulfillment. Retry it before uploading a file." } } }));
+    const { router } = renderApp({ server, url: "/sub/preview/library/uploads?request=7" });
+    expect(await screen.findByText("This request is no longer open for file fulfillment. Retry it before uploading a file.")).toBeTruthy();
+    await router.navigate({ to: "/library" });
+    open = true;
+    await router.navigate({ to: "/library/uploads", search: { request: "7" } });
+    expect(await screen.findByLabelText("Choose a file")).toBeTruthy();
+    expect(server.called("GET", /uploads\/requests\/7$/)).toHaveLength(2);
+  });
+
+  test("a folder dropped on a request form is refused at once", async () => {
+    const server = memberServer(() => listing([])).on("GET", /\/api\/v1\/uploads\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: context } }));
+    renderApp({ server, url: "/sub/preview/library/uploads?request=7" });
+    await screen.findByLabelText("Choose a file");
+    const folder = { isFile: false, isDirectory: true, createReader: () => ({ readEntries: () => undefined }) };
+    fireEvent.drop(document.querySelector(".upload-drop")!, { dataTransfer: { items: [{ webkitGetAsEntry: () => folder }], files: [] } });
+    expect(await screen.findByText("Choose one file for this request.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reading the folder…" })).toBeNull();
+    expect((screen.getByLabelText("Choose a file") as HTMLInputElement).disabled).toBe(false);
+  });
+
   test("a request that is not yours reads as not found", async () => {
     renderApp({ server: memberServer(() => listing([])), url: "/sub/preview/library/uploads?request=7" });
     expect(await screen.findByText("That request can't be found, or it belongs to another account.")).toBeTruthy();
@@ -392,7 +422,7 @@ describe("upload administration", () => {
 
     await user.clear(search);
     await user.click(within(panel).getByRole("button", { name: "Search books" }));
-    await user.click(await within(panel).findByRole("button", { name: "Select and retry with Unrecognized Saga" }));
+    await user.click(await within(panel).findByRole("button", { name: "Select and retry with Unrecognized Saga by A. Writer" }));
     expect(await screen.findByText("Manual match saved. Upload queued for retry.")).toBeTruthy();
     expect(server.called("POST", /match$/)[1]?.body).toEqual({ book_id: "21" });
     await waitFor(() => expect(screen.queryByRole("region", { name: "Correct the match and retry" })).toBeNull());
@@ -416,6 +446,22 @@ describe("upload administration", () => {
     expect((within(panel).getByRole("button", { name: "Select and retry with Unrecognized Saga" }) as HTMLButtonElement).disabled).toBe(true);
     slow.resolve({ body: { ...first, query: "Other", books: [] } });
     expect(await within(panel).findByText("No available books found. Try another search or create a book below.")).toBeTruthy();
+    const again = deferred<{ body: unknown }>();
+    let repeats = 0;
+    server.on("GET", /\/admin\/uploads\/9\/matches\?q=Unrecognized$/, () => {
+      repeats += 1;
+      return repeats === 1 ? { body: first } : again.promise;
+    });
+    await user.clear(search);
+    await user.type(search, "Unrecognized");
+    await user.click(within(panel).getByRole("button", { name: "Search books" }));
+    await within(panel).findByText("Unrecognized Saga");
+    await user.click(within(panel).getByRole("button", { name: "Search books" }));
+    expect(await within(panel).findByText("Looking for books…")).toBeTruthy();
+    expect((within(panel).getByRole("button", { name: "Select and retry with Unrecognized Saga" }) as HTMLButtonElement).disabled).toBe(true);
+    again.resolve({ body: first });
+    await waitFor(() => expect((within(panel).getByRole("button", { name: "Select and retry with Unrecognized Saga" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(within(panel).queryByText("Looking for books…")).toBeNull();
     expect(server.called("POST", /match$/)).toHaveLength(0);
   });
 
