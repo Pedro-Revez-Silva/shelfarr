@@ -163,9 +163,7 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
     if (list && current && list.scrollWidth > list.clientWidth) list.scrollLeft = current.offsetLeft - list.offsetLeft - 16;
   }, []);
 
-  useEffect(() => {
-    if (writing) setConfirming(null);
-  }, [writing]);
+  useEffect(() => setConfirming(null), [writing, state]);
 
   const go = (next: SetupState | null) => {
     dirty.current = false;

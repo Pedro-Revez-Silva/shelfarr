@@ -656,4 +656,32 @@ describe("Setup in the Rails preview", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
   }, 15_000);
+
+  test("a confirmation left open is withdrawn when the step's saved values change underneath it", async () => {
+    const librariesWith = (value: string) =>
+      card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value, placeholder: "Not now" })], {
+        phase: "libraries",
+        title: "Libraries",
+        submit: "Save and continue",
+        libraries: [
+          { id: "old", name: "Old", media_type: "book" },
+          { id: "new", name: "New", media_type: "book" },
+        ],
+      });
+    const connection = card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true });
+    let stored = "old";
+    const server = setupServer().on("GET", /\/admin\/setup\?step=audiobookshelf/, () => ({ body: state("audiobookshelf", [librariesWith(stored), connection]) }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+    const change = await waitFor(() => cardSection("Change the Audiobookshelf connection") as HTMLDetailsElement);
+    change.open = true;
+    await userEvent.type(within(change).getByLabelText("Audiobookshelf address"), "/other");
+    await userEvent.click(within(cardSection("Libraries")).getByRole("button", { name: "Save and continue" }));
+    expect(await screen.findByRole("dialog", { name: "Leave without saving?" })).toBeTruthy();
+
+    stored = "new";
+    await services.queryClient.invalidateQueries();
+    await waitFor(() => expect((within(cardSection("Libraries")).getByLabelText("Audiobook library") as HTMLSelectElement).value).toBe("new"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
+  });
 });
