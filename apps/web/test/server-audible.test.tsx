@@ -171,6 +171,7 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
 
     await user.click(within(connection).getByRole("button", { name: "Test" }));
     expect(await within(connection).findByText(/Connected to the Libation companion \(1\.4\.0 \/ Libation 14\.2\.1\); status: ok\./)).toBeTruthy();
+    expect(connection.textContent).not.toContain("Audible backup connection saved.");
   });
 
   test("a rejected save marks the field, says why and focuses it, and keeps the draft", async () => {

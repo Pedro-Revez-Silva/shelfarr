@@ -18,14 +18,15 @@ const SECTION_IDS = ["audible-connection", "audible-account", "audible-sync", "a
 const TOKEN_FILE_VARIABLE = "SHELFARR_LIBATION_TOKEN_FILE";
 
 type SectionId = (typeof SECTION_IDS)[number];
-type Outcome = { where: SectionId; said: ReturnType<typeof useSay>["said"] };
+type Outcome = { where: SectionId | null; said: ReturnType<typeof useSay>["said"] };
 const OutcomeContext = createContext<Outcome | null>(null);
 
-function outcomeSection(command: AudibleCommand, data: Audible | undefined): SectionId {
+function outcomeSection(command: AudibleCommand, data: Audible | undefined): SectionId | null {
   switch (command.kind) {
     case "save":
-    case "test":
       return "audible-connection";
+    case "test":
+      return null;
     case "start_sign_in":
     case "complete_sign_in":
       return "audible-account";
@@ -98,7 +99,7 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
   const denied = query.isError && failureKind(query.error) === "not_found";
   useRevalidateAccessWhenDenied(denied);
   useArrival(query.data !== undefined);
-  const [where, setWhere] = useState<SectionId>("audible-connection");
+  const [where, setWhere] = useState<SectionId | null>(null);
   const run: Run = (next, then, rejected) => {
     if (command.isPending) return;
     setWhere(outcomeSection(next, query.data));
@@ -109,10 +110,13 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
           rejected?.(answer.errors);
           return;
         }
-        if (next.kind !== "test") say(answer.action.outcome.tone, answer.action.outcome.message);
+        say(answer.action.outcome.tone, answer.action.outcome.message);
         then?.(answer.action);
       },
-      onError: (error) => say("error", commandFailureText(error)),
+      onError: (error) => {
+        setWhere(outcomeSection(next, query.data) ?? "audible-connection");
+        say("error", commandFailureText(error));
+      },
     });
   };
   return (
