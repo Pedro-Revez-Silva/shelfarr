@@ -9,7 +9,7 @@ import { useServices } from "../services";
 import { usePageTitle } from "../title";
 import { useSendUpload, useUploadRequest, useUploads, type UploadSubmission } from "./api";
 import type { UploadCreated, UploadFormats, UploadRequest } from "./contract";
-import { acceptList, droppedSelection, formatBytes, selectionText, supported, tooLarge, type Selection } from "./files";
+import { acceptList, bySize, droppedSelection, formatBytes, oversizedText, selectionText, supported, type Selection } from "./files";
 import { BOOK_TYPE_LABELS, UploadList } from "./UploadList";
 import "./uploads.css";
 
@@ -112,7 +112,9 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
   const [note, setNote] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [result, setResult] = useState<UploadCreated | null>(null);
+  const [skipped, setSkipped] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [scanning, setScanning] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const problemRef = useRef<HTMLParagraphElement>(null);
@@ -133,6 +135,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
 
   const choose = (next: Selection) => {
     setResult(null);
+    setSkipped(null);
     setProblem(null);
     send.reset();
     if (!bulk && (next.folder || next.files.length > 1)) {
@@ -158,29 +161,38 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
   const drop = async (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDragging(false);
-    if (send.isPending) return;
+    if (send.isPending || scanning) return;
     clearInputs();
-    choose(await droppedSelection(event.dataTransfer));
+    setSelection(null);
+    setNote(null);
+    setScanning(true);
+    try {
+      choose(await droppedSelection(event.dataTransfer));
+    } finally {
+      setScanning(false);
+    }
   };
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (send.isPending) return;
+    if (send.isPending || scanning) return;
     if (!selection) {
       setProblem(bulk ? "Choose at least one file or a folder to upload." : "Choose the file to upload.");
       return;
     }
-    const large = tooLarge(selection.files, maxBytes);
-    if (large) {
-      setProblem(`${large.name} is larger than Shelfarr's ${formatBytes(maxBytes)} limit.`);
+    const { fitting, oversized } = bySize(selection.files, maxBytes);
+    if (fitting.length === 0) {
+      setProblem(`${oversizedText(oversized, maxBytes)}.`);
       return;
     }
-    const submission: UploadSubmission = { files: selection.files, folder: selection.folder, requestId: request?.id ?? null };
+    const submission: UploadSubmission = { files: fitting, folder: selection.folder, requestId: request?.id ?? null };
     setProblem(null);
     setResult(null);
+    setSkipped(null);
     send.mutate(submission, {
       onSuccess: (answer) => {
         setResult(answer);
+        setSkipped(oversized.length > 0 ? `${oversizedText(oversized, maxBytes)} and ${oversized.length === 1 ? "was" : "were"} not sent.` : null);
         setSelection(null);
         clearInputs();
       },
@@ -257,8 +269,8 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
           </p>
         ) : null}
         <div className="form-actions">
-          <button type="submit" className="button button--primary" disabled={send.isPending}>
-            {send.isPending ? "Uploading…" : "Upload"}
+          <button type="submit" className="button button--primary" disabled={send.isPending || scanning}>
+            {send.isPending ? "Uploading…" : scanning ? "Reading the folder…" : "Upload"}
           </button>
         </div>
         {send.isPending ? (
@@ -267,7 +279,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
             <p id={`${ids.status}-sending`}>Sending {selection ? selectionText(selection) : "the files"}. Keep this page open until it finishes.</p>
           </div>
         ) : null}
-        <Outcome result={result} />
+        <Outcome result={result} skipped={skipped} />
       </form>
       <details className="settings-note">
         <summary>File name tips</summary>
@@ -282,7 +294,7 @@ function UploadForm({ request, formats, maxBytes }: { request: UploadRequest | n
   );
 }
 
-function Outcome({ result }: { result: UploadCreated | null }) {
+function Outcome({ result, skipped }: { result: UploadCreated | null; skipped: string | null }) {
   return (
     <div className="form-outcome" role="status">
       {result?.notice ? (
@@ -299,6 +311,7 @@ function Outcome({ result }: { result: UploadCreated | null }) {
         </p>
       ) : null}
       {result?.alert ? <p className="form-error">{result.alert}</p> : null}
+      {result && skipped ? <p className="form-error">{skipped}</p> : null}
     </div>
   );
 }

@@ -41,8 +41,14 @@ export function formatBytes(bytes: number): string {
   return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10} ${units[unit]}`;
 }
 
-export function tooLarge(files: File[], maxBytes: number): File | undefined {
-  return files.find((file) => file.size > maxBytes);
+export function bySize(files: File[], maxBytes: number): { fitting: File[]; oversized: File[] } {
+  return { fitting: files.filter((file) => file.size <= maxBytes), oversized: files.filter((file) => file.size > maxBytes) };
+}
+
+export function oversizedText(oversized: File[], maxBytes: number): string {
+  const names = oversized.map((file) => file.name).join(", ");
+  const limit = `Shelfarr's ${formatBytes(maxBytes)} limit`;
+  return oversized.length === 1 ? `${names} is larger than ${limit}` : `${names} are larger than ${limit}`;
 }
 
 function entryFile(entry: FileSystemFileEntry): Promise<File[]> {

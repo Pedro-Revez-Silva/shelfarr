@@ -580,6 +580,17 @@ class Admin::UploadsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "an empty local search lists every available book instead of the parsed title" do
+    upload = create_failed_manual_upload
+    Book.create!(title: "Different saga", book_type: :audiobook)
+
+    get "#{admin_upload_url(upload)}?q"
+    assert_select "div", text: "Different saga", count: 1
+
+    get admin_upload_url(upload)
+    assert_select "div", text: "Different saga", count: 0
+  end
+
   test "manual correction prefills filename metadata when extraction never completed" do
     upload = create_failed_manual_upload(original_filename: "Known Author - Known Title.m4b", parsed_title: nil)
 

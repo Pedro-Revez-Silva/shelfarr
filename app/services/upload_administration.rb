@@ -83,7 +83,7 @@ class UploadAdministration
   def match_choices(query:, page:, manual_book:)
     return unless @upload.manual_match_available?
 
-    match_query = (query.nil? ? @upload.parsed_title : query).to_s.strip.first(200)
+    match_query = query.to_s.strip.first(200)
     match_page = Integer(page, exception: false).to_i.clamp(1, 100_000)
     parsed = FilenameParserService.parse(@upload.original_filename)
     fields = manual_book || {}

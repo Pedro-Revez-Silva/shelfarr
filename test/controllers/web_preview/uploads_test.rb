@@ -13,7 +13,6 @@ class WebPreview::UploadsTest < ActionDispatch::IntegrationTest
     @other = User.create!(name: "Other Member", username: "other_member_uploads", password: "Password123!")
     @previous_enabled = ENV[WebPreview::Access::VARIABLE]
     ENV[WebPreview::Access::VARIABLE] = [ @member, @admin, @other ].map { |user| user.id.to_s }.join(",")
-    @created_paths = []
   end
 
   teardown do
@@ -351,6 +350,20 @@ class WebPreview::UploadsTest < ActionDispatch::IntegrationTest
     admin_write(:get, web_preview_api_admin_upload_matches_path(upload))
     assert_response :conflict
     assert_equal "match_unavailable", response.parsed_body.fetch("error")
+  end
+
+  test "manual matching prefills the full book details and searches every book for an empty query" do
+    title = "T" * 260
+    author = "A" * 240
+    upload = failed_manual_upload(book: Book.create!(title: title, author: author, book_type: :audiobook))
+    other = Book.create!(title: "Different saga", book_type: :audiobook)
+
+    admin_write(:get, web_preview_api_admin_upload_matches_path(upload))
+    assert_equal({ "title" => title, "author" => author }, response.parsed_body.fetch("manual_book"))
+    refute_includes response.parsed_body.fetch("books").map { |book| book.fetch("id") }, other.id.to_s
+
+    admin_write(:get, web_preview_api_admin_upload_matches_path(upload, q: ""))
+    assert_includes response.parsed_body.fetch("books").map { |book| book.fetch("id") }, other.id.to_s
   end
 
   test "manual matching creates a corrected book and reports invalid choices" do

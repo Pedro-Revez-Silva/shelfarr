@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ServerSettings } from "../src/server/contract";
 import { uploadsSchema, type Upload, type Uploads } from "../src/uploads/contract";
@@ -178,6 +178,51 @@ describe("Library ▸ Uploads for a member", () => {
     expect(await screen.findByText("Big.epub is larger than Shelfarr's 10 bytes limit.")).toBeTruthy();
     expect(server.called("POST", /uploads$/)).toHaveLength(0);
   });
+
+  test("sends the files within the size limit and names the ones left out, as classic queues the rest", async () => {
+    const server = memberServer(() => listing([], { max_bytes: 10 })).on("POST", /\/api\/v1\/uploads$/, () => ({ status: 201, body: { account: ACCOUNT, notice: "1 file uploaded successfully. Processing started.", uploads: ["5"] } }));
+    renderApp({ server, url: "/sub/preview/library/uploads" });
+    const user = userEvent.setup({ applyAccept: false });
+    await user.upload(await screen.findByLabelText("Choose files"), [file("Small.epub", "application/epub+zip", 8), file("Big.epub", "application/epub+zip", 12)]);
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    expect(await screen.findByText("1 file uploaded successfully. Processing started.")).toBeTruthy();
+    expect(screen.getByText("Big.epub is larger than Shelfarr's 10 bytes limit and was not sent.")).toBeTruthy();
+    expect((sentForm(server).getAll("files[]") as File[]).map((entry) => entry.name)).toEqual(["Small.epub"]);
+  });
+
+  test("a dropped folder replaces the selection and cannot be sent until it has been read", async () => {
+    const server = memberServer(() => listing([])).on("POST", /\/api\/v1\/uploads$/, () => ({ status: 201, body: { account: ACCOUNT, notice: "1 file uploaded successfully. Processing started.", uploads: ["5"] } }));
+    renderApp({ server, url: "/sub/preview/library/uploads" });
+    const user = userEvent.setup({ applyAccept: false });
+    await user.upload(await screen.findByLabelText("Choose files"), [file("Previous.epub")]);
+    let release: () => void = () => undefined;
+    const replacement = { isFile: true, isDirectory: false, file: (done: (value: File) => void) => done(file("Replacement.epub")) };
+    let read = false;
+    const folder = {
+      isFile: false,
+      isDirectory: true,
+      createReader: () => ({
+        readEntries: (done: (entries: unknown[]) => void) => {
+          if (read) return done([]);
+          read = true;
+          release = () => done([replacement, { isFile: true, isDirectory: false, file: (next: (value: File) => void) => next(file("cover.jpg", "image/jpeg")) }]);
+        },
+      }),
+    };
+    fireEvent.drop(document.querySelector(".upload-drop")!, { dataTransfer: { items: [{ webkitGetAsEntry: () => folder }], files: [] } });
+    const button = await screen.findByRole("button", { name: "Reading the folder…" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("Selected: Previous.epub")).toBeNull();
+    fireEvent.submit(button.closest("form")!);
+    expect(server.called("POST", /uploads$/)).toHaveLength(0);
+    release();
+    expect(await screen.findByText("Selected: 1 supported file selected from the folder")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await screen.findByText("1 file uploaded successfully. Processing started.");
+    const form = sentForm(server);
+    expect(form.get("upload_mode")).toBe("folder");
+    expect((form.getAll("files[]") as File[]).map((entry) => entry.name)).toEqual(["Replacement.epub"]);
+  });
 });
 
 describe("uploading for a request", () => {
@@ -303,6 +348,8 @@ describe("upload administration", () => {
     await user.click(within(panel).getByRole("button", { name: "Search books" }));
     expect(await within(panel).findByText("No available books found. Try another search or create a book below.")).toBeTruthy();
     expect(server.called("GET", /matches\?q=zzz$/)).toHaveLength(1);
+    await user.click(within(panel).getByRole("button", { name: "Search books" }));
+    await waitFor(() => expect(server.called("GET", /matches\?q=zzz$/)).toHaveLength(2));
 
     await user.click(within(panel).getByText("Create a book with corrected details"));
     await user.clear(within(panel).getByLabelText("Title"));

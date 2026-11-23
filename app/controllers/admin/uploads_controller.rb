@@ -70,7 +70,7 @@ module Admin
     def prepare_manual_match
       fields = params[:manual_book]
       choices = administration.match_choices(
-        query: params.key?(:q) ? params[:q] : nil,
+        query: params.fetch(:q, @upload.parsed_title),
         page: params[:page],
         manual_book: fields.is_a?(ActionController::Parameters) ? fields.permit(:title, :author) : nil
       )

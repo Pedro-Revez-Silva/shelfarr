@@ -224,8 +224,13 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
   };
   const search = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const next = (draft ?? data?.query ?? "").trim();
+    if (next === query && page === 1) {
+      void matches.refetch();
+      return;
+    }
     setPage(1);
-    setQuery((draft ?? data?.query ?? "").trim());
+    setQuery(next);
   };
   const create = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -296,11 +301,11 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
             <form className="upload-match-create" onSubmit={create}>
               <div className="field">
                 <label htmlFor={ids.title}>Title</label>
-                <input id={ids.title} type="text" required maxLength={500} value={title ?? data.manual_book.title} onChange={(event) => setTitle(event.target.value)} />
+                <input id={ids.title} type="text" required value={title ?? data.manual_book.title} onChange={(event) => setTitle(event.target.value)} />
               </div>
               <div className="field">
                 <label htmlFor={ids.author}>Author (optional)</label>
-                <input id={ids.author} type="text" maxLength={500} value={author ?? data.manual_book.author} onChange={(event) => setAuthor(event.target.value)} />
+                <input id={ids.author} type="text" value={author ?? data.manual_book.author} onChange={(event) => setAuthor(event.target.value)} />
               </div>
               <div className="form-actions">
                 <button type="submit" className="button button--primary" disabled={command.isPending}>

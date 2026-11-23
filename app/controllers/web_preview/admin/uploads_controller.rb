@@ -15,7 +15,7 @@ class WebPreview::Admin::UploadsController < WebPreview::Admin::BaseController
   end
 
   def matches
-    choices = administration.match_choices(query: params[:q].is_a?(String) ? params[:q] : nil, page: params[:page].to_s, manual_book: nil)
+    choices = administration.match_choices(query: params[:q].is_a?(String) ? params[:q] : @upload.parsed_title, page: params[:page].to_s, manual_book: nil)
     return render_error("match_unavailable", :conflict, message: match_unavailable_message) unless choices
 
     render json: {
@@ -25,7 +25,7 @@ class WebPreview::Admin::UploadsController < WebPreview::Admin::BaseController
       page: choices.page,
       more: choices.books.size > UploadAdministration::MATCHES_PER_PAGE,
       books: choices.books.first(UploadAdministration::MATCHES_PER_PAGE).map { |book| { id: book.id.to_s, title: book.title.to_s.first(TEXT_LIMIT), author: book.author.presence&.first(TEXT_LIMIT) } },
-      manual_book: { title: choices.manual_book.title.to_s.first(TEXT_LIMIT), author: choices.manual_book.author.to_s.first(TEXT_LIMIT) }
+      manual_book: { title: choices.manual_book.title.to_s, author: choices.manual_book.author.to_s }
     }
   end
 
