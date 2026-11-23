@@ -5,7 +5,6 @@ import type { NotificationChange, NotificationItem, NotificationList } from "../
 import { useNotificationCommand, useNotifications, type NotificationCommand } from "../notifications";
 import { RemoveZone } from "../server/primitives";
 import { useServices } from "../services";
-import { usePageTitle } from "../title";
 import { PageHeading } from "./PageHeading";
 import { actionFailure, Time } from "./requestText";
 import { EmptyState, ErrorPanel, Loading } from "./States";
@@ -24,7 +23,6 @@ type FocusTarget = { kind: "heading" } | { kind: "item"; id: string } | null;
 
 export function NotificationsPage() {
   const { mode } = useServices();
-  usePageTitle("Notifications");
   if (mode === "go") {
     return (
       <EmptyState title="That page is not part of this preview">

@@ -121,6 +121,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       if (generation === guard.generation) keepsRole(session);
       if (generation === guard.generation && guard.isActive()) {
         queryClient.setQueryData(keys.session, session);
+        if (queryClient.isFetching({ queryKey: keys.session, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey: keys.session, exact: true });
         retryFailedRequests();
       }
       guard.finishCheck(generation, true);

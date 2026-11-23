@@ -29,7 +29,9 @@ export function useNotificationCommand() {
       return api.clearNotifications(command.through);
     },
     onSettled: () => {
-      if (guard.isActive()) void queryClient.invalidateQueries({ queryKey: keys.notifications });
+      if (!guard.isActive()) return;
+      void queryClient.invalidateQueries({ queryKey: keys.notifications });
+      void queryClient.invalidateQueries({ queryKey: keys.session, exact: true });
     },
   });
 }
