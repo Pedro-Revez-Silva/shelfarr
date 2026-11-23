@@ -33,7 +33,6 @@ function row(overrides: Partial<KoboReaderRow> = {}): KoboReaderRow {
     store_coexistence: false,
     share_progress: true,
     receive_progress: false,
-    base_url: "https://shelf.test/sub",
     last_sync_at: null,
     version: "v1",
     ...overrides,
@@ -234,7 +233,6 @@ describe("a Kobo reader's page", () => {
     });
     const { services } = renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
     const connection = (await screen.findByRole("heading", { name: "Connection" })).closest("section") as HTMLElement;
-    expect(within(connection).getByText("https://shelf.test/sub")).toBeTruthy();
     const user = userEvent.setup();
     await user.click(within(connection).getByRole("button", { name: "Make a new connection address" }));
     expect(server.called("POST", /connection_address/)).toEqual([]);
@@ -343,6 +341,16 @@ describe("a Kobo reader's page", () => {
     await act(() => router.navigate({ to: "/account/devices/kobo/$readerId", params: { readerId: "3" } }));
     expect(await screen.findByRole("heading", { name: "This Kobo reader is not connected to your account" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Make a new connection address" })).toBeNull();
+  });
+
+  test("a reader whose saved address cannot make a new one says why", async () => {
+    const server = koboServer().on("POST", /\/connection_address$/, () => ({ status: 422, body: { error: "connection_address_saved", message: "This reader's saved Shelfarr address is itself a connection address, so a new one can't be made from it." } }));
+    renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Make a new connection address" }));
+    await user.click(screen.getByRole("button", { name: "Make a new address" }));
+    expect(await screen.findByText("This reader's saved Shelfarr address is itself a connection address, so a new one can't be made from it.")).toBeTruthy();
+    expect(screen.queryByTestId("kobo-endpoint")).toBeNull();
   });
 
   test("hiding a new address keeps keyboard focus in the Connection card", async () => {

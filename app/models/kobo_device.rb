@@ -5,7 +5,7 @@ class KoboDevice < ApplicationRecord
   # restored. Shelfarr cannot read the reader's own configuration file.
   STORE_ENDPOINT = Kobo::StoreProxy::ORIGIN
   STORE_STATUSES = %w[ok unavailable rejected authorization].freeze
-  CONNECTION_PATH = %r{/kobo/[0-9a-f]{64}(?=[/?#]|\z).*}im
+  CONNECTION_TOKEN = %r{/kobo/[0-9a-f]{64}}i
 
   belongs_to :user
   has_many :kobo_deliveries, dependent: :destroy
@@ -45,8 +45,12 @@ class KoboDevice < ApplicationRecord
     token
   end
 
+  def self.connection_address?(url)
+    CGI.unescape(url.to_s).match?(CONNECTION_TOKEN)
+  end
+
   def endpoint(token)
-    "#{base_url.to_s.sub(CONNECTION_PATH, '')}/kobo/#{token}"
+    "#{base_url}/kobo/#{token}"
   end
 
   # The counter is advanced in the same transaction as publication. A sync
@@ -118,7 +122,7 @@ class KoboDevice < ApplicationRecord
   end
 
   def base_url_is_not_a_connection_address
-    errors.add(:base_url, "must be Shelfarr's own address, not a Kobo connection address") if base_url.to_s.match?(CONNECTION_PATH)
+    errors.add(:base_url, "must be Shelfarr's own address, not a Kobo connection address") if self.class.connection_address?(base_url)
   end
 
   def coexistence_requires_https

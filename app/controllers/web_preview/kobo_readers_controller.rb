@@ -3,6 +3,7 @@
 class WebPreview::KoboReadersController < WebPreview::APIController
   SETTINGS = %w[store_coexistence share_progress receive_progress].freeze
   ENTITLEMENT = /\A[0-9A-Za-z-]{1,64}\z/
+  SAVED_CONNECTION_ADDRESS = "This reader's saved Shelfarr address is itself a connection address, so a new one can't be made from it. Revoke this reader and connect it again with Shelfarr's own address."
   PLACES_CHANGED = "This book's reading places changed after the page was shown. Review them and choose again."
 
   before_action :set_device, except: %i[index create book]
@@ -49,6 +50,8 @@ class WebPreview::KoboReadersController < WebPreview::APIController
   def connection_address
     values = body_values(%w[version], [])
     return render_error("invalid_request", :bad_request) unless values
+
+    return render_error("connection_address_saved", :unprocessable_entity, message: SAVED_CONNECTION_ADDRESS) if KoboDevice.connection_address?(@device.base_url)
 
     token = @device.with_lock do
       @device.rotate_token! if values["version"] == WebPreview::KoboReaderJson.version(@device)

@@ -24,7 +24,6 @@ module WebPreview
         store_coexistence: @device.store_coexistence?,
         share_progress: @device.share_progress?,
         receive_progress: @device.receive_progress?,
-        base_url: @device.base_url.to_s.sub(KoboDevice::CONNECTION_PATH, "/kobo/…"),
         last_sync_at: @device.last_sync_at&.iso8601(3),
         version: self.class.version(@device)
       }

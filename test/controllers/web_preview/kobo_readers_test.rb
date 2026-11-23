@@ -47,7 +47,7 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_equal @member.id.to_s, body.fetch("account")
     assert_equal [ "My Kobo" ], body.fetch("readers").map { |entry| entry.fetch("name") }
     row = body.fetch("readers").sole
-    assert_equal %w[id name mode mode_label store_coexistence share_progress receive_progress base_url last_sync_at version], row.keys
+    assert_equal %w[id name mode mode_label store_coexistence share_progress receive_progress last_sync_at version], row.keys
     assert_equal [ "shelfarr_only", "Shelfarr books only", nil ], row.values_at("mode", "mode_label", "last_sync_at")
     assert_equal({ "base_url" => "http://www.example.com", "store_coexistence" => false, "share_progress" => true, "receive_progress" => false }, body.fetch("new_reader"))
     assert_not_includes response.body, @device.token_digest
@@ -107,27 +107,25 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
 
   test "a pasted connection address is refused as the Shelfarr address and never logged or shown" do
     sign_in_as(@member)
-    pasted = "https://shelfarr.example/shelf/kobo/#{@token}"
-    assert_no_difference "KoboDevice.count" do
-      body = send_json(:post, web_preview_api_account_kobo_readers_path, name: "Copy", base_url: pasted, store_coexistence: true, share_progress: true, receive_progress: false)
-      assert_response :unprocessable_entity
-      assert_equal({ "base_url" => [ "must be Shelfarr's own address, not a Kobo connection address" ] }, body.fetch("errors"))
-      assert_not_includes response.body, @token
+    escaped = "https://shelfarr.example/shelf/kobo/%#{@token[0].ord.to_s(16)}#{@token[1..]}"
+    [ "https://shelfarr.example/shelf/kobo/#{@token}", "#{escaped}#saved", "https://shelfarr.example/shelf/kobo/#{@token}/v1/initialization" ].each do |pasted|
+      assert_no_difference "KoboDevice.count" do
+        body = send_json(:post, web_preview_api_account_kobo_readers_path, name: "Copy", base_url: pasted, store_coexistence: true, share_progress: true, receive_progress: false)
+        assert_response :unprocessable_entity
+        assert_includes body.dig("errors", "base_url"), "must be Shelfarr's own address, not a Kobo connection address"
+        assert_not_includes response.body, @token
+      end
     end
     assert_not_includes Rails.root.join("log/test.log").read.lines.last(200).join, @token
 
-    @device.update_columns(base_url: pasted)
-    preview_get web_preview_api_kobo_readers_path
-    assert_equal "https://shelfarr.example/shelf/kobo/…", response.parsed_body.fetch("readers").sole.fetch("base_url")
-    assert_not_includes response.body, @token
-
-    other, other_token = KoboDevice.issue(user: @member, name: "Copied", base_url: "https://shelfarr.example/shelf")
-    other.save!
-    other.update_columns(base_url: "https://shelfarr.example/shelf/kobo/#{other_token}")
-    rotated = send_json(:post, web_preview_api_kobo_reader_connection_address_path(other), version: WebPreview::KoboReaderJson.version(other))
-    fresh = endpoint_token(rotated)
-    assert_equal "https://shelfarr.example/shelf/kobo/#{fresh}", rotated.dig("setup", "endpoint")
-    assert_not_includes response.body, other_token
+    @device.update_columns(base_url: escaped)
+    detail = reader
+    assert_not_includes response.body, @token[1..]
+    refused = send_json(:post, web_preview_api_kobo_reader_connection_address_path(@device), version: detail.fetch("version"))
+    assert_response :unprocessable_entity
+    assert_equal "connection_address_saved", refused.fetch("error")
+    assert_not_includes response.body, @token[1..]
+    assert_equal @device, KoboDevice.authenticate(@token)
   end
 
   test "writes need the page's account and a valid CSRF token, and a signed-out request is refused" do

@@ -312,7 +312,7 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
       if (!mounted.current) return;
       publish.lost(error);
       void client.invalidateQueries({ queryKey: keys.reader(reader.id) });
-      say("error", describeWriteFailure(error, "Shelfarr could not confirm whether a new address was made. If the reader stops syncing, make a new address and update the reader."));
+      say("error", koboFailure(error, "Shelfarr could not confirm whether a new address was made. If the reader stops syncing, make a new address and update the reader."));
     } finally {
       if (mounted.current) setMaking(false);
     }
@@ -344,7 +344,7 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
       ) : (
         <>
           <p className="muted">
-            This reader reaches Shelfarr at <span className="secret">{reader.base_url}</span>. Making a new address disables the previous one; update the reader's configuration afterward. Revoking this connection keeps books already on the reader.
+            Making a new address disables the previous one; update the reader's configuration afterward. Revoking this connection keeps books already on the reader.
           </p>
           <RestoreStore storeEndpoint={reader.store_endpoint} />
           <div className="form-actions">

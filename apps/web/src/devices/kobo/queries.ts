@@ -17,7 +17,7 @@ export function isMissingReader(error: unknown): boolean {
 
 export function koboFailure(error: unknown, uncertain: string): string {
   if (!isApiError(error)) return uncertain;
-  if (error.code === "kobo_send_refused") return error.message;
+  if (error.code === "kobo_send_refused" || error.code === "connection_address_saved") return error.message;
   if (error.code === "reader_not_found") return "That Kobo reader is no longer connected to your account. Nothing was sent.";
   if (error.code === "book_not_found") return "This book is no longer in the library. Nothing was sent.";
   return describeWriteFailure(error, uncertain);

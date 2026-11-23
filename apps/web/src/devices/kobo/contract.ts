@@ -18,7 +18,6 @@ export const koboReaderRowSchema = koboSettingsSchema.extend({
   name: z.string(),
   mode: z.enum(["store_and_shelfarr", "shelfarr_only"]),
   mode_label: z.string(),
-  base_url: z.string(),
   last_sync_at: timestamp.nullable(),
   version: z.string().min(1),
 });
