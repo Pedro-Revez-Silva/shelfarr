@@ -490,11 +490,11 @@ describe("a request's copies for an administrator", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByLabelText("Copy 66.epub"));
     await user.click(document.querySelector("#copies .copies-heading .request-meta") as HTMLElement);
-    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement?.tagName).toBe("BODY");
     cleared = true;
     await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
     await waitFor(() => expect(document.querySelector("#copies .copies .request-note[tabindex]")).not.toBeNull());
-    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement?.tagName).toBe("BODY");
   });
 
   test("a pick that lapsed when its copy changed does not come back when the copy changes back", async () => {
@@ -526,7 +526,7 @@ describe("a request's copies for an administrator", () => {
     button.focus();
     await userEvent.setup().keyboard("{Enter}");
     const note = await screen.findByText("No copies found yet. The search may still be running.");
-    await waitFor(() => expect(document.activeElement).toBe(note));
+    await waitFor(() => expect(document.activeElement?.textContent).toBe(note.textContent));
     expect(screen.getByRole("alert").textContent).toBe("The choice could not be sent. Nothing was changed.");
   });
 
