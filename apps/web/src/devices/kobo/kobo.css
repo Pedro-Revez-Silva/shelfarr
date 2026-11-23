@@ -1,0 +1,169 @@
+.kobo-options {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.kobo-options legend {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.kobo-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  cursor: pointer;
+}
+.kobo-option:has(:checked) {
+  border-color: var(--accent);
+}
+.kobo-option input {
+  flex: none;
+  margin-top: 4px;
+  accent-color: var(--accent);
+}
+.kobo-option > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.kobo-option-title {
+  margin: 0;
+  font-weight: 600;
+}
+.kobo-badge {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.kobo-badge--preview {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+}
+.kobo-preview-note,
+.kobo-secret-warning,
+.kobo-mode,
+.kobo-restore {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--sunken);
+}
+.kobo-preview-note p,
+.kobo-mode p,
+.kobo-restore p {
+  margin: 0;
+}
+.kobo-secret-warning {
+  border-inline-start: 6px solid var(--accent);
+  font-weight: 550;
+}
+.kobo-setup,
+.kobo-connect {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.kobo-setup h3,
+.kobo-connect h3 {
+  margin: 0;
+}
+.kobo-setup .steps-list li {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.kobo-endpoint {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.kobo-reader-list,
+.kobo-deliveries {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.kobo-reader-list > li,
+.kobo-deliveries > li {
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  min-width: 0;
+}
+.kobo-delivery {
+  display: grid;
+  gap: 10px;
+}
+.kobo-delivery-text {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.kobo-delivery-text p {
+  margin: 0;
+}
+.kobo-tone {
+  margin: 0;
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid var(--line);
+  font-size: 0.9rem;
+}
+.kobo-tone--ok {
+  border-inline-start-color: var(--ink);
+}
+.kobo-tone--warning {
+  border-inline-start-color: var(--danger);
+}
+.kobo-tone--choice {
+  border-inline-start-color: var(--accent);
+  font-weight: 550;
+}
+.kobo-tone--info {
+  color: var(--muted);
+}
+.kobo-reader-summary {
+  display: grid;
+  gap: 6px;
+}
+.kobo-reader-summary p {
+  margin: 0;
+}
+.kobo-send {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.kobo-panel {
+  display: grid;
+  gap: 8px;
+  margin-top: 24px;
+}
+.kobo-panel h2 {
+  margin: 0;
+  font-size: 1rem;
+}

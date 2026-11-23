@@ -5,6 +5,7 @@ import type { BookLocation } from "../api/client";
 import { workSources, type Book, type BookCopy, type BookFormat, type BookRequest, type PublicationSummary, type Session } from "../contract";
 import { useBook, useCancelRequest, useChooseCopy, useRequestBook, useSearchAgain, useSession } from "../queries";
 import { OfflineChoice } from "../offline/SaveForOffline";
+import { SendToKobo, sendsToKobo } from "../devices/kobo/SendToKobo";
 import { summaryReaderHref } from "../reader/links";
 import { useServices } from "../services";
 import { usePageTitle } from "../title";
@@ -405,6 +406,12 @@ function OpenPanel({ publication }: { publication: PublicationSummary }) {
           )}
         </li>
         {publication.availability === "available" ? <OfflineChoice publication={publication} /> : null}
+        {services.mode === "rails" && sendsToKobo(publication) ? (
+          <li>
+            <span>Kobo</span>
+            <SendToKobo publication={publication} />
+          </li>
+        ) : null}
         <li>
           <span>Library</span>
           <Link to="/library/$publicationId" params={{ publicationId: publication.id }}>

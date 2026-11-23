@@ -10,6 +10,7 @@ import { PageHeading } from "./PageHeading";
 import { ReadingStatusForm } from "./ReadingStatusForm";
 import { ErrorPanel, Loading } from "./States";
 import { OfflineNotSavable, SaveForOffline } from "../offline/SaveForOffline";
+import { SendToKobo, sendsToKobo } from "../devices/kobo/SendToKobo";
 
 const routeApi = getRouteApi("/library/$publicationId");
 
@@ -129,6 +130,13 @@ function Details({ publication }: { publication: PublicationDetail }) {
             <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub} load={(signal) => api.reader(publication.id, signal)} />
           ) : readerLink ? (
             <OfflineNotSavable kind={publication.action === "listen" ? "listen" : publication.format_label} fallback={mode === "rails" ? publication.reader_url : null} />
+          ) : null}
+
+          {mode === "rails" && sendsToKobo(publication) ? (
+            <section className="kobo-panel" aria-labelledby="kobo-send-heading">
+              <h2 id="kobo-send-heading">Send to Kobo</h2>
+              <SendToKobo publication={publication} />
+            </section>
           ) : null}
 
           <ReadingStatusForm publication={publication} />

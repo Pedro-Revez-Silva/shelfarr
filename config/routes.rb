@@ -217,6 +217,7 @@ Rails.application.routes.draw do
   get "preview/requests/:id", to: "web_preview/shell#show", as: :web_preview_request, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/account", to: "web_preview/shell#show", as: :web_preview_account
   get "preview/account/:section", to: "web_preview/shell#show", as: :web_preview_account_section, constraints: { section: /security|devices|connections|about/ }
+  get "preview/account/devices/kobo/:id", to: "web_preview/shell#show", as: :web_preview_kobo_reader, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/find", to: "web_preview/shell#show", as: :web_preview_find
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
     get "session", to: "sessions#show"
@@ -256,6 +257,18 @@ Rails.application.routes.draw do
     post "account/api_tokens", to: "account_security#create_api_token", as: :account_api_tokens
     post "account/api_tokens/:id/revoke", to: "account_security#revoke_api_token", as: :account_api_token_revoke
     post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
+    get "account/kobo_readers", to: "kobo_readers#index", as: :kobo_readers
+    post "account/kobo_readers", to: "kobo_readers#create"
+    constraints id: /[1-9]\d{0,18}/ do
+      get "account/kobo_readers/:id", to: "kobo_readers#show", as: :kobo_reader
+      put "account/kobo_readers/:id", to: "kobo_readers#update", as: nil
+      post "account/kobo_readers/:id/connection_address", to: "kobo_readers#connection_address", as: :kobo_reader_connection_address
+      post "account/kobo_readers/:id/revoke", to: "kobo_readers#revoke", as: :kobo_reader_revoke
+      post "account/kobo_readers/:id/send", to: "kobo_readers#send_book", as: :kobo_reader_send
+      post "account/kobo_readers/:id/places/kobo", to: "kobo_readers#use_kobo_place", as: :kobo_reader_kobo_place
+      post "account/kobo_readers/:id/places/shelfarr", to: "kobo_readers#send_shelfarr_place", as: :kobo_reader_shelfarr_place
+      get "library/:id/kobo", to: "kobo_readers#book", as: :library_kobo
+    end
   end
 
   get "preview/admin", to: "web_preview/shell#show", as: :web_preview_admin

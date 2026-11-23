@@ -68,6 +68,17 @@ class KoboPublication
     raise Unavailable, "This file is not a valid EPUB"
   end
 
+  def send_refusal
+    raise Unavailable, "Choose an acquired ebook" unless @book.ebook? && @book.acquired?
+
+    publication_path
+    nil
+  rescue UnsafeDownloadPathError, FileCopyService::UnsafePathError, SystemCallError, ArgumentError
+    "The EPUB is missing or outside the authorized library"
+  rescue Unavailable => error
+    error.message
+  end
+
   def open_file(expected_fingerprint: nil)
     raise Unavailable, "Choose an acquired ebook" unless @book.ebook? && @book.acquired?
 

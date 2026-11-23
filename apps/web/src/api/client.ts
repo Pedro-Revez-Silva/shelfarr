@@ -116,6 +116,9 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   upload_refused: "conflict",
   match_rejected: "invalid",
   match_unavailable: "conflict",
+  reader_not_found: "not_found",
+  book_not_found: "not_found",
+  kobo_send_refused: "invalid",
 };
 
 export class ApiClient {
