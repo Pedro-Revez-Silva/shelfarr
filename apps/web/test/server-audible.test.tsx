@@ -166,7 +166,7 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await user.click(within(connection).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(server.called("PUT", /companion$/)).toHaveLength(1));
     expect(server.called("PUT", /companion$/)[0]!.body).toEqual({ companion: { url: "http://shelfarr-libation:8080", bridge_token: "", enabled: true, allow_private_network: true, timeout_seconds: "45" } });
-    expect(await screen.findByText("Audible backup connection saved.")).toBeTruthy();
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
     await waitFor(() => expect(within(connection).queryByText("Unsaved changes")).toBeNull());
 
     await user.click(within(connection).getByRole("button", { name: "Test" }));
@@ -239,12 +239,12 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     const server = adminServer().on("POST", /\/admin\/audible\/sync$/, () => answer(syncing, "Audible library sync queued."));
     await openLibrary(server);
     const sync = section("audible-sync");
-    expect(within(sync).getByRole("status").textContent).toContain("Library ready · 3 active titles.");
+    expect(sync.querySelector(".audible-sync-status")!.textContent).toContain("Library ready · 3 active titles.");
     await user.click(within(sync).getByRole("button", { name: "Sync library" }));
-    expect(await screen.findByText("Audible library sync queued.")).toBeTruthy();
+    expect(await within(sync).findByText("Audible library sync queued.")).toBeTruthy();
     expect((within(sync).getByRole("button", { name: "Syncing…" }) as HTMLButtonElement).disabled).toBe(true);
     expect(within(sync).getByRole("progressbar", { name: "Library sync in progress" })).toBeTruthy();
-    expect(within(sync).getByRole("status").textContent).toContain("Refreshing your Audible library");
+    expect(sync.querySelector(".audible-sync-status")!.textContent).toContain("Refreshing your Audible library");
   });
 
   test("the first-sync prompt queues the existing library only after the box is ticked, and Not now puts it off", async () => {
@@ -284,12 +284,12 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await openLibrary(server);
     const automation = section("audible-automation");
     await user.click(within(automation).getByLabelText("Sync the Audible library automatically"));
-    await user.click(within(automation).getByLabelText("Every hour"));
+    await user.selectOptions(within(automation).getByLabelText("Sync interval"), "60");
     await user.click(within(automation).getByLabelText("Automatically back up new purchases"));
     await user.click(within(automation).getByRole("button", { name: "Save automation" }));
     await waitFor(() => expect(server.called("PUT", /automation$/)).toHaveLength(1));
     expect(server.called("PUT", /automation$/)[0]!.body).toEqual({ automation: { scheduled_sync_enabled: true, scheduled_sync_interval_minutes: 60, automatic_backup_enabled: true } });
-    expect(await screen.findByText("Audible automation saved.")).toBeTruthy();
+    expect(await within(automation).findByText("Audible automation saved.")).toBeTruthy();
     expect(automation.textContent).toContain("New backups are credited to Ada Reader.");
   });
 
@@ -312,7 +312,7 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await user.click(within(rows[1]!).getByRole("button", { name: "Back up separately Dune Local" }));
     await waitFor(() => expect(server.called("POST", /items\/6\/backup$/)).toHaveLength(1));
     expect(server.called("POST", /items\/6\/backup$/)[0]!.body).toEqual({ separate_edition: true });
-    expect(await screen.findByText("Backup of “Dune Local” queued through Libation.")).toBeTruthy();
+    expect(await within(list).findByText("Backup of “Dune Local” queued through Libation.")).toBeTruthy();
 
     await user.click(within(list).getByRole("button", { name: "Next page" }));
     await waitFor(() => expect(router.state.location.search).toEqual({ audible_q: "Dune", audible_page: "2" }));

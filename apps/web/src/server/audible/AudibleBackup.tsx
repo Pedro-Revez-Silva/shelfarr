@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate, useSearch } from "@tanstack/react-router";
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { failureKind } from "../../api/errors";
 import { ErrorPanel, Loading } from "../../components/States";
 import { Time } from "../../components/requestText";
@@ -16,6 +16,30 @@ const CARD_ID = "audible";
 export const AUDIBLE_CARDS = [{ id: CARD_ID, title: "Audible backup" }] as const;
 const SECTION_IDS = ["audible-connection", "audible-account", "audible-sync", "audible-automation", "audible-catalogue"] as const;
 const TOKEN_FILE_VARIABLE = "SHELFARR_LIBATION_TOKEN_FILE";
+
+type SectionId = (typeof SECTION_IDS)[number];
+type Outcome = { where: SectionId; said: ReturnType<typeof useSay>["said"] };
+const OutcomeContext = createContext<Outcome | null>(null);
+
+function outcomeSection(command: AudibleCommand, data: Audible | undefined): SectionId {
+  switch (command.kind) {
+    case "save":
+    case "test":
+      return "audible-connection";
+    case "start_sign_in":
+    case "complete_sign_in":
+      return "audible-account";
+    case "sync":
+    case "dismiss_existing":
+      return "audible-sync";
+    case "back_up_existing":
+      return data?.existing_backup.prompt ? "audible-sync" : "audible-automation";
+    case "automation":
+      return "audible-automation";
+    case "back_up_item":
+      return "audible-catalogue";
+  }
+}
 
 type Run = (command: AudibleCommand, then?: (action: AudibleAction) => void, rejected?: (errors: AudibleRejection) => void) => void;
 
@@ -74,8 +98,10 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
   const denied = query.isError && failureKind(query.error) === "not_found";
   useRevalidateAccessWhenDenied(denied);
   useArrival(query.data !== undefined);
+  const [where, setWhere] = useState<SectionId>("audible-connection");
   const run: Run = (next, then, rejected) => {
     if (command.isPending) return;
+    setWhere(outcomeSection(next, query.data));
     command.mutate(next, {
       onSuccess: (answer) => {
         if (answer.kind === "rejected") {
@@ -83,7 +109,7 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
           rejected?.(answer.errors);
           return;
         }
-        say(answer.action.outcome.tone, answer.action.outcome.message);
+        if (next.kind !== "test") say(answer.action.outcome.tone, answer.action.outcome.message);
         then?.(answer.action);
       },
       onError: (error) => say("error", commandFailureText(error)),
@@ -94,12 +120,12 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
       id={CARD_ID}
       headingId={`${scope}-heading`}
       title="Audible backup"
-      status={<span className="badge">Beta</span>}
+      status={<span className="badge audible-beta">Beta</span>}
       summary="Keep personal backups of purchased Audible audiobooks through a Libation companion. Shelfarr never receives your Audible password."
     >
       <CardBody query={query} label="Loading Audible backup…" denied="Only administrators can manage Audible backup.">
         {(data) => (
-          <>
+          <OutcomeContext.Provider value={denied ? null : { where, said }}>
             <p className="field-warning audible-shared">
               <span aria-hidden="true">⚠ </span>Imported backups join this server's shared library and may be available to other people here. Only give library access to people allowed to use the connected account holder's purchases.
             </p>
@@ -116,10 +142,9 @@ export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter 
               </a>
               , an independent GPL-3.0 open-source project.
             </p>
-          </>
+          </OutcomeContext.Provider>
         )}
       </CardBody>
-      {denied ? null : <Said said={said} />}
     </SettingsCard>
   );
 }
@@ -159,12 +184,14 @@ function AudibleStatus({ data }: { data: Audible }) {
   );
 }
 
-function Section({ id, title, summary, children }: { id: string; title: string; summary?: string; children: ReactNode }) {
+function Section({ id, title, summary, children }: { id: SectionId; title: string; summary?: string; children: ReactNode }) {
+  const outcome = useContext(OutcomeContext);
   return (
     <section id={id} className="audible-section" aria-labelledby={`${id}-heading`} tabIndex={-1}>
       <h4 id={`${id}-heading`}>{title}</h4>
       {summary ? <p className="field-hint">{summary}</p> : null}
       {children}
+      {outcome ? <Said said={outcome.where === id ? outcome.said : null} /> : null}
     </section>
   );
 }
@@ -256,7 +283,7 @@ function ConnectionSection({ data, run, busy, onDirtyChange }: { data: Audible; 
   };
   return (
     <Section id="audible-connection" title="Libation companion" summary="Connection changes are saved only when you press Save, and a stored token is kept unless you enter a new one.">
-      <form className="audible-form" onSubmit={submit} aria-labelledby="audible-connection-heading" noValidate>
+      <form className="settings-form audible-form" method="post" noValidate onSubmit={submit} aria-labelledby="audible-connection-heading">
         {data.connection.problem ? (
           <p className="field-warning" role="alert">
             <span aria-hidden="true">⚠ </span>The companion is set up but did not answer: {data.connection.problem}
@@ -348,10 +375,10 @@ function StartSignIn({ data, run, busy }: { data: Audible; run: Run; busy: boole
     });
   };
   return (
-    <form className="audible-form" onSubmit={submit} aria-label="Start Audible sign-in">
+    <form className="settings-form audible-form" method="post" onSubmit={submit} aria-label="Start Audible sign-in">
       <div className="field">
         <label htmlFor={`${scope}-account`}>Audible account email</label>
-        <input id={`${scope}-account`} name="account" type="email" required maxLength={320} autoComplete="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={account} onChange={(event) => setAccount(event.target.value)} />
+        <input id={`${scope}-account`} name="account" type="text" inputMode="email" required maxLength={320} autoComplete="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={account} onChange={(event) => setAccount(event.target.value)} />
       </div>
       <div className="field">
         <label htmlFor={`${scope}-locale`}>Marketplace</label>
@@ -410,7 +437,7 @@ function PendingSignIn({ data, run, busy }: { data: Audible; run: Run; busy: boo
         ) : null}
       </li>
       <li>
-        <form className="audible-form" onSubmit={submit} aria-label="Complete Audible sign-in">
+        <form className="settings-form audible-form" method="post" onSubmit={submit} aria-label="Complete Audible sign-in">
           <div className="field">
             <label htmlFor={`${scope}-response`}>Address the Audible tab ends on</label>
             <input id={`${scope}-response`} name="response_url" type="url" inputMode="url" required autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={address} aria-describedby={`${scope}-response-hint`} onChange={(event) => setAddress(event.target.value)} />
@@ -534,7 +561,7 @@ function ExistingBackupForm({ run, busy, confirmText }: { run: Run; busy: boolea
     run({ kind: "back_up_existing" }, () => setConfirmed(false));
   };
   return (
-    <form className="audible-form" onSubmit={submit} aria-label="Queue the existing-library backup">
+    <form className="settings-form audible-form" method="post" onSubmit={submit} aria-label="Queue the existing-library backup">
       <div className="check-field">
         <input id={`${scope}-confirm`} type="checkbox" required checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
         <label htmlFor={`${scope}-confirm`}>{confirmText}</label>
@@ -570,26 +597,16 @@ function AutomationSection({ data, run, busy, onDirtyChange }: { data: Audible; 
     );
   }
   const automation = data.automation;
-  const fields: SettingField[] = [
-    { key: "scheduled_sync_enabled", label: "Sync the Audible library automatically", description: "Runs through the same one-at-a-time Libation work as a manual sync.", input: "toggle", value: draft.scheduled_sync_enabled },
-    {
-      key: "interval",
-      label: "Sync interval",
-      description: "Hourly finds new purchases fastest; every 24 hours is the default.",
-      input: "choice",
-      value: draft.interval,
-      options: automation.intervals.map((entry) => ({ value: String(entry.minutes), label: entry.label })),
-    },
-    {
-      key: "automatic_backup_enabled",
-      label: "Automatically back up new purchases",
-      description: automation.first_sync_done
-        ? "Needs scheduled sync. After a first sync that downloads nothing, purchases first found on later syncs are queued by themselves. This covers future purchases only."
-        : "Run the first library sync before turning this on, so Shelfarr can record what you already own.",
-      input: "toggle",
-      value: draft.automatic_backup_enabled,
-    },
-  ];
+  const scheduled: SettingField = { key: "scheduled_sync_enabled", label: "Sync the Audible library automatically", description: "Runs through the same one-at-a-time Libation work as a manual sync.", input: "toggle", value: draft.scheduled_sync_enabled };
+  const backups: SettingField = {
+    key: "automatic_backup_enabled",
+    label: "Automatically back up new purchases",
+    description: automation.first_sync_done
+      ? "Needs scheduled sync. After a first sync that downloads nothing, purchases first found on later syncs are queued by themselves. This covers future purchases only."
+      : "Run the first library sync before turning this on, so Shelfarr can record what you already own.",
+    input: "toggle",
+    value: draft.automatic_backup_enabled,
+  };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy) return;
@@ -599,16 +616,22 @@ function AutomationSection({ data, run, busy, onDirtyChange }: { data: Audible; 
   };
   return (
     <Section id="audible-automation" title="Automation" summary="Changes apply to future scheduled runs and never touch stored Audible sign-ins.">
-      <form className="audible-form" onSubmit={submit} aria-labelledby="audible-automation-heading">
-        {fields.map((field) => (
-          <SettingControl
-            key={field.key}
-            scope={scope}
-            field={field}
-            value={draft[field.key as keyof AutomationDraft]}
-            onChange={(next) => setDraft((previous) => ({ ...previous, [field.key]: field.input === "toggle" ? next === true : String(next) }))}
-          />
-        ))}
+      <form className="settings-form audible-form" method="post" noValidate onSubmit={submit} aria-labelledby="audible-automation-heading">
+        <SettingControl scope={scope} field={scheduled} value={draft.scheduled_sync_enabled} onChange={(next) => setDraft((previous) => ({ ...previous, scheduled_sync_enabled: next === true }))} />
+        <div className="field">
+          <label htmlFor={`${scope}-interval`}>Sync interval</label>
+          <select id={`${scope}-interval`} name="scheduled_sync_interval_minutes" value={draft.interval} aria-describedby={`${scope}-interval-hint`} onChange={(event) => setDraft((previous) => ({ ...previous, interval: event.target.value }))}>
+            {automation.intervals.map((entry) => (
+              <option key={entry.minutes} value={String(entry.minutes)}>
+                {entry.label}
+              </option>
+            ))}
+          </select>
+          <p id={`${scope}-interval-hint`} className="field-hint">
+            Hourly finds new purchases fastest; every 24 hours is the default.
+          </p>
+        </div>
+        <SettingControl scope={scope} field={backups} value={draft.automatic_backup_enabled} onChange={(next) => setDraft((previous) => ({ ...previous, automatic_backup_enabled: next === true }))} />
         <p className="field-hint">
           {!automation.scheduled_sync_enabled
             ? "Scheduled sync is off."

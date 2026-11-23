@@ -1,3 +1,6 @@
+.audible-beta {
+  justify-self: start;
+}
 .audible-shared {
   margin: 0;
 }
@@ -29,25 +32,24 @@
   align-items: center;
   gap: 4px 8px;
 }
-.audible-form,
-.audible-filter {
+.audible-form {
   display: grid;
   gap: 16px;
   min-width: 0;
 }
-.audible-form input[type="email"],
-.audible-form input[type="url"],
-.audible-filter input[type="search"],
-.audible-form select {
-  min-height: 48px;
+.audible-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  min-width: 0;
+}
+.audible-filter .field {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.audible-filter input[type="search"] {
   width: 100%;
-  padding: 0 12px;
-  background: var(--surface);
-  color: inherit;
-  border: 1px solid var(--muted);
-  border-radius: 12px;
-  font: inherit;
-  font-size: max(1rem, 16px);
 }
 .audible-accounts {
   display: flex;
@@ -69,6 +71,10 @@
   gap: 16px;
   margin: 0;
   padding-inline-start: 1.5rem;
+  list-style: decimal;
+}
+.audible-steps > li::marker {
+  font-weight: 600;
 }
 .audible-steps > li {
   display: grid;
@@ -143,10 +149,15 @@
   text-transform: uppercase;
 }
 .audible-table tbody th {
-  display: grid;
-  gap: 2px;
   font-weight: 400;
   min-inline-size: 12rem;
+}
+.audible-table tbody th > span {
+  display: block;
+}
+.audible-table thead th:nth-child(2),
+.audible-table td[data-label="Ownership"] {
+  white-space: nowrap;
 }
 .audible-title {
   font-weight: 600;
@@ -193,6 +204,7 @@
     padding: 0;
     border: 0;
     min-inline-size: 0;
+    white-space: normal;
   }
   .audible-table td::before {
     content: attr(data-label) ": ";
