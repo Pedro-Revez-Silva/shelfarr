@@ -375,7 +375,7 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
 
   test("a cancellation the server refuses because the request changed says so, reads the request again and stays on the page", async () => {
     let found = offering(1);
-    const message = "This request changed since the page was read. The page now shows it as it is; check what removing it does and choose again.";
+    const message = "This request changed since the page was read. The page now shows it as it is; check what cancelling it does and choose again.";
     const server = railsServer(found)
       .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found } }))
       .on("POST", /\/requests\/7\/withdraw$/, () => {

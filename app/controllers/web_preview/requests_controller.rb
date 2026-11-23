@@ -18,7 +18,7 @@ class WebPreview::RequestsController < WebPreview::APIController
   READ_ATTEMPTS = 3
   NOT_CHOOSABLE = "This copy can no longer be chosen. The page shows what can be chosen now."
   COPIES_CHANGED = "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one."
-  WITHDRAWAL_CHANGED = "This request changed since the page was read. The page now shows it as it is; check what removing it does and choose again."
+  WITHDRAWAL_CHANGED = "This request changed since the page was read. The page now shows it as it is; check what cancelling it does and choose again."
   REPLACEMENT_UNCONFIRMED = "This book is already in the library. Confirm that this copy replaces the library file, then choose it again."
 
   before_action :require_admin, only: [ :selection, :search, :retry, :manual ]

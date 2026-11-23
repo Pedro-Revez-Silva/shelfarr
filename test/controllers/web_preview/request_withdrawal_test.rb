@@ -9,7 +9,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
   include WebPreviewTestHelper
   include ActiveJob::TestHelper
 
-  CHANGED = "This request changed since the page was read. The page now shows it as it is; check what removing it does and choose again."
+  CHANGED = "This request changed since the page was read. The page now shows it as it is; check what cancelling it does and choose again."
 
   setup do
     prepare_consumer_library
