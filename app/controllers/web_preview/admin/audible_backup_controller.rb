@@ -83,7 +83,8 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     end
     outcome = case result.status
     when :expired then failure("This Audible sign-in has expired or was already used. Start again.")
-    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)} Start the sign-in again.")
+    when :wrong_marketplace then failure("That address is from a different Audible marketplace than this sign-in. Paste the address from the tab this sign-in opened. Nothing was sent to Libation.")
+    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)}#{result.error.is_a?(LibationCompanionClient::ConnectionError) ? ' Try again.' : ' Start the sign-in again.'}")
     else success("Audible account connected through Libation.")
     end
     render json: answer(outcome: outcome)

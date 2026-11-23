@@ -14,6 +14,7 @@ class OwnedLibraryConnectionWorkflow
   AUTOMATION_ATTRIBUTES = %i[scheduled_sync_enabled scheduled_sync_interval_minutes automatic_backup_enabled].freeze
   BACKUP_ENQUEUE_FAILURE = "Shelfarr could not queue the Libation backup"
 
+  CompletionClaim = Data.define(:pending_state, :auth_state, :endpoint)
   ConnectionTest = Data.define(:status, :companion_version, :libation_version, :health_status, :error)
   SignInStart = Data.define(:status, :login_url, :error)
   SignInCompletion = Data.define(:status, :error)
@@ -189,14 +190,17 @@ class OwnedLibraryConnectionWorkflow
   def test_connection
     return ConnectionTest.new(status: :busy, companion_version: nil, libation_version: nil, health_status: nil, error: nil) if active_operation?
 
+    secrets = connection.client.secret_values
     health = connection.client.health
     version = connection.client.version
-    connection.update!(companion_version: version.companion_version, provider_version: version.libation_version)
+    companion_version = reportable(version.companion_version, secrets)
+    libation_version = reportable(version.libation_version, secrets)
+    connection.update!(companion_version: companion_version, provider_version: libation_version)
     ConnectionTest.new(
       status: :connected,
-      companion_version: version.companion_version,
-      libation_version: version.libation_version,
-      health_status: health.is_a?(Hash) ? health["status"].presence : nil,
+      companion_version: companion_version,
+      libation_version: libation_version,
+      health_status: reportable(health.is_a?(Hash) ? health["status"].presence&.to_s : nil, secrets),
       error: nil
     )
   rescue LibationCompanionClient::Error => e
@@ -236,14 +240,36 @@ class OwnedLibraryConnectionWorkflow
   end
 
   def complete_sign_in_once(response_url:, &proof)
-    pending_state, claim = claim_completion(proof)
-    return SignInCompletion.new(status: :expired, error: nil) unless claim
+    claim = claim_completion(response_url, proof)
+    return SignInCompletion.new(status: claim, error: nil) if claim.is_a?(Symbol)
 
-    connection.client.complete_auth(session_id: pending_state.fetch(:session_id), response_url: response_url)
+    connection.client.complete_auth(session_id: claim.pending_state.fetch(:session_id), response_url: response_url)
     finish_completion(claim)
-  rescue ArgumentError, LibationCompanionClient::Error => e
-    abandon_completion(claim) if claim
+  rescue ArgumentError, LibationCompanionClient::ConnectionError => e
+    restore_completion(claim) if claim.is_a?(CompletionClaim)
     SignInCompletion.new(status: :failed, error: e)
+  rescue LibationCompanionClient::Error => e
+    abandon_completion(claim) if claim.is_a?(CompletionClaim)
+    SignInCompletion.new(status: :failed, error: e)
+  end
+
+  def self.same_marketplace?(login_url, response_url)
+    roots = marketplace_roots(URI.parse(login_url.to_s).host)
+    host = URI.parse(response_url.to_s.strip).host.to_s.downcase
+    roots.any? { |root| host == root || host.end_with?(".#{root}") }
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def self.marketplace_roots(login_host)
+    host = login_host.to_s.downcase
+    suffix = LibationCompanionClient::AUTH_HOST_SUFFIXES
+      .select { |candidate| host == candidate || host.end_with?(".#{candidate}") }
+      .max_by(&:length)
+    return [] unless suffix
+
+    domain = suffix.sub(/\A(?:amazon|audible)\./, "")
+    [ "amazon.#{domain}", "audible.#{domain}" ]
   end
 
   def sync
@@ -491,10 +517,11 @@ class OwnedLibraryConnectionWorkflow
     end
   end
 
-  def claim_completion(proof)
+  def claim_completion(response_url, proof)
     connection.with_lock do
       connection.reload
-      next unless connection.auth_pending? && proof.call(connection.auth_session_id.to_s)
+      next :expired unless connection.auth_pending? && proof.call(connection.auth_session_id.to_s)
+      next :wrong_marketplace unless self.class.same_marketplace?(connection.auth_login_url, response_url)
 
       pending_state = connection.auth_state_snapshot
       connection.update!(
@@ -502,25 +529,48 @@ class OwnedLibraryConnectionWorkflow
         auth_login_url: nil,
         auth_expires_at: OwnedLibraryConnection::AUTH_START_TIMEOUT.from_now
       )
-      [ pending_state, connection.auth_state_snapshot ]
+      CompletionClaim.new(pending_state: pending_state, auth_state: connection.auth_state_snapshot, endpoint: endpoint_identity)
     end
   end
 
   def finish_completion(claim)
     connection.with_lock do
       connection.reload
-      next SignInCompletion.new(status: :expired, error: nil) unless connection.auth_state_snapshot == claim
+      next SignInCompletion.new(status: :expired, error: nil) unless endpoint_identity == claim.endpoint
 
-      reset_account_bound_catalog!
+      reset_account_bound_catalog!(clear_auth_state: connection.auth_state_snapshot == claim.auth_state)
       SignInCompletion.new(status: :connected, error: nil)
+    end
+  end
+
+  def restore_completion(claim)
+    connection.with_lock do
+      connection.reload
+      next unless connection.auth_state_snapshot == claim.auth_state
+
+      connection.update!(
+        auth_session_id: claim.pending_state.fetch(:session_id),
+        auth_login_url: claim.pending_state.fetch(:login_url),
+        auth_expires_at: claim.pending_state.fetch(:expires_at)
+      )
     end
   end
 
   def abandon_completion(claim)
     connection.with_lock do
       connection.reload
-      connection.clear_auth_state! if connection.auth_state_snapshot == claim
+      connection.clear_auth_state! if connection.auth_state_snapshot == claim.auth_state
     end
+  end
+
+  def endpoint_identity
+    [ connection.url, connection.bridge_token ]
+  end
+
+  def reportable(value, secrets)
+    return nil if value.nil? || value.include?("://") || secrets.any? { |secret| value.include?(secret) }
+
+    value
   end
 
   def create_queued_import(item, poll_token:, separate_edition:, request_id:)

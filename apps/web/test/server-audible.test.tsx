@@ -380,17 +380,24 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(within(connection).getByText("Unsaved changes")).toBeTruthy();
   });
 
-  test("filtering keeps the address fragment and focus on Filter", async () => {
+  test("filtering keeps the address fragment and focus on Filter without scrolling back to the card", async () => {
     const user = userEvent.setup();
     const { router } = await openLibrary(adminServer(), "#audible");
     const list = section("audible-catalogue");
     await within(list).findByRole("table");
     await user.type(within(list).getByLabelText("Title or author"), "Herbert");
     const filter = within(list).getByRole("button", { name: "Filter" });
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.id);
+    };
     await user.click(filter);
     await waitFor(() => expect(router.state.location.search).toEqual({ audible_q: "Herbert" }));
     await new Promise((resolve) => setTimeout(resolve, 50));
+    Element.prototype.scrollIntoView = original;
     expect(router.state.location.hash).toBe("audible");
+    expect(scrolled).toEqual([]);
     expect(document.activeElement === filter).toBe(true);
   });
 

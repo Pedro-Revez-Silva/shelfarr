@@ -606,8 +606,9 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
       stub_request(:get, "#{COMPANION}/version").to_return(status: 200, body: { companionVersion: "1.4 #{TOKEN}", libationVersion: "14.2" }.to_json)
       stub_accounts
       write :post, web_preview_api_admin_audible_test_path
-      assert_equal "Connected to the Libation companion (1.4 [hidden] / Libation 14.2); status: ok [hidden].", response.parsed_body.dig("outcome", "message")
-      assert_equal "1.4 [hidden]", response.parsed_body.dig("connection", "companion_version")
+      assert_equal "Connected to the Libation companion (14.2).", response.parsed_body.dig("outcome", "message")
+      assert_nil response.parsed_body.dig("connection", "companion_version")
+      assert_equal [ nil, "14.2" ], [ connection.reload.companion_version, connection.provider_version ]
       assert_equal "Libation rejected https://www.amazon.com/[hidden]", response.parsed_body.dig("sync", "error")
       state
       preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
@@ -647,12 +648,32 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_equal 1, calls.size
 
     proof = pending_sign_in(connection)
+    offline = Object.new
+    offline.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED" }
+    assert_equal :failed, completing_with(offline, connection, proof).status
+    assert_equal "companion-session-7", connection.reload.auth_session_id
+    assert connection.auth_pending?
+
     rejecting = Object.new
     rejecting.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ResponseError, "Libation companion returned HTTP 422" }
     result = completing_with(rejecting, connection, proof)
     assert_equal :failed, result.status
     assert_equal [ nil, nil, nil ], connection.reload.auth_state_snapshot.values
     assert_equal :expired, completing_with(client, connection, proof).status
+  end
+
+  test "an address from another marketplace than the pending sign-in is refused before anything is claimed or sent" do
+    connection = create_connection
+    connection.update!(auth_session_id: "companion-session-7", auth_login_url: "https://www.amazon.co.uk/ap/signin?x=1", auth_expires_at: 10.minutes.from_now)
+    token = WebPreview::AudibleBackupJson.sign_in_token(connection, @admin, "companion-session-7")
+    sign_in_as(@admin)
+    body = write :post, web_preview_api_admin_audible_sign_in_complete_path, { sign_in_token: token, response_url: "https://www.amazon.com/ap/maplanding?code=1" }
+    assert_equal "That address is from a different Audible marketplace than this sign-in. Paste the address from the tab this sign-in opened. Nothing was sent to Libation.", body.dig("outcome", "message")
+    assert connection.reload.auth_pending?
+    assert_not_requested :any, /libation\.test/
+    assert OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.co.uk/ap/signin", "https://www.audible.co.uk/x")
+    assert OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.com.au/ap/signin", "https://www.amazon.com.au/x")
+    assert_not OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.com/ap/signin", "https://www.amazon.com.au/x")
   end
 
   test "a completion whose claim was lost while Libation answered leaves the catalogue of what replaced it alone" do
@@ -676,6 +697,24 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_equal "https://replacement-libation.test", connection.url
   end
 
+  test "a completion that outlives its claim on the same companion still retires the previous account's catalogue" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    previous = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Previous account purchase", ownership_type: "purchased")
+    proof = pending_sign_in(connection)
+    test_case = self
+    client = Object.new
+    client.define_singleton_method(:complete_auth) do |**|
+      test_case.travel 4.minutes
+      OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: nil).clear_stale_auth_state
+    end
+    result = completing_with(client, connection, proof)
+    travel_back
+    assert_equal :connected, result.status
+    assert_not previous.reload.active?
+    assert_nil connection.reload.last_synced_at
+    assert_equal [ nil, nil, nil ], connection.auth_state_snapshot.values
+  end
+
   test "an address that is not an https Amazon or Audible page is refused before anything is claimed or sent" do
     connection = create_connection(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
     sign_in_as(@admin)
@@ -689,7 +728,7 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_not_requested :any, /libation\.test/
   end
 
-  test "a token read from the mounted token file is hidden like a stored one" do
+  test "a token read from the mounted token file, even one rotated mid-request, and addresses in versions are never stored or shown" do
     file = File.join(@audiobook_output_path, "bridge.token")
     File.write(file, "file-token-6631aa\n")
     with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
@@ -698,14 +737,18 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
       VCR.turned_off do
         stub_request(:get, "#{connection.url}/health").to_return(status: 200, body: { status: "ok" }.to_json)
         stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer file-token-6631aa" })
-          .to_return(status: 200, body: { companionVersion: "1.4 file-token-6631aa", libationVersion: "14.2" }.to_json)
+          .to_return do
+            File.write(file, "rotated-token-7742bb\n")
+            { status: 200, body: { companionVersion: "1.4 file-token-6631aa", libationVersion: "14.2 https://www.amazon.com/ap/x?code=1" }.to_json }
+          end
         stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
         write :post, web_preview_api_admin_audible_test_path
-        assert_equal "Connected to the Libation companion (1.4 [hidden] / Libation 14.2); status: ok.", response.parsed_body.dig("outcome", "message")
-        assert_equal [ "1.4 [hidden]", true ], response.parsed_body.fetch("connection").values_at("companion_version", "token_file_managed")
+        assert_equal "Connected to the Libation companion; status: ok.", response.parsed_body.dig("outcome", "message")
+        assert_equal [ nil, nil, true ], response.parsed_body.fetch("connection").values_at("companion_version", "provider_version", "token_file_managed")
+        assert_equal [ nil, nil ], [ connection.reload.companion_version, connection.provider_version ]
         state
       end
-      assert_not_includes response.body, "file-token-6631aa"
+      [ "file-token-6631aa", "rotated-token-7742bb", "code=1" ].each { |secret| assert_not_includes response.body, secret }
     end
   end
 
