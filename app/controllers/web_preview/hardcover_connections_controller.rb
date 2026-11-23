@@ -76,6 +76,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
     return render_state(notice: "No Hardcover account is connected.") unless connection
     return refuse("hardcover_changed", CHANGED, :conflict) unless Hardcover::ConnectionManager.disconnect!(connection, expected_version: version)
 
+    sign_in.forget_sign_ins
     render_state(notice: DISCONNECTED)
   end
 

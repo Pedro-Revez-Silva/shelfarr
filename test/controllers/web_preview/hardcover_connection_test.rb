@@ -362,6 +362,31 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_equal newer.version, @member.reload.hardcover_connection.version
   end
 
+  test "disconnecting ends sign-ins started earlier, so an older approval cannot connect afterwards" do
+    stub_request(:post, REVOKE_URL).to_return(status: 200, body: "{}")
+    stub_device
+    stub_token(access: "hc_at_old_approval", refresh: "hc_rt_old_approval")
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    oauth_state = state_of(start_oauth(version: nil))
+    stub_me(id: 77, username: "key_account")
+    send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_between", version: nil)
+    between = @member.reload.hardcover_connection
+
+    answer = send_json(web_preview_api_hardcover_disconnect_path, version: between.version)
+    assert_response :success
+    assert_nil answer.dig("hardcover", "device")
+    stub_me(id: 4242, username: "old_approval")
+
+    travel 6.seconds do
+      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
+    end
+    get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
+    assert_returned_to_warm_page("error", "That Hardcover sign-in expired or was started elsewhere. Please try again.")
+    assert_not_requested :post, TOKEN_URL
+    assert_nil @member.reload.hardcover_connection
+  end
+
   test "an API key checked while another connection is made does not replace it" do
     stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
       create_hardcover_connection(@member, hardcover_user_id: 4242, username: "made_meanwhile") unless @member.hardcover_connection

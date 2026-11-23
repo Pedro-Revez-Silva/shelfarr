@@ -125,7 +125,7 @@ describe("Hardcover in Account ▸ Connections", () => {
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ device: { ...DEVICE, verification_uri: address } }) }).success).toBe(false);
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following: "/sub/hardcover/subscriptions", api_key_page: address } }) }).success).toBe(false);
     }
-    for (const following of ["https://evil.example/follow", "//evil.example/follow", "/\\evil.example/follow"]) {
+    for (const following of ["https://evil.example/follow", "//evil.example/follow", "/\\evil.example/follow", "/\t/evil.example/follow", "/\n/evil.example/follow", "hardcover/subscriptions"]) {
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following } }) }).success).toBe(false);
     }
     expect(hardcoverRefusalSchema.safeParse({ account: ACCOUNT, error: "hardcover_changed", message: "Changed", hardcover: state() }).success).toBe(true);
@@ -366,6 +366,27 @@ describe("Hardcover in Account ▸ Connections", () => {
     await press(within(hardcover).getByRole("button", { name: "Cancel" }));
     await until(() => within(hardcover).getByRole("button", { name: "Sign in with Hardcover" }));
     expect(api.called("POST", /device\/cancel$/)).toHaveLength(1);
+  });
+
+  test("Cancel pressed in the instant a code check starts sends nothing until the check ends", async () => {
+    useFakeTimers();
+    const live: Live = { state: state({ device: DEVICE }) };
+    const checked = deferred<{ body: unknown }>();
+    const api = server(live)
+      .on("POST", /\/account\/hardcover\/device\/poll$/, () => checked.promise)
+      .on("POST", /\/account\/hardcover\/device\/cancel$/, () => change(live, state()));
+    renderApp({ server: api, url: "/sub/preview/account/connections" });
+    const hardcover = await until(cardNow);
+    await until(() => within(hardcover).getByText("ABCD-1234"));
+    const cancel = within(hardcover).getByRole("button", { name: "Cancel" });
+    jest.advanceTimersByTime(5_100);
+    cancel.click();
+    expect(cancel.getAttribute("aria-disabled")).toBeNull();
+    await tick();
+    expect(api.called("POST", /device\/poll$/)).toHaveLength(1);
+    expect(api.called("POST", /device\/cancel$/)).toHaveLength(0);
+    checked.resolve({ body: { account: ACCOUNT, status: "pending", hardcover: live.state } });
+    await until(() => expect(within(hardcover).getByRole("button", { name: "Cancel" }).getAttribute("aria-disabled")).toBeNull());
   });
 
   test("disconnect asks first, sends the connection the page showed and keeps a newer one", async () => {

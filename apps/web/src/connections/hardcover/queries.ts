@@ -52,6 +52,12 @@ export function useHardcoverBusy(): boolean {
   return useIsMutating({ mutationKey: useHardcoverKeys().writes }) > 0;
 }
 
+export function useHardcoverWriting(): () => boolean {
+  const client = useQueryClient();
+  const writes = useHardcoverKeys().writes;
+  return useCallback(() => client.isMutating({ mutationKey: writes }) > 0, [client, writes]);
+}
+
 export function useHardcoverWrite<Input, Answer extends { kind: string; hardcover?: HardcoverState }>(write: (input: Input) => Promise<Answer>) {
   const publish = usePublishHardcover();
   const keys = useHardcoverKeys();

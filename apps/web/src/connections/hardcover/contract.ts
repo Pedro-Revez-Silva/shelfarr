@@ -2,7 +2,8 @@ import { z } from "zod";
 
 const identifier = z.string().regex(/^[1-9]\d{0,18}$/);
 const timestamp = z.iso.datetime({ offset: true });
-const sitePath = z.string().regex(/^\/(?![\/\\])/, "Expected a path on this server");
+const PAGE_ORIGIN = "https://shelfarr.invalid";
+const sitePath = z.string().refine((value) => value.startsWith("/") && URL.canParse(value, PAGE_ORIGIN) && new URL(value, PAGE_ORIGIN).origin === PAGE_ORIGIN, "Expected a path on this server");
 
 export const HARDCOVER_ORIGINS: readonly string[] = ["https://hardcover.app", "https://api.hardcover.app"];
 

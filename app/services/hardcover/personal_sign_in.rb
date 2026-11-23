@@ -105,6 +105,11 @@ module Hardcover
       @session.delete(DEVICE_KEY)
     end
 
+    def forget_sign_ins
+      @session.delete(OAUTH_KEY)
+      forget_device
+    end
+
     def poll_device
       pending = pending_device
       return DevicePoll.new(status: :failed, message: "Hardcover sign-in expired. Start again.", connection: nil) unless pending

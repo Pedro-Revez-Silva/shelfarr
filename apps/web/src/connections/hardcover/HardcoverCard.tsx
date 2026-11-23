@@ -8,7 +8,7 @@ import { Said, useSay } from "../../server/extras";
 import { useServices } from "../../services";
 import * as api from "./api";
 import type { HardcoverConnection, HardcoverDevice, HardcoverState } from "./contract";
-import { external, hardcoverFailure, useCodePoll, useHardcover, useHardcoverBusy, useHardcoverWrite, type CodeOutcome } from "./queries";
+import { external, hardcoverFailure, useCodePoll, useHardcover, useHardcoverBusy, useHardcoverWrite, useHardcoverWriting, type CodeOutcome } from "./queries";
 import "./hardcover.css";
 
 type Say = (tone: "success" | "error", text: string) => void;
@@ -94,9 +94,10 @@ function NotOffered({ admin }: { admin: boolean }) {
 function Connected({ connection, following, say }: { connection: HardcoverConnection; following: string; say: Say }) {
   const { api: client } = useServices();
   const busy = useHardcoverBusy();
+  const writing = useHardcoverWriting();
   const remove = useHardcoverWrite((version: string) => api.disconnect(client, version));
   const confirm = (version: string) => {
-    if (busy) return;
+    if (writing()) return;
     remove.mutate(version, {
       onSuccess: (answer) => say(answer.kind === "done" ? "success" : "error", answer.kind === "done" ? (answer.notice ?? "Hardcover account disconnected.") : answer.message),
       onError: (error) => say("error", hardcoverFailure(error, UNCONFIRMED)),
@@ -151,6 +152,7 @@ function Connect({ state, version, say }: { state: HardcoverState; version: stri
 function SignIn({ code, version, say }: { code: boolean; version: string | null; say: Say }) {
   const { api: client } = useServices();
   const busy = useHardcoverBusy();
+  const writing = useHardcoverWriting();
   const [leaving, setLeaving] = useState(false);
   useEffect(() => {
     const returned = (event: PageTransitionEvent) => {
@@ -162,7 +164,7 @@ function SignIn({ code, version, say }: { code: boolean; version: string | null;
   const authorize = useHardcoverWrite((expected: string | null) => api.authorize(client, expected));
   const startCode = useHardcoverWrite((expected: string | null) => api.startCode(client, expected));
   const signIn = () => {
-    if (busy || leaving) return;
+    if (writing() || leaving) return;
     authorize.mutate(version, {
       onSuccess: (answer) => {
         if (answer.kind === "refused") return say("error", answer.message);
@@ -173,7 +175,7 @@ function SignIn({ code, version, say }: { code: boolean; version: string | null;
     });
   };
   const withCode = () => {
-    if (busy || leaving) return;
+    if (writing() || leaving) return;
     startCode.mutate(version, {
       onSuccess: (answer) => {
         if (answer.kind === "refused") say("error", answer.message);
@@ -202,6 +204,7 @@ function CodePanel({ device, say }: { device: HardcoverDevice; say: Say }) {
   const headingId = useId();
   const { api: client } = useServices();
   const busy = useHardcoverBusy();
+  const writing = useHardcoverWriting();
   const heading = useRef<HTMLHeadingElement>(null);
   const ended = (outcome: CodeOutcome) => say(outcome.tone, outcome.message);
   const poll = useCodePoll(device, ended);
@@ -242,7 +245,7 @@ function CodePanel({ device, say }: { device: HardcoverDevice; say: Say }) {
           className="button button--subtle"
           aria-disabled={busy ? true : undefined}
           onClick={() => {
-            if (busy) return;
+            if (writing()) return;
             cancel.mutate(undefined, { onError: (error) => say("error", hardcoverFailure(error, UNCONFIRMED)) });
           }}
         >
@@ -257,6 +260,7 @@ function ApiKeyForm({ open, page, version, say }: { open: boolean; page: string 
   const ids = { key: useId(), help: useId(), error: useId() };
   const { api: client } = useServices();
   const busy = useHardcoverBusy();
+  const writing = useHardcoverWriting();
   const input = useRef<HTMLInputElement>(null);
   const [key, setKey] = useState("");
   const [missing, setMissing] = useState(false);
@@ -268,7 +272,7 @@ function ApiKeyForm({ open, page, version, say }: { open: boolean; page: string 
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy) return;
+    if (writing()) return;
     const value = key.trim();
     if (value === "") {
       setMissing(true);
