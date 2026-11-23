@@ -314,6 +314,16 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal revision(@theirs), request.dig("copies", "revision")
   end
 
+  test "an administrator's request read never answers from the query cache, so a write from another connection is seen on the second look" do
+    @theirs.search_results.create!(guid: "first", title: "Audio.m4b", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"))
+    sign_in_as(@admin)
+    cached = []
+    record = ->(*, payload) { cached << payload[:sql] if payload[:cached] }
+    ActiveSupport::Notifications.subscribed(record, "sql.active_record") { detail(@theirs, user: @admin) }
+    assert_response :success
+    assert_equal [], cached
+  end
+
   test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
     @theirs.search_results.create!(guid: "odd", title: "Odd.m4b", source: SearchResult::SOURCE_PROWLARR, indexer: "Prowlarr", magnet_url: magnet("a"), seeders: 5, confidence_score: 60,
       score_breakdown: { "audiobook_structure" => 1, "preference_adjustment" => [ 1 ], "auto_select_allowed" => true })

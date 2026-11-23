@@ -290,7 +290,7 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
       <div role="status">{search.isSuccess ? <p className="form-success">Searching again. Copies found by this search appear here.</p> : null}</div>
       {count > 0 ? (
-        <CopyTable copies={copies.candidates} choose={choice} preselect={revision === null && copies.selectable} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} />
+        <CopyTable copies={copies.candidates} choose={choice} preselect={false} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} />
       ) : (
         <>
           <p className="request-note copies-empty" tabIndex={-1}>

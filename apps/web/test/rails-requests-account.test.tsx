@@ -370,6 +370,8 @@ describe("a request's copies for an administrator", () => {
     expect(within(section).getByText("2 copies found, best first")).toBeTruthy();
     expect([...within(section).getAllByRole("row")[2]!.querySelectorAll("td[data-label]")].map((cell) => cell.textContent)).toEqual(["EPUB", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"]);
     const user = userEvent.setup();
+    expect((within(section).getByLabelText("Old.epub") as HTMLInputElement).checked).toBe(false);
+    await user.click(within(section).getByLabelText("Old.epub"));
     await user.click(within(section).getByRole("button", { name: "Download this copy" }));
     await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "70" }]));
   });

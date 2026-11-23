@@ -36,14 +36,10 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   def show
-    id = identifier(params[:id])
-    READ_ATTEMPTS.times do
-      seen = Current.user.admin? ? WebPreview::RequestJson.copies_revision(visible_requests.find(id)) : nil
-      request = visible_requests.includes(:book, :downloads, :search_results).find(id)
-      detail = projection(request).detail(store_offers: StoreProviderRegistry.visible_offers_for(request).best_first.to_a, copies_revision: seen)
-      return render(json: { account: web_preview_account_id, request: detail }) if seen.nil? || seen == WebPreview::RequestJson.copies_revision(request)
-    end
-    render_error("server_busy", :service_unavailable)
+    detail = Request.uncached { coherent_detail(identifier(params[:id])) }
+    return render_error("server_busy", :service_unavailable) unless detail
+
+    render json: { account: web_preview_account_id, request: detail }
   end
 
   def selection
@@ -117,6 +113,16 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   private
+
+  def coherent_detail(id)
+    READ_ATTEMPTS.times do
+      seen = Current.user.admin? ? WebPreview::RequestJson.copies_revision(visible_requests.find(id)) : nil
+      request = visible_requests.includes(:book, :downloads, :search_results).find(id)
+      detail = projection(request).detail(store_offers: StoreProviderRegistry.visible_offers_for(request).best_first.to_a, copies_revision: seen)
+      return detail if seen.nil? || seen == WebPreview::RequestJson.copies_revision(request)
+    end
+    nil
+  end
 
   def choose_waiting_copy(request, result)
     raise ArgumentError, NOT_CHOOSABLE unless WebPreview::BookPage.choosing_allowed?(request) && result.downloadable?
