@@ -19,7 +19,7 @@ import { DownloadsPage } from "../offline/DownloadsPage";
 import type { ConfirmedAccount, OfflineStore } from "../offline/model";
 import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
 import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
-import { createOnlineOffline, keepOfflineAccount, reconfirmOnMarkerChange, refreshOfflineAccount, runOfflineSync } from "../offline/online";
+import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "../offline/online";
 import { offlineStoreFor } from "../offline/store";
 import { retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
@@ -264,14 +264,13 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   });
   const { csrf, services, router } = built;
 
-  useEffect(() => {
-    const stopLocks = services.guard.subscribe(() => void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined));
-    const stopContinuity = reconfirmOnMarkerChange(boot.offline, auth, store);
-    return () => {
-      stopLocks();
-      stopContinuity();
-    };
-  }, [services, boot, auth, store]);
+  useEffect(
+    () =>
+      services.guard.subscribe(() => {
+        void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
+      }),
+    [services, boot, auth, store],
+  );
 
   const [offline] = useState<Offline | null>(() =>
     boot.offline ? createOnlineOffline({ server: { mount: boot.mount, api: boot.api, offline: boot.offline }, auth, store, guard: services.guard, confirmation, fetcher }) : null,

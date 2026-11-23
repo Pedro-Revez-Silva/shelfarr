@@ -6,7 +6,7 @@ import { readerPublicationId } from "../reader/ReaderApp";
 import { ReaderFrame } from "../reader/ReaderFrame";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
-import { steady, useOffline, type Offline } from "./context";
+import { unchangedOr, useOffline, type Offline } from "./context";
 import { DevicePlaces, type DeviceSaveState } from "./devicePlaces";
 import { openingLocator, type SavedBook, type Upload } from "./model";
 import { uploadText } from "./text";
@@ -45,7 +45,7 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
       return;
     }
     let current = true;
-    steady(offlineBoot, () => store.open(guard.account, id))
+    unchangedOr(offlineBoot, null, () => store.open(guard.account, id))
       .then((saved) => {
         if (current) setOpened(saved && guard.isActive() ? { kind: "ready", book: saved.book, blob: saved.blob } : { kind: "missing" });
       })

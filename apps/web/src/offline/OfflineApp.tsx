@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AccountGuard } from "../api/account-guard";
 import { definitiveRefusal } from "./reachability";
 import { AuthFrame } from "../go/AuthFrame";
@@ -7,7 +7,7 @@ import { PageHeading } from "../components/PageHeading";
 import type { GoBoot, OfflineBoot } from "../contract";
 import { createServices, ServicesProvider, useGuardState } from "../services";
 import { useDocumentTitle } from "../title";
-import { OfflineProvider, confirmationFrom, onContinuityChange, type Offline } from "./context";
+import { OfflineProvider, confirmationFrom, continuityOf, onContinuityChange, type Offline } from "./context";
 import { DownloadsPage } from "./DownloadsPage";
 import { offlineUntil, type ConfirmedAccount, type OfflineStore } from "./model";
 import { OfflineReader } from "./OfflineReader";
@@ -41,6 +41,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
   });
   const { guard, services, sync } = built;
   const [offline, setOffline] = useState<Offline>({ boot: boot.offline, store, confirmation: record, connected: false, confirm: () => Promise.reject(new SaveFailure("network")), sync: null });
+  const confirmed = useRef(record);
 
   useEffect(() => {
     const stop = guard.subscribe(() => sync.stop());
@@ -85,6 +86,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
       guard.lock("account_changed");
       return;
     }
+    confirmed.current = confirmation;
     setOffline((value) => ({ ...value, confirmation, connected: true, sync }));
     sync.request();
   }, [auth, store, guard, recheck, sync]);
@@ -115,7 +117,10 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
     window.addEventListener("focus", show);
     window.addEventListener("online", show);
     document.addEventListener("visibilitychange", visible);
-    const stopContinuity = onContinuityChange(boot.offline, () => void recheck());
+    const stopContinuity = onContinuityChange(boot.offline, () => {
+      if (continuityOf(boot.offline) !== (confirmed.current.continuity ?? null)) guard.lock("signed_out");
+      void recheck();
+    });
     const checks = setInterval(() => void recheck(), CHECK_INTERVAL_MS);
     const probes = setInterval(() => void probe(), PROBE_INTERVAL_MS);
     return () => {
@@ -129,7 +134,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
       clearInterval(probes);
       root.removeAttribute("data-offline-check");
     };
-  }, [recheck, probe, boot.offline]);
+  }, [recheck, probe, boot.offline, guard]);
 
   return (
     <ServicesProvider services={services}>

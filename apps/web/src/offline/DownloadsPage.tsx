@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
-import { announceChange, onChange, onContinuityChange, steady, useOffline, type Offline } from "./context";
+import { announceChange, onChange, onContinuityChange, unchangedOr, useOffline, type Offline } from "./context";
 import { ACCOUNT_LIMIT_BYTES, describeLocator, laterDevicePlace, offlineUntil, type Attempt, type SavedBook } from "./model";
 import { FAILURES, formatDay, formatMoment, uploadText } from "./text";
 
@@ -18,6 +18,8 @@ async function list(offline: Offline, account: string): Promise<Listing> {
   const saved = new Set(books.map((book) => book.key));
   return { books, unfinished: attempts.filter((attempt) => !saved.has(attempt.key)), others, persisted };
 }
+
+const HIDDEN: Listing = { books: [], unfinished: [], others: { books: 0, bytes: 0 }, persisted: null };
 
 function placeText(book: SavedBook): string {
   const own = book.devicePlace?.asset_id === book.asset.id ? book.devicePlace : null;
@@ -40,7 +42,7 @@ export function DownloadsPage() {
   const refresh = useCallback(async () => {
     if (!offline) return;
     try {
-      const next = await steady(offline.boot, () => list(offline, account));
+      const next = await unchangedOr(offline.boot, HIDDEN, () => list(offline, account));
       if (guard.isActive()) {
         setListing(next);
         setFailed(false);

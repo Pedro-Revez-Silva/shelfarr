@@ -47,12 +47,10 @@ export function onContinuityChange(boot: OfflineBoot | undefined, listener: () =
   return () => cookies.removeEventListener("change", changed);
 }
 
-export async function steady<T>(boot: OfflineBoot, read: () => Promise<T>): Promise<T> {
-  for (;;) {
-    const before = continuityOf(boot);
-    const value = await read();
-    if (continuityOf(boot) === before) return value;
-  }
+export async function unchangedOr<T>(boot: OfflineBoot, hidden: T, read: () => Promise<T>): Promise<T> {
+  const before = continuityOf(boot);
+  const value = await read();
+  return continuityOf(boot) === before ? value : hidden;
 }
 
 const CHANNEL = "shelfarr-go-preview-offline";

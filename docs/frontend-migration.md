@@ -217,22 +217,24 @@ being created), and any page or API answer under `/preview` (other than the work
 an account the allowlist does not name, or while the preview is off. Linking a single sign-on identity, failed sign-ins,
 signed-in bootstraps and ordinary requests leave it alone. Each offline confirmation stores the marker the bootstrap echoed,
 and the store compares it with the cookie when storage answers, both for the confirmation and for every read of saved books,
-files and unfinished saves; Downloads and the offline reader read again if the cookie changed while they were reading, and an
-open offline page ends at once when the browser reports a marker change (Cookie Store API; otherwise on focus, visibility and
-the 30 s check). Since nothing ever sets an earlier value again, once the browser has received a sign-out, a sign-in to any
+files and unfinished saves; Downloads and the offline reader show nothing from a read during which the cookie changed, and an
+open offline page ends as soon as the browser reports a marker change (Cookie Store `change` event, compared with the cookie
+without waiting for storage; browsers without that API recheck on focus, visibility and every 30 s). Since nothing ever sets an earlier value again, once the browser has received a sign-out, a sign-in to any
 account or a refusal, the previous account's saved books stay hidden offline whether or not any page script ran, however slow
 IndexedDB is, and whatever an earlier bootstrap answers late. A confirmation saved before the marker existed is honoured only
 while the browser has no marker. The files stay, hidden, until that account confirms again online, which also sends any
-waiting place. A refusal that arrives after a later sign-in replaces that sign-in's marker too; online pages confirm the
-account again when the marker changes, and offline pages show the books again after the next successful bootstrap. The local
+waiting place. A refusal that arrives after a later sign-in replaces that sign-in's marker too, so that account's copies stay
+hidden until its next page load confirms it again (fail-closed); a confirmation whose marker changes while it is being
+written can report success but is never readable. The local
 sign-in page (which also clears `/read`'s offline account, as before) and the allowlist 404 page still clear the stored
 preview confirmation, but nothing depends on them finishing, and the single sign-on hand-off no longer waits for anything. A
 change the browser cannot receive, because the server is unreachable or the session was ended elsewhere and the browser has
 not contacted Rails since, leaves that account's own saved books readable on that browser until its offline window ends (at
 most the session's remaining life, at most 30 days); so does a media request refused only because its file is gone. The Go
 runtime does not use the marker yet: its boot names no cookie and its own sign-in and sign-out do not set it, so a Go offline
-worker that is still installed when the same origin moves to Rails keeps its own rules until an online visit to a preview
-Library page updates it (not verified in a browser). The
+worker that is still installed when the same origin moves to Rails keeps its own rules, including for copies saved through
+Rails while it is active, until the browser replaces it, which can wait until every tab it controls is closed (not verified in
+a browser). The
 `/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
 `/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
 server is unreachable, exactly as after a Go rollback; the first page or API answer under the preview after that hides the saved books.
