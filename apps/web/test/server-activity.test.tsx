@@ -200,6 +200,18 @@ describe("Activity log in the Rails preview", () => {
     await waitFor(() => expect(reads(server).at(-1)).toBe("/sub/preview/api/v1/admin/activity"));
   });
 
+  test("pressing Filter again without changing anything reads the log again", async () => {
+    let entries = [ENTRIES[1]!];
+    const server = activityServer(() => ({ body: log({ entries }) }));
+    renderApp({ server, url: "/sub/preview/server/system/activity?action=request.created" });
+    expect(await screen.findByText("1 entry")).toBeTruthy();
+    entries = [entry("10", { action: "request.created" }), ENTRIES[1]!];
+    await userEvent.setup().click(screen.getByRole("button", { name: "Filter" }));
+    expect(await screen.findByText("2 entries")).toBeTruthy();
+    expect(reads(server)).toEqual(["/sub/preview/api/v1/admin/activity?action_filter=request.created", "/sub/preview/api/v1/admin/activity?action_filter=request.created"]);
+    expect(rows()).toHaveLength(2);
+  });
+
   test("an empty log and an empty filtered result are told apart", async () => {
     const server = activityServer(() => ({ body: log({ entries: [] }) }));
     renderApp({ server, url: "/sub/preview/server/system/activity" });

@@ -105,7 +105,7 @@ function ActivityBody({ log, filters, current, failure, onRetry }: { log: Activi
   const keepFocus = () => submit.current?.focus();
   return (
     <>
-      <FilterForm log={log} filters={filters} submit={submit} onClear={keepFocus} />
+      <FilterForm log={log} filters={filters} submit={submit} onClear={keepFocus} onReload={onRetry} />
       <p className="result-count activity-count" role="status">
         {failure ? "The activity log could not be loaded." : current ? countText(log) : ""}
       </p>
@@ -155,7 +155,19 @@ function filterKey(filters: ActivityFilters): string {
   return JSON.stringify([filters.user ?? "", filters.action ?? "", filters.from ?? ""]);
 }
 
-function FilterForm({ log, filters, submit: submitButton, onClear }: { log: ActivityLog; filters: ActivityFilters; submit: RefObject<HTMLButtonElement | null>; onClear: () => void }) {
+function FilterForm({
+  log,
+  filters,
+  submit: submitButton,
+  onClear,
+  onReload,
+}: {
+  log: ActivityLog;
+  filters: ActivityFilters;
+  submit: RefObject<HTMLButtonElement | null>;
+  onClear: () => void;
+  onReload: () => void;
+}) {
   const navigate = useNavigate();
   const id = useId();
   const [applied, setApplied] = useState(filterKey(filters));
@@ -177,7 +189,8 @@ function FilterForm({ log, filters, submit: submitButton, onClear }: { log: Acti
     if (user) next.user = user;
     if (action) next.action = action;
     if (from) next.from = from;
-    void navigate({ to: "/server/system/activity", search: next });
+    if (filterKey(next) === filterKey(filters)) onReload();
+    else void navigate({ to: "/server/system/activity", search: next });
   };
 
   return (
