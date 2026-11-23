@@ -353,6 +353,43 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert_equal [ "New attempt" ], @mine.downloads.where(status: :queued).pluck(:name)
   end
 
+  test "only the client jobs admitted with the confirmed offer are removed, even if another job is released meanwhile" do
+    torrent(external_id: "offered-hash")
+    torrent(status: :failed, external_id: "shared-hash")
+    theirs = Request.create!(book: Book.create!(title: "Theirs", book_type: :ebook), user: @member, status: :downloading)
+    owner = torrent(theirs, external_id: "shared-hash")
+    sign_in_as(@member)
+    offer = withdrawal
+    assert_equal 1, offer.fetch("client_jobs")
+    removed = @removed
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      owner.update!(status: :failed)
+      removed << [ external_id, delete_files ]
+      true
+    end
+    withdraw(revision: offer.fetch("revision"), remove_torrent: true, adapter: adapter)
+    assert_response :success
+    assert_equal [ [ "offered-hash", false ] ], @removed
+  end
+
+  test "a request restarted and stopped again while its client job was being removed is kept" do
+    torrent(external_id: "first-hash")
+    sign_in_as(@member)
+    revision = withdrawal.fetch("revision")
+    request_id = @mine.id
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |*, delete_files:|
+      Request.find(request_id).retry_now!
+      Request.find(request_id).cancel!
+      true
+    end
+    withdraw(revision: revision, remove_torrent: true, adapter: adapter)
+    assert_equal({ "error" => "cannot_remove", "message" => RequestWithdrawal::REOPENED }, response.parsed_body)
+    assert_response :conflict
+    assert @mine.reload.failed?
+  end
+
   test "a requester promoted to administrator just before the claim is refused under the lock" do
     sign_in_as(@member)
     revision = withdrawal.fetch("revision")

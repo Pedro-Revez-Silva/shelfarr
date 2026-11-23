@@ -323,7 +323,6 @@ class Request < ApplicationRecord
 
   def cancel!(allow_direct_recovery: false)
     cancelled_download_ids = with_acquisition_transition_lock do
-      yield self if block_given?
       raise CancellationBlockedError, upload_cancellation_blocked_message if upload_cancellation_blocked?
       if post_processing_recovery_pending?
         raise CancellationBlockedError, post_processing_recovery_message

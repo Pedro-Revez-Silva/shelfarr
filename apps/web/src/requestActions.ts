@@ -41,7 +41,7 @@ export function useWithdrawRequest(requestId: string) {
   return useRequestChange(
     requestId,
     (withdrawal: RequestWithdrawal) => api.withdrawRequest(requestId, withdrawal),
-    (answer) => (answer.request.status === "removed" && router.state.location.pathname === page ? void navigate({ to: "/requests", replace: true }) : undefined),
+    (answer) => (answer.request.status === "removed" && router.state.location.pathname.replace(/\/+$/, "") === page ? void navigate({ to: "/requests", replace: true }) : undefined),
   );
 }
 

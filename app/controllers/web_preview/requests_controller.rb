@@ -108,11 +108,9 @@ class WebPreview::RequestsController < WebPreview::APIController
     return render_error("invalid_request", :bad_request) unless revision.is_a?(String) && [ true, false ].include?(remove_client_jobs)
 
     request = Request.for_user(Current.user).find(identifier(params[:id]))
-    outcome = RequestWithdrawal.call(request, remove_client_jobs: remove_client_jobs, allow_direct_recovery: false) do |locked|
+    RequestWithdrawal.call(request, remove_client_jobs: remove_client_jobs, allow_direct_recovery: false) do |locked|
       raise WithdrawalChanged unless withdrawal_admitted?(locked, revision)
     end
-    return render_action(request) unless outcome == :removed
-
     render json: { account: web_preview_account_id, request: { id: request.id.to_s, status: "removed" } }
   rescue WithdrawalChanged
     render_error("request_changed", :conflict, message: WITHDRAWAL_CHANGED)

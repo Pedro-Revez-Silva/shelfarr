@@ -324,6 +324,15 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
     await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
   }, 15000);
 
+  test("a request page opened with a trailing slash still returns to the list", async () => {
+    const server = railsServer(offering(0)).on("POST", /\/requests\/7\/withdraw$/, removed);
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7/" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  });
+
   test("an answer that arrives after the person moved to another page leaves them there", async () => {
     let answer: () => void = () => undefined;
     const server = railsServer(offering(1)).on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
