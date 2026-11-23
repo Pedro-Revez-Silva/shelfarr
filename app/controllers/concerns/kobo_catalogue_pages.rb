@@ -19,6 +19,10 @@ module KoboCataloguePages
     @sendable_count = account.kobo_account_books.sendable.count
   end
 
+  def warm_catalogue_query
+    { filter: ("sendable" if params[:filter] == "sendable"), page: (params[:page] if params[:page].to_s.match?(/\A[1-9]\d{0,5}\z/)) }.compact
+  end
+
   def prevent_caching
     response.headers["Cache-Control"] = "private, no-store"
   end

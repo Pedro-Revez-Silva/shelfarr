@@ -218,6 +218,9 @@ Rails.application.routes.draw do
   get "preview/account", to: "web_preview/shell#show", as: :web_preview_account
   get "preview/account/:section", to: "web_preview/shell#show", as: :web_preview_account_section, constraints: { section: /security|devices|connections|about/ }
   get "preview/account/devices/kobo/:id", to: "web_preview/shell#show", as: :web_preview_kobo_reader, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/account/devices/kobo-accounts/:id", to: "web_preview/shell#show", as: :web_preview_kobo_account, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/account/devices/kobo-shared/:id", to: "web_preview/shell#show", as: :web_preview_kobo_shared, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/account/devices/kobo-books/:id", to: "web_preview/shell#show", as: :web_preview_kobo_book, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/find", to: "web_preview/shell#show", as: :web_preview_find
   get "preview/notifications", to: "web_preview/shell#show", as: :web_preview_notifications
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
@@ -264,6 +267,8 @@ Rails.application.routes.draw do
     post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
     get "account/kobo_readers", to: "kobo_readers#index", as: :kobo_readers
     post "account/kobo_readers", to: "kobo_readers#create"
+    get "account/kobo_accounts", to: "kobo_accounts#index", as: :kobo_accounts
+    post "account/kobo_accounts", to: "kobo_accounts#create"
     constraints id: /[1-9]\d{0,18}/ do
       get "account/kobo_readers/:id", to: "kobo_readers#show", as: :kobo_reader
       put "account/kobo_readers/:id", to: "kobo_readers#update", as: nil
@@ -273,6 +278,16 @@ Rails.application.routes.draw do
       post "account/kobo_readers/:id/places/kobo", to: "kobo_readers#use_kobo_place", as: :kobo_reader_kobo_place
       post "account/kobo_readers/:id/places/shelfarr", to: "kobo_readers#send_shelfarr_place", as: :kobo_reader_shelfarr_place
       get "library/:id/kobo", to: "kobo_readers#book", as: :library_kobo
+      get "account/kobo_accounts/:id", to: "kobo_accounts#show", as: :kobo_account
+      post "account/kobo_accounts/:id/poll", to: "kobo_accounts#poll", as: :kobo_account_poll
+      post "account/kobo_accounts/:id/refresh", to: "kobo_accounts#refresh", as: :kobo_account_refresh
+      post "account/kobo_accounts/:id/shares", to: "kobo_accounts#share", as: :kobo_account_shares
+      post "account/kobo_accounts/:id/shares/:share_id/remove", to: "kobo_accounts#unshare", as: :kobo_account_share_remove, constraints: { share_id: /[1-9]\d{0,18}/ }
+      post "account/kobo_accounts/:id/disconnect", to: "kobo_accounts#disconnect", as: :kobo_account_disconnect
+      get "kobo_catalogues/:id", to: "kobo_books#catalogue", as: :kobo_catalogue
+      get "kobo_books/:id", to: "kobo_books#show", as: :kobo_book
+      post "kobo_books/:id/prepare", to: "kobo_books#prepare", as: :kobo_book_prepare
+      post "kobo_books/:id/deliver", to: "kobo_books#deliver", as: :kobo_book_deliver
     end
   end
 

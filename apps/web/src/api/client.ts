@@ -121,6 +121,12 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   book_not_found: "not_found",
   kobo_send_refused: "invalid",
   connection_address_saved: "invalid",
+  kobo_account_not_found: "not_found",
+  kobo_book_not_found: "not_found",
+  catalogue_not_found: "not_found",
+  kobo_limit_reached: "conflict",
+  kobo_account_removed: "conflict",
+  invalid_kobo_account: "invalid",
 };
 
 export class ApiClient {

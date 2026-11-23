@@ -6,6 +6,7 @@
 class KoboAccountBooksController < ApplicationController
   before_action :prevent_caching
   before_action :set_book
+  before_action :open_warm_page, only: :show
 
   def show
     @account = @book.kobo_account
@@ -65,6 +66,12 @@ class KoboAccountBooksController < ApplicationController
     :none
   ensure
     file&.close unless file&.closed?
+  end
+
+  def open_warm_page
+    return unless flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+
+    redirect_to web_preview_kobo_book_path(@book)
   end
 
   def set_book
