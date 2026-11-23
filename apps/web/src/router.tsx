@@ -14,6 +14,8 @@ import { LegacySetupRedirect } from "./server/setup/RunSetupAgain";
 import { ServerSetupPage } from "./server/setup/SetupPage";
 import { Shell } from "./components/Shell";
 import { EmptyState } from "./components/States";
+import { uploadsSearchSchema } from "./uploads/contract";
+import { UploadsPage } from "./uploads/UploadsPage";
 
 function parseSearch(search: string): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(search));
@@ -50,6 +52,13 @@ const libraryRoute = createRoute({
   path: "/library",
   validateSearch: (search: Record<string, unknown>) => libraryFiltersSchema.parse(search),
   component: LibraryPage,
+});
+
+const uploadsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/library/uploads",
+  validateSearch: (search: Record<string, unknown>) => uploadsSearchSchema.parse(search),
+  component: UploadsPage,
 });
 
 const publicationRoute = createRoute({
@@ -142,7 +151,7 @@ const serverCategoryRoute = createRoute({
   component: ServerCategoryPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

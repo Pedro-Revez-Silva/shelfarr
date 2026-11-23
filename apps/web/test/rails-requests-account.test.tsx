@@ -139,7 +139,7 @@ describe("one request in the Rails preview", () => {
     renderApp({ server: railsServer(detail({ status: "awaiting_purchase", store_offers: [offer], actions: { ...memberActions, upload_url: "/sub/uploads/new?request_id=7" } })), url: "/sub/preview/requests/7" });
     const offers = await screen.findByRole("region", { name: "Buy it DRM-free" });
     expect(within(offers).getByRole("link", { name: "View and buy at Kobo (opens in a new tab)" }).getAttribute("href")).toBe(offer.url);
-    expect(within(offers).getByRole("link", { name: "Upload after buying" }).getAttribute("href")).toBe("/sub/uploads/new?request_id=7");
+    expect(within(offers).getByRole("link", { name: "Upload after buying" }).getAttribute("href")).toBe("/sub/preview/library/uploads?request=7");
     expect(screen.getByText("Waiting for a purchase.")).toBeTruthy();
   });
 
@@ -165,7 +165,7 @@ describe("one request in the Rails preview", () => {
 
   test("a member can upload without store offers", async () => {
     renderApp({ server: railsServer(detail({ actions: { ...memberActions, upload_url: "/sub/uploads/new?request_id=7" } })), url: "/sub/preview/requests/7" });
-    expect((await screen.findByRole("link", { name: "Upload a file for this request" })).getAttribute("href")).toBe("/sub/uploads/new?request_id=7");
+    expect((await screen.findByRole("link", { name: "Upload a file for this request" })).getAttribute("href")).toBe("/sub/preview/library/uploads?request=7");
   });
 
   test("a completed request opens its Book page and keeps a link to its details", async () => {

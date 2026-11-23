@@ -56,11 +56,16 @@ export function LibraryPage() {
         <p className="eyebrow">On {serverName ?? "your server"}</p>
         <PageHeading id="library-heading">Library</PageHeading>
         <p className="lede">The books and audiobooks stored on this server, ready to read or listen to.</p>
-        {mode === "rails" && boot.offline ? (
+        {mode === "rails" ? (
           <div className="state-actions">
-            <a className="button button--subtle" href={boot.offline.downloads}>
-              Downloads
-            </a>
+            <Link className="button button--subtle" to="/library/uploads">
+              Uploads
+            </Link>
+            {boot.offline ? (
+              <a className="button button--subtle" href={boot.offline.downloads}>
+                Downloads
+              </a>
+            ) : null}
           </div>
         ) : null}
       </header>

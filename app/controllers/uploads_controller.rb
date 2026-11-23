@@ -53,19 +53,10 @@ class UploadsController < ApplicationController
     return if params[:request_id].blank?
 
     @request = Request.includes(:book).find(params[:request_id])
-    unless Current.user.admin? || @request.user == Current.user
-      redirect_to uploads_path, alert: "You cannot upload files for this request."
-      return
-    end
+    refusal = UploadRequestContext.refusal(@request, user: Current.user)
+    return unless refusal
 
-    return if @request.upload_fulfillable?
-
-    message = if @request.completed?
-      "This request is already completed."
-    else
-      "This request is no longer open for file fulfillment. Retry it before uploading a file."
-    end
-    redirect_to @request, alert: message
+    redirect_to (refusal.reason == :not_owner ? uploads_path : @request), alert: refusal.message
   end
 
   def upload_success_location

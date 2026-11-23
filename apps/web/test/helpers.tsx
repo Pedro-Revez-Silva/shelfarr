@@ -73,7 +73,7 @@ export class FakeServer {
         method: init?.method ?? "GET",
         path: `${url.pathname}${url.search}`,
         headers,
-        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : init?.body instanceof FormData ? init.body : undefined,
         signal: init?.signal ?? undefined,
       };
       this.requests.push(request);

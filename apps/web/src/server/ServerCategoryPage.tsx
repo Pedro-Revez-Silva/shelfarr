@@ -11,6 +11,7 @@ import { SettingsGroupCard } from "./SettingsGroupCard";
 import { CATEGORY_LABELS, isCategory, ServerShell } from "./ServerShell";
 import { useIsAdministrator, useServerSettings } from "./queries";
 import { RunSetupAgainCard } from "./setup/RunSetupAgain";
+import { ServerUploads, UPLOAD_CARDS } from "../uploads/ServerUploads";
 
 export function AdministratorsOnly() {
   return (
@@ -117,7 +118,7 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
     <>
       <nav className="card-index" aria-label={`${category.title} cards`}>
         <ul>
-          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...category.groups].map((group) => (
+          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...category.groups, ...(category.id === "library" ? UPLOAD_CARDS : [])].map((group) => (
             <li key={group.id}>
               <a href={`#${group.id}`}>{group.title}</a>
             </li>
@@ -133,6 +134,7 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
           ))}
         </div>
       ))}
+      {category.id === "library" ? <ServerUploads /> : null}
       {blocker.status === "blocked" ? <LeaveDialog count={dirtyCount} onStay={blocker.reset} onLeave={blocker.proceed} /> : null}
     </>
   );

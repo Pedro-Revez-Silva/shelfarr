@@ -1,0 +1,199 @@
+.uploads-page {
+  display: grid;
+  gap: 32px;
+}
+.uploads-page .page-heading {
+  margin-bottom: 0;
+}
+.upload-add {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.upload-add h2,
+.upload-list-heading h2,
+.upload-list-heading h4 {
+  margin: 0;
+}
+.upload-form {
+  display: grid;
+  gap: 16px;
+}
+.upload-drop {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 2px dashed var(--muted);
+  border-radius: 14px;
+  background: var(--sunken);
+}
+.upload-drop--active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.upload-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+.upload-pickers label:focus-within {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.upload-drop-hint {
+  color: var(--muted);
+}
+.upload-drop .field-hint p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.upload-selection {
+  margin: 0;
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.upload-selection:empty {
+  display: none;
+}
+.upload-progress {
+  display: grid;
+  gap: 6px;
+}
+.upload-progress progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.upload-progress p {
+  margin: 0;
+  color: var(--muted);
+}
+.upload-context {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-inline-start: 6px solid var(--accent);
+  border-radius: 12px;
+  background: var(--sunken);
+}
+.upload-context p {
+  margin: 0;
+}
+.upload-context--closed {
+  border-inline-start-color: var(--danger);
+}
+.upload-list {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.upload-list-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+}
+.upload-list-heading .result-count {
+  margin: 0;
+}
+.upload-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  justify-items: start;
+}
+.upload-name {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.upload-facts {
+  width: 100%;
+}
+.upload-facts dd a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.upload-row .request-meta a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.upload-failure {
+  margin: 0;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.upload-actions {
+  width: 100%;
+}
+.upload-match {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sunken);
+}
+.upload-match h4 {
+  margin: 0;
+}
+.upload-match-search,
+.upload-match-create {
+  display: grid;
+  gap: 8px;
+}
+.upload-match-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.upload-match-row input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.upload-match-create input[type="text"] {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 12px;
+  font-size: max(1rem, 16px);
+}
+.upload-match-books {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.upload-match-books li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.upload-match-books li > span {
+  min-width: 0;
+}
+.upload-disabled {
+  margin: 0;
+}

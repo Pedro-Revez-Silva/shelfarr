@@ -203,6 +203,7 @@ Rails.application.routes.draw do
 
   get "preview", to: "web_preview/shell#index", as: :web_preview
   get "preview/library", to: "web_preview/shell#show", as: :web_preview_library
+  get "preview/library/uploads", to: "web_preview/shell#show", as: :web_preview_uploads
   get "preview/library/:id", to: "web_preview/shell#show", as: :web_preview_publication, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/library/:id/read", to: "web_preview/shell#moved_reader", constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/library/downloads", to: "web_preview/shell#moved_downloads"
@@ -230,6 +231,9 @@ Rails.application.routes.draw do
     get "library/:id/assets/:asset_id/reading_order", to: "reader#reading_order", as: :reading_order
     get "accounts/:account/library/:id/assets/:asset_id", to: "media#show", as: :media
     get "discover", to: "discover#index"
+    get "uploads", to: "uploads#index", as: :uploads
+    post "uploads", to: "uploads#create"
+    get "uploads/requests/:request_id", to: "uploads#request_context", as: :upload_request_context
     constraints source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ do
       get "books/:source/:source_id", to: "books#show", as: :book
       post "books/:source/:source_id/requests", to: "books#create_request", as: :book_requests
@@ -288,6 +292,10 @@ Rails.application.routes.draw do
     post "downloads/rules", to: "downloads#create_rule", as: :download_rules
     put "downloads/rules/:id", to: "downloads#update_rule", as: :download_rule
     delete "downloads/rules/:id", to: "downloads#destroy_rule"
+    post "uploads/:id/retry", to: "uploads#retry", as: :upload_retry
+    get "uploads/:id/matches", to: "uploads#matches", as: :upload_matches
+    post "uploads/:id/match", to: "uploads#match", as: :upload_match
+    delete "uploads/:id", to: "uploads#destroy", as: :upload
   end
 
   namespace :integrations, defaults: { format: :json } do

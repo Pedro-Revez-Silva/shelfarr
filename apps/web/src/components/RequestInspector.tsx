@@ -12,7 +12,7 @@ export function RequestTools({ request, admin }: { request: RequestDetail; admin
   if (!actions) return null;
   return (
     <>
-      {request.store_offers && request.store_offers.length > 0 ? <StoreOffers offers={request.store_offers} uploadUrl={actions.upload_url} /> : null}
+      {request.store_offers && request.store_offers.length > 0 ? <StoreOffers offers={request.store_offers} requestId={request.id} uploads={actions.upload_url !== null} /> : null}
       <MainActions request={request} actions={actions} admin={admin} />
       {admin ? <Inspector request={request} actions={actions} /> : null}
     </>
@@ -41,10 +41,10 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
       {admin && actions.search_again ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
       {actions.cancel ? <CancelTracked request={request} /> : null}
-      {memberUpload && actions.upload_url ? (
-        <a className="button" href={actions.upload_url}>
+      {memberUpload ? (
+        <Link className="button" to="/library/uploads" search={{ request: request.id }}>
           Upload a file for this request
-        </a>
+        </Link>
       ) : null}
       {memberRemoval ? <RemoveRequest request={request} mode={memberRemoval} /> : null}
       {retry.data?.message ? <p role="status">{retry.data.message}</p> : null}
@@ -129,12 +129,12 @@ function RemoveRequest({ request, mode }: { request: RequestDetail; mode: NonNul
   );
 }
 
-function StoreOffers({ offers, uploadUrl }: { offers: StoreOffer[]; uploadUrl: string | null }) {
+function StoreOffers({ offers, requestId, uploads }: { offers: StoreOffer[]; requestId: string; uploads: boolean }) {
   const headingId = useId();
   return (
     <section className="store-offers" aria-labelledby={headingId}>
       <h2 id={headingId}>Buy it DRM-free</h2>
-      <p className="request-note">Checkout, account details and payment stay with the seller. Prices and availability can change at checkout.{uploadUrl ? " After buying, upload the EPUB or PDF to this request." : " After buying, ask an administrator to import the file into this request."}</p>
+      <p className="request-note">Checkout, account details and payment stay with the seller. Prices and availability can change at checkout.{uploads ? " After buying, upload the EPUB or PDF to this request." : " After buying, ask an administrator to import the file into this request."}</p>
       <ul className="offer-list">
         {offers.map((offer) => (
           <li key={offer.id} className="offer">
@@ -160,10 +160,10 @@ function StoreOffers({ offers, uploadUrl }: { offers: StoreOffer[]; uploadUrl: s
           </li>
         ))}
       </ul>
-      {uploadUrl ? (
-        <a className="button button--subtle" href={uploadUrl}>
+      {uploads ? (
+        <Link className="button button--subtle" to="/library/uploads" search={{ request: requestId }}>
           Upload after buying
-        </a>
+        </Link>
       ) : null}
     </section>
   );
@@ -197,7 +197,9 @@ function Inspector({ request, actions }: { request: RequestDetail; actions: Requ
           {actions.manual_download ? <ManualLink requestId={request.id} replaces={actions.replaces_library_file} /> : null}
           {actions.upload_url ? (
             <p>
-              <a href={actions.upload_url}>Upload a file for this request</a>
+              <Link to="/library/uploads" search={{ request: request.id }}>
+                Upload a file for this request
+              </Link>
             </p>
           ) : null}
         </Section>

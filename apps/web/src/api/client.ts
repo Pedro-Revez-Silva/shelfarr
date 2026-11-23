@@ -58,6 +58,7 @@ type RequestOptions<T> = {
   method?: "GET" | "PUT" | "POST" | "DELETE";
   verifying?: boolean;
   body?: unknown;
+  form?: FormData;
   keepalive?: boolean;
   conflict?: z.ZodType<T>;
   rejection?: z.ZodType<T>;
@@ -109,6 +110,12 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   two_factor_disabled: "conflict",
   two_factor_not_started: "conflict",
   oidc_not_linked: "conflict",
+  uploads_disabled: "conflict",
+  upload_closed: "conflict",
+  upload_rejected: "invalid",
+  upload_refused: "conflict",
+  match_rejected: "invalid",
+  match_unavailable: "conflict",
 };
 
 export class ApiClient {
@@ -372,7 +379,7 @@ export class ApiClient {
 
     const headers: Record<string, string> = { Accept: "application/json", [ACCOUNT_HEADER]: guard.account };
     if (options.method === "PUT" || options.method === "POST" || options.method === "DELETE") {
-      headers["Content-Type"] = "application/json";
+      if (options.form === undefined) headers["Content-Type"] = "application/json";
       await this.deps.mutations?.prepare(options.signal);
       guard.assertActive();
       const token = this.deps.csrfToken();
@@ -385,7 +392,8 @@ export class ApiClient {
       const init: RequestInit = { method: options.method ?? "GET", headers, credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "same-origin" };
       if (options.signal) init.signal = options.signal;
       if (options.keepalive) init.keepalive = true;
-      if (options.body !== undefined) init.body = JSON.stringify(options.body);
+      if (options.form !== undefined) init.body = options.form;
+      else if (options.body !== undefined) init.body = JSON.stringify(options.body);
       response = await (this.deps.fetcher ?? fetch)(`${boot.api}${options.path}`, init);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
