@@ -2570,6 +2570,7 @@ thead th {
   gap: 8px 12px;
 }
 .withdraw-confirm {
+  flex: 1 1 100%;
   flex-direction: column;
   align-items: flex-start;
   max-width: 44rem;
