@@ -2,14 +2,14 @@ import { z } from "zod";
 
 const identifier = z.string().regex(/^[1-9]\d{0,18}$/);
 const timestamp = z.iso.datetime({ offset: true });
-const sitePath = z.string().regex(/^\/(?!\/)/, "Expected a path on this server");
+const sitePath = z.string().regex(/^\/(?![\/\\])/, "Expected a path on this server");
 
 export const HARDCOVER_ORIGINS: readonly string[] = ["https://hardcover.app", "https://api.hardcover.app"];
 
 export function isHardcoverPage(value: string): boolean {
   if (!URL.canParse(value)) return false;
   const url = new URL(value);
-  return HARDCOVER_ORIGINS.includes(url.origin) && url.username === "" && url.password === "";
+  return url.protocol === "https:" && HARDCOVER_ORIGINS.includes(url.origin) && url.username === "" && url.password === "";
 }
 
 const hardcoverPage = z.string().refine(isHardcoverPage, "Expected a page on hardcover.app");

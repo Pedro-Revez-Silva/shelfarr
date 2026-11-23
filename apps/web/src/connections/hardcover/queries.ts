@@ -58,6 +58,7 @@ export function useHardcoverWrite<Input, Answer extends { kind: string; hardcove
   return useMutation({
     mutationKey: keys.writes,
     mutationFn: write,
+    gcTime: 0,
     onSuccess: (answer) => {
       if (answer.hardcover) publish.state(answer.hardcover);
     },
@@ -92,6 +93,7 @@ export function useCodePoll(device: HardcoverDevice, onEnd: (outcome: CodeOutcom
   const publish = usePublishHardcover();
   const queryClient = useQueryClient();
   const writes = useHardcoverKeys().writes;
+  const { mutateAsync: checkCode } = useMutation({ mutationKey: writes, mutationFn: (signal: AbortSignal) => api.pollCode(client, signal), gcTime: 0 });
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
   const [checking, setChecking] = useState(false);
@@ -115,7 +117,7 @@ export function useCodePoll(device: HardcoverDevice, onEnd: (outcome: CodeOutcom
     inFlight.current = controller;
     setChecking(true);
     try {
-      const answer = await api.pollCode(client, controller.signal);
+      const answer = await checkCode(controller.signal);
       if (!live.current || !publish.active()) return;
       setProblem(null);
       publish.state(answer.hardcover);
@@ -141,7 +143,7 @@ export function useCodePoll(device: HardcoverDevice, onEnd: (outcome: CodeOutcom
       if (inFlight.current === controller) inFlight.current = null;
       if (live.current) setChecking(false);
     }
-  }, [client, publish, queryClient, writes]);
+  }, [checkCode, publish, queryClient, writes]);
 
   schedule.current = () => {
     if (!live.current) return;

@@ -27,8 +27,10 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
     api_key = Hardcover::PersonalSignIn.api_key(raw)
     return refuse("invalid_api_key", "Paste a Hardcover API key to connect.", :unprocessable_entity) unless api_key
 
-    connection = sign_in.connect_api_key(api_key)
+    connection = sign_in.connect_api_key(api_key, expected_version: expected_version)
     render_state(notice: "Connected Hardcover account @#{connection.hardcover_username}.")
+  rescue Hardcover::ConnectionManager::ConnectionChanged
+    refuse("hardcover_changed", CHANGED, :conflict)
   rescue HardcoverClient::Error => e
     refuse("hardcover_refused", Hardcover::PersonalSignIn.error_message(e), :unprocessable_entity)
   end
@@ -37,7 +39,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
     return unavailable(SIGN_IN_OFF) unless HardcoverIntegration.oauth_configured?
     return unless expected_connection?
 
-    url = sign_in.start_oauth(request.base_url, warm: true)
+    url = sign_in.start_oauth(request.base_url, warm: true, expected_version: expected_version)
     return unavailable(INSECURE_REDIRECT) unless url
 
     render json: { account: web_preview_account_id, authorization_url: url }
@@ -47,7 +49,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
     return unavailable(CODE_OFF) unless HardcoverIntegration.device_flow_enabled?
     return unless expected_connection?
 
-    sign_in.start_device
+    sign_in.start_device(expected_version: expected_version)
     render_state
   rescue Hardcover::Oauth::Error => e
     refuse("hardcover_refused", Hardcover::PersonalSignIn.error_message(e), :unprocessable_entity)
@@ -72,8 +74,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
     connection = current_connection
     return render_state(notice: "No Hardcover account is connected.") unless connection
-    return refuse("hardcover_changed", CHANGED, :conflict) unless version == WebPreview::HardcoverConnectionJson.version(connection)
-    return refuse("hardcover_changed", CHANGED, :conflict) unless Hardcover::ConnectionManager.disconnect!(connection, hardcover_user_id: connection.hardcover_user_id)
+    return refuse("hardcover_changed", CHANGED, :conflict) unless Hardcover::ConnectionManager.disconnect!(connection, expected_version: version)
 
     render_state(notice: DISCONNECTED)
   end
@@ -103,10 +104,14 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
       render_error("invalid_request", :bad_request)
       return false
     end
-    return true if expected == WebPreview::HardcoverConnectionJson.version(current_connection)
+    return true if expected == current_connection&.version
 
     refuse("hardcover_changed", CHANGED, :conflict)
     false
+  end
+
+  def expected_version
+    request.request_parameters["version"]
   end
 
   def state(outcome: nil)

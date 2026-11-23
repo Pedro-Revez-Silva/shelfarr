@@ -101,7 +101,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
 
   test "every change is refused while Hardcover or the chosen way of connecting is turned off, and nothing reaches Hardcover" do
     connection = create_hardcover_connection(@member)
-    version = WebPreview::HardcoverConnectionJson.version(connection)
+    version = connection.version
     SettingsService.set(:hardcover_enabled, false)
     [ [ web_preview_api_hardcover_api_key_path, { api_key: "hc_pat_value", version: version } ], [ web_preview_api_hardcover_authorize_path, { version: version } ],
       [ web_preview_api_hardcover_device_path, { version: version } ], [ web_preview_api_hardcover_device_poll_path, {} ],
@@ -143,7 +143,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     connection = @member.reload.hardcover_connection
     assert_equal [ "personal_token", "hc_pat_synthetic_value", 77 ], [ connection.auth_method, connection.access_token, connection.hardcover_user_id ]
     assert_equal "Bearer hc_pat_synthetic_value", hardcover_requests.sole[:authorization]
-    assert_equal({ "version" => "#{connection.id}-77", "username" => "pat_user", "profile_url" => "https://hardcover.app/@pat_user", "method" => "api_key", "state" => "active", "problem" => nil },
+    assert_equal({ "version" => connection.version, "username" => "pat_user", "profile_url" => "https://hardcover.app/@pat_user", "method" => "api_key", "state" => "active", "problem" => nil },
       answer.dig("hardcover", "connection"))
     raw = HardcoverConnection.connection.select_one("SELECT access_token FROM hardcover_connections WHERE id = #{connection.id}")
     assert_not_includes raw["access_token"], "hc_pat_synthetic_value"
@@ -181,11 +181,11 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     device = stub_device
 
     [ web_preview_api_hardcover_api_key_path, web_preview_api_hardcover_authorize_path, web_preview_api_hardcover_device_path ].each do |path|
-      [ nil, "#{connection.id}-9999", "#{connection.id + 1}-4242" ].each do |stale|
+      [ nil, "stale", connection.version.reverse ].each do |stale|
         answer = send_json(path, api_key: "hc_pat_value", version: stale)
         assert_response :conflict
         assert_equal [ "hardcover_changed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("error", "message")
-        assert_equal "#{connection.id}-4242", answer.dig("hardcover", "connection", "version")
+        assert_equal connection.version, answer.dig("hardcover", "connection", "version")
       end
     end
     assert_not_requested :post, HardcoverClient::BASE_URL
@@ -201,11 +201,11 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     own_list = create_hardcover_subscription(@member, kind: "list", target_id: 99, account_id: 4242, personal: true)
     revoke = stub_request(:post, REVOKE_URL).with(body: hash_including("token" => "hc_rt_first")).to_return(status: 200, body: "{}")
     stub_me(id: 77, username: "second_reader")
-    assert_equal({ "version" => "#{first.id}-4242", "username" => "reader#{@member.id}", "profile_url" => "https://hardcover.app/@reader#{@member.id}", "method" => "sign_in",
+    assert_equal({ "version" => first.reload.version, "username" => "reader#{@member.id}", "profile_url" => "https://hardcover.app/@reader#{@member.id}", "method" => "sign_in",
       "state" => "needs_reconnecting", "problem" => "Hardcover rejected the refresh token" }, hardcover.fetch("connection"))
 
     assert_enqueued_with(job: HardcoverSubscriptionSyncJob, args: [ want_to_read.id, { mode: "snapshot" } ]) do
-      send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_second", version: "#{first.id}-4242")
+      send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_second", version: first.version)
     end
 
     assert_response :success
@@ -320,18 +320,74 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_match(/expired or was started elsewhere/, flash[:alert])
   end
 
-  test "the classic code page opens the warm card for someone in the preview and stays classic otherwise" do
+  test "a code started on the classic page keeps its classic page for someone in the preview" do
     stub_device
     post device_hardcover_connection_path
     assert_redirected_to device_hardcover_connection_path
     get device_hardcover_connection_path
-    assert_redirected_to "/preview/account/connections#hardcover"
-    assert_equal "ABCD-1234", hardcover.dig("device", "user_code")
-
-    ENV[WebPreview::Access::VARIABLE] = @admin.id.to_s
-    get device_hardcover_connection_path
     assert_response :success
     assert_select "p", text: "ABCD-1234"
+    assert_equal "ABCD-1234", hardcover.dig("device", "user_code")
+  end
+
+  test "a sign-in that finishes after another connection was made keeps the newer one and revokes its own grant" do
+    stub_me(id: 77, username: "second")
+    send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_other_tab", version: nil)
+    newer = @member.reload.hardcover_connection
+    revoke = stub_request(:post, REVOKE_URL).with(body: hash_including("token" => "hc_rt_late")).to_return(status: 200, body: "{}")
+    stub_token(access: "hc_at_late", refresh: "hc_rt_late")
+    stub_me(id: 4242, username: "first")
+    newer.destroy!
+    state = state_of(start_oauth(version: nil))
+    send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_other_tab", version: nil)
+    newer = @member.reload.hardcover_connection
+
+    get callback_hardcover_connection_path, params: { code: "c", state: state, iss: ISSUER }
+
+    assert_returned_to_warm_page("error", "Your Hardcover connection changed after this page was shown. Review it and try again.")
+    assert_requested revoke
+    assert_equal [ newer.id, newer.version, "hc_pat_other_tab" ], @member.reload.hardcover_connection.then { |stored| [ stored.id, stored.version, stored.access_token ] }
+
+    newer.destroy!
+    stub_device
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_other_tab", version: nil)
+    newer = @member.reload.hardcover_connection
+    stub_token(access: "hc_at_late", refresh: "hc_rt_late")
+    travel 6.seconds do
+      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
+    end
+    assert_requested revoke, times: 2
+    assert_equal newer.version, @member.reload.hardcover_connection.version
+  end
+
+  test "an API key checked while another connection is made does not replace it" do
+    stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
+      create_hardcover_connection(@member, hardcover_user_id: 4242, username: "made_meanwhile") unless @member.hardcover_connection
+      { "me" => [ { "id" => 77, "username" => "slow_key" } ] }
+    })
+
+    answer = send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_slow", version: nil)
+
+    assert_response :conflict
+    assert_equal "hardcover_changed", answer.fetch("error")
+    assert_equal "made_meanwhile", answer.dig("hardcover", "connection", "username")
+    assert_equal [ 4242, "hc_at_test_#{@member.id}" ], @member.reload.hardcover_connection.then { |stored| [ stored.hardcover_user_id, stored.access_token ] }
+  end
+
+  test "a slow-down answer lengthens the interval the card is told to wait" do
+    stub_device
+    token = stub_request(:post, TOKEN_URL).to_return(status: 400, body: { error: "slow_down" }.to_json)
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    travel 6.seconds do
+      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      assert_equal [ "pending", 10 ], [ answer.fetch("status"), answer.dig("hardcover", "device", "interval") ]
+    end
+    travel 12.seconds do
+      send_json(web_preview_api_hardcover_device_poll_path)
+    end
+    assert_requested token, times: 1
   end
 
   test "sign-in with a code shows the code, honours Hardcover's interval, expires and can be cancelled" do
@@ -403,15 +459,18 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     want_to_read = create_hardcover_subscription(@member, kind: "want_to_read")
     revoke = stub_request(:post, REVOKE_URL).with(body: hash_including("token" => "hc_rt_revoke_me")).to_return(status: 200, body: "{}")
 
-    answer = send_json(web_preview_api_hardcover_disconnect_path, version: "#{connection.id}-9999")
+    shown = connection.version
+    connection.update!(access_token: "hc_at_newer_grant", refresh_token: "hc_rt_newer_grant", last_verified_at: 1.minute.from_now)
+    answer = send_json(web_preview_api_hardcover_disconnect_path, version: shown)
     assert_response :conflict
     assert_equal "hardcover_changed", answer.fetch("error")
-    assert HardcoverConnection.exists?(connection.id)
+    assert_equal "hc_at_newer_grant", connection.reload.access_token, "a newer grant for the same Hardcover account is kept"
+    connection.update!(refresh_token: "hc_rt_revoke_me")
     send_json(web_preview_api_hardcover_disconnect_path)
     assert_response :bad_request
 
     assert_no_difference -> { Request.count } do
-      answer = send_json(web_preview_api_hardcover_disconnect_path, version: "#{connection.id}-4242")
+      answer = send_json(web_preview_api_hardcover_disconnect_path, version: connection.version)
     end
     assert_response :success
     assert_equal "Hardcover account disconnected. Requests already created were kept.", answer.fetch("notice")
@@ -420,7 +479,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_not HardcoverConnection.exists?(connection.id)
     assert want_to_read.reload.paused?
 
-    answer = send_json(web_preview_api_hardcover_disconnect_path, version: "#{connection.id}-4242")
+    answer = send_json(web_preview_api_hardcover_disconnect_path, version: shown)
     assert_response :success
     assert_equal "No Hardcover account is connected.", answer.fetch("notice")
   end
@@ -431,7 +490,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     shown = HardcoverConnection.find(connection.id)
     connection.update!(hardcover_user_id: 77, hardcover_username: "second")
 
-    assert_not Hardcover::ConnectionManager.disconnect!(shown, hardcover_user_id: shown.hardcover_user_id)
+    assert_not Hardcover::ConnectionManager.disconnect!(shown, expected_version: shown.version)
     assert_equal 77, connection.reload.hardcover_user_id
     assert Hardcover::ConnectionManager.disconnect!(shown)
     assert_not HardcoverConnection.exists?(connection.id)
@@ -482,7 +541,7 @@ class WebPreview::HardcoverConnectionMountTest < ActionDispatch::IntegrationTest
     @app ||= Rack::URLMap.new(BASE => Rails.application)
   end
 
-  test "under a deployment path the callback address stays classic and the sign-in returns to the warm page there" do
+  test "under a deployment path the advertised callback address is unchanged from classic and the sign-in returns to the warm page there" do
     sign_in_as(users(:one))
     post "#{BASE}/preview/api/v1/account/hardcover/authorize", params: { version: nil }, headers: account_headers(users(:one)).merge("HOST" => "localhost"), as: :json
     assert_response :success

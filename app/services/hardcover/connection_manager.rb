@@ -11,6 +11,9 @@ module Hardcover
 
     # The Shelfarr user was deleted while Hardcover was verifying the token.
     class UserUnavailable < HardcoverClient::Error; end
+    class ConnectionChanged < HardcoverClient::Error; end
+
+    ANY = :any
 
     module_function
 
@@ -26,7 +29,7 @@ module Hardcover
     # Verification happens outside any transaction and can take a while, so
     # the user is read again inside the write transaction. One deleted in the
     # meantime gets no connection, and a new OAuth grant is revoked.
-    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil)
+    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil, expected_version: ANY)
       account = Hardcover::API.me(credential: HardcoverClient.credential_for_token(access_token))
       replaced_token = nil
       previews = []
@@ -39,6 +42,8 @@ module Hardcover
           raise UserUnavailable, "This Shelfarr account is no longer active" unless active_user?(user)
 
           connection = HardcoverConnection.find_by(user_id: user.id) || HardcoverConnection.new(user: user)
+          raise ConnectionChanged, "The Hardcover connection changed while signing in" unless expected_version == ANY || expected_version == (connection.persisted? ? connection.version : nil)
+
           replaced_token = connection.persisted? ? revocable_token(connection) : nil
           connection.assign_attributes(
             auth_method: auth_method,
@@ -59,7 +64,7 @@ module Hardcover
       rescue ActiveRecord::StaleObjectError, ActiveRecord::RecordNotUnique
         retry if attempts < MAX_ATTEMPTS
         raise
-      rescue UserUnavailable
+      rescue UserUnavailable, ConnectionChanged
         Hardcover::Oauth.revoke(refresh_token.presence || access_token) if auth_method == "oauth"
         raise
       end
@@ -73,13 +78,13 @@ module Hardcover
     # Deletes the stored tokens unconditionally. A refresh still in flight
     # then fails its versioned write and revokes what it received, so it
     # cannot bring the connection back.
-    def disconnect!(connection, hardcover_user_id: nil)
+    def disconnect!(connection, expected_version: ANY)
       user = connection.user
       token = nil
       replaced = false
       HardcoverConnection.transaction do
         current = HardcoverConnection.find_by(id: connection.id)
-        replaced = hardcover_user_id.present? && current&.hardcover_user_id != hardcover_user_id
+        replaced = expected_version != ANY && current&.version != expected_version
         next if replaced
 
         if current

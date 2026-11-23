@@ -260,7 +260,12 @@ function ApiKeyForm({ open, page, version, say }: { open: boolean; page: string 
   const input = useRef<HTMLInputElement>(null);
   const [key, setKey] = useState("");
   const [missing, setMissing] = useState(false);
-  const connect = useHardcoverWrite((value: { key: string; version: string | null }) => api.connectApiKey(client, value.key, value.version));
+  const submitted = useRef("");
+  const connect = useHardcoverWrite((expected: string | null) => {
+    const value = submitted.current;
+    submitted.current = "";
+    return api.connectApiKey(client, value, expected);
+  });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy) return;
@@ -270,14 +275,12 @@ function ApiKeyForm({ open, page, version, say }: { open: boolean; page: string 
       input.current?.focus();
       return;
     }
-    connect.mutate(
-      { key: value, version },
-      {
+    submitted.current = value;
+    connect.mutate(version, {
         onSuccess: (answer) => say(answer.kind === "done" ? "success" : "error", answer.kind === "done" ? (answer.notice ?? "Hardcover account connected.") : answer.message),
         onError: (error) => say("error", hardcoverFailure(error, UNCONFIRMED)),
-        onSettled: () => setKey(""),
-      },
-    );
+      onSettled: () => setKey(""),
+    });
   };
   return (
     <details className="hardcover-key" open={open}>

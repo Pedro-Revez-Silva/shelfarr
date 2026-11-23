@@ -4,10 +4,6 @@ module WebPreview
   class HardcoverConnectionJson
     PROFILE_ORIGIN = "https://hardcover.app"
 
-    def self.version(connection)
-      connection && "#{connection.id}-#{connection.hardcover_user_id}"
-    end
-
     def initialize(user, sign_in:, routes:)
       @user = user
       @sign_in = sign_in
@@ -37,7 +33,7 @@ module WebPreview
       return unless connection
 
       {
-        version: self.class.version(connection),
+        version: connection.version,
         username: connection.hardcover_username.to_s,
         profile_url: connection.hardcover_username.present? ? "#{PROFILE_ORIGIN}/@#{ERB::Util.url_encode(connection.hardcover_username)}" : nil,
         method: connection.oauth? ? "sign_in" : "api_key",

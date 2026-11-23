@@ -11,8 +11,6 @@ module Hardcover
     before_action :require_oauth, only: [ :authorize, :callback ]
     before_action :require_device_flow, only: [ :device, :device_poll ]
 
-    before_action :open_warm_page, only: :show_device
-
     def create
       unless HardcoverIntegration.personal_tokens_allowed?
         redirect_to profile_path, alert: "Personal API keys are not enabled on this Shelfarr instance."
@@ -130,12 +128,6 @@ module Hardcover
       response.headers["Cache-Control"] = "private, no-store"
       response.headers["Referrer-Policy"] = "no-referrer"
       redirect_to web_preview_account_section_path(section: "connections", anchor: "hardcover"), status: :see_other
-    end
-
-    def open_warm_page
-      return unless flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
-
-      redirect_to web_preview_account_section_path(section: "connections", anchor: "hardcover")
     end
 
     def device_poll_response(status, message = nil)

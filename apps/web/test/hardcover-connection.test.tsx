@@ -8,10 +8,19 @@ import { ACCOUNT, deferred, renderApp, standardServer, type FakeServer } from ".
 
 const originalOpen = external.open;
 
-afterEach(() => {
+let fakeTimers = false;
+
+function useFakeTimers() {
+  fakeTimers = true;
+  jest.useFakeTimers();
+}
+
+afterEach(async () => {
+  cleanup();
+  if (fakeTimers) await tick(1_000);
+  fakeTimers = false;
   jest.useRealTimers();
   external.open = originalOpen;
-  cleanup();
 });
 
 beforeEach(() => {
@@ -106,7 +115,7 @@ function cardNow(): HTMLElement {
 
 describe("Hardcover in Account ▸ Connections", () => {
   test("the contract accepts only Hardcover pages for every outside address", () => {
-    const evil = ["https://hardcover.app.evil.example/x", "http://hardcover.app/x", "https://user@hardcover.app/x", "https://evil.example/@reader", "javascript:alert(1)", "//hardcover.app/x"];
+    const evil = ["blob:https://hardcover.app/0b6e", "https://hardcover.app.evil.example/x", "http://hardcover.app/x", "https://user@hardcover.app/x", "https://evil.example/@reader", "javascript:alert(1)", "//hardcover.app/x"];
     expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ connection: connection(), device: DEVICE }) }).success).toBe(true);
     expect(hardcoverAuthorizationSchema.safeParse({ account: ACCOUNT, authorization_url: "https://hardcover.app/oauth2/authorize?state=preview-x" }).success).toBe(true);
     expect(hardcoverAuthorizationSchema.safeParse({ account: ACCOUNT, authorization_url: "https://api.hardcover.app/oauth2/authorize?state=preview-x" }).success).toBe(true);
@@ -116,7 +125,9 @@ describe("Hardcover in Account ▸ Connections", () => {
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ device: { ...DEVICE, verification_uri: address } }) }).success).toBe(false);
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following: "/sub/hardcover/subscriptions", api_key_page: address } }) }).success).toBe(false);
     }
-    expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following: "https://evil.example/follow" } }) }).success).toBe(false);
+    for (const following of ["https://evil.example/follow", "//evil.example/follow", "/\\evil.example/follow"]) {
+      expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following } }) }).success).toBe(false);
+    }
     expect(hardcoverRefusalSchema.safeParse({ account: ACCOUNT, error: "hardcover_changed", message: "Changed", hardcover: state() }).success).toBe(true);
   });
 
@@ -154,6 +165,7 @@ describe("Hardcover in Account ▸ Connections", () => {
     expect(within(hardcover).getByRole("link", { name: "Following and reading lists" }).getAttribute("href")).toBe("/sub/hardcover/subscriptions");
     expect(within(hardcover).queryByLabelText("Hardcover API key")).toBeNull();
     expect(JSON.stringify(services.queryClient.getQueryCache().getAll().map((query) => query.state.data))).not.toContain("hc_pat_synthetic");
+    expect(JSON.stringify(services.queryClient.getMutationCache().getAll().map((mutation) => mutation.state))).not.toContain("hc_pat_synthetic");
   });
 
   test("a refused key says why and keeps the card on the server's state", async () => {
@@ -249,7 +261,7 @@ describe("Hardcover in Account ▸ Connections", () => {
   });
 
   test("a sign-in code is shown, checked at Hardcover's interval one request at a time, and ends connected", async () => {
-    jest.useFakeTimers();
+    useFakeTimers();
     const live: Live = { state: state() };
     const answer = deferred<{ body: unknown }>();
     let polls = 0;
@@ -288,7 +300,7 @@ describe("Hardcover in Account ▸ Connections", () => {
   });
 
   test("a code that expires or is declined says so and offers the ways to connect again; Cancel ends it", async () => {
-    jest.useFakeTimers();
+    useFakeTimers();
     const live: Live = { state: state({ device: DEVICE }) };
     const api = server(live)
       .on("POST", /\/account\/hardcover\/device\/poll$/, () => ({ body: { account: ACCOUNT, status: "failed", message: "The sign-in code expired. Start again.", hardcover: (live.state = state()) } }))
@@ -309,7 +321,7 @@ describe("Hardcover in Account ▸ Connections", () => {
   });
 
   test("a code check waits while another change to the connection is being saved", async () => {
-    jest.useFakeTimers();
+    useFakeTimers();
     const live: Live = { state: state({ device: DEVICE }) };
     const cancelled = deferred<{ body: unknown }>();
     const api = server(live)
@@ -329,6 +341,31 @@ describe("Hardcover in Account ▸ Connections", () => {
     });
     await tick(30_000);
     expect(api.called("POST", /device\/poll$/)).toHaveLength(0);
+  });
+
+  test("while a code is being checked nothing else can change the connection, and the card waits as long as Hardcover asks", async () => {
+    useFakeTimers();
+    const live: Live = { state: state({ device: { ...DEVICE, interval: 10 } }) };
+    const checked = deferred<{ body: unknown }>();
+    const api = server(live)
+      .on("POST", /\/account\/hardcover\/device\/poll$/, () => checked.promise)
+      .on("POST", /\/account\/hardcover\/device\/cancel$/, () => change(live, state()));
+    renderApp({ server: api, url: "/sub/preview/account/connections" });
+    const hardcover = await until(cardNow);
+    await until(() => within(hardcover).getByText("ABCD-1234"));
+    await tick(9_900);
+    expect(api.called("POST", /device\/poll$/)).toHaveLength(0);
+    await tick(200);
+    expect(api.called("POST", /device\/poll$/)).toHaveLength(1);
+    const cancel = within(hardcover).getByRole("button", { name: "Cancel" });
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    await press(cancel);
+    expect(api.called("POST", /device\/cancel$/)).toHaveLength(0);
+    checked.resolve({ body: { account: ACCOUNT, status: "pending", hardcover: live.state } });
+    await until(() => expect(within(hardcover).getByRole("button", { name: "Cancel" }).getAttribute("aria-disabled")).toBeNull());
+    await press(within(hardcover).getByRole("button", { name: "Cancel" }));
+    await until(() => within(hardcover).getByRole("button", { name: "Sign in with Hardcover" }));
+    expect(api.called("POST", /device\/cancel$/)).toHaveLength(1);
   });
 
   test("disconnect asks first, sends the connection the page showed and keeps a newer one", async () => {
