@@ -177,6 +177,34 @@ describe("notifications in the Rails preview", () => {
     expect(await screen.findByText("Cleared 3 notifications. 1 newer notification arrived and was kept.")).toBeTruthy();
   });
 
+  test("an open clear confirmation is withdrawn when a newer alert arrives, so it can never delete what was not asked about", async () => {
+    let items = SAMPLE;
+    const server = railsServer({ list: () => ({ body: inbox(items) }) });
+    server.on("POST", /\/notifications\/clear$/, () => {
+      items = [item({ id: "8", title: "Arrived later" })];
+      return { body: { account: ACCOUNT, unread: 1, total: 1, changed: 3 } };
+    });
+    const { services } = renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Clear all" }));
+    expect(screen.getByRole("group", { name: "Delete all 3 notifications? This can’t be undone." })).toBeTruthy();
+    items = [item({ id: "6", title: "Newer" }), ...SAMPLE];
+    act(() => {
+      void services.queryClient.invalidateQueries({ queryKey: services.keys.notifications });
+    });
+    expect(await screen.findByRole("heading", { name: /^Newer/ })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("group", { name: /^Delete/ })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Clear all" }));
+    expect(server.called("POST", /clear$/)).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Clear all" }));
+    await user.click(within(screen.getByRole("group", { name: "Delete all 4 notifications? This can’t be undone." })).getByRole("button", { name: "Clear all" }));
+    expect(await screen.findByText("Cleared 3 notifications. 1 newer notification arrived and was kept.")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: /^Arrived later/ })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: /^Delete/ })).toBeNull();
+    expect(server.called("POST", /clear$/).map((request) => request.body)).toEqual([{ through: "6" }]);
+  });
+
   test("a notification already cleared elsewhere is reported and the inbox and session are read again", async () => {
     let gone = false;
     const server = railsServer({ list: () => ({ body: inbox(gone ? SAMPLE.slice(1) : SAMPLE) }) });

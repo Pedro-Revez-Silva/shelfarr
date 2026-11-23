@@ -117,8 +117,21 @@ function newestId(list: NotificationList): string | null {
   return list.items.reduce<string | null>((newest, item) => (newest === null || BigInt(item.id) > BigInt(newest) ? item.id : newest), null);
 }
 
+function useFocusKeptAcross(snapshot: string) {
+  const zone = useRef<HTMLSpanElement>(null);
+  const seen = useRef(snapshot);
+  useEffect(() => {
+    if (seen.current === snapshot) return;
+    seen.current = snapshot;
+    if (document.activeElement === document.body) zone.current?.querySelector("button")?.focus();
+  }, [snapshot]);
+  return zone;
+}
+
 function Toolbar({ list, busy, onCommand }: { list: NotificationList; busy: boolean; onCommand: (command: NotificationCommand) => void }) {
   const through = newestId(list);
+  const snapshot = `${through}:${list.total}`;
+  const zone = useFocusKeptAcross(snapshot);
   if (list.total === 0 || !through) return null;
   const shown = list.items.length < list.total ? `Showing the ${list.items.length} most recent of ${list.total}.` : null;
   return (
@@ -134,13 +147,16 @@ function Toolbar({ list, busy, onCommand }: { list: NotificationList; busy: bool
             Mark all as read
           </button>
         ) : null}
-        <RemoveZone
-          label="Clear all"
+        <span ref={zone} className="notifications-clear">
+          <RemoveZone
+            key={snapshot}
+            label="Clear all"
           confirmLabel="Clear all"
-          question={`Delete ${list.total === 1 ? "this notification" : `all ${list.total} notifications`}? This can’t be undone.`}
-          busy={busy}
-          onRemove={() => onCommand({ kind: "clear", through })}
-        />
+            question={`Delete ${list.total === 1 ? "this notification" : `all ${list.total} notifications`}? This can’t be undone.`}
+            busy={busy}
+            onRemove={() => onCommand({ kind: "clear", through })}
+          />
+        </span>
       </div>
     </div>
   );
