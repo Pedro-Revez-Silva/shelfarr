@@ -267,6 +267,19 @@ describe("going offline straight after the Rails session changed", () => {
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
   });
 
+  test("an offline reader whose copy arrives after the marker changed shows that nothing is saved instead of A's book", async () => {
+    const store = await accountAWithSavedBook();
+    const opening = store.open.bind(store);
+    store.open = async (account, id) => {
+      const saved = await opening(account, id);
+      setMarker("mB");
+      return saved;
+    };
+    renderApp(unreachable(), store, "reader", `${MOUNT}/library/7/read`);
+    expect(await screen.findByRole("heading", { name: "It can't be opened without a connection" })).toBeTruthy();
+    expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
+  });
+
   test("an open offline page hides A's books as soon as the browser reports the marker changed, without waiting for storage", async () => {
     const store = await accountAWithSavedBook();
     const cookies = new EventTarget();
