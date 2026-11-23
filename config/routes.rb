@@ -265,6 +265,13 @@ Rails.application.routes.draw do
     post "account/api_tokens", to: "account_security#create_api_token", as: :account_api_tokens
     post "account/api_tokens/:id/revoke", to: "account_security#revoke_api_token", as: :account_api_token_revoke
     post "account/oidc/unlink", to: "account_security#unlink_oidc", as: :account_oidc_unlink
+    get "account/hardcover", to: "hardcover_connections#show", as: :hardcover_connection
+    post "account/hardcover/api_key", to: "hardcover_connections#create", as: :hardcover_api_key
+    post "account/hardcover/authorize", to: "hardcover_connections#authorize", as: :hardcover_authorize
+    post "account/hardcover/device", to: "hardcover_connections#device", as: :hardcover_device
+    post "account/hardcover/device/poll", to: "hardcover_connections#device_poll", as: :hardcover_device_poll
+    post "account/hardcover/device/cancel", to: "hardcover_connections#cancel_device", as: :hardcover_device_cancel
+    post "account/hardcover/disconnect", to: "hardcover_connections#disconnect", as: :hardcover_disconnect
     get "account/kobo_readers", to: "kobo_readers#index", as: :kobo_readers
     post "account/kobo_readers", to: "kobo_readers#create"
     get "account/kobo_accounts", to: "kobo_accounts#index", as: :kobo_accounts

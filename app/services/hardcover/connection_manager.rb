@@ -73,11 +73,15 @@ module Hardcover
     # Deletes the stored tokens unconditionally. A refresh still in flight
     # then fails its versioned write and revokes what it received, so it
     # cannot bring the connection back.
-    def disconnect!(connection)
+    def disconnect!(connection, hardcover_user_id: nil)
       user = connection.user
       token = nil
+      replaced = false
       HardcoverConnection.transaction do
         current = HardcoverConnection.find_by(id: connection.id)
+        replaced = hardcover_user_id.present? && current&.hardcover_user_id != hardcover_user_id
+        next if replaced
+
         if current
           token = revocable_token(current)
           HardcoverConnection.where(id: current.id).delete_all
@@ -86,6 +90,8 @@ module Hardcover
           subscription.pause!(HardcoverSubscription::PAUSE_DISCONNECTED)
         end
       end
+      return false if replaced
+
       user.association(:hardcover_connection).reset
       Hardcover::Oauth.revoke(token) if token.present?
       true
