@@ -1,5 +1,5 @@
 import { getRouteApi, Link } from "@tanstack/react-router";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { PageHeading } from "../../components/PageHeading";
 import { AccountRail } from "../../components/PersonalSettings";
 import { Time } from "../../components/requestText";
@@ -12,6 +12,7 @@ import * as api from "./api";
 import type { KoboBook } from "./contract";
 import { DevicesBackLink } from "./KoboAccountPage";
 import { isMissing, koboAccountFailure, useBookWrite, useKoboBook } from "./queries";
+import { useFocusStaysInCard } from "./focus";
 import "./kobo-accounts.css";
 
 const routeApi = getRouteApi("/account/devices/kobo-books/$bookId");
@@ -179,9 +180,14 @@ function SendToReaders({ book, say }: { book: KoboBook; say: Say }) {
   const deliver = useBookWrite(book.id, ({ readerId, copy }: { readerId: string; copy: string | null }) => api.deliver(client, book.id, readerId, copy));
   const ready = Boolean(book.copy?.ready);
   const owner = book.kobo_account.owner;
+  const card = useRef<HTMLElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useFocusStaysInCard(card, heading, book.readers.map((reader) => reader.id).join(" "));
   return (
-    <section className="account-card" aria-labelledby={headingId}>
-      <h2 id={headingId}>Send to your Kobo</h2>
+    <section ref={card} className="account-card" aria-labelledby={headingId}>
+      <h2 id={headingId} ref={heading} tabIndex={-1}>
+        Send to your Kobo
+      </h2>
       {book.readers.length === 0 ? (
         <>
           <p data-testid="kobo-no-reader">You haven't connected a Kobo reader to Shelfarr yet.</p>

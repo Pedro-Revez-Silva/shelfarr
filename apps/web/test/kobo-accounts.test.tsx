@@ -448,6 +448,20 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     expect(await screen.findByText("That Kobo reader is no longer connected to your account. Nothing was sent.")).toBeTruthy();
     await waitFor(() => expect(screen.getByTestId("kobo-no-reader")).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Send to Clara" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Send to your Kobo" }));
+  });
+
+  test("an approval that ends before the person reaches it leaves focus where it was", async () => {
+    jest.useFakeTimers();
+    const api = server(pending()).on("POST", /\/kobo_accounts\/5\/poll$/, () => ({ status: 404, body: { error: "kobo_account_not_found" } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    await until(() => expect(screen.getByRole("link", { name: /Open Kobo activation/ })).toBeTruthy());
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    await tick(5000);
+    await until(() => expect(screen.getByRole("heading", { name: "Approval can't continue here" })).toBeTruthy());
+    expect(document.activeElement).toBe(document.body);
+    await tick();
+    jest.useRealTimers();
   });
 
   test("an approval that ends while its link is focused keeps focus and the same status line", async () => {

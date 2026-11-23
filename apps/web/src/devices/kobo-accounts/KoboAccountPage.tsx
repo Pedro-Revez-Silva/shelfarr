@@ -12,6 +12,7 @@ import * as api from "./api";
 import type { CatalogueSearch, KoboAccount } from "./contract";
 import { CatalogueCard } from "./KoboCatalogue";
 import { isMissing, koboAccountFailure, useAccountBusy, useAccountWrite, useActivationPoll, useCatalogueFollowsRefresh, useKoboAccount, useKoboAccountKeys, usePublishAccount } from "./queries";
+import { useFocusStaysInCard } from "./focus";
 import "./kobo-accounts.css";
 
 const routeApi = getRouteApi("/account/devices/kobo-accounts/$accountId");
@@ -116,13 +117,12 @@ function Activation({ account }: { account: KoboAccount }) {
   const poller = useActivationPoll(account);
   const activation = account.activation;
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    if (poller.ended && (document.activeElement === null || document.activeElement === document.body)) heading.current?.focus();
-  }, [poller.ended]);
+  const card = useRef<HTMLElement>(null);
+  useFocusStaysInCard(card, heading, poller.ended);
   if (!activation) return null;
   const ended = poller.ended;
   return (
-    <section className="account-card" aria-labelledby={headingId}>
+    <section ref={card} className="account-card" aria-labelledby={headingId}>
       <h2 id={headingId} ref={heading} tabIndex={-1}>
         {ended ? "Approval can't continue here" : "Approve this connection on Kobo"}
       </h2>
