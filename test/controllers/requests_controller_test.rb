@@ -1670,6 +1670,29 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert messages.none? { |message| message.include?(private_error) }
   end
 
+  test "destroy with torrent removal leaves a client job that another request now owns" do
+    client = DownloadClient.create!(name: "Shared job guard #{SecureRandom.hex(4)}", client_type: :qbittorrent, url: "http://127.0.0.1:8080", enabled: true, priority: 0)
+    @pending_request.downloads.create!(name: "Mine", status: :queued, download_client: client, external_id: "own-hash")
+    @pending_request.downloads.create!(name: "Old", status: :failed, download_client: client, external_id: "shared-hash")
+    other = Request.create!(book: Book.create!(title: "Other owner", book_type: :ebook), user: users(:two), status: :downloading)
+    owner = other.downloads.create!(name: "Theirs", status: :downloading, download_client: client, external_id: "shared-hash")
+    request_id = @pending_request.id
+    seen = []
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      seen << [ external_id, delete_files, Request.exists?(request_id) ]
+      true
+    end
+
+    DownloadClients::Qbittorrent.stub(:new, adapter) do
+      delete request_path(@pending_request), params: { remove_torrent: "1" }
+    end
+
+    assert_redirected_to requests_path
+    assert_equal [ [ "own-hash", false, true ] ], seen
+    assert owner.reload.downloading?
+  end
+
   test "destroy resumes safely after a durable cancellation claim" do
     book = Book.create!(title: "Claimed cancellation retry", book_type: :ebook)
     request = Request.create!(book: book, user: @user, status: :downloading)

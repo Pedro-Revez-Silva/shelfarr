@@ -1,12 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ManualLink, RequestCopyChoice } from "./api/client";
+import { useNavigate, useRouter } from "@tanstack/react-router";
+import type { ManualLink, RequestCopyChoice, RequestWithdrawal } from "./api/client";
 import { useServices } from "./services";
 
-function useRequestChange<V, T>(requestId: string, send: (variables: V) => Promise<T>) {
+function useRequestChange<V, T>(requestId: string, send: (variables: V) => Promise<T>, onSuccess?: (answer: T) => void) {
   const { keys, guard } = useServices();
   const client = useQueryClient();
   return useMutation({
     mutationFn: send,
+    onSuccess,
     onSettled: () => {
       if (!guard.isActive()) return;
       for (const queryKey of [keys.request(requestId), keys.requestsAll, keys.libraryAll, keys.continueAll, keys.catalogueAll, [...keys.root, "book"]]) {
@@ -29,6 +31,18 @@ export function useRetryRequest(requestId: string) {
 export function useRemoveRequest(requestId: string) {
   const { api } = useServices();
   return useRequestChange(requestId, () => api.removeRequest(requestId));
+}
+
+export function useWithdrawRequest(requestId: string) {
+  const { api } = useServices();
+  const navigate = useNavigate();
+  const router = useRouter();
+  const page = `/requests/${requestId}`;
+  return useRequestChange(
+    requestId,
+    (withdrawal: RequestWithdrawal) => api.withdrawRequest(requestId, withdrawal),
+    (answer) => (answer.request.status === "removed" && router.state.location.pathname.replace(/\/+$/, "") === page ? void navigate({ to: "/requests", replace: true }) : undefined),
+  );
 }
 
 export function useSearchRequestAgain(requestId: string) {

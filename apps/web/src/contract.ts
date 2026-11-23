@@ -375,6 +375,10 @@ export type RequestCopies = z.infer<typeof requestCopiesSchema>;
 export const requestActionsSchema = z.object({
   cancel: z.boolean(),
   remove: z.enum(["admin_remove", "delete_history"]).nullable(),
+  withdraw: z
+    .object({ revision: z.string().regex(/^[0-9a-f]{32}$/), client_jobs: z.number().int().nonnegative(), starting: z.boolean() })
+    .nullable()
+    .catch(null),
   retry: z.boolean(),
   search_again: z.boolean(),
   manual_download: z.boolean(),
@@ -383,6 +387,7 @@ export const requestActionsSchema = z.object({
   download_url: sitePath.nullable(),
 });
 export type RequestActions = z.infer<typeof requestActionsSchema>;
+export type RequestWithdrawalOffer = NonNullable<RequestActions["withdraw"]>;
 
 export const storeOfferSchema = z.object({
   id: identifier,

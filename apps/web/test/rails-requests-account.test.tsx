@@ -51,7 +51,7 @@ function copy(id: string, overrides: Partial<RequestCopy> = {}, details: Partial
   return { id, title: `Copy ${id}.epub`, format: "EPUB", size_bytes: 1000, language: "English", source: "Prowlarr", state: "pending", skipped: false, downloadable: true, details: copyDetails(details), ...overrides };
 }
 
-const memberActions = { cancel: true, remove: null, retry: false, search_again: false, manual_download: false, replaces_library_file: false, upload_url: null, download_url: null } as const;
+const memberActions = { cancel: true, remove: null, withdraw: null, retry: false, search_again: false, manual_download: false, replaces_library_file: false, upload_url: null, download_url: null } as const;
 
 function detail(overrides: Partial<RequestDetail> = {}): RequestDetail {
   return { ...request(), attention_reason: null, downloads: [], choice_needed: false, notes: null, collection_title: null, retry_count: 0, actions: memberActions, store_offers: [], ...overrides };
@@ -217,6 +217,217 @@ describe("one request in the Rails preview", () => {
     await user.click(screen.getByRole("button", { name: "Yes, delete it" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
     expect(server.called("POST", /remove$/)).toHaveLength(1);
+  });
+});
+
+describe("a requester cancels and removes an unfinished request in the Rails preview", () => {
+  const first = "a".repeat(32);
+  const second = "b".repeat(32);
+
+  function offering(clientJobs: number, revision = first, starting = false): RequestDetail {
+    return detail({ status: "downloading", actions: { ...memberActions, withdraw: { revision, client_jobs: clientJobs, starting } } });
+  }
+
+  function removed() {
+    return { body: { account: ACCOUNT, request: { id: "7", status: "removed" } } };
+  }
+
+  test("one Cancel request names exactly what happens, the client choice can be changed or dropped before confirming, and confirming sends that choice", async () => {
+    const server = railsServer(offering(1)).on("POST", /\/requests\/7\/withdraw$/, removed);
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    expect((await screen.findAllByRole("button", { name: "Cancel request" })).length).toBe(1);
+    await user.click(screen.getByRole("button", { name: "Cancel request" }));
+    const question = screen.getByRole("group", { name: "Cancel this request?" });
+    expect(question.textContent).toBe(
+      "Cancel this request?It is removed from your requests and Shelfarr stops working on it. Files already in the library stay.Also remove its download from the download clientThe download client keeps it and the files already downloaded.Yes, cancel itKeep it",
+    );
+    expect(document.activeElement?.textContent).toBe("Keep it");
+    const choice = within(question).getByRole("checkbox", { name: "Also remove its download from the download client" }) as HTMLInputElement;
+    expect(choice.checked).toBe(false);
+    await user.click(choice);
+    expect(within(question).getByText("Shelfarr asks the download client to remove it. Files already downloaded stay on disk. If the client can't be reached, the request is still removed and the client keeps it.")).toBeTruthy();
+    expect(within(question).getByRole("button", { name: "Yes, cancel it and remove the download" })).toBeTruthy();
+    await user.click(choice);
+    expect(within(question).getByText("The download client keeps it and the files already downloaded.")).toBeTruthy();
+    await user.click(within(question).getByRole("button", { name: "Keep it" }));
+    expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Cancel request");
+    expect(server.called("POST", /\/requests\/7\/(withdraw|cancel)$/)).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Cancel request" }));
+    const reopened = screen.getByRole("checkbox", { name: "Also remove its download from the download client" }) as HTMLInputElement;
+    expect(reopened.checked).toBe(false);
+    await user.click(reopened);
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it and remove the download" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+    const sent = server.called("POST", /\/requests\/7\/withdraw$/);
+    expect(sent.map((call) => call.body)).toEqual([{ expected_revision: first, remove_client_jobs: true }]);
+    expect(sent[0]?.headers["x-csrf-token"]).toBe("token-123");
+    expect(server.called("POST", /cancel$/)).toHaveLength(0);
+  }, 15000);
+
+  test("a request with no client job says no client is contacted and never sends the client choice", async () => {
+    const server = railsServer(offering(0)).on("POST", /\/requests\/7\/withdraw$/, removed);
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    const question = screen.getByRole("group", { name: "Cancel this request?" });
+    expect(within(question).getByText("No download client is contacted.")).toBeTruthy();
+    expect(within(question).queryByRole("checkbox")).toBeNull();
+    await user.click(within(question).getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(server.called("POST", /withdraw$/).map((call) => call.body)).toEqual([{ expected_revision: first, remove_client_jobs: false }]));
+  });
+
+  test("a download that is starting is named with what a client does to it, and several jobs are counted", async () => {
+    renderApp({ server: railsServer(offering(2, first, true)), url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    const question = screen.getByRole("group", { name: "Cancel this request?" });
+    expect(within(question).getByText("A download is starting right now. Shelfarr stops it, and if it was going to a download client, the client removes it together with anything it already downloaded.")).toBeTruthy();
+    expect(within(question).queryByText("No download client is contacted.")).toBeNull();
+    await user.click(within(question).getByRole("checkbox", { name: "Also remove its 2 downloads from the download client" }));
+    expect(within(question).getByRole("button", { name: "Yes, cancel it and remove the 2 downloads" })).toBeTruthy();
+  });
+
+  test("while the answer is pending the question can't be closed, changed or sent again, and the answer still returns to the list", async () => {
+    let answer: () => void = () => undefined;
+    const server = railsServer(offering(1)).on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancelling…" })).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: "Keep it" }));
+    await user.click(screen.getByRole("button", { name: "Cancelling…" }));
+    expect(screen.getByRole("group", { name: "Cancel this request?" })).toBeTruthy();
+    expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
+    expect(server.called("POST", /withdraw$/)).toHaveLength(1);
+    await act(async () => answer());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  }, 15000);
+
+  test("a refresh that finds the request already gone while the answer is pending still returns to the list", async () => {
+    let answer: () => void = () => undefined;
+    let gone = false;
+    const server = railsServer(offering(1))
+      .on("GET", /\/api\/v1\/requests\/7$/, () => (gone ? { status: 404, body: { error: "not_found" } } : { body: { account: ACCOUNT, request: offering(1) } }))
+      .on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
+    const { router, services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    gone = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull());
+    await act(async () => answer());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  }, 15000);
+
+  test("a request page opened with a trailing slash still returns to the list", async () => {
+    const server = railsServer(offering(0)).on("POST", /\/requests\/7\/withdraw$/, removed);
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7/" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  });
+
+  test("an answer that arrives after the person moved to another page leaves them there", async () => {
+    let answer: () => void = () => undefined;
+    const server = railsServer(offering(1)).on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await act(async () => void router.navigate({ to: "/find" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/find"));
+    await act(async () => answer());
+    await waitFor(() => expect(server.called("POST", /withdraw$/)).toHaveLength(1));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(router.state.location.pathname).toBe("/find");
+  }, 15000);
+
+  test("a question left open while the request changes is withdrawn and forgotten, so it never returns by itself", async () => {
+    let found = offering(1);
+    const server = railsServer(found)
+      .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found } }))
+      .on("POST", /\/requests\/7\/withdraw$/, removed);
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("checkbox", { name: "Also remove its download from the download client" }));
+    found = offering(0, second);
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull());
+    expect(screen.getByText("This request changed while you were deciding. Check what cancelling it does now and ask again.").getAttribute("role")).toBe("status");
+    expect(document.activeElement?.textContent).toBe("Cancel request");
+    found = offering(1, first);
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect(server.called("GET", /\/requests\/7$/).length).toBeGreaterThan(2));
+    expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Cancel request" }));
+    expect(screen.queryByText(/changed while you were deciding/)).toBeNull();
+    expect((screen.getByRole("checkbox", { name: "Also remove its download from the download client" }) as HTMLInputElement).checked).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(server.called("POST", /withdraw$/).map((call) => call.body)).toEqual([{ expected_revision: first, remove_client_jobs: false }]));
+  }, 30000);
+
+  test("a cancellation the server refuses because the request changed says so, reads the request again and stays on the page", async () => {
+    let found = offering(1);
+    const message = "This request changed since the page was read. The page now shows it as it is; check what cancelling it does and choose again.";
+    const server = railsServer(found)
+      .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found } }))
+      .on("POST", /\/requests\/7\/withdraw$/, () => {
+        found = offering(0, second);
+        return { status: 409, body: { error: "request_changed", message } };
+      });
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull());
+    expect(screen.queryByText(/changed while you were deciding/)).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Cancel request");
+    expect(router.state.location.pathname).toBe("/requests/7");
+  }, 15000);
+
+  test("a refusal that also takes the cancellation away keeps the server's reason on screen", async () => {
+    let found = offering(1);
+    const message = "This request has an upload or Audible backup in progress. Wait for it to finish, or retry its recovery, before cancelling the request.";
+    const server = railsServer(found)
+      .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found } }))
+      .on("POST", /\/requests\/7\/withdraw$/, () => {
+        found = detail({ status: "downloading", actions: { ...memberActions, cancel: false } });
+        return { status: 409, body: { error: "cannot_remove", message } };
+      });
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull());
+    expect(screen.getByRole("alert").textContent).toBe(message);
+  });
+
+  test("an older server without the offer keeps the existing cancel, which keeps the request", async () => {
+    const { withdraw: _withdraw, ...olderActions } = memberActions;
+    const older = { ...detail(), actions: olderActions } as unknown as RequestDetail;
+    renderApp({ server: railsServer(older), url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    expect(screen.getByRole("group", { name: "Cancel this request? If a download is running, it is stopped and its files are deleted from the download client." })).toBeTruthy();
+  });
+
+  test("an administrator's own request keeps the existing cancel and the single removal in the inspector, even if an offer is present", async () => {
+    const adminActions = { ...memberActions, remove: "admin_remove" as const, withdraw: { revision: first, client_jobs: 1, starting: false } };
+    renderApp({ server: railsServer(detail({ requested_by: { name: "Rae", self: true }, actions: adminActions }), true), url: "/sub/preview/requests/7" });
+    const tools = await screen.findByRole("region", { name: "Administrator tools" });
+    expect(screen.getAllByRole("button", { name: "Remove request" })).toEqual([within(tools).getByRole("button", { name: "Remove request" })]);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Cancel request" }));
+    expect(screen.getByRole("group", { name: "Cancel this request? If a download is running, it is stopped and its files are deleted from the download client." })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull();
   });
 });
 

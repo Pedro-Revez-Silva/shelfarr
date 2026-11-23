@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
-import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
+import type { RequestActions, RequestCopies, RequestDetail, RequestWithdrawalOffer, StoreOffer } from "../contract";
+import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain, useWithdrawRequest } from "../requestActions";
 import { CopyTable, focusLeftThePage, keepsFocus } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
@@ -25,7 +25,9 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
   const searchHere = admin && actions.search_again && !request.copies;
   const memberUpload = !admin && actions.upload_url !== null && (request.store_offers ?? []).length === 0;
   const memberRemoval = !admin && actions.remove === "delete_history" ? actions.remove : null;
-  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || searchHere));
+  const withdraw = useWithdrawRequest(request.id);
+  const withdrawal = admin ? null : actions.withdraw;
+  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || withdrawal || withdraw.isError || (admin && (actions.retry || searchHere));
   if (!shown) return null;
   return (
     <div className="copy-actions request-actions">
@@ -41,7 +43,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       ) : null}
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
       {searchHere ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
-      {actions.cancel ? <CancelTracked request={request} /> : null}
+      {withdrawal ? <WithdrawRequest offer={withdrawal} withdraw={withdraw} /> : actions.cancel ? <CancelTracked request={request} /> : null}
       {memberUpload ? (
         <Link className="button" to="/library/uploads" search={{ request: request.id }}>
           Upload a file for this request
@@ -51,6 +53,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       {retry.data?.message ? <p role="status">{retry.data.message}</p> : null}
       {retry.isError ? <Failure error={retry.error} fallback="The request could not be retried. Nothing was changed." /> : null}
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
+      {withdraw.isError ? <Failure error={withdraw.error} fallback="The request could not be removed. Nothing was changed." /> : null}
     </div>
   );
 }
@@ -106,6 +109,93 @@ function CancelTracked({ request }: { request: RequestDetail }) {
       {cancel.isError ? <Failure error={cancel.error} fallback="The request could not be cancelled. Nothing was changed." /> : null}
     </>
   );
+}
+
+function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; withdraw: ReturnType<typeof useWithdrawRequest> }) {
+  const [askedOn, setAskedOn] = useState<string | null>(null);
+  const [removeJobs, setRemoveJobs] = useState(false);
+  const [lapsed, setLapsed] = useState(false);
+  const ask = useRef<HTMLButtonElement>(null);
+  const keep = useRef<HTMLButtonElement>(null);
+  const wasAsking = useRef(false);
+  const questionId = useId();
+  const consequenceId = useId();
+  const jobsId = useId();
+  const jobsHintId = useId();
+  const asking = askedOn !== null && (askedOn === offer.revision || withdraw.isPending);
+  const jobs = clientJobWords(offer.client_jobs);
+  const choosesJobs = offer.client_jobs > 0 && removeJobs;
+
+  useEffect(() => {
+    if (asking || askedOn === null) return;
+    setAskedOn(null);
+    setRemoveJobs(false);
+    setLapsed(true);
+  }, [asking, askedOn]);
+  useEffect(() => {
+    if (asking) keep.current?.focus();
+    else if (wasAsking.current && focusLeftThePage()) ask.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
+
+  const open = () => {
+    withdraw.reset();
+    setRemoveJobs(false);
+    setLapsed(false);
+    setAskedOn(offer.revision);
+  };
+  const close = () => {
+    if (!withdraw.isPending) setAskedOn(null);
+  };
+  const confirm = () => {
+    if (withdraw.isPending) return;
+    withdraw.mutate({ expected_revision: offer.revision, remove_client_jobs: choosesJobs });
+  };
+
+  return (
+    <>
+      {asking ? (
+        <div className="cancel-confirm withdraw-confirm" role="group" aria-labelledby={questionId} aria-describedby={consequenceId} aria-busy={withdraw.isPending ? true : undefined}>
+          <p id={questionId}>Cancel this request?</p>
+          <div id={consequenceId} className="withdraw-consequence">
+            <p>It is removed from your requests and Shelfarr stops working on it. Files already in the library stay.</p>
+            {offer.starting ? <p>A download is starting right now. Shelfarr stops it, and if it was going to a download client, the client removes it together with anything it already downloaded.</p> : null}
+            {offer.client_jobs > 0 ? (
+              <div className="check-field">
+                <input id={jobsId} type="checkbox" checked={removeJobs} disabled={withdraw.isPending} aria-describedby={jobsHintId} onChange={(event) => setRemoveJobs(event.currentTarget.checked)} />
+                <label htmlFor={jobsId}>Also remove {jobs.its} from the download client</label>
+                <p id={jobsHintId} className="field-hint">
+                  {choosesJobs
+                    ? `Shelfarr asks the download client to remove ${jobs.them}. Files already downloaded stay on disk. If the client can't be reached, the request is still removed and the client keeps ${jobs.them}.`
+                    : `The download client keeps ${jobs.them} and the files already downloaded.`}
+                </p>
+              </div>
+            ) : offer.starting ? null : (
+              <p>No download client is contacted.</p>
+            )}
+          </div>
+          <span className="withdraw-buttons">
+            <button type="button" className="button button--danger" aria-disabled={withdraw.isPending ? true : undefined} onClick={confirm}>
+              {withdraw.isPending ? "Cancelling…" : choosesJobs ? `Yes, cancel it and remove ${jobs.the}` : "Yes, cancel it"}
+            </button>
+            <button ref={keep} type="button" className="button button--subtle" aria-disabled={withdraw.isPending ? true : undefined} onClick={close}>
+              Keep it
+            </button>
+          </span>
+        </div>
+      ) : (
+        <button ref={ask} type="button" className="button button--subtle" onClick={open}>
+          Cancel request
+        </button>
+      )}
+      {lapsed && !withdraw.isError ? <p role="status">This request changed while you were deciding. Check what cancelling it does now and ask again.</p> : null}
+    </>
+  );
+}
+
+function clientJobWords(count: number): { its: string; them: string; the: string } {
+  if (count === 1) return { its: "its download", them: "it", the: "the download" };
+  return { its: `its ${count} downloads`, them: "them", the: `the ${count} downloads` };
 }
 
 function RemoveRequest({ request, mode }: { request: RequestDetail; mode: NonNullable<RequestActions["remove"]> }) {

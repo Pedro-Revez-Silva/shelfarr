@@ -21,6 +21,13 @@ module WebPreview
       Digest::SHA256.hexdigest(shown.to_json).first(32)
     end
 
+    def self.withdrawal_offer(request)
+      facts = RequestWithdrawal.facts(request)
+      shown = [ request.id, request.user_id, request.status, request.direct_acquisition_recovery_pending?, facts.dispatch_in_progress,
+        facts.client_jobs.map { |job| [ job.download_id, job.download_client_id ] } ]
+      { revision: Digest::SHA256.hexdigest(shown.to_json).first(32), client_jobs: facts.client_jobs.size, starting: facts.dispatch_in_progress }
+    end
+
     def initialize(request, viewer:, routes:, opens_in_browser:)
       @request = request
       @book = request.book
@@ -97,6 +104,7 @@ module WebPreview
       {
         cancel: own? && !@request.failed? && @request.can_be_cancelled?,
         remove: removal,
+        withdraw: withdrawal,
         retry: admin? && @request.can_retry?,
         search_again: admin? && @request.search_refresh_allowed?,
         manual_download: admin? && @request.manual_download_allowed?,
@@ -111,6 +119,12 @@ module WebPreview
       return "delete_history" if own? && @request.can_delete_completed_history?
 
       nil
+    end
+
+    def withdrawal
+      return unless own? && !admin? && @request.can_be_cancelled?
+
+      RequestJson.withdrawal_offer(@request)
     end
 
     def upload_url
