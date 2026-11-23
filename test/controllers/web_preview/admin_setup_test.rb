@@ -527,9 +527,12 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
     with_preview_for("first") do
       post sign_up_path, params: { user: { name: "First", username: "first", password: PASSWORD, password_confirmation: PASSWORD } }
       assert_redirected_to web_preview_server_setup_path
+      assert_nil flash[:notice]
       follow_redirect!
       assert_response :success
       assert_select "#shelfarr-boot"
+      get admin_setup_wizard_path(step: "folders")
+      assert_redirected_to web_preview_server_setup_path(step: "folders")
     end
     assert User.find_by!(username: "first").admin?
 
@@ -544,6 +547,7 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
       post sign_up_path, params: { user: { name: "Third", username: "third", password: PASSWORD, password_confirmation: PASSWORD } }
     end
     assert_redirected_to admin_setup_wizard_path
+    assert_equal "Welcome! You are the admin. Let's set up Shelfarr.", flash[:notice]
   end
 
   test "without the built stylesheet the first administrator stays on the classic setup" do
