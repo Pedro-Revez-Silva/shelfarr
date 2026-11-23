@@ -90,7 +90,7 @@ describe("the Rails preview shell", () => {
   test("an administrator gets Server and a bell that names the unread count", async () => {
     renderApp({ server: railsServer(detail(), true) });
     const bell = await screen.findByRole("link", { name: "Notifications, 3 unread" });
-    expect(bell.getAttribute("href")).toBe("/sub/notifications");
+    expect(bell.getAttribute("href")).toBe("/sub/preview/notifications");
     const nav = screen.getByRole("navigation", { name: "Primary" });
     expect(within(nav).getAllByRole("link").map((link) => link.textContent)).toEqual(["Library", "Find", "Account", "Server"]);
   });

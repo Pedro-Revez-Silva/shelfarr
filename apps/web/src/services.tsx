@@ -41,6 +41,7 @@ export function createQueryKeys(account: string) {
     acquisition: (id: string) => [...root, "acquisition", id] as const,
     acquisitionAll: [...root, "acquisition"] as const,
     serverOverview: [...root, "admin", "overview"] as const,
+    notifications: [...root, "notifications"] as const,
     discoverAll: [...root, "discover"] as const,
     catalogue: (query: string | null) => [...root, "catalogue", query] as const,
     catalogueAll: [...root, "catalogue"] as const,
@@ -120,6 +121,7 @@ export function createServices({ boot, csrfToken, fetcher, mutations, guard: sup
       if (generation === guard.generation) keepsRole(session);
       if (generation === guard.generation && guard.isActive()) {
         queryClient.setQueryData(keys.session, session);
+        if (queryClient.isFetching({ queryKey: keys.session, exact: true }) > 0) void queryClient.invalidateQueries({ queryKey: keys.session, exact: true });
         retryFailedRequests();
       }
       guard.finishCheck(generation, true);

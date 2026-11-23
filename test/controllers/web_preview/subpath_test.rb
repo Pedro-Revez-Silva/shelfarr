@@ -127,4 +127,20 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
       config.values_at("cache", "reads", "downloads")
     assert config.fetch("assets").all? { |entry| entry.fetch("path").start_with?("#{BASE}/assets/") }
   end
+
+  test "the classic notifications address, the warm inbox and its actions live under the deployment path" do
+    sign_in_as(users(:one))
+    notification = users(:one).notifications.create!(notification_type: "request_completed", title: "Book Ready", message: "Ready.")
+    get "#{BASE}/notifications"
+    assert_redirected_to "http://www.example.com#{BASE}/preview/notifications"
+    get "#{BASE}/preview/notifications"
+    assert_response :success
+    get "#{BASE}/preview/api/v1/notifications", headers: account_headers(users(:one))
+    assert_equal [ notification.id.to_s ], response.parsed_body.fetch("items").map { |item| item.fetch("id") }
+    post "#{BASE}/preview/api/v1/notifications/#{notification.id}/read", headers: account_headers(users(:one)), as: :json
+    assert_response :success
+    assert notification.reload.read?
+    post "#{BASE}/preview/api/v1/notifications/clear", params: { through: notification.id.to_s }, headers: account_headers(users(:one)), as: :json
+    assert_equal [ 0, 0, 1 ], response.parsed_body.values_at("unread", "total", "changed")
+  end
 end

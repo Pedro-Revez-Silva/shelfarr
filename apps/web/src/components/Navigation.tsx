@@ -66,7 +66,7 @@ export function NotificationBell({ session }: { session: Session | undefined }) 
   if (!link) return null;
   const unread = link.unread;
   return (
-    <a className="bell" href={link.url} aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}>
+    <Link to="/notifications" className="bell" activeProps={{ "aria-current": "page" }} aria-label={unread > 0 ? `Notifications, ${unread} unread` : "Notifications"}>
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true" focusable="false">
         <path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" />
       </svg>
@@ -75,6 +75,6 @@ export function NotificationBell({ session }: { session: Session | undefined }) 
           {unread > 9 ? "9+" : unread}
         </span>
       ) : null}
-    </a>
+    </Link>
   );
 }

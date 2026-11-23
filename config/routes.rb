@@ -218,6 +218,7 @@ Rails.application.routes.draw do
   get "preview/account", to: "web_preview/shell#show", as: :web_preview_account
   get "preview/account/:section", to: "web_preview/shell#show", as: :web_preview_account_section, constraints: { section: /security|devices|connections|about/ }
   get "preview/find", to: "web_preview/shell#show", as: :web_preview_find
+  get "preview/notifications", to: "web_preview/shell#show", as: :web_preview_notifications
   scope "preview/api/v1", module: :web_preview, as: :web_preview_api, defaults: { format: :json } do
     get "session", to: "sessions#show"
     get "continue", to: "library#continue"
@@ -246,6 +247,10 @@ Rails.application.routes.draw do
     post "requests/:id/retry", to: "requests#retry", as: :request_retry
     post "requests/:id/remove", to: "requests#remove", as: :request_remove
     post "requests/:id/manual", to: "requests#manual", as: :request_manual
+    get "notifications", to: "notifications#index", as: :notifications
+    post "notifications/read", to: "notifications#mark_all_read", as: :notifications_read
+    post "notifications/clear", to: "notifications#clear", as: :notifications_clear
+    post "notifications/:id/read", to: "notifications#mark_read", as: :notification_read
     get "account", to: "accounts#show", as: :account
     put "account/profile", to: "accounts#profile", as: :account_profile
     post "account/password", to: "accounts#password", as: :account_password

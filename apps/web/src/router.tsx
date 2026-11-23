@@ -6,6 +6,7 @@ import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
 import { DiscoverPage, FindPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
+import { NotificationsPage } from "./components/NotificationsPage";
 import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
 import { ServerSettingsPage } from "./components/ServerSettingsPage";
@@ -114,6 +115,12 @@ const requestRoute = createRoute({
   component: RequestPage,
 });
 
+const notificationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/notifications",
+  component: NotificationsPage,
+});
+
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/admin",
@@ -164,7 +171,7 @@ const personRoute = createRoute({
   component: PersonPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({
