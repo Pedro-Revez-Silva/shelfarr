@@ -279,6 +279,15 @@ Rails.application.routes.draw do
     post "settings/telegram_chats/:id/pause", to: "telegram_chats#pause", as: :telegram_chat_pause
     post "settings/telegram_chats/:id/resume", to: "telegram_chats#resume", as: :telegram_chat_resume
     delete "settings/telegram_chats/:id", to: "telegram_chats#destroy", as: :telegram_chat
+    get "downloads", to: "downloads#show"
+    post "downloads/clients", to: "downloads#create_client", as: :download_clients
+    put "downloads/clients/:id", to: "downloads#update_client", as: :download_client
+    delete "downloads/clients/:id", to: "downloads#destroy_client"
+    post "downloads/clients/:id/test", to: "downloads#test_client", as: :download_client_test
+    post "downloads/clients/:id/move", to: "downloads#move_client", as: :download_client_move
+    post "downloads/rules", to: "downloads#create_rule", as: :download_rules
+    put "downloads/rules/:id", to: "downloads#update_rule", as: :download_rule
+    delete "downloads/rules/:id", to: "downloads#destroy_rule"
   end
 
   namespace :integrations, defaults: { format: :json } do

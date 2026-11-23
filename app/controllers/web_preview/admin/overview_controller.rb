@@ -3,6 +3,7 @@
 class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
   FIXES = {
     "indexer" => { category: "sources", group: "indexer", label: "Indexer settings" },
+    "download_client" => { category: "downloads", group: "download_clients", label: "Download clients" },
     "download_paths" => { category: "downloads", group: "path_mapping", label: "Path mapping" },
     "output_paths" => { category: "library", group: "folders", label: "Folder settings" },
     "audiobookshelf" => { category: "library", group: "library_platform", label: "Library platform settings" },
@@ -49,8 +50,6 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
 
   def pending_screens
     [
-      [ "Download clients", admin_download_clients_path ],
-      [ "Download routing", admin_download_routing_rules_path ],
       [ "Custom acquisition providers", admin_acquisition_providers_path ],
       [ "Users", admin_users_path ],
       [ "Uploads", admin_uploads_path ],
@@ -64,7 +63,7 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
       service: service,
       label: LABELS.fetch(service) { service.humanize },
       status: health&.status,
-      message: WebPreview::SecretRedaction.call(health&.message.presence),
+      message: service == WebPreview::DownloadManagement::HEALTH_SERVICE ? WebPreview::DownloadManagement.health_sentence(health&.status) : WebPreview::SecretRedaction.call(health&.message.presence),
       checked_at: health&.last_check_at&.iso8601,
       fix: FIXES[service]
     }.compact.merge(status: health&.status, checked_at: health&.last_check_at&.iso8601)

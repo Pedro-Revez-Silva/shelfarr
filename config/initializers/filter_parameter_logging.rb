@@ -10,5 +10,6 @@ Rails.application.config.filter_parameters += [
   /\A(?:code|device_code|user_code|code_verifier)\z/i,
   # Consumer transfer grants travel in the query string. Exact, so OAuth
   # `grant_type` and other keys that merely contain "grant" still log.
-  /\Agrant\z/i
+  /\Agrant\z/i,
+  "client.url"
 ]
