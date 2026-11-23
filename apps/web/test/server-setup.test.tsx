@@ -114,6 +114,7 @@ describe("Setup in the Rails preview", () => {
       ["5Search", null, "/sub/preview/server/setup?step=search"],
     ]);
     expect(screen.getByText("Step 1 of 5")).toBeTruthy();
+    expect(document.activeElement).not.toBe(screen.getByRole("heading", { name: "Prowlarr", level: 2 }));
     expect(screen.queryByRole("link", { name: "Back" })).toBeNull();
     const prowlarrCard = cardSection("prowlarr");
     expect(within(prowlarrCard).getByRole("button", { name: "Replace" })).toBeTruthy();

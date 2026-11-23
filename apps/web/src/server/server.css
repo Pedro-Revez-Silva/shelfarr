@@ -754,8 +754,26 @@
 .setup-collapsed > summary {
   display: flex;
   align-items: center;
+  gap: 10px;
   min-height: 44px;
   cursor: pointer;
+  list-style: none;
+}
+.setup-collapsed > summary::-webkit-details-marker {
+  display: none;
+}
+.setup-collapsed > summary::before {
+  content: "▸";
+  color: var(--accent);
+  transition: rotate 0.15s ease;
+}
+.setup-collapsed[open] > summary::before {
+  rotate: 90deg;
+}
+@media (prefers-reduced-motion: reduce) {
+  .setup-collapsed > summary::before {
+    transition: none;
+  }
 }
 .setup-collapsed > summary h3 {
   margin: 0;
@@ -769,6 +787,11 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+.setup-elsewhere a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .setup-reminder {
   border-color: var(--accent);

@@ -44,6 +44,10 @@ function SetupView() {
   const admin = useIsAdministrator();
   const setup = useSetupState(step);
   const [said, setSaid] = useState<Said | null>(null);
+  const shown = useRef(false);
+  useEffect(() => {
+    if (setup.data) shown.current = true;
+  });
 
   const body =
     session.isError && !session.data ? (
@@ -53,7 +57,7 @@ function SetupView() {
     ) : !admin || (setup.isError && failureKind(setup.error) === "not_found") ? (
       <AdministratorsOnly />
     ) : setup.data ? (
-      <SetupStep key={setup.data.step} state={setup.data} version={setup.dataUpdatedAt} said={said?.state === setup.data ? said : null} onSaid={setSaid} />
+      <SetupStep key={setup.data.step} state={setup.data} version={setup.dataUpdatedAt} moveFocus={shown.current} said={said?.state === setup.data ? said : null} onSaid={setSaid} />
     ) : setup.isError ? (
       <ErrorPanel error={setup.error} onRetry={() => void setup.refetch()} />
     ) : (
@@ -90,7 +94,7 @@ function useDirtyCards(): DirtyCards {
   return cards;
 }
 
-function SetupStep({ state, version, said, onSaid }: { state: SetupState; version: number; said: Said | null; onSaid: (said: Said | null) => void }) {
+function SetupStep({ state, version, moveFocus, said, onSaid }: { state: SetupState; version: number; moveFocus: boolean; said: Said | null; onSaid: (said: Said | null) => void }) {
   const navigate = useNavigate();
   const moved = useSetupMoves();
   const skip = useSkipSetup();
@@ -104,9 +108,11 @@ function SetupStep({ state, version, said, onSaid }: { state: SetupState; versio
     withResolver: true,
   });
 
+  const arrived = useRef(moveFocus);
   useEffect(() => {
     const active = document.activeElement;
-    if (!active || active === document.body || active.closest(".server-content")) heading.current?.focus();
+    if (arrived.current && (!active || active === document.body || active.closest(".server-content"))) heading.current?.focus();
+    arrived.current = true;
   }, [version]);
 
   const go = (next: SetupState | null) => {
