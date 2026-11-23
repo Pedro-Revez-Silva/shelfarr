@@ -81,13 +81,12 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "a request from the Shelfarr app says so, without passing on any other source a caller supplied" do
-    app = log("request.created", at: 2.minutes.ago, user: @member, details: { created_via: "api", external_source: "consumer_app" })
-    other = log("request.created", at: 1.minute.ago, user: @member, details: { created_via: "api", external_source: "consumer_app " })
+  test "a request's source is never passed on, whatever the caller supplied" do
+    entry = log("request.created", at: 1.minute.ago, user: @member, details: { created_via: "api", external_source: "consumer_app" })
 
-    details = listing.fetch("entries").to_h { |entry| [ entry.fetch("id"), entry.fetch("details") ] }
-
-    assert_equal({ app.id.to_s => { "via" => "api", "app" => true }, other.id.to_s => { "via" => "api" } }, details)
+    assert_equal({ "via" => "api" }, listing.fetch("entries").sole.fetch("details"))
+    assert_equal entry.id.to_s, listing.fetch("entries").sole.fetch("id")
+    assert_not_includes response.body, "consumer_app"
   end
 
   test "a matched book that was later removed leaves the entry without a subject" do
@@ -156,7 +155,7 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
 
   test "a malformed filter is refused instead of being read as another filter" do
     log("request.completed", at: 1.minute.ago)
-    [ { user_id: "abc" }, { user_id: "0" }, { from: "2026-02-30" }, { from: "21/11/2026" }, { action_filter: "x" * 201 }, { "user_id[]" => "1" } ].each do |query|
+    [ { user_id: "abc" }, { user_id: "0" }, { from: "2026-02-30" }, { from: "21/11/2026" }, { "user_id[]" => "1" } ].each do |query|
       body = listing(**query)
       assert_response :bad_request
       assert_equal({ "error" => "invalid_request" }, body, query.inspect)
@@ -245,20 +244,23 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
     log("user.login", at: Time.utc(2026, 11, 21, 20), user: @member)
     log(" user.login ", at: Time.utc(2026, 11, 21, 21), user: @member)
     log("user.login", at: Time.utc(2026, 11, 21, 20), user: @admin)
+    log("\uFEFF", at: Time.utc(2026, 11, 21, 22), user: @admin)
+    log("x" * 201, at: Time.utc(2026, 11, 21, 23), user: @admin)
     warm_names = { "user" => "user_id", "action" => "action_filter", "from" => "from" }
 
     redirected = [
       { user_id: "0#{@member.id}", from: "2026-11-21" },
       { action_filter: " user.login " },
       { action_filter: "user.login", from: "2026-11-21" },
-      { user_id: @admin.id.to_s, action_filter: "", from: " " }
+      { user_id: @admin.id.to_s, action_filter: "", from: " " },
+      { action_filter: "\uFEFF" },
+      { action_filter: "x" * 201 }
     ]
     stays = [
       { user_id: "0#{@member.id}", from: "2026-11-21 12:00:00" },
       { from: "2026-02-30" },
       { user_id: "abc" },
-      { "user_id[]" => @member.id.to_s },
-      { action_filter: "x" * 201 }
+      { "user_id[]" => @member.id.to_s }
     ]
 
     redirected.each do |query|
@@ -276,7 +278,7 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
       assert_response :success, query.inspect
       assert_equal expected, css_select("tbody tr").size, query.inspect
     end
-    assert_equal [ 2, 1, 1 ], [ { user_id: "0#{@member.id}", from: "2026-11-21 12:00:00" }, { action_filter: " user.login " }, { user_id: @admin.id.to_s } ].map { |query| classic_rows(**query) }
+    assert_equal [ 2, 1, 3, 1, 1 ], [ { user_id: "0#{@member.id}", from: "2026-11-21 12:00:00" }, { action_filter: " user.login " }, { user_id: @admin.id.to_s }, { action_filter: "\uFEFF" }, { action_filter: "x" * 201 } ].map { |query| classic_rows(**query) }
   end
 
   test "a page of entries is still sent when an older entry beyond it points at a record type this version does not know" do

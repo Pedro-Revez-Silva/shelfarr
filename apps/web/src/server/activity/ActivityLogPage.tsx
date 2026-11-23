@@ -304,8 +304,7 @@ function Subject({ subject }: { subject: ActivitySubject }): ReactNode {
 
 function facts(details: ActivityDetails): string[] {
   const lines: string[] = [];
-  if (details.app) lines.push("Requested from the Shelfarr app");
-  else if (details.via) lines.push(ORIGINS[details.via]);
+  if (details.via) lines.push(ORIGINS[details.via]);
   if (details.match) lines.push(MATCHES[details.match]);
   if (details.scopes?.length) lines.push(`Scopes: ${details.scopes.join(", ")}`);
   return lines;

@@ -4,7 +4,6 @@ module WebPreview
   class ActivityJson
     MATCH_CHOICES = %w[existing created].freeze
     MATCHED_BOOK_ACTION = "upload.manually_matched"
-    APP_SOURCE = "consumer_app"
 
     def initialize(logs)
       @logs = logs
@@ -63,7 +62,6 @@ module WebPreview
       stored = stored.is_a?(Hash) ? stored : {}
       {
         via: stored["created_via"].presence_in(Request::CREATED_VIA_VALUES),
-        app: (true if stored["external_source"] == APP_SOURCE),
         scopes: scopes(stored["scopes"]),
         match: stored["choice"].presence_in(MATCH_CHOICES)
       }.compact

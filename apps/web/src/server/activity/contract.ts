@@ -3,7 +3,6 @@ import { z } from "zod";
 const identifier = z.string().regex(/^[1-9]\d{0,18}$/);
 const timestamp = z.iso.datetime({ offset: true });
 
-export const MAX_ACTION = 200;
 export const requestOrigins = ["web", "api", "telegram", "hardcover"] as const;
 export const matchChoices = ["existing", "created"] as const;
 
@@ -20,7 +19,6 @@ export type ActivitySubject = z.infer<typeof activitySubjectSchema>;
 
 export const activityDetailsSchema = z.object({
   via: z.enum(requestOrigins).optional(),
-  app: z.literal(true).optional(),
   scopes: z.array(z.string()).optional(),
   match: z.enum(matchChoices).optional(),
 });
@@ -55,8 +53,7 @@ export const activitySearchSchema = z.object({
   user: identifier.optional().catch(undefined),
   action: z
     .string()
-    .max(MAX_ACTION)
-    .refine((value) => value.trim() !== "")
+    .refine((value) => !/^\p{White_Space}*$/u.test(value))
     .optional()
     .catch(undefined),
   from: z

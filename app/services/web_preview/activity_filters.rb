@@ -5,7 +5,6 @@ module WebPreview
     IDENTIFIER = /\A[1-9]\d{0,18}\z/
     PADDED_IDENTIFIER = /\A0*([1-9]\d{0,18})\z/
     DAY = /\A(\d{4})-(\d{2})-(\d{2})\z/
-    MAX_ACTION = 200
     Invalid = Class.new(StandardError)
 
     module_function
@@ -43,7 +42,7 @@ module WebPreview
     end
 
     def action(value)
-      value if value.length <= MAX_ACTION && value.valid_encoding?
+      value
     end
 
     def day(value)

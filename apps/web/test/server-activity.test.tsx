@@ -185,11 +185,19 @@ describe("Activity log in the Rails preview", () => {
     expect(reads(server).at(-1)).toBe("/sub/preview/api/v1/admin/activity?action_filter=+user.login+");
   });
 
-  test("a request from the Shelfarr app is labelled as such", async () => {
-    renderApp({ server: activityServer(() => ({ body: log({ entries: [entry("3", { action: "request.created", details: { via: "api", app: true } })] }) })), url: "/sub/preview/server/system/activity" });
+  test("every stored action can be chosen and filtered, however unusual, and only whitespace counts as no action", async () => {
+    const long = "x".repeat(201);
+    const server = activityServer(() => ({ body: log({ actions: ["\uFEFF", long, "user.login"] }) }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/system/activity?action=%EF%BB%BF" });
     await screen.findByRole("region", { name: "Activity, newest first" });
-    expect(within(rows()[0]!).getByText("Requested from the Shelfarr app")).toBeTruthy();
-    expect(screen.queryByText("Requested through the API")).toBeNull();
+    expect(reads(server)).toEqual(["/sub/preview/api/v1/admin/activity?action_filter=%EF%BB%BF"]);
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Action"), long);
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ action: long }));
+    expect(reads(server).at(-1)).toBe(`/sub/preview/api/v1/admin/activity?action_filter=${long}`);
+    await act(async () => router.navigate({ to: "/server/system/activity", search: { action: "\u00a0\u2003 " } }));
+    await waitFor(() => expect(reads(server).at(-1)).toBe("/sub/preview/api/v1/admin/activity"));
   });
 
   test("an empty log and an empty filtered result are told apart", async () => {
