@@ -587,4 +587,39 @@ describe("Setup in the Rails preview", () => {
     expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(false);
     expect(server.called("PUT", /prowlarr$/).length).toBe(1);
   });
+
+  test("when the read after a save fails, the old form stays locked and offers Try again", async () => {
+    const heldSave = deferred<{ body: unknown }>();
+    let saved = false;
+    let rereadWorks = false;
+    const server = setupServer({ qbittorrent: qbittorrent() })
+      .on("GET", /\/admin\/setup\?step=prowlarr/, () =>
+        !saved ? { body: prowlarr() } : rereadWorks ? { body: state("prowlarr", [card("prowlarr", [field("url", { label: "Prowlarr address", input: "url", value: "http://new:9696" })])]) } : { status: 503, body: {} },
+      )
+      .on("PUT", /\/admin\/setup\/steps\/prowlarr$/, () => heldSave.promise);
+    const { router } = renderApp({ server, url: "/sub/preview/server/setup?step=prowlarr" });
+    const address = await screen.findByLabelText("Prowlarr address");
+    await userEvent.clear(address);
+    await userEvent.type(address, "http://new:9696");
+    await userEvent.click(screen.getByRole("button", { name: "Test and continue" }));
+    await waitFor(() => expect(server.called("PUT", /prowlarr$/).length).toBe(1));
+    void router.navigate({ to: "/server/setup", search: { step: "qbittorrent" } });
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Leave and discard" }));
+    await screen.findByRole("heading", { name: "qBittorrent", level: 2 });
+    await router.navigate({ to: "/server/setup", search: { step: "prowlarr" } });
+    await screen.findByRole("heading", { name: "Prowlarr", level: 2 });
+
+    saved = true;
+    heldSave.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: qbittorrent() } });
+    const problem = await screen.findByText(/latest state of this step could not be loaded/, {}, { timeout: 8000 });
+    expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Skip setup" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(server.called("PUT", /prowlarr$/).length).toBe(1);
+
+    rereadWorks = true;
+    await userEvent.click(within(problem.closest("p")!).getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect((screen.getByLabelText("Prowlarr address") as HTMLInputElement).value).toBe("http://new:9696"));
+    expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(false);
+    expect(screen.queryByText(/latest state of this step could not be loaded/)).toBeNull();
+  }, 15_000);
 });

@@ -57,16 +57,19 @@ function SetupView() {
     ) : !admin || (setup.isError && failureKind(setup.error) === "not_found") ? (
       <AdministratorsOnly />
     ) : setup.data ? (
-      <SetupStep
-        key={setup.data.step}
-        state={setup.data}
-        revision={revision}
-        moveFocus={shown.current}
-        rereading={setup.isFetching && setup.isStale}
-        said={said?.step === setup.data.step && said.revision === revision ? said : null}
-        onSaid={setSaid}
-        onReplaced={() => setRevision((current) => current + 1)}
-      />
+      <>
+        {setup.isStale && setup.isRefetchError && !setup.isFetching ? <StaleStep onRetry={() => void setup.refetch()} /> : null}
+        <SetupStep
+          key={setup.data.step}
+          state={setup.data}
+          revision={revision}
+          moveFocus={shown.current}
+          rereading={setup.isStale && (setup.isFetching || setup.isRefetchError)}
+          said={said?.step === setup.data.step && said.revision === revision ? said : null}
+          onSaid={setSaid}
+          onReplaced={() => setRevision((current) => current + 1)}
+        />
+      </>
     ) : setup.isError ? (
       <ErrorPanel error={setup.error} onRetry={() => void setup.refetch()} />
     ) : (
@@ -84,6 +87,17 @@ function SetupView() {
     >
       {body}
     </ServerShell>
+  );
+}
+
+function StaleStep({ onRetry }: { onRetry: () => void }) {
+  return (
+    <p className="refresh-problem" role="alert">
+      <span aria-hidden="true">⚠ </span>The latest state of this step could not be loaded, so it cannot be changed until it is.{" "}
+      <button type="button" className="button button--subtle" onClick={onRetry}>
+        Try again
+      </button>
+    </p>
   );
 }
 
