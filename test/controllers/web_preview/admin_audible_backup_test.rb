@@ -304,6 +304,39 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "Test never shows or stores a token that happens to look like a version or a health word" do
+    file = File.join(@audiobook_output_path, "bridge.token")
+    File.write(file, "healthy\n")
+    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
+      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
+      sign_in_as(@admin)
+      VCR.turned_off do
+        stub_request(:get, "#{connection.url}/health").to_return do
+          File.write(file, "9.8.7\n")
+          { status: 200, body: { status: "healthy" }.to_json }
+        end
+        stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer 9.8.7" }).to_return do
+          File.write(file, "unrelated-token-8811dd\n")
+          { status: 200, body: { companionVersion: "9.8.7", libationVersion: "14.2.0" }.to_json }
+        end
+        stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
+        write :post, web_preview_api_admin_audible_test_path
+        assert_equal "Connected to the Libation companion (14.2.0).", response.parsed_body.dig("outcome", "message")
+        assert_equal [ nil, "14.2.0" ], [ connection.reload.companion_version, connection.provider_version ]
+      end
+    end
+  end
+
+  test "an existing-library batch cannot be confirmed while a sign-in is waiting, so the two never block each other" do
+    connection = create_connection(last_synced_at: 1.hour.ago, auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
+    connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Old Purchase", ownership_type: "purchased")
+    sign_in_as(@admin)
+    write :post, web_preview_api_admin_audible_existing_backup_path, { confirm: true }
+    assert_equal({ "tone" => "error", "message" => "Finish the current Audible sign-in before backing up the existing library" }, response.parsed_body.fetch("outcome"))
+    assert_equal 0, OwnedMediaImport.count
+    assert_not_requested :any, /libation\.test/
+  end
+
   test "Test reports versions and health, records them, and keeps the token out of a failure" do
     connection = create_connection
     sign_in_as(@admin)

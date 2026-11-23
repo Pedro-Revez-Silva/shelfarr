@@ -192,16 +192,20 @@ class OwnedLibraryConnectionWorkflow
   def test_connection
     return ConnectionTest.new(status: :busy, companion_version: nil, libation_version: nil, health_status: nil, error: nil) if active_operation?
 
-    health = connection.client.health
-    version = connection.client.version
-    companion_version = reportable_version(version.companion_version)
-    libation_version = reportable_version(version.libation_version)
+    client = connection.client
+    secrets = client.secret_values
+    health = client.health
+    secrets |= client.secret_values
+    version = client.version
+    secrets |= client.secret_values
+    companion_version = reportable_version(version.companion_version, secrets)
+    libation_version = reportable_version(version.libation_version, secrets)
     connection.update!(companion_version: companion_version, provider_version: libation_version)
     ConnectionTest.new(
       status: :connected,
       companion_version: companion_version,
       libation_version: libation_version,
-      health_status: health.is_a?(Hash) ? HEALTH_WORDS.find { |word| word == health["status"] } : nil,
+      health_status: reportable_health(health.is_a?(Hash) ? health["status"] : nil, secrets),
       error: nil
     )
   rescue LibationCompanionClient::Error => e
@@ -568,8 +572,12 @@ class OwnedLibraryConnectionWorkflow
     [ connection.url, connection.bridge_token ]
   end
 
-  def reportable_version(value)
-    value if value.is_a?(String) && value.match?(VERSION_FORMAT)
+  def reportable_version(value, secrets)
+    value if value.is_a?(String) && value.match?(VERSION_FORMAT) && secrets.none? { |secret| value.include?(secret) }
+  end
+
+  def reportable_health(value, secrets)
+    HEALTH_WORDS.find { |word| word == value && secrets.exclude?(word) }
   end
 
   def create_queued_import(item, poll_token:, separate_edition:, request_id:)
