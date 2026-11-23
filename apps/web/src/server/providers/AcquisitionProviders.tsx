@@ -39,6 +39,11 @@ function focusStillUnclaimed(target: HTMLElement): boolean {
   return active === null || active === document.body || active === target || active === document.getElementById(CARD_ID);
 }
 
+function focusWithinCardOrUnclaimed(): boolean {
+  const active = document.activeElement;
+  return active === null || active === document.body || Boolean(document.getElementById(CARD_ID)?.contains(active));
+}
+
 function bringIntoView(id: string) {
   const target = document.getElementById(id);
   if (!target || !focusStillUnclaimed(target)) return;
@@ -289,7 +294,7 @@ function ProviderForm({
   const headingId = labelledBy ?? `${scope}-heading`;
 
   useEffect(() => {
-    formRef.current?.querySelector<HTMLElement>("input, select")?.focus();
+    if (focusWithinCardOrUnclaimed()) formRef.current?.querySelector<HTMLElement>("input, select")?.focus();
   }, []);
 
   const focusField = (key: string) => {

@@ -387,6 +387,20 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await screen.findByRole("heading", { name: "Local provider", level: 5 });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(document.activeElement).toBe(system);
+
+    for (const hash of ["#acquisition_providers-new", "#acquisition-provider-1-edit"]) {
+      cleanup();
+      let arrive = () => {};
+      const delayed = adminServer().on("GET", /\/api\/v1\/admin\/acquisition_providers$/, () => new Promise((resolve) => (arrive = () => resolve({ body: current }))));
+      renderApp({ server: delayed, url: `/sub/preview/server/sources${hash}` });
+      await screen.findByRole("heading", { name: "Custom providers", level: 3 });
+      const elsewhere = within(screen.getByRole("navigation", { name: "Server" })).getByRole("link", { name: "System" });
+      elsewhere.focus();
+      arrive();
+      expect(await within(card()).findByRole("form")).toBeTruthy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(document.activeElement).toBe(elsewhere);
+    }
   });
 
   test("leaving with an unsaved provider edit asks first", async () => {
