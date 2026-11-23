@@ -3,6 +3,7 @@
 module WebPreview
   module ActivityFilters
     IDENTIFIER = /\A[1-9]\d{0,18}\z/
+    PADDED_IDENTIFIER = /\A0*([1-9]\d{0,18})\z/
     DAY = /\A(\d{4})-(\d{2})-(\d{2})\z/
     MAX_ACTION = 200
     Invalid = Class.new(StandardError)
@@ -18,11 +19,13 @@ module WebPreview
     end
 
     def warm_address(params)
-      {
-        user: lenient(params[:user_id], :person),
-        action: lenient(params[:action_filter], :action),
-        from: lenient(params[:from], :day)
-      }.compact
+      carried = { user: [ params[:user_id], :listed_person ], action: [ params[:action_filter], :action ], from: [ params[:from], :day ] }
+      carried.each_with_object({}) do |(name, (raw, check)), address|
+        next if raw.blank?
+        return nil unless raw.is_a?(String) && (value = public_send(check, raw))
+
+        address[name] = value
+      end
     end
 
     def strict(raw, check)
@@ -31,12 +34,12 @@ module WebPreview
       (raw.is_a?(String) && public_send(check, raw)) || raise(Invalid)
     end
 
-    def lenient(raw, check)
-      public_send(check, raw) if raw.is_a?(String) && raw.present?
-    end
-
     def person(value)
       value if value.match?(IDENTIFIER)
+    end
+
+    def listed_person(value)
+      PADDED_IDENTIFIER.match(value)&.captures&.first
     end
 
     def action(value)

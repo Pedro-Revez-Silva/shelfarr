@@ -27,6 +27,7 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
   end
 
   def classic_rows(**query)
+    sign_in_as(@admin)
     with_env(WebPreview::Access::VARIABLE => nil) do
       get admin_activity_logs_path(query)
     end
@@ -43,7 +44,14 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
       details: { created_via: "api", external_source: "https://private.example/hook?token=s3cret", password: "hunter2" })
     edited = log("admin.user_updated", at: 4.minutes.ago, user: @admin, trackable: @gone, details: { changes: { role: "admin" } })
     removed = log("book.deleted", at: 3.minutes.ago, user: @admin, trackable: catalogue)
-    shelved = log("upload.manually_matched", at: 2.minutes.ago, user: @admin, trackable: stored, details: { book_id: stored.id, choice: "existing" })
+    upload = Upload.create!(user: @member, original_filename: "unrecognized.epub", file_path: "/tmp/manual-upload.epub", status: :failed,
+      error_message: "Automatic match failed", parsed_title: "Unrecognized")
+    matched = Book.create!(title: "Kindred", book_type: :ebook)
+    outcome = travel_to(2.minutes.ago) { UploadAdministration.new(upload, user: @admin).match_and_retry(book_id: matched.id.to_s) }
+    assert_equal :done, outcome.kind, outcome.message
+    matched.update_columns(file_path: "/library/kindred.epub")
+    shelved = ActivityLog.for_action("upload.manually_matched").sole
+    assert_equal [ upload, { "book_id" => matched.id, "choice" => "existing" } ], [ shelved.trackable, shelved.details ]
     system = log("request.completed", at: 1.minute.ago)
 
     body = listing
@@ -58,7 +66,7 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
     assert_equal [
       { "id" => system.id.to_s, "at" => system.created_at.iso8601(3), "action" => "request.completed", "actor" => nil, "subject" => nil, "details" => {} },
       { "id" => shelved.id.to_s, "at" => shelved.created_at.iso8601(3), "action" => "upload.manually_matched", "actor" => admin,
-        "subject" => { "kind" => "book", "id" => stored.id.to_s, "title" => "The Dispossessed", "in_library" => true }, "details" => { "match" => "existing" } },
+        "subject" => { "kind" => "book", "id" => matched.id.to_s, "title" => "Kindred", "in_library" => true }, "details" => { "match" => "existing" } },
       { "id" => removed.id.to_s, "at" => removed.created_at.iso8601(3), "action" => "book.deleted", "actor" => admin,
         "subject" => { "kind" => "book", "id" => catalogue.id.to_s, "title" => "Not Yet Here", "in_library" => false }, "details" => {} },
       { "id" => edited.id.to_s, "at" => edited.created_at.iso8601(3), "action" => "admin.user_updated", "actor" => admin,
@@ -71,6 +79,28 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
     [ "203.0.113.77", "SecretController", "private.example", "s3cret", "hunter2", "api_token_id", "book_id", "made:up" ].each do |hidden|
       assert_not_includes response.body, hidden
     end
+  end
+
+  test "a request from the Shelfarr app says so, without passing on any other source a caller supplied" do
+    app = log("request.created", at: 2.minutes.ago, user: @member, details: { created_via: "api", external_source: "consumer_app" })
+    other = log("request.created", at: 1.minute.ago, user: @member, details: { created_via: "api", external_source: "consumer_app " })
+
+    details = listing.fetch("entries").to_h { |entry| [ entry.fetch("id"), entry.fetch("details") ] }
+
+    assert_equal({ app.id.to_s => { "via" => "api", "app" => true }, other.id.to_s => { "via" => "api" } }, details)
+  end
+
+  test "a matched book that was later removed leaves the entry without a subject" do
+    gone_book = Book.create!(title: "Removed Later", book_type: :ebook)
+    entry = log("upload.manually_matched", at: 1.minute.ago, user: @admin, details: { book_id: gone_book.id, choice: "created" })
+    gone_book.delete
+    log("admin.user_updated", at: 2.minutes.ago, user: @admin, details: { book_id: Book.create!(title: "Not A Match", book_type: :ebook).id })
+
+    entries = listing.fetch("entries").index_by { |item| item.fetch("id") }
+
+    assert_equal({ "match" => "created" }, entries.fetch(entry.id.to_s).fetch("details"))
+    assert_equal [ nil, nil ], entries.values.map { |item| item.fetch("subject") }
+    assert_not_includes response.body, "Not A Match"
   end
 
   test "the filter lists name everyone who can appear, removed people included, and every action on record" do
@@ -120,7 +150,8 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
       assert_equal count, warm.size, query.inspect
       assert_equal count, classic_rows(**query), query.inspect
     end
-    assert_equal [ Time.utc(2026, 11, 21).iso8601(3) ], listing(user_id: @member.id.to_s, action_filter: "user.login", from: "2026-11-21").fetch("entries").map { |entry| entry.fetch("at") }
+    boundary = listing(user_id: @member.id.to_s, action_filter: "user.login", from: "2026-11-21").fetch("entries").map { |entry| Time.iso8601(entry.fetch("at")) }
+    assert_equal [ Time.utc(2026, 11, 21) ], boundary
   end
 
   test "a malformed filter is refused instead of being read as another filter" do
@@ -193,20 +224,69 @@ class WebPreview::AdminActivityTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "a classic bookmark sends a listed administrator to the warm page with the filters it can carry" do
+  test "a classic bookmark sends a listed administrator to the warm page with the filters it carries" do
     sign_in_as(@admin)
     with_preview_users(@admin) do
       get admin_activity_logs_path(user_id: @member.id, action_filter: "user.login", from: "2026-11-21")
       assert_redirected_to "http://www.example.com/preview/server/system/activity?action=user.login&from=2026-11-21&user=#{@member.id}"
       get admin_activity_logs_path
       assert_redirected_to "http://www.example.com/preview/server/system/activity"
-      get admin_activity_logs_path(action_filter: "a&b=c d")
-      assert_redirected_to "http://www.example.com/preview/server/system/activity?action=a%26b%3Dc+d"
-      get admin_activity_logs_path(user_id: "abc", action_filter: "", from: "2026-02-30")
+      get admin_activity_logs_path(user_id: "", action_filter: " ", from: "", commit: "Filter")
       assert_redirected_to "http://www.example.com/preview/server/system/activity"
-      get admin_activity_logs_path(user_id: [ "1" ], action_filter: "request.created")
-      assert_redirected_to "http://www.example.com/preview/server/system/activity?action=request.created"
+      get admin_activity_logs_path(action_filter: " a&b=c d ")
+      assert_redirected_to "http://www.example.com/preview/server/system/activity?action=+a%26b%3Dc+d+"
+      get admin_activity_logs_path(user_id: "000#{@member.id}")
+      assert_redirected_to "http://www.example.com/preview/server/system/activity?user=#{@member.id}"
     end
+  end
+
+  test "every redirected classic bookmark opens the same entries, and one the warm page cannot express stays classic" do
+    log("user.login", at: Time.utc(2026, 11, 21, 8), user: @member)
+    log("user.login", at: Time.utc(2026, 11, 21, 20), user: @member)
+    log(" user.login ", at: Time.utc(2026, 11, 21, 21), user: @member)
+    log("user.login", at: Time.utc(2026, 11, 21, 20), user: @admin)
+    warm_names = { "user" => "user_id", "action" => "action_filter", "from" => "from" }
+
+    redirected = [
+      { user_id: "0#{@member.id}", from: "2026-11-21" },
+      { action_filter: " user.login " },
+      { action_filter: "user.login", from: "2026-11-21" },
+      { user_id: @admin.id.to_s, action_filter: "", from: " " }
+    ]
+    stays = [
+      { user_id: "0#{@member.id}", from: "2026-11-21 12:00:00" },
+      { from: "2026-02-30" },
+      { user_id: "abc" },
+      { "user_id[]" => @member.id.to_s },
+      { action_filter: "x" * 201 }
+    ]
+
+    redirected.each do |query|
+      expected = classic_rows(**query)
+      sign_in_as(@admin)
+      with_preview_users(@admin) { get admin_activity_logs_path(query) }
+      assert_response :redirect, query.inspect
+      warm = Rack::Utils.parse_query(URI(response.location).query.to_s).transform_keys(warm_names)
+      assert_equal expected, listing(**warm.symbolize_keys).fetch("entries").size, query.inspect
+    end
+    stays.each do |query|
+      expected = classic_rows(**query)
+      sign_in_as(@admin)
+      with_preview_users(@admin) { get admin_activity_logs_path(query) }
+      assert_response :success, query.inspect
+      assert_equal expected, css_select("tbody tr").size, query.inspect
+    end
+    assert_equal [ 2, 1, 1 ], [ { user_id: "0#{@member.id}", from: "2026-11-21 12:00:00" }, { action_filter: " user.login " }, { user_id: @admin.id.to_s } ].map { |query| classic_rows(**query) }
+  end
+
+  test "a page of entries is still sent when an older entry beyond it points at a record type this version does not know" do
+    ActivityLog.insert_all!(Array.new(100) { |index| { action: "user.login", user_id: @member.id, details: {}, created_at: 1.hour.ago + index.seconds, updated_at: 1.hour.ago } })
+    ActivityLog.insert_all!([ { action: "legacy.event", trackable_type: "RemovedTrackableKind", trackable_id: 5, details: {}, created_at: 1.day.ago, updated_at: 1.day.ago } ])
+
+    body = listing
+
+    assert_response :success
+    assert_equal [ 100, true ], [ body.fetch("entries").size, body.fetch("more") ]
   end
 
   test "the classic page stays for unlisted administrators, with the preview off or unbuilt, and still turns members away" do

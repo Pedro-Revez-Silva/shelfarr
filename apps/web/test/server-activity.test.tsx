@@ -116,7 +116,7 @@ describe("Activity log in the Rails preview", () => {
 
   test("filters the server could not use are left out of the address instead of being sent", async () => {
     const server = activityServer();
-    renderApp({ server, url: "/sub/preview/server/system/activity?user=abc&from=2026-02-30&action=" });
+    renderApp({ server, url: "/sub/preview/server/system/activity?user=abc&from=2026-02-30&action=%20%20" });
     await screen.findByRole("region", { name: "Activity, newest first" });
     expect(reads(server)).toEqual(["/sub/preview/api/v1/admin/activity"]);
     expect(screen.queryByRole("link", { name: "Clear filters" })).toBeNull();
@@ -141,6 +141,55 @@ describe("Activity log in the Rails preview", () => {
     await act(async () => later.resolve({ body: log({ entries: [ENTRIES[1]!] }) }));
     expect(await screen.findByText("1 entry")).toBeTruthy();
     expect(rows()).toHaveLength(1);
+  });
+
+  test("focus stays on Filter after filtering, clearing or showing everything, and the form follows the address back", async () => {
+    const server = activityServer((request) => ({ body: log(request.path.includes("from=") ? { entries: [] } : {}) }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/system/activity" });
+    await screen.findByRole("region", { name: "Activity, newest first" });
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Person"), "5");
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ user: "5" }));
+    await screen.findByText("6 entries");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+
+    await user.click(screen.getByRole("link", { name: "Clear filters" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+    expect((screen.getByLabelText("Person") as HTMLSelectElement).value).toBe("");
+
+    await act(async () => router.history.back());
+    await waitFor(() => expect((screen.getByLabelText("Person") as HTMLSelectElement).value).toBe("5"));
+
+    await user.type(screen.getByLabelText("From"), "2026-11-21");
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.click(await screen.findByRole("link", { name: "Show all activity" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Filter" }));
+  });
+
+  test("an action with surrounding spaces is filtered exactly as stored, from the address and from the list", async () => {
+    const server = activityServer(() => ({ body: log({ actions: [" user.login ", "user.login"] }) }));
+    const { router } = renderApp({ server, url: "/sub/preview/server/system/activity?action=%20user.login%20" });
+    await screen.findByRole("region", { name: "Activity, newest first" });
+    expect(reads(server)).toEqual(["/sub/preview/api/v1/admin/activity?action_filter=+user.login+"]);
+    expect((screen.getByLabelText("Action") as HTMLSelectElement).value).toBe(" user.login ");
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("Action"), "user.login");
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ action: "user.login" }));
+    await user.selectOptions(screen.getByLabelText("Action"), " user.login ");
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ action: " user.login " }));
+    expect(reads(server).at(-1)).toBe("/sub/preview/api/v1/admin/activity?action_filter=+user.login+");
+  });
+
+  test("a request from the Shelfarr app is labelled as such", async () => {
+    renderApp({ server: activityServer(() => ({ body: log({ entries: [entry("3", { action: "request.created", details: { via: "api", app: true } })] }) })), url: "/sub/preview/server/system/activity" });
+    await screen.findByRole("region", { name: "Activity, newest first" });
+    expect(within(rows()[0]!).getByText("Requested from the Shelfarr app")).toBeTruthy();
+    expect(screen.queryByText("Requested through the API")).toBeNull();
   });
 
   test("an empty log and an empty filtered result are told apart", async () => {

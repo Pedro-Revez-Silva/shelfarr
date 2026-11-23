@@ -16,6 +16,7 @@
 .activity-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 13rem), 1fr));
+  align-items: start;
   gap: 16px;
 }
 .activity-fields input[type="date"] {

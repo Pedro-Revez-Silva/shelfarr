@@ -3,13 +3,16 @@
 module WebPreview
   class ActivityJson
     MATCH_CHOICES = %w[existing created].freeze
+    MATCHED_BOOK_ACTION = "upload.manually_matched"
+    APP_SOURCE = "consumer_app"
 
     def initialize(logs)
       @logs = logs
       requests = logs.map(&:trackable).grep(Request)
       ActiveRecord::Associations::Preloader.new(records: requests, associations: :book).call
-      books = logs.map(&:trackable).grep(Book)
-      @library_books = Book.acquired.where(id: books.map(&:id), book_type: Consumer::LibraryScope.types(nil, graphic: true)).pluck(:id).to_set
+      @matched_books = Book.where(id: logs.filter_map { |log| matched_book_id(log) }).index_by(&:id)
+      book_ids = logs.map(&:trackable).grep(Book).map(&:id) + @matched_books.keys
+      @library_books = Book.acquired.where(id: book_ids, book_type: Consumer::LibraryScope.types(nil, graphic: true)).pluck(:id).to_set
     end
 
     def entries
@@ -28,9 +31,15 @@ module WebPreview
         at: log.created_at.iso8601(3),
         action: log.action,
         actor: log.user && self.class.person(log.user),
-        subject: subject(log.trackable),
+        subject: subject(log.trackable) || book(@matched_books[matched_book_id(log)]),
         details: details(log.details)
       }
+    end
+
+    def matched_book_id(log)
+      return nil unless log.action == MATCHED_BOOK_ACTION && log.details.is_a?(Hash)
+
+      log.details["book_id"].then { |id| id if id.is_a?(Integer) && id.positive? }
     end
 
     def subject(trackable)
@@ -40,16 +49,21 @@ module WebPreview
       when User
         { kind: "person", **self.class.person(trackable) }
       when Book
-        { kind: "book", id: trackable.id.to_s, title: trackable.title.to_s, in_library: @library_books.include?(trackable.id) }
+        book(trackable)
       else
         { kind: "other", title: trackable.title.to_s } if trackable.respond_to?(:title)
       end
+    end
+
+    def book(record)
+      { kind: "book", id: record.id.to_s, title: record.title.to_s, in_library: @library_books.include?(record.id) } if record
     end
 
     def details(stored)
       stored = stored.is_a?(Hash) ? stored : {}
       {
         via: stored["created_via"].presence_in(Request::CREATED_VIA_VALUES),
+        app: (true if stored["external_source"] == APP_SOURCE),
         scopes: scopes(stored["scopes"]),
         match: stored["choice"].presence_in(MATCH_CHOICES)
       }.compact

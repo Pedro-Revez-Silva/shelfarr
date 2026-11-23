@@ -17,8 +17,8 @@ module Admin
     def open_warm_page
       return unless request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
 
-      query = WebPreview::ActivityFilters.warm_address(params).to_query
-      redirect_to [ web_preview_server_activity_path, query.presence ].compact.join("?")
+      address = WebPreview::ActivityFilters.warm_address(params)
+      redirect_to [ web_preview_server_activity_path, address.to_query.presence ].compact.join("?") if address
     end
   end
 end

@@ -1,5 +1,5 @@
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
-import { useId, useState, type FormEvent, type ReactNode } from "react";
+import { useId, useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { failureKind } from "../../api/errors";
 import { Time } from "../../components/requestText";
 import { EmptyState, ErrorPanel, Loading } from "../../components/States";
@@ -101,9 +101,11 @@ function ActivityView() {
 }
 
 function ActivityBody({ log, filters, current, failure, onRetry }: { log: ActivityLog; filters: ActivityFilters; current: boolean; failure: unknown; onRetry: () => void }) {
+  const submit = useRef<HTMLButtonElement>(null);
+  const keepFocus = () => submit.current?.focus();
   return (
     <>
-      <FilterForm key={`${filters.user ?? ""}|${filters.action ?? ""}|${filters.from ?? ""}`} log={log} filters={filters} />
+      <FilterForm log={log} filters={filters} submit={submit} onClear={keepFocus} />
       <p className="result-count activity-count" role="status">
         {failure ? "The activity log could not be loaded." : current ? countText(log) : ""}
       </p>
@@ -112,7 +114,7 @@ function ActivityBody({ log, filters, current, failure, onRetry }: { log: Activi
       ) : !current ? (
         <Loading label="Loading the activity log…" />
       ) : log.entries.length === 0 ? (
-        <NoEntries filtered={filtering(filters)} />
+        <NoEntries filtered={filtering(filters)} onShowAll={keepFocus} />
       ) : (
         <EntryTable entries={log.entries} />
       )}
@@ -126,7 +128,7 @@ function countText(log: ActivityLog): string {
   return log.entries.length === 1 ? "1 entry" : `${log.entries.length} entries`;
 }
 
-function NoEntries({ filtered }: { filtered: boolean }) {
+function NoEntries({ filtered, onShowAll }: { filtered: boolean; onShowAll: () => void }) {
   if (!filtered) {
     return (
       <EmptyState title="No activity yet">
@@ -137,7 +139,9 @@ function NoEntries({ filtered }: { filtered: boolean }) {
   return (
     <EmptyState title="No activity matches these filters">
       <p>
-        <Link to="/server/system/activity">Show all activity</Link>
+        <Link to="/server/system/activity" onClick={onShowAll}>
+          Show all activity
+        </Link>
       </p>
     </EmptyState>
   );
@@ -147,12 +151,23 @@ function personLabel(person: ActivityPerson): string {
   return person.removed ? `${person.name} (removed)` : person.name;
 }
 
-function FilterForm({ log, filters }: { log: ActivityLog; filters: ActivityFilters }) {
+function filterKey(filters: ActivityFilters): string {
+  return JSON.stringify([filters.user ?? "", filters.action ?? "", filters.from ?? ""]);
+}
+
+function FilterForm({ log, filters, submit: submitButton, onClear }: { log: ActivityLog; filters: ActivityFilters; submit: RefObject<HTMLButtonElement | null>; onClear: () => void }) {
   const navigate = useNavigate();
   const id = useId();
+  const [applied, setApplied] = useState(filterKey(filters));
   const [user, setUser] = useState(filters.user ?? "");
   const [action, setAction] = useState(filters.action ?? "");
   const [from, setFrom] = useState(filters.from ?? "");
+  if (applied !== filterKey(filters)) {
+    setApplied(filterKey(filters));
+    setUser(filters.user ?? "");
+    setAction(filters.action ?? "");
+    setFrom(filters.from ?? "");
+  }
   const knownUser = !filters.user || log.people.some((person) => person.id === filters.user);
   const actions = filters.action && !log.actions.includes(filters.action) ? [...log.actions, filters.action] : log.actions;
 
@@ -204,11 +219,11 @@ function FilterForm({ log, filters }: { log: ActivityLog; filters: ActivityFilte
           </div>
         </div>
         <div className="settings-card-actions">
-          <button type="submit" className="button button--primary">
+          <button ref={submitButton} type="submit" className="button button--primary">
             Filter
           </button>
           {filtering(filters) ? (
-            <Link to="/server/system/activity" className="button button--subtle" activeOptions={{ exact: true, includeSearch: true }}>
+            <Link to="/server/system/activity" className="button button--subtle" activeOptions={{ exact: true, includeSearch: true }} onClick={onClear}>
               Clear filters
             </Link>
           ) : null}
@@ -289,7 +304,8 @@ function Subject({ subject }: { subject: ActivitySubject }): ReactNode {
 
 function facts(details: ActivityDetails): string[] {
   const lines: string[] = [];
-  if (details.via) lines.push(ORIGINS[details.via]);
+  if (details.app) lines.push("Requested from the Shelfarr app");
+  else if (details.via) lines.push(ORIGINS[details.via]);
   if (details.match) lines.push(MATCHES[details.match]);
   if (details.scopes?.length) lines.push(`Scopes: ${details.scopes.join(", ")}`);
   return lines;

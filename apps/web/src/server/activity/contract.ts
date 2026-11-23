@@ -20,6 +20,7 @@ export type ActivitySubject = z.infer<typeof activitySubjectSchema>;
 
 export const activityDetailsSchema = z.object({
   via: z.enum(requestOrigins).optional(),
+  app: z.literal(true).optional(),
   scopes: z.array(z.string()).optional(),
   match: z.enum(matchChoices).optional(),
 });
@@ -52,7 +53,12 @@ function isCalendarDay(value: string): boolean {
 
 export const activitySearchSchema = z.object({
   user: identifier.optional().catch(undefined),
-  action: z.string().trim().min(1).max(MAX_ACTION).optional().catch(undefined),
+  action: z
+    .string()
+    .max(MAX_ACTION)
+    .refine((value) => value.trim() !== "")
+    .optional()
+    .catch(undefined),
   from: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
