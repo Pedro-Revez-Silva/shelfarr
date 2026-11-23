@@ -88,7 +88,6 @@ class OwnedLibraryBacklogBackup
       if connection.last_synced_at.blank?
         raise ConnectionUnavailable, "Sync the Audible library before backing up its backlog"
       end
-      raise ConnectionUnavailable, "Finish the current Audible sign-in before backing up the existing library" if connection.auth_active?
 
       now = Time.current
       rows = []

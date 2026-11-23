@@ -304,37 +304,21 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "Test never shows or stores a token that happens to look like a version or a health word" do
-    file = File.join(@audiobook_output_path, "bridge.token")
-    File.write(file, "healthy\n")
-    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
-      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
-      sign_in_as(@admin)
-      VCR.turned_off do
-        stub_request(:get, "#{connection.url}/health").to_return do
-          File.write(file, "9.8.7\n")
-          { status: 200, body: { status: "healthy" }.to_json }
-        end
-        stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer 9.8.7" }).to_return do
-          File.write(file, "unrelated-token-8811dd\n")
-          { status: 200, body: { companionVersion: "9.8.7", libationVersion: "14.2.0" }.to_json }
-        end
-        stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
-        write :post, web_preview_api_admin_audible_test_path
-        assert_equal "Connected to the Libation companion (14.2.0).", response.parsed_body.dig("outcome", "message")
-        assert_equal [ nil, "14.2.0" ], [ connection.reload.companion_version, connection.provider_version ]
-      end
-    end
-  end
-
-  test "an existing-library batch cannot be confirmed while a sign-in is waiting, so the two never block each other" do
-    connection = create_connection(last_synced_at: 1.hour.ago, auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
-    connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Old Purchase", ownership_type: "purchased")
+  test "Test and the state never show a stored token or anything as long as a companion bearer, even when the companion returns it" do
+    connection = create_connection(bridge_token: "9.8.7")
     sign_in_as(@admin)
-    write :post, web_preview_api_admin_audible_existing_backup_path, { confirm: true }
-    assert_equal({ "tone" => "error", "message" => "Finish the current Audible sign-in before backing up the existing library" }, response.parsed_body.fetch("outcome"))
-    assert_equal 0, OwnedMediaImport.count
-    assert_not_requested :any, /libation\.test/
+    VCR.turned_off do
+      stub_request(:get, "#{COMPANION}/health").to_return(status: 200, body: { status: "ok" }.to_json)
+      stub_request(:get, "#{COMPANION}/version").to_return(status: 200, body: { companionVersion: "9.8.7", libationVersion: "1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.16" }.to_json)
+      stub_accounts
+      write :post, web_preview_api_admin_audible_test_path
+      assert_equal "Connected to the Libation companion; status: ok.", response.parsed_body.dig("outcome", "message")
+      assert_equal [ nil, nil ], [ connection.reload.companion_version, connection.provider_version ]
+
+      connection.update_columns(companion_version: "123456.123456.123456.123456-beta.123456", provider_version: "14.2.0")
+      body = state
+      assert_equal [ nil, "14.2.0" ], body.fetch("connection").values_at("companion_version", "provider_version")
+    end
   end
 
   test "Test reports versions and health, records them, and keeps the token out of a failure" do
@@ -555,7 +539,7 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     VCR.turned_off do
       stub_accounts
       body = state
-      assert_equal({ "available" => true, "prompt" => true, "locked" => false, "total" => 0, "remaining" => 0, "processed" => 0, "counts" => [] }, body.fetch("existing_backup"))
+      assert_equal({ "available" => true, "prompt" => true, "total" => 0, "remaining" => 0, "processed" => 0, "counts" => [] }, body.fetch("existing_backup"))
 
       write :post, web_preview_api_admin_audible_existing_backup_path, { confirm: "1" }
       assert_response :bad_request
@@ -675,55 +659,6 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     [ TOKEN, "private-code-8842" ].each { |secret| assert_not_includes response.body, secret }
   end
 
-  def pending_sign_in(connection)
-    connection.update!(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
-    token = WebPreview::AudibleBackupJson.sign_in_token(connection, @admin, "companion-session-7")
-    ->(session_id) { WebPreview::AudibleBackupJson.sign_in_token_matches?(connection, @admin, session_id, token) }
-  end
-
-  def completing_with(client, connection, proof)
-    LibationCompanionClient.stub(:new, client) do
-      OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: @admin).complete_sign_in_once(response_url: LANDING, &proof)
-    end
-  end
-
-  test "overlapping completions of one sign-in reach the companion once, and a failed one ends that sign-in" do
-    connection = create_connection
-    connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Previous", ownership_type: "purchased")
-    proof = pending_sign_in(connection)
-    calls = []
-    overlapping = nil
-    client = Object.new
-    client.define_singleton_method(:complete_auth) do |session_id:, response_url:|
-      calls << [ session_id, response_url ]
-      overlapping ||= OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: @admin).complete_sign_in_once(response_url: response_url, &proof)
-    end
-    assert_equal :connected, completing_with(client, connection, proof).status
-    assert_equal [ :expired, [ [ "companion-session-7", LANDING ] ] ], [ overlapping.status, calls ]
-    assert_nil connection.reload.auth_session_id
-    assert_not connection.owned_library_items.sole.active?
-    assert_equal :expired, completing_with(client, connection, proof).status
-    assert_equal 1, calls.size
-
-    proof = pending_sign_in(connection)
-    offline = Object.new
-    offline.define_singleton_method(:complete_auth) do |**|
-      raise Errno::ECONNREFUSED
-    rescue Errno::ECONNREFUSED
-      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED"
-    end
-    assert_equal :failed, completing_with(offline, connection, proof).status
-    assert_equal "companion-session-7", connection.reload.auth_session_id
-    assert connection.auth_pending?
-
-    rejecting = Object.new
-    rejecting.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ResponseError, "Libation companion returned HTTP 422" }
-    result = completing_with(rejecting, connection, proof)
-    assert_equal :failed, result.status
-    assert_equal [ nil, nil, nil ], connection.reload.auth_state_snapshot.values
-    assert_equal :expired, completing_with(client, connection, proof).status
-  end
-
   test "an address from another marketplace than the pending sign-in is refused before anything is claimed or sent" do
     connection = create_connection
     connection.update!(auth_session_id: "companion-session-7", auth_login_url: "https://www.amazon.co.uk/ap/signin?x=1", auth_expires_at: 10.minutes.from_now)
@@ -736,144 +671,6 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.co.uk/ap/signin", "https://www.audible.co.uk/x")
     assert OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.com.au/ap/signin", "https://www.amazon.com.au/x")
     assert_not OwnedLibraryConnectionWorkflow.same_marketplace?("https://www.amazon.com/ap/signin", "https://www.amazon.com.au/x")
-  end
-
-  test "a completion whose claim was lost while Libation answered leaves the catalogue of what replaced it alone" do
-    connection = create_connection
-    proof = pending_sign_in(connection)
-    replacement = nil
-    test_case = self
-    client = Object.new
-    client.define_singleton_method(:complete_auth) do |**|
-      test_case.travel 4.minutes
-      fresh = OwnedLibraryConnection.find(connection.id)
-      OwnedLibraryConnectionWorkflow.new(fresh, user: nil).clear_stale_auth_state
-      fresh.update!(url: "https://replacement-libation.test", bridge_token: "replacement-token", last_synced_at: Time.current)
-      replacement = fresh.owned_library_items.create!(external_id: "B0NEW00001", title: "Replacement purchase", ownership_type: "purchased")
-    end
-    result = completing_with(client, connection, proof)
-    travel_back
-    assert_equal :expired, result.status
-    assert replacement.reload.active?
-    assert_not_nil connection.reload.last_synced_at
-    assert_equal "https://replacement-libation.test", connection.url
-  end
-
-  test "a completion that outlives its claim on the same companion still retires the previous account's catalogue" do
-    connection = create_connection(last_synced_at: 1.hour.ago)
-    previous = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Previous account purchase", ownership_type: "purchased")
-    proof = pending_sign_in(connection)
-    test_case = self
-    client = Object.new
-    client.define_singleton_method(:complete_auth) do |**|
-      test_case.travel 4.minutes
-      OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: nil).clear_stale_auth_state
-    end
-    result = completing_with(client, connection, proof)
-    travel_back
-    assert_equal :connected, result.status
-    assert_not previous.reload.active?
-    assert_nil connection.reload.last_synced_at
-    assert_equal [ nil, nil, nil ], connection.auth_state_snapshot.values
-  end
-
-  test "while a completion is with Libation, and after a lost reply and a retry, no title of the previous account can be backed up" do
-    connection = create_connection(last_synced_at: 1.hour.ago)
-    previous = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Previous account purchase", ownership_type: "purchased")
-    proof = pending_sign_in(connection)
-    test_case = self
-    during = nil
-    slow = Object.new
-    slow.define_singleton_method(:complete_auth) do |**|
-      test_case.travel 4.minutes
-      fresh = OwnedLibraryConnection.find(connection.id)
-      OwnedLibraryConnectionWorkflow.new(fresh, user: nil).clear_stale_auth_state
-      during = begin
-        OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: test_case.users(:two)).back_up_item(item_id: previous.id, separate_edition: false)
-      rescue ActiveRecord::RecordNotFound => e
-        e
-      end
-      begin
-        raise Net::ReadTimeout
-      rescue Net::ReadTimeout
-        raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Net::ReadTimeout"
-      end
-    end
-    assert_equal :failed, completing_with(slow, connection, proof).status
-    travel_back
-    assert_kind_of ActiveRecord::RecordNotFound, during
-    assert_not previous.reload.active?
-    assert_empty previous.owned_media_imports
-
-    connection.reload.update!(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
-    gone = Object.new
-    gone.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ResponseError, "Libation companion returned HTTP 404" }
-    assert_equal :failed, completing_with(gone, connection, proof).status
-    assert_equal [ nil, nil, nil ], connection.reload.auth_state_snapshot.values
-    assert_not previous.reload.active?
-    assert_raises(ActiveRecord::RecordNotFound) do
-      OwnedLibraryConnectionWorkflow.new(connection, user: @admin).back_up_item(item_id: previous.id, separate_edition: false)
-    end
-  end
-
-  test "a completion waits for a confirmed existing-library batch instead of cancelling it" do
-    connection = create_connection(last_synced_at: 1.hour.ago)
-    title = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Queued purchase", ownership_type: "purchased")
-    waiting = title.owned_media_imports.create!(status: "pending", requested_by: @admin, automatic: true)
-    proof = pending_sign_in(connection)
-    calls = []
-    client = Object.new
-    client.define_singleton_method(:complete_auth) { |**arguments| calls << arguments }
-    assert_equal :backups_waiting, completing_with(client, connection, proof).status
-    assert_empty calls
-    assert connection.reload.auth_pending?
-    assert title.reload.active?
-    assert_equal "pending", waiting.reload.status
-  end
-
-  test "a completion that never reached Libation puts back the catalogue and automation it retired" do
-    connection = create_connection(last_synced_at: 2.hours.ago, scheduled_sync_enabled: true)
-    connection.update!(automatic_backup_enabled: true, automatic_backup_user: @admin)
-    before = connection.reload.attributes.slice(*OwnedLibraryConnectionWorkflow::RETIRED_ATTRIBUTES)
-    title = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Kept purchase", ownership_type: "purchased")
-    proof = pending_sign_in(connection)
-    refused = Object.new
-    refused.define_singleton_method(:complete_auth) do |**|
-      raise Errno::ECONNREFUSED
-    rescue Errno::ECONNREFUSED
-      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED"
-    end
-    assert_equal :failed, completing_with(refused, connection, proof).status
-    assert title.reload.active?
-    assert_nil title.absent_since
-    assert_equal before, connection.reload.attributes.slice(*OwnedLibraryConnectionWorkflow::RETIRED_ATTRIBUTES)
-    assert connection.auth_pending?
-    assert_equal "companion-session-7", connection.auth_session_id
-  end
-
-  test "Test catches the token the version request used even when the file changes right before and after it is read" do
-    file = File.join(@audiobook_output_path, "bridge.token")
-    File.write(file, "first-token-1100aa\n")
-    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
-      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
-      sign_in_as(@admin)
-      original = OutboundUrlGuard.method(:validate!)
-      rotating = lambda do |url, **options|
-        File.write(file, "1.2.3\n") if url.end_with?("/version")
-        original.call(url, **options)
-      end
-      VCR.turned_off do
-        stub_request(:get, "#{connection.url}/health").to_return(status: 200, body: { status: "ok" }.to_json)
-        stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer 1.2.3" }).to_return do
-          File.write(file, "last-token-3300cc\n")
-          { status: 200, body: { companionVersion: "1.2.3", libationVersion: "14.2.0" }.to_json }
-        end
-        stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
-        OutboundUrlGuard.stub(:validate!, rotating) { write :post, web_preview_api_admin_audible_test_path }
-      end
-      assert_equal "Connected to the Libation companion (14.2.0); status: ok.", response.parsed_body.dig("outcome", "message")
-      assert_equal [ nil, "14.2.0" ], [ connection.reload.companion_version, connection.provider_version ]
-    end
   end
 
   test "an address that is not an https Amazon or Audible page is refused before anything is claimed or sent" do

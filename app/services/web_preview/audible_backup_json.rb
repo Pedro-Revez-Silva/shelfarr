@@ -73,6 +73,10 @@ module WebPreview
 
     private
 
+    def shown_version(value)
+      OwnedLibraryConnectionWorkflow.reportable_version(value, companion_secrets)
+    end
+
     def companion_secrets
       @companion_secrets ||= @connection.client.secret_values.select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
     end
@@ -113,8 +117,8 @@ module WebPreview
         enabled: @connection.enabled?,
         allow_private_network: @connection.allow_private_network?,
         timeout_seconds: @connection.timeout_seconds,
-        companion_version: redact(@connection.companion_version.presence),
-        provider_version: redact(@connection.provider_version.presence),
+        companion_version: shown_version(@connection.companion_version),
+        provider_version: shown_version(@connection.provider_version),
         status: problem ? "unavailable" : (@connection.enabled? ? (summary.companion_busy? ? "busy" : "ready") : "needs_setup"),
         problem: problem,
         locked: @connection.persisted? && operation_locked?(summary)
@@ -183,7 +187,6 @@ module WebPreview
       {
         available: summary.backlog_backup_available,
         prompt: summary.backlog_backup_prompt,
-        locked: summary.auth_active?,
         total: summary.backlog_backup_total,
         remaining: summary.backlog_backup_remaining,
         processed: summary.backlog_backup_processed,

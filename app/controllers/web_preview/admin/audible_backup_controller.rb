@@ -78,14 +78,16 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
       return render json: answer(outcome: failure("Paste the full https address the Amazon or Audible tab ends on. Nothing was sent to Libation."))
     end
 
-    result = workflow.complete_sign_in_once(response_url: response_url) do |session_id|
+    if connection.auth_pending? && !OwnedLibraryConnectionWorkflow.same_marketplace?(connection.auth_login_url, response_url)
+      return render json: answer(outcome: failure("That address is from a different Audible marketplace than this sign-in. Paste the address from the tab this sign-in opened. Nothing was sent to Libation."))
+    end
+
+    result = workflow.complete_sign_in(response_url: response_url) do |session_id|
       WebPreview::AudibleBackupJson.sign_in_token_matches?(connection, Current.user, session_id, token)
     end
     outcome = case result.status
     when :expired then failure("This Audible sign-in has expired or was already used. Start again.")
-    when :backups_waiting then failure("Wait for queued or recoverable Audible backups to finish before completing this sign-in: completing it retires the current account's titles. Nothing was sent to Libation.")
-    when :wrong_marketplace then failure("That address is from a different Audible marketplace than this sign-in. Paste the address from the tab this sign-in opened. Nothing was sent to Libation.")
-    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)}#{result.error.is_a?(LibationCompanionClient::ConnectionError) ? ' Try again.' : ' Start the sign-in again.'}")
+    when :failed then failure("Could not complete Audible sign-in: #{presenter.redact(result.error.message)}")
     else success("Audible account connected through Libation.")
     end
     render json: answer(outcome: outcome)

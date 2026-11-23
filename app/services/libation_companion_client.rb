@@ -120,9 +120,9 @@ class LibationCompanionClient
   end
 
   def secret_values
-    [ connection.bridge_token, @bearer_token, (token_from_file if token_file_managed?) ].compact_blank.uniq
+    [ connection.bridge_token, (token_from_file if token_file_managed?) ].compact_blank.uniq
   rescue NotConfiguredError
-    [ connection.bridge_token, @bearer_token ].compact_blank.uniq
+    [ connection.bridge_token ].compact_blank
   end
 
   def health
@@ -491,11 +491,9 @@ class LibationCompanionClient
   end
 
   def bearer_token
-    @bearer_token ||= if token_file_managed?
-      token_from_file
-    else
-      connection.bridge_token.presence || raise(NotConfiguredError, "Libation companion token is not configured")
-    end
+    return token_from_file if token_file_managed?
+
+    connection.bridge_token.presence || raise(NotConfiguredError, "Libation companion token is not configured")
   end
 
   def token_from_file

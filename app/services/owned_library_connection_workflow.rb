@@ -15,16 +15,8 @@ class OwnedLibraryConnectionWorkflow
   BACKUP_ENQUEUE_FAILURE = "Shelfarr could not queue the Libation backup"
   VERSION_FORMAT = /\Av?\d{1,6}(?:\.\d{1,6}){0,3}(?:-(?:alpha|beta|rc|preview|dev)(?:\.\d{1,6})?)?\z/
   HEALTH_WORDS = %w[ok healthy ready degraded busy starting unhealthy].freeze
+  SHORTEST_COMPANION_BEARER = 32
 
-  CompletionClaim = Data.define(:pending_state, :auth_state, :endpoint, :retired_item_ids, :retired_attributes)
-  RETIRED_ATTRIBUTES = %w[
-    companion_version provider_version last_synced_at last_sync_error backlog_backup_decided_at
-    automatic_backup_enabled automatic_backup_user_id automatic_backup_enabled_at next_scheduled_sync_at
-  ].freeze
-  UNDELIVERED_CAUSES = [
-    Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ENETUNREACH, SocketError, Net::OpenTimeout,
-    OutboundUrlGuard::BlockedUrlError
-  ].freeze
   ConnectionTest = Data.define(:status, :companion_version, :libation_version, :health_status, :error)
   SignInStart = Data.define(:status, :login_url, :error)
   SignInCompletion = Data.define(:status, :error)
@@ -200,12 +192,9 @@ class OwnedLibraryConnectionWorkflow
   def test_connection
     return ConnectionTest.new(status: :busy, companion_version: nil, libation_version: nil, health_status: nil, error: nil) if active_operation?
 
-    client = connection.client
-    secrets = client.secret_values
-    health = client.health
-    secrets |= client.secret_values
-    version = client.version
-    secrets |= client.secret_values
+    secrets = connection.client.secret_values
+    health = connection.client.health
+    version = connection.client.version
     companion_version = reportable_version(version.companion_version, secrets)
     libation_version = reportable_version(version.libation_version, secrets)
     connection.update!(companion_version: companion_version, provider_version: libation_version)
@@ -249,20 +238,6 @@ class OwnedLibraryConnectionWorkflow
     invalidate_account_bound_catalog_after_auth!(auth_state)
     SignInCompletion.new(status: :connected, error: nil)
   rescue ArgumentError, LibationCompanionClient::Error => e
-    SignInCompletion.new(status: :failed, error: e)
-  end
-
-  def complete_sign_in_once(response_url:, &proof)
-    claim = claim_completion(response_url, proof)
-    return SignInCompletion.new(status: claim, error: nil) if claim.is_a?(Symbol)
-
-    connection.client.complete_auth(session_id: claim.pending_state.fetch(:session_id), response_url: response_url)
-    finish_completion(claim)
-  rescue ArgumentError, LibationCompanionClient::ConnectionError, LibationCompanionClient::NotConfiguredError => e
-    restore_completion(claim, catalogue: never_sent?(e)) if claim.is_a?(CompletionClaim)
-    SignInCompletion.new(status: :failed, error: e)
-  rescue LibationCompanionClient::Error => e
-    abandon_completion(claim) if claim.is_a?(CompletionClaim)
     SignInCompletion.new(status: :failed, error: e)
   end
 
@@ -530,78 +505,14 @@ class OwnedLibraryConnectionWorkflow
     end
   end
 
-  def claim_completion(response_url, proof)
-    connection.with_lock do
-      connection.reload
-      next :expired unless connection.auth_pending? && proof.call(connection.auth_session_id.to_s)
-      next :wrong_marketplace unless self.class.same_marketplace?(connection.auth_login_url, response_url)
-      next :backups_waiting if account_bound_backup_state?
+  def self.reportable_version(value, secrets)
+    return unless value.is_a?(String) && value.length < SHORTEST_COMPANION_BEARER && value.match?(VERSION_FORMAT)
 
-      pending_state = connection.auth_state_snapshot
-      retired_item_ids = connection.owned_library_items.active.pluck(:id)
-      retired_attributes = connection.attributes.slice(*RETIRED_ATTRIBUTES)
-      reset_account_bound_catalog!(clear_auth_state: false)
-      connection.update!(
-        auth_session_id: "#{OwnedLibraryConnection::AUTH_START_PREFIX}#{SecureRandom.hex(16)}",
-        auth_login_url: nil,
-        auth_expires_at: OwnedLibraryConnection::AUTH_START_TIMEOUT.from_now
-      )
-      CompletionClaim.new(
-        pending_state: pending_state,
-        auth_state: connection.auth_state_snapshot,
-        endpoint: endpoint_identity,
-        retired_item_ids: retired_item_ids,
-        retired_attributes: retired_attributes
-      )
-    end
-  end
-
-  def finish_completion(claim)
-    connection.with_lock do
-      connection.reload
-      connection.clear_auth_state! if connection.auth_state_snapshot == claim.auth_state
-      SignInCompletion.new(status: endpoint_identity == claim.endpoint ? :connected : :expired, error: nil)
-    end
-  end
-
-  def restore_completion(claim, catalogue:)
-    connection.with_lock do
-      connection.reload
-      next unless connection.auth_state_snapshot == claim.auth_state
-
-      now = Time.current
-      if catalogue
-        connection.owned_library_items.where(id: claim.retired_item_ids, active: false)
-          .update_all(active: true, absent_since: nil, updated_at: now)
-        connection.update_columns(claim.retired_attributes.merge("updated_at" => now))
-      end
-      connection.update!(
-        auth_session_id: claim.pending_state.fetch(:session_id),
-        auth_login_url: claim.pending_state.fetch(:login_url),
-        auth_expires_at: claim.pending_state.fetch(:expires_at)
-      )
-    end
-  end
-
-  def never_sent?(error)
-    return true unless error.is_a?(LibationCompanionClient::ConnectionError)
-
-    error.cause.nil? || UNDELIVERED_CAUSES.any? { |cause| error.cause.is_a?(cause) }
-  end
-
-  def abandon_completion(claim)
-    connection.with_lock do
-      connection.reload
-      connection.clear_auth_state! if connection.auth_state_snapshot == claim.auth_state
-    end
-  end
-
-  def endpoint_identity
-    [ connection.url, connection.bridge_token ]
+    value if secrets.none? { |secret| value.include?(secret) }
   end
 
   def reportable_version(value, secrets)
-    value if value.is_a?(String) && value.match?(VERSION_FORMAT) && secrets.none? { |secret| value.include?(secret) }
+    self.class.reportable_version(value, secrets)
   end
 
   def reportable_health(value, secrets)
