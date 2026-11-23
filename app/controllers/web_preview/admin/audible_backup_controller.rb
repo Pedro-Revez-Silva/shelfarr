@@ -236,7 +236,7 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
   end
 
   def item_outcome(result)
-    title = result.item&.display_title
+    title = presenter.identity(result.item&.display_title)
     case result.status
     when :storage_not_ready then failure(workflow.storage_error)
     when :disabled then failure("Turn on Audible backup before backing up a title.")

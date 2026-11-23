@@ -160,7 +160,7 @@ export function useAudibleCommand() {
       const state = audibleSchema.parse(answer.action);
       client.setQueryData<Audible>(keys.state, state);
       client.setQueryData<string>(keys.revision, state.revision);
-      await client.invalidateQueries({ queryKey: keys.catalogue });
+      await readAgain(client, keys.catalogue);
     },
     onError: (error) => {
       if (!guard.isActive()) return;

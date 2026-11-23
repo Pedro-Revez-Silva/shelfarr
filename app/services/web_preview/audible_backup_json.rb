@@ -84,10 +84,10 @@ module WebPreview
       SecretRedaction.call(masked.gsub(BEARER_SHAPED, SecretRedaction::MASK))
     end
 
-    def plain(text)
+    def identity(text)
       return nil if text.nil?
 
-      without_secrets(text).gsub(BEARER_SHAPED, SecretRedaction::MASK)
+      without_secrets(text)
     end
 
     private
@@ -174,7 +174,7 @@ module WebPreview
 
     def account_json(account)
       {
-        label: plain(account.name.presence || account.account),
+        label: identity(account.name.presence || account.account),
         marketplace: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(account.locale.to_s.downcase, "Unknown marketplace"),
         authenticated: account.authenticated == true
       }
@@ -239,8 +239,8 @@ module WebPreview
     def item_json(item, resolution)
       {
         id: item.id.to_s,
-        title: plain(item.display_title.to_s),
-        author: plain(item.author.presence || item.external_id.to_s),
+        title: identity(item.display_title.to_s),
+        author: identity(item.author.presence || item.external_id.to_s),
         ownership: item.ownership_type,
         book_id: (item.book_id.to_s if item.book&.acquired?),
         **backup_json(item, resolution)

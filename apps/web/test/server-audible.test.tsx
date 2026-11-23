@@ -536,4 +536,27 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     first.resolve({ body: catalogue({ pages: 1, items: [item({ state: "downloading", action: { label: "Backing up…", separate_edition: false, available: false } })] }) });
     expect(await within(list).findByRole("button", { name: "Retry backup Dune" }, { timeout: 4000 })).toBeTruthy();
   }, 20000);
+  test("a catalogue read still on its way when a save answers is replaced by a fresh one", async () => {
+    const user = userEvent.setup();
+    const first = deferred<{ body: Catalogue }>();
+    let reads = 0;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => {
+        reads += 1;
+        if (reads === 1) return first.promise;
+        return { body: catalogue({ pages: 1, total: 0, items: [], synced: false }) };
+      })
+      .on("PUT", /\/admin\/audible\/companion$/, () => answer(state({ revision: "3333333333333333" }), "Audible backup connection saved."));
+    await openLibrary(server);
+    const connection = section("audible-connection");
+    const timeout = within(connection).getByLabelText("Request timeout");
+    await user.clear(timeout);
+    await user.type(timeout, "45");
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
+    first.resolve({ body: catalogue() });
+    const list = section("audible-catalogue");
+    expect(await within(list).findByText("No Audible catalogue has been synced yet.", { exact: false })).toBeTruthy();
+    expect(within(list).queryByRole("button", { name: "Back up Dune" })).toBeNull();
+  });
 });
