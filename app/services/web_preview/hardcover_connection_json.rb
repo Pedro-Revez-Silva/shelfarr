@@ -43,7 +43,7 @@ module WebPreview
     end
 
     def device_json
-      pending = @sign_in.pending_device
+      pending = @sign_in.pending_device(warm: true)
       return unless pending
 
       {

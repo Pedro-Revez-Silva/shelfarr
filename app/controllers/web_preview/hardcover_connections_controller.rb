@@ -64,7 +64,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
   def device_poll
     return unavailable(CODE_OFF) unless HardcoverIntegration.device_flow_enabled?
 
-    poll = sign_in.poll_device
+    poll = sign_in.poll_device(warm: true)
     notice = "Connected Hardcover account @#{poll.connection.hardcover_username}." if poll.status == :approved
     render json: { account: web_preview_account_id, status: poll.status, message: poll.message || notice, hardcover: state }.compact
   end

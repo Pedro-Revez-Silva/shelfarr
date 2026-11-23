@@ -320,14 +320,16 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_match(/expired or was started elsewhere/, flash[:alert])
   end
 
-  test "a code started on the classic page keeps its classic page for someone in the preview" do
+  test "a code started on the classic page keeps its classic page and is not offered on the warm card" do
     stub_device
     post device_hardcover_connection_path
     assert_redirected_to device_hardcover_connection_path
     get device_hardcover_connection_path
     assert_response :success
     assert_select "p", text: "ABCD-1234"
-    assert_equal "ABCD-1234", hardcover.dig("device", "user_code")
+    assert_nil hardcover.fetch("device")
+    answer = send_json(web_preview_api_hardcover_device_poll_path)
+    assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
   end
 
   test "a sign-in that finishes after another connection was made keeps the newer one and revokes its own grant" do
@@ -358,7 +360,8 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
       answer = send_json(web_preview_api_hardcover_device_poll_path)
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
-    assert_requested revoke, times: 2
+    assert_requested revoke, times: 1
+    assert_requested :post, TOKEN_URL, times: 1
     assert_equal newer.version, @member.reload.hardcover_connection.version
   end
 
@@ -409,7 +412,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
     assert_nil @member.reload.hardcover_connection
-    assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_late"), times: 2
+    assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_late"), times: 1
 
     stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
       connect_and_disconnect_elsewhere.call
@@ -444,6 +447,34 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     end
     assert_nil @member.reload.hardcover_connection
     assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_cancelled")
+  end
+
+  test "a key checked while another request cancels a sign-in reads the current count, not a cached one" do
+    stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
+      User.connection.raw_connection.execute("UPDATE users SET hardcover_sign_in_generation = hardcover_sign_in_generation + 1 WHERE id = #{@member.id}")
+      { "me" => [ { "id" => 5150, "username" => "slow_key" } ] }
+    })
+
+    answer = send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_slow", version: nil)
+
+    assert_response :conflict
+    assert_equal "hardcover_changed", answer.fetch("error")
+    assert_nil @member.reload.hardcover_connection
+  end
+
+  test "a warm code is hidden and ends as soon as anything changes the connection" do
+    stub_device
+    token = stub_request(:post, TOKEN_URL)
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    assert_equal "ABCD-1234", hardcover.dig("device", "user_code")
+    Hardcover::ConnectionManager.end_sign_ins!(@member)
+
+    assert_nil hardcover.fetch("device")
+    travel 6.seconds do
+      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
+    end
+    assert_not_requested token
   end
 
   test "cancelling a code ends sign-ins still waiting in other tabs" do

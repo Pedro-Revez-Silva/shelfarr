@@ -93,10 +93,11 @@ module Hardcover
       }
     end
 
-    def pending_device
+    def pending_device(warm: false)
       pending = @session[DEVICE_KEY]
       return unless pending.is_a?(Hash) && pending["user_id"] == @user.id
       return if pending["expires_at"].to_i < Time.current.to_i
+      return if warm && !current?(pending)
 
       pending
     end
@@ -110,9 +111,10 @@ module Hardcover
       forget_device
     end
 
-    def poll_device
+    def poll_device(warm: false)
       pending = pending_device
-      return DevicePoll.new(status: :failed, message: "Hardcover sign-in expired. Start again.", connection: nil) unless pending
+      return expired_device unless pending && (!warm || pending.key?("generation"))
+      return replaced_device if warm && !current?(pending)
       return DevicePoll.new(status: :pending, message: nil, connection: nil) if Time.current.to_i < pending["next_poll_at"].to_i
 
       poll = Oauth.poll_device_authorization(pending["device_code"])
@@ -146,6 +148,19 @@ module Hardcover
     end
 
     private
+
+    def current?(pending)
+      pending.key?("generation") && pending["generation"] == ConnectionManager.sign_in_generation(@user)
+    end
+
+    def expired_device
+      DevicePoll.new(status: :failed, message: "Hardcover sign-in expired. Start again.", connection: nil)
+    end
+
+    def replaced_device
+      forget_device
+      DevicePoll.new(status: :failed, message: self.class.error_message(ConnectionManager::ConnectionChanged.new), connection: nil)
+    end
 
     def bound_to(generation)
       generation.nil? ? {} : { "generation" => generation }

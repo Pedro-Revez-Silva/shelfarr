@@ -114,7 +114,7 @@ module Hardcover
     end
 
     def sign_in_generation(user)
-      User.where(id: user.id).pick(:hardcover_sign_in_generation).to_i
+      User.uncached { User.where(id: user.id).pick(:hardcover_sign_in_generation).to_i }
     end
 
     def end_sign_ins!(user)
