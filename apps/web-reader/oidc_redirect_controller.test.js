@@ -10,8 +10,18 @@ async function controllerWith(preview) {
   const { default: Redirect } = await import(moduleURL(source))
   const controller = new Redirect()
   controller.baseValue = "/shelf"
+  const listeners = []
   controller.hasFormTarget = true
-  controller.formTarget = { requestSubmit: () => globalThis.events.push("submit") }
+  controller.formTarget = {
+    addEventListener: (type, listener) => listeners.push(listener),
+    removeEventListener: () => {},
+    requestSubmit: () => globalThis.events.push("submit"),
+    pressContinue: () => {
+      const event = { prevented: false, preventDefault() { this.prevented = true } }
+      for (const listener of listeners) listener(event)
+      globalThis.events.push(event.prevented ? "held" : "continued")
+    }
+  }
   return controller
 }
 
@@ -33,4 +43,15 @@ test("a release that never finishes does not keep single sign-on from continuing
   await new Promise(done => setTimeout(done, 10))
   expect(globalThis.events).toEqual(["submit"])
   expect(Date.now() - started).toBeGreaterThanOrEqual(1500)
+})
+
+test("pressing Continue before the release finishes is held until the page submits itself", async () => {
+  globalThis.events = []
+  const controller = await controllerWith("export const releasePreviewAccount = async base => { await new Promise(done => setTimeout(done, 50)); globalThis.events.push(['released', base]) }")
+  const connecting = controller.connect()
+  controller.formTarget.pressContinue()
+  await connecting
+  await new Promise(done => setTimeout(done, 10))
+  controller.formTarget.pressContinue()
+  expect(globalThis.events).toEqual(["held", ["released", "/shelf"], "submit", "continued"])
 })
