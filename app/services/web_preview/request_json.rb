@@ -7,6 +7,19 @@ module WebPreview
     BOOK_TYPES = %w[ebook audiobook comicbook].freeze
     TEXT_LIMIT = 500
     EVENT_LIMIT = 10
+    COPY_STRUCTURES = { single_file: "single_file", multi_file: "multi_file" }.freeze
+    UNREADABLE_SCORING = { structure: nil, bitrate_kbps: nil, preference_adjustment: 0, size_limit: nil }.freeze
+
+    def self.copies_revision(request)
+      shown = [
+        Request.where(id: request.id).pick(:status, :search_generation),
+        Book.where(id: request.book_id).pick(:file_path, :updated_at).then { |file_path, updated_at| [ file_path, updated_at&.iso8601(6) ] },
+        request.search_results.order(:id).pluck(:id, :updated_at).map { |id, updated_at| [ id, updated_at.iso8601(6) ] },
+        AcquisitionProvider.where(id: request.search_results.select(:acquisition_provider_id)).order(:id).pluck(:id, :updated_at).map { |id, updated_at| [ id, updated_at.iso8601(6) ] },
+        request.downloads.order(:id).pluck(:id, :status)
+      ]
+      Digest::SHA256.hexdigest(shown.to_json).first(32)
+    end
 
     def initialize(request, viewer:, routes:, opens_in_browser:)
       @request = request
@@ -37,7 +50,7 @@ module WebPreview
       value
     end
 
-    def detail(store_offers:)
+    def detail(store_offers:, copies_revision: nil)
       value = summary.merge(
         attention_reason: admin? && @request.attention_needed ? @request.issue_description.to_s.first(TEXT_LIMIT).presence : nil,
         downloads: @request.downloads.order(id: :desc).map { |download| download_fields(download) },
@@ -48,7 +61,7 @@ module WebPreview
         actions: actions,
         store_offers: @request.completed? ? [] : store_offers.filter_map { |offer| offer_fields(offer) }
       )
-      admin? ? value.merge(copies: copies, events: events) : value
+      admin? ? value.merge(copies: copies(copies_revision), events: events) : value
     end
 
     private
@@ -124,12 +137,60 @@ module WebPreview
       }
     end
 
-    def copies
-      candidates = @request.search_results.best_first.to_a
+    def copies(revision)
+      candidates = @request.search_results.best_first.includes(:acquisition_provider).to_a
       {
         selectable: BookPage.choosing_allowed?(@request) && candidates.any?(&:downloadable?),
-        candidates: candidates.map { |result| BookPage.candidate(result) }
+        revision: revision,
+        looking_for: @request.language_display_name.to_s.first(TEXT_LIMIT),
+        search_blocked: @request.search_refresh_allowed? ? nil : @request.search_refresh_blocked_message,
+        candidates: candidates.map { |result| BookPage.candidate(result).merge(details: copy_details(result)) }
       }
+    end
+
+    def copy_details(result)
+      {
+        choice: copy_choice(result),
+        indexer: (result.indexer.to_s.first(TEXT_LIMIT).presence unless result.indexer == result.source_display_name),
+        seeders: count(result.seeders),
+        leechers: count(result.leechers),
+        score: result.confidence_score&.clamp(0, 100),
+        high_confidence: result.high_confidence?,
+        language_matches: result.language_matches_request?,
+        **scoring_facts(result),
+        manual_review: !result.auto_select_allowed_by_preferences?,
+        blocklist_reason: result.blocklisted? ? result.blocklist_reason.to_s.first(TEXT_LIMIT).presence : nil,
+        info_url: result.safe_info_url
+      }
+    end
+
+    def scoring_facts(result)
+      {
+        structure: COPY_STRUCTURES[result.audiobook_structure],
+        bitrate_kbps: count(result.audio_bitrate_kbps)&.nonzero?,
+        preference_adjustment: result.preference_adjustment,
+        size_limit: size_limit(result)
+      }
+    rescue NoMethodError, TypeError
+      UNREADABLE_SCORING
+    end
+
+    def copy_choice(result)
+      return "selected" if result.selected?
+      return result.rejected? ? "skipped" : "no_link" unless result.downloadable?
+      return "retry_anyway" if result.blocklisted?
+
+      result.rejected? ? "select_instead" : "select"
+    end
+
+    def count(value)
+      value.to_i if value.present? && value.to_i >= 0
+    end
+
+    def size_limit(result)
+      return if result.file_size_adjustment.zero?
+
+      { label: result.file_size_adjustment_label, explanation: result.file_size_limit_explanation }
     end
 
     def events

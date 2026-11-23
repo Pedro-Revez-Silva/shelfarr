@@ -285,5 +285,46 @@ module Admin
       assert_equal previous_result_ids, @request_record.search_result_ids.sort
       assert_equal selected, download.reload.search_result
     end
+
+    test "an old Manage Results address opens the warm request page's Copies section for a preview administrator, and stays classic otherwise" do
+      WarmEntry.stub(:preview_built?, true) do
+        with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
+          get admin_request_search_results_path(@request_record)
+          assert_redirected_to "http://www.example.com/preview/requests/#{@request_record.id}#copies"
+
+          post select_admin_request_search_result_path(@request_record, @no_link_result)
+          assert_redirected_to admin_request_search_results_path(@request_record)
+          follow_redirect!
+          assert_response :success
+          assert_select "h2", /Search Results for/
+
+          post refresh_admin_request_search_results_path(@request_record)
+          assert_redirected_to request_path(@request_record)
+          follow_redirect!
+          assert_response :success
+        end
+        with_env(WebPreview::Access::VARIABLE => @user.id.to_s) do
+          get admin_request_search_results_path(@request_record)
+          assert_response :success
+        end
+        with_env(WebPreview::Access::VARIABLE => nil) do
+          get admin_request_search_results_path(@request_record)
+          assert_response :success
+        end
+      end
+      WarmEntry.stub(:preview_built?, false) do
+        with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
+          get admin_request_search_results_path(@request_record)
+          assert_response :success
+          assert_select "h2", /Search Results for/
+        end
+      end
+      WarmEntry.stub(:preview_built?, true) do
+        with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
+          get "/admin/requests/#{@request_record.id}/search_results", env: { "SCRIPT_NAME" => "/shelf" }
+          assert_redirected_to "http://www.example.com/shelf/preview/requests/#{@request_record.id}#copies"
+        end
+      end
+    end
   end
 end

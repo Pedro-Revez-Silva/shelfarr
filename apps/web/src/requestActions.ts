@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ManualLink } from "./api/client";
+import type { ManualLink, RequestCopyChoice } from "./api/client";
 import { useServices } from "./services";
 
 function useRequestChange<V, T>(requestId: string, send: (variables: V) => Promise<T>) {
@@ -38,7 +38,7 @@ export function useSearchRequestAgain(requestId: string) {
 
 export function useChooseRequestCopy(requestId: string) {
   const { api } = useServices();
-  return useRequestChange(requestId, (resultId: string) => api.chooseCopy(requestId, resultId));
+  return useRequestChange(requestId, (choice: RequestCopyChoice) => api.chooseRequestCopy(requestId, choice));
 }
 
 export function useManualLink(requestId: string) {

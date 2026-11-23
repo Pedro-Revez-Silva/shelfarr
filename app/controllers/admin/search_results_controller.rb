@@ -6,6 +6,8 @@ module Admin
     before_action :set_search_result, only: [ :select ]
 
     def index
+      return redirect_to(web_preview_request_path(@request, anchor: "copies")) if warm_copies?
+
       @search_results = @request.search_results.best_first
     end
 
@@ -40,6 +42,10 @@ module Admin
     end
 
     private
+
+    def warm_copies?
+      request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.preview_built?
+    end
 
     def set_request
       @request = Request.find(params[:request_id])

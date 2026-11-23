@@ -1,8 +1,8 @@
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { RequestActions, RequestDetail, StoreOffer } from "../contract";
+import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
 import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
-import { CopyTable } from "./CopyTable";
+import { CopyTable, focusLeftThePage, keepsFocus } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
 type Pending = { isPending: boolean; isError: boolean; error: unknown };
@@ -22,9 +22,10 @@ export function RequestTools({ request, admin }: { request: RequestDetail; admin
 function MainActions({ request, actions, admin }: { request: RequestDetail; actions: RequestActions; admin: boolean }) {
   const retry = useRetryRequest(request.id);
   const search = useSearchRequestAgain(request.id);
+  const searchHere = admin && actions.search_again && !request.copies;
   const memberUpload = !admin && actions.upload_url !== null && (request.store_offers ?? []).length === 0;
   const memberRemoval = !admin && actions.remove === "delete_history" ? actions.remove : null;
-  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || actions.search_again));
+  const shown = request.book_page || actions.cancel || actions.download_url || memberUpload || memberRemoval || (admin && (actions.retry || searchHere));
   if (!shown) return null;
   return (
     <div className="copy-actions request-actions">
@@ -39,7 +40,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
         </a>
       ) : null}
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
-      {admin && actions.search_again ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
+      {searchHere ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
       {actions.cancel ? <CancelTracked request={request} /> : null}
       {memberUpload ? (
         <Link className="button" to="/library/uploads" search={{ request: request.id }}>
@@ -171,25 +172,12 @@ function StoreOffers({ offers, requestId, uploads }: { offers: StoreOffer[]; req
 
 function Inspector({ request, actions }: { request: RequestDetail; actions: RequestActions }) {
   const copies = request.copies;
+  const linked = useLocation({ select: (location) => location.hash === "copies" });
   return (
     <section className="request-inspector" aria-label="Administrator tools">
-      {copies && copies.candidates.length > 0 ? (
-        <Section id="copies" title={`Copies (${copies.candidates.length})`} open={copies.selectable}>
-          {copies.selectable ? <TrackedCopies requestId={request.id} copies={copies.candidates} /> : <p className="request-note">These copies can't be chosen now. Shelfarr offers them again when the request is searching and no download is running.</p>}
-          {!copies.selectable ? (
-            <ul className="copy-list">
-              {copies.candidates.map((copy) => (
-                <li key={copy.id}>
-                  {copy.title}
-                  <span className="copy-flag">
-                    {" "}
-                    · {copy.format ?? "Unknown format"} · {copy.source}
-                    {copy.skipped ? " · skipped before" : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+      {copies ? (
+        <Section id="copies" title={`Copies (${copies.candidates.length})`} open={copies.selectable || linked} target={linked}>
+          <Copies request={request} copies={copies} actions={actions} />
         </Section>
       ) : null}
       {actions.manual_download || actions.upload_url ? (
@@ -239,18 +227,81 @@ function Inspector({ request, actions }: { request: RequestDetail; actions: Requ
   );
 }
 
-function Section({ id, title, open = false, children }: { id: string; title: string; open?: boolean; children: ReactNode }) {
+function Section({ id, title, open = false, target = false, children }: { id: string; title: string; open?: boolean; target?: boolean; children: ReactNode }) {
+  const details = useRef<HTMLDetailsElement>(null);
+  const summary = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (open && details.current) details.current.open = true;
+  }, [open]);
+  useEffect(() => {
+    if (!target) return;
+    summary.current?.scrollIntoView({ block: "start" });
+    summary.current?.focus({ preventScroll: true });
+  }, [target]);
   return (
-    <details className="inspector-section" id={id} open={open}>
-      <summary>{title}</summary>
+    <details ref={details} className="inspector-section" id={id}>
+      <summary ref={summary}>{title}</summary>
       <div className="inspector-body">{children}</div>
     </details>
   );
 }
 
-function TrackedCopies({ requestId, copies }: { requestId: string; copies: NonNullable<RequestDetail["copies"]>["candidates"] }) {
-  const choose = useChooseRequestCopy(requestId);
-  return <CopyTable copies={copies} choose={choose} />;
+const FOCUS_FALLBACKS = ["button[type=submit]", ".copy-table-wrap", ".copies-empty"];
+
+function Copies({ request, copies, actions }: { request: RequestDetail; copies: RequestCopies; actions: RequestActions }) {
+  const search = useSearchRequestAgain(request.id);
+  const choose = useChooseRequestCopy(request.id);
+  const replaces = actions.replaces_library_file;
+  const revision = copies.revision;
+  const choice = {
+    mutate: (resultId: string) => choose.mutate(revision === null ? { result_id: resultId } : { result_id: resultId, expected_revision: revision, replace_library_file: replaces }),
+    isPending: choose.isPending,
+    isError: choose.isError,
+    error: choose.error,
+  };
+  const count = copies.candidates.length;
+  const locked = revision === null && !copies.selectable;
+  const section = useRef<HTMLDivElement>(null);
+  const holdsFocus = useRef(false);
+  useEffect(() => {
+    if (!holdsFocus.current || !focusLeftThePage()) return;
+    const target = FOCUS_FALLBACKS.map((selector) => section.current?.querySelector<HTMLElement>(selector)).find(Boolean);
+    target?.focus();
+  });
+  return (
+    <div
+      ref={section}
+      className="copies"
+      onFocus={() => {
+        holdsFocus.current = true;
+      }}
+      onBlur={(event) => {
+        holdsFocus.current = keepsFocus(event);
+      }}
+    >
+      <div className="copies-heading">
+        <p className="request-meta">
+          {copies.looking_for ? `Looking for ${copies.looking_for} · ` : ""}
+          {count === 1 ? "1 copy found" : `${count} copies found`}, best first
+        </p>
+        {actions.search_again ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
+      </div>
+      {copies.search_blocked ? <p className="request-note">{copies.search_blocked}</p> : null}
+      {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
+      <div role="status">{search.isSuccess ? <p className="form-success">Searching again. Copies found by this search appear here.</p> : null}</div>
+      {count > 0 ? (
+        <CopyTable copies={copies.candidates} choose={choice} preselect={false} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} />
+      ) : (
+        <>
+          <p className="request-note copies-empty" tabIndex={-1}>
+            No copies found yet. The search may still be running.
+          </p>
+          {choose.isError ? <Failure error={choose.error} fallback="The choice could not be sent. Nothing was changed." /> : null}
+        </>
+      )}
+      <div role="status">{choose.isSuccess ? <p className="form-success">Download queued. This page updates as it goes.</p> : null}</div>
+    </div>
+  );
 }
 
 function ManualLink({ requestId, replaces }: { requestId: string; replaces: boolean }) {

@@ -37,6 +37,7 @@ import { ApiError, type FailureKind } from "./errors";
 export const ACCOUNT_HEADER = "X-Shelfarr-Account";
 
 export type ManualLink = { kind: "magnet" | "nzb"; url: string; replace_library_file: boolean };
+export type RequestCopyChoice = { result_id: string } | { result_id: string; expected_revision: string; replace_library_file: boolean };
 
 export type ApiDependencies = {
   boot: Boot;
@@ -95,6 +96,8 @@ const FAILURE_BY_CODE: Record<string, FailureKind> = {
   search_rate_limited: "rate_limited",
   work_not_offered: "invalid",
   not_selectable: "conflict",
+  copies_changed: "conflict",
+  replacement_unconfirmed: "conflict",
   acquisition_busy: "conflict",
   search_blocked: "conflict",
   cannot_cancel: "conflict",
@@ -271,6 +274,10 @@ export class ApiClient {
 
   chooseCopy(requestId: string, resultId: string, signal?: AbortSignal): Promise<unknown> {
     return this.requestAction(`/requests/${encodeURIComponent(requestId)}/selection`, { result_id: resultId }, signal);
+  }
+
+  chooseRequestCopy(requestId: string, choice: RequestCopyChoice, signal?: AbortSignal): Promise<RequestActionAnswer> {
+    return this.requestAction(`/requests/${encodeURIComponent(requestId)}/selection`, choice, signal);
   }
 
   searchAgain(requestId: string, signal?: AbortSignal): Promise<unknown> {

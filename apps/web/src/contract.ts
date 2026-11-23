@@ -18,6 +18,15 @@ const httpsUrl = z.string().refine((value) => {
 
 const sitePath = z.string().regex(/^\/(?!\/)/, "Expected a path on this server");
 
+const webUrl = z.string().refine((value) => {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && url.username === "" && url.password === "";
+  } catch {
+    return false;
+  }
+}, "Expected a plain web address");
+
 export const coverStyles = ["clay", "moss", "slate", "oat", "plum", "stone"] as const;
 export const readingStatuses = ["unread", "in_progress", "finished"] as const;
 export const publicationTypes = ["ebook", "audiobook"] as const;
@@ -329,6 +338,40 @@ export const bookCopySchema = z.object({
 });
 export type BookCopy = z.infer<typeof bookCopySchema>;
 
+export const copyChoices = ["selected", "select", "select_instead", "retry_anyway", "skipped", "no_link"] as const;
+export type CopyChoiceKind = (typeof copyChoices)[number];
+const copyTally = z.number().int().nonnegative();
+
+export const copyDetailsSchema = z.object({
+  choice: z.enum(copyChoices).nullable().catch(null),
+  indexer: z.string().nullable().catch(null),
+  seeders: copyTally.nullable().catch(null),
+  leechers: copyTally.nullable().catch(null),
+  score: z.number().int().min(0).max(100).nullable().catch(null),
+  high_confidence: z.boolean().catch(false),
+  language_matches: z.boolean().catch(true),
+  structure: z.enum(["single_file", "multi_file"]).nullable().catch(null),
+  bitrate_kbps: z.number().int().positive().nullable().catch(null),
+  preference_adjustment: z.number().int().catch(0),
+  size_limit: z.object({ label: z.string(), explanation: z.string().nullable() }).nullable().catch(null),
+  manual_review: z.boolean().catch(false),
+  blocklist_reason: z.string().nullable().catch(null),
+  info_url: webUrl.nullable().catch(null),
+});
+export type CopyDetails = z.infer<typeof copyDetailsSchema>;
+
+export const requestCopySchema = bookCopySchema.extend({ details: copyDetailsSchema.nullable().catch(null) });
+export type RequestCopy = z.infer<typeof requestCopySchema>;
+
+export const requestCopiesSchema = z.object({
+  selectable: z.boolean(),
+  revision: z.string().nullable().catch(null),
+  looking_for: z.string().nullable().catch(null),
+  search_blocked: z.string().nullable().catch(null),
+  candidates: z.array(requestCopySchema),
+});
+export type RequestCopies = z.infer<typeof requestCopiesSchema>;
+
 export const requestActionsSchema = z.object({
   cancel: z.boolean(),
   remove: z.enum(["admin_remove", "delete_history"]).nullable(),
@@ -384,7 +427,7 @@ export const requestDetailSchema = requestSummarySchema.extend({
   retry_count: z.number().int().nonnegative().optional(),
   actions: requestActionsSchema.optional(),
   store_offers: z.array(storeOfferSchema).optional(),
-  copies: z.object({ selectable: z.boolean(), candidates: z.array(bookCopySchema) }).optional(),
+  copies: requestCopiesSchema.optional(),
   events: z.array(z.object({ title: z.string(), message: z.string().nullable(), level: z.string(), at: timestamp })).optional(),
 });
 export type RequestDetail = z.infer<typeof requestDetailSchema>;

@@ -4,6 +4,7 @@ module WarmEntry
   extend ActiveSupport::Concern
 
   STYLESHEET = "web/preview.css"
+  SCRIPT = "web/preview.js"
 
   included do
     layout :entry_layout
@@ -11,8 +12,16 @@ module WarmEntry
   end
 
   def self.stylesheet_built?
+    asset_built?(STYLESHEET)
+  end
+
+  def self.preview_built?
+    stylesheet_built? && asset_built?(SCRIPT)
+  end
+
+  def self.asset_built?(path)
     resolver = Rails.application.assets.resolver
-    url = resolver.resolve(STYLESHEET)
+    url = resolver.resolve(path)
     return false if url.nil?
     return true unless resolver.is_a?(Propshaft::Resolver::Static)
 
