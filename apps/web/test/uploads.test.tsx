@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { focusManager } from "@tanstack/react-query";
+import { focusManager, onlineManager } from "@tanstack/react-query";
 import type { ServerSettings } from "../src/server/contract";
 import { uploadsSchema, type Upload, type Uploads } from "../src/uploads/contract";
 import { formatBytes, selectionText, supported } from "../src/uploads/files";
@@ -276,10 +276,31 @@ describe("uploading for a request", () => {
     await waitFor(() => expect(server.called("GET", /\/api\/v1\/uploads$/).length).toBeGreaterThan(1));
     focusManager.setFocused(false);
     focusManager.setFocused(true);
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
     await waitFor(() => expect(server.called("GET", /\/api\/v1\/uploads$/).length).toBeGreaterThan(2));
     focusManager.setFocused(undefined);
+    onlineManager.setOnline(true);
     expect(screen.getByText(/File uploaded successfully/)).toBeTruthy();
     expect(server.called("GET", /uploads\/requests\/7$/)).toHaveLength(1);
+  });
+
+  test("a request closed elsewhere before sending reads the refusal and removes the form", async () => {
+    let closed = false;
+    const server = memberServer(() => listing([]))
+      .on("GET", /\/api\/v1\/uploads\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: closed ? { ...context, open: false, message: "This request is already completed." } : context } }))
+      .on("POST", /\/api\/v1\/uploads$/, () => {
+        closed = true;
+        return { status: 409, body: { error: "upload_closed", message: "This request is already completed." } };
+      });
+    renderApp({ server, url: "/sub/preview/library/uploads?request=7" });
+    const user = userEvent.setup({ applyAccept: false });
+    await user.upload(await screen.findByLabelText("Choose a file"), file("The Dispossessed.epub"));
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await waitFor(() => expect(screen.queryByLabelText("Choose a file")).toBeNull());
+    expect(screen.getByText("This request is already completed.")).toBeTruthy();
+    expect(screen.queryByText(/This file will fulfil/)).toBeNull();
+    expect(server.called("POST", /uploads$/)).toHaveLength(1);
   });
 
   test("explains a request that no longer takes files and offers no form", async () => {

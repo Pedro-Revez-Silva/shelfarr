@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ApiClient } from "../api/client";
-import { failureKind } from "../api/errors";
+import { failureKind, isApiError } from "../api/errors";
 import { useServices } from "../services";
 import { uploadCreatedSchema, uploadMatchesSchema, uploadOutcomeSchema, uploadRequestSchema, uploadsSchema, type UploadCreated, type UploadMatches, type UploadOutcome, type UploadRequest, type Uploads } from "./contract";
 
@@ -101,6 +101,7 @@ export function useUploadRequest(requestId: string | undefined) {
     retry: false,
     staleTime: 0,
     refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }
 
@@ -130,6 +131,7 @@ function useAfterUploadChange() {
       void client.invalidateQueries({ queryKey: keys.requestsAll });
     }
     if (error !== null && failureKind(error) === "not_found") void client.invalidateQueries({ queryKey: keys.session });
+    if (requestId && isApiError(error) && error.code === "upload_closed") void client.invalidateQueries({ queryKey: uploadKeys.request(requestId) });
   };
 }
 
