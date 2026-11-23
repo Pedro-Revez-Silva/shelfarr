@@ -22,15 +22,22 @@ import { useProviders, useProvidersCommand, type ProvidersCommand } from "./api"
 import type { AcquisitionProvider, Providers } from "./contract";
 import { PROVIDER_KEYS, initialProviderDraft, mediaLabels, providerFields, providerSubmission } from "./forms";
 
-export const PROVIDER_CARDS = [{ id: "acquisition_providers", title: "Custom providers" }] as const;
+const CARD_ID = "acquisition_providers";
 
-const NEW_HASH = "acquisition_providers-new";
+export const PROVIDER_CARDS = [{ id: CARD_ID, title: "Custom providers" }] as const;
+const NEW_HASH = `${CARD_ID}-new`;
 const RECORD_HASH = /^acquisition-provider-([1-9]\d{0,18})(-edit)?$/;
 
 type Arrival = { id: string; edit: boolean } | null;
 
 function rowId(provider: AcquisitionProvider): string {
   return `acquisition-provider-${provider.id}`;
+}
+
+function bringIntoView(id: string) {
+  const target = document.getElementById(id);
+  target?.scrollIntoView({ block: "start" });
+  target?.focus({ preventScroll: true });
 }
 
 function useArrival(ready: boolean, onNew: () => void): Arrival {
@@ -40,6 +47,10 @@ function useArrival(ready: boolean, onNew: () => void): Arrival {
   useEffect(() => {
     if (!ready || !hash || handled.current === hash) return;
     handled.current = hash;
+    if (hash === CARD_ID) {
+      bringIntoView(CARD_ID);
+      return;
+    }
     if (hash === NEW_HASH) {
       onNew();
       return;
@@ -60,14 +71,11 @@ export function AcquisitionProviders({ onDirtyChange }: { onDirtyChange: DirtyRe
   const denied = query.isError && failureKind(query.error) === "not_found";
   useRevalidateAccessWhenDenied(denied);
   const { track, markRemoving } = useLostDraftNotice(query.data?.providers, "provider", say, onDirtyChange);
-  const openNew = useCallback(() => {
-    setAdding(true);
-    focusSoon(() => document.getElementById("acquisition_providers"));
-  }, []);
+  const openNew = useCallback(() => setAdding(true), []);
   const arrival = useArrival(query.data !== undefined, openNew);
   return (
     <SettingsCard
-      id="acquisition_providers"
+      id={CARD_ID}
       headingId={headingId}
       title="Custom providers"
       summary="Your own search services. For each request Shelfarr asks every enabled provider that takes its book type, in priority order, alongside the other sources. New providers go last."
@@ -86,7 +94,7 @@ export function AcquisitionProviders({ onDirtyChange }: { onDirtyChange: DirtyRe
                     say={say}
                     onDirtyChange={track}
                     onRemoving={markRemoving}
-                    onRemoved={() => focusSoon(() => document.getElementById("acquisition_providers"))}
+                    onRemoved={() => focusSoon(() => document.getElementById(CARD_ID))}
                   />
                 ))}
               </ul>
@@ -155,9 +163,7 @@ function ProviderRow({
       restart();
       setEditing(true);
     } else {
-      const name = document.getElementById(id);
-      name?.scrollIntoView({ block: "start" });
-      name?.focus({ preventScroll: true });
+      bringIntoView(id);
     }
   }, [arrival]);
 

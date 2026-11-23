@@ -282,7 +282,7 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     expect(row("Comic shelf")).toBeTruthy();
   });
 
-  test("an old edit address opens that provider's form and an old new address opens the add form", async () => {
+  test("old addresses open the provider's form, the add form, the row or the card once the list has loaded", async () => {
     await openSources(adminServer(), "#acquisition-provider-2-edit");
     expect(await within(row("Comic shelf")).findByRole("form", { name: "Comic shelf" })).toBeTruthy();
     expect(within(row("Local provider")).queryByRole("form")).toBeNull();
@@ -295,6 +295,16 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await openSources(adminServer(), "#acquisition-provider-1");
     await waitFor(() => expect(document.activeElement?.id).toBe("acquisition-provider-1"));
     expect(within(row("Local provider")).queryByRole("form")).toBeNull();
+    cleanup();
+
+    let release = () => {};
+    const slow = adminServer().on("GET", /\/api\/v1\/admin\/acquisition_providers$/, () => new Promise((resolve) => (release = () => resolve({ body: current }))));
+    renderApp({ server: slow, url: "/sub/preview/server/sources#acquisition_providers" });
+    await screen.findByRole("heading", { name: "Custom providers", level: 3 });
+    (document.activeElement as HTMLElement | null)?.blur();
+    release();
+    await screen.findByRole("heading", { name: "Local provider", level: 5 });
+    await waitFor(() => expect(document.activeElement?.id).toBe("acquisition_providers"));
   });
 
   test("leaving with an unsaved provider edit asks first", async () => {
