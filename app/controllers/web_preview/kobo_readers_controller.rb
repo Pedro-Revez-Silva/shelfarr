@@ -19,6 +19,7 @@ class WebPreview::KoboReadersController < WebPreview::APIController
     return render_error("invalid_request", :bad_request) unless values
 
     @device, token = KoboDevice.issue(user: Current.user, **values.symbolize_keys)
+    return render_pasted_connection if KoboDevice.carries_active_connection?(@device.base_url)
     return render_rejection unless @device.save
 
     render_setup(token, status: :created)
@@ -51,7 +52,7 @@ class WebPreview::KoboReadersController < WebPreview::APIController
     values = body_values(%w[version], [])
     return render_error("invalid_request", :bad_request) unless values
 
-    return render_error("connection_address_saved", :unprocessable_entity, message: SAVED_CONNECTION_ADDRESS) if KoboDevice.connection_address?(@device.base_url)
+    return render_error("connection_address_saved", :unprocessable_entity, message: SAVED_CONNECTION_ADDRESS) if KoboDevice.carries_active_connection?(@device.base_url)
 
     token = @device.with_lock do
       @device.rotate_token! if values["version"] == WebPreview::KoboReaderJson.version(@device)
@@ -177,6 +178,11 @@ class WebPreview::KoboReadersController < WebPreview::APIController
 
   def render_rejection
     render json: { account: web_preview_account_id, error: "invalid_reader", errors: @device.errors.to_hash, messages: @device.errors.full_messages }, status: :unprocessable_entity
+  end
+
+  def render_pasted_connection
+    @device.errors.add(:base_url, "must be Shelfarr's own address, not a Kobo connection address")
+    render_rejection
   end
 
   def render_changed

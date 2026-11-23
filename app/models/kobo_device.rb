@@ -5,7 +5,6 @@ class KoboDevice < ApplicationRecord
   # restored. Shelfarr cannot read the reader's own configuration file.
   STORE_ENDPOINT = Kobo::StoreProxy::ORIGIN
   STORE_STATUSES = %w[ok unavailable rejected authorization].freeze
-  CONNECTION_TOKEN = %r{/kobo/[0-9a-f]{64}}i
 
   belongs_to :user
   has_many :kobo_deliveries, dependent: :destroy
@@ -18,7 +17,6 @@ class KoboDevice < ApplicationRecord
   validate :valid_base_url
   # The reader's own Kobo sign-in passes through Shelfarr in this mode.
   validate :coexistence_requires_https
-  validate :base_url_is_not_a_connection_address, on: :create
 
   normalizes :name, with: ->(value) { value.strip }
   normalizes :base_url, with: ->(value) { value.strip.sub(%r{/+\z}, "") }
@@ -39,14 +37,16 @@ class KoboDevice < ApplicationRecord
     joins(:user).merge(User.active).find_by(token_digest: Digest::SHA256.hexdigest(token))
   end
 
+  def self.carries_active_connection?(url)
+    URI.parse(url.to_s).path.to_s.split("/").any? { |segment| authenticate(CGI.unescape(segment).scrub("")) }
+  rescue URI::InvalidURIError
+    false
+  end
+
   def rotate_token!
     token = SecureRandom.hex(32)
     update!(token_digest: Digest::SHA256.hexdigest(token))
     token
-  end
-
-  def self.connection_address?(url)
-    CGI.unescape(url.to_s).match?(CONNECTION_TOKEN)
   end
 
   def endpoint(token)
@@ -119,10 +119,6 @@ class KoboDevice < ApplicationRecord
       kobo_local_entitlements.create_or_find_by!(entitlement_id: delivery.entitlement_id)
       delivery
     end
-  end
-
-  def base_url_is_not_a_connection_address
-    errors.add(:base_url, "must be Shelfarr's own address, not a Kobo connection address") if self.class.connection_address?(base_url)
   end
 
   def coexistence_requires_https

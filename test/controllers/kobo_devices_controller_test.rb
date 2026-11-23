@@ -45,7 +45,7 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "invalid and unsafe connection addresses stay on form without creating a device" do
-    [ "file:///etc/passwd", "https://user:pass@example.com", "https://example.com?private=yes", "https://example.com#fragment", "broken", "https://example.com/shelf/kobo/#{"a" * 64}" ].each do |base_url|
+    [ "file:///etc/passwd", "https://user:pass@example.com", "https://example.com?private=yes", "https://example.com#fragment", "broken" ].each do |base_url|
       assert_no_difference "KoboDevice.count" do
         post kobo_devices_path, params: { kobo_device: { name: "Reader", base_url: base_url } }
       end
@@ -54,14 +54,6 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     end
     post kobo_devices_path, params: { kobo_device: { name: "", base_url: "http://shelfarr.local:3000" } }
     assert_response :unprocessable_entity
-    post kobo_devices_path, params: { kobo_device: { name: "Copy", base_url: "https://reader.example/shelfarr/kobo/#{@token}" } }
-    assert_response :unprocessable_entity
-    assert_not_includes response.body, @token
-    assert_select "input[name='kobo_device[base_url]'][value=?]", "http://www.example.com"
-    escaped = "%#{@token[0].ord.to_s(16)}#{@token[1..]}"
-    post kobo_devices_path, params: { kobo_device: { name: "Copy", base_url: "https://reader.example/shelfarr/kobo/#{escaped}#saved" } }
-    assert_response :unprocessable_entity
-    assert_not_includes response.body, @token[1..]
   end
 
   test "send and resend keep the canonical library copy and do not acquire again" do

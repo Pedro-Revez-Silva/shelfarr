@@ -118,6 +118,12 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     end
     assert_not_includes Rails.root.join("log/test.log").read.lines.last(200).join, @token
 
+    [ "https://shelfarr.example/legacy-%FF/shelf", "https://shelfarr.example/kobo/#{'b' * 64}-prod/shelf", "https://shelfarr.example/kobo/#{'c' * 64}/shelf" ].each do |mount|
+      created = send_json(:post, web_preview_api_account_kobo_readers_path, name: "Mounted", base_url: mount, store_coexistence: true, share_progress: true, receive_progress: false)
+      assert_response :created
+      assert_match(%r{\A#{Regexp.escape(mount)}/kobo/[0-9a-f]{64}\z}, created.dig("setup", "endpoint"))
+    end
+
     @device.update_columns(base_url: escaped)
     detail = reader
     assert_not_includes response.body, @token[1..]
