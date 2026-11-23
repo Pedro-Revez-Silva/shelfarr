@@ -16,7 +16,15 @@ class OwnedLibraryConnectionWorkflow
   VERSION_FORMAT = /\Av?\d{1,6}(?:\.\d{1,6}){0,3}(?:-(?:alpha|beta|rc|preview|dev)(?:\.\d{1,6})?)?\z/
   HEALTH_WORDS = %w[ok healthy ready degraded busy starting unhealthy].freeze
 
-  CompletionClaim = Data.define(:pending_state, :auth_state, :endpoint)
+  CompletionClaim = Data.define(:pending_state, :auth_state, :endpoint, :retired_item_ids, :retired_attributes)
+  RETIRED_ATTRIBUTES = %w[
+    companion_version provider_version last_synced_at last_sync_error backlog_backup_decided_at
+    automatic_backup_enabled automatic_backup_user_id automatic_backup_enabled_at next_scheduled_sync_at
+  ].freeze
+  UNDELIVERED_CAUSES = [
+    Errno::ECONNREFUSED, Errno::EHOSTUNREACH, Errno::ENETUNREACH, SocketError, Net::OpenTimeout,
+    OutboundUrlGuard::BlockedUrlError
+  ].freeze
   ConnectionTest = Data.define(:status, :companion_version, :libation_version, :health_status, :error)
   SignInStart = Data.define(:status, :login_url, :error)
   SignInCompletion = Data.define(:status, :error)
@@ -250,8 +258,8 @@ class OwnedLibraryConnectionWorkflow
 
     connection.client.complete_auth(session_id: claim.pending_state.fetch(:session_id), response_url: response_url)
     finish_completion(claim)
-  rescue ArgumentError, LibationCompanionClient::ConnectionError => e
-    restore_completion(claim) if claim.is_a?(CompletionClaim)
+  rescue ArgumentError, LibationCompanionClient::ConnectionError, LibationCompanionClient::NotConfiguredError => e
+    restore_completion(claim, catalogue: never_sent?(e)) if claim.is_a?(CompletionClaim)
     SignInCompletion.new(status: :failed, error: e)
   rescue LibationCompanionClient::Error => e
     abandon_completion(claim) if claim.is_a?(CompletionClaim)
@@ -530,13 +538,21 @@ class OwnedLibraryConnectionWorkflow
       next :backups_waiting if account_bound_backup_state?
 
       pending_state = connection.auth_state_snapshot
+      retired_item_ids = connection.owned_library_items.active.pluck(:id)
+      retired_attributes = connection.attributes.slice(*RETIRED_ATTRIBUTES)
       reset_account_bound_catalog!(clear_auth_state: false)
       connection.update!(
         auth_session_id: "#{OwnedLibraryConnection::AUTH_START_PREFIX}#{SecureRandom.hex(16)}",
         auth_login_url: nil,
         auth_expires_at: OwnedLibraryConnection::AUTH_START_TIMEOUT.from_now
       )
-      CompletionClaim.new(pending_state: pending_state, auth_state: connection.auth_state_snapshot, endpoint: endpoint_identity)
+      CompletionClaim.new(
+        pending_state: pending_state,
+        auth_state: connection.auth_state_snapshot,
+        endpoint: endpoint_identity,
+        retired_item_ids: retired_item_ids,
+        retired_attributes: retired_attributes
+      )
     end
   end
 
@@ -548,17 +564,29 @@ class OwnedLibraryConnectionWorkflow
     end
   end
 
-  def restore_completion(claim)
+  def restore_completion(claim, catalogue:)
     connection.with_lock do
       connection.reload
       next unless connection.auth_state_snapshot == claim.auth_state
 
+      now = Time.current
+      if catalogue
+        connection.owned_library_items.where(id: claim.retired_item_ids, active: false)
+          .update_all(active: true, absent_since: nil, updated_at: now)
+        connection.update_columns(claim.retired_attributes.merge("updated_at" => now))
+      end
       connection.update!(
         auth_session_id: claim.pending_state.fetch(:session_id),
         auth_login_url: claim.pending_state.fetch(:login_url),
         auth_expires_at: claim.pending_state.fetch(:expires_at)
       )
     end
+  end
+
+  def never_sent?(error)
+    return true unless error.is_a?(LibationCompanionClient::ConnectionError)
+
+    error.cause.nil? || UNDELIVERED_CAUSES.any? { |cause| error.cause.is_a?(cause) }
   end
 
   def abandon_completion(claim)

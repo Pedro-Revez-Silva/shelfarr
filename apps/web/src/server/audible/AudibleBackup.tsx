@@ -547,12 +547,12 @@ function SyncSection({ data, run, busy }: { data: Audible; run: Run; busy: boole
           {data.sync.action}
         </button>
       </div>
-      {data.existing_backup.prompt && data.existing_backup.available ? <ExistingBackupPrompt run={run} busy={busy} /> : null}
+      {data.existing_backup.prompt && data.existing_backup.available ? <ExistingBackupPrompt run={run} busy={busy} locked={data.existing_backup.locked} /> : null}
     </Section>
   );
 }
 
-function ExistingBackupPrompt({ run, busy }: { run: Run; busy: boolean }) {
+function ExistingBackupPrompt({ run, busy, locked }: { run: Run; busy: boolean; locked: boolean }) {
   return (
     <div className="audible-prompt">
       <h5>Back up your existing Audible library?</h5>
@@ -560,7 +560,7 @@ function ExistingBackupPrompt({ run, busy }: { run: Run; busy: boolean }) {
       <p className="field-warning">
         <span aria-hidden="true">⚠ </span>A full backup can take a long time and use a lot of bandwidth and disk space. Subscription titles, files already here, uncertain matches and titles tried before are skipped.
       </p>
-      <ExistingBackupForm run={run} busy={busy} confirmText="I understand this queues every eligible personal backup and continues in the background." />
+      <ExistingBackupForm run={run} busy={busy} locked={locked} confirmText="I understand this queues every eligible personal backup and continues in the background." />
       <p>
         <button type="button" className="button button--subtle" disabled={busy} onClick={() => run({ kind: "dismiss_existing" })}>
           Not now
@@ -571,7 +571,7 @@ function ExistingBackupPrompt({ run, busy }: { run: Run; busy: boolean }) {
   );
 }
 
-function ExistingBackupForm({ run, busy, confirmText }: { run: Run; busy: boolean; confirmText: string }) {
+function ExistingBackupForm({ run, busy, locked, confirmText }: { run: Run; busy: boolean; locked: boolean; confirmText: string }) {
   const scope = useScope();
   const [confirmed, setConfirmed] = useState(false);
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -579,6 +579,7 @@ function ExistingBackupForm({ run, busy, confirmText }: { run: Run; busy: boolea
     if (busy || !confirmed) return;
     run({ kind: "back_up_existing" }, () => setConfirmed(false));
   };
+  if (locked) return <p className="field-hint">Finish the current Audible sign-in before backing up the existing library.</p>;
   return (
     <form className="settings-form audible-form" method="post" onSubmit={submit} aria-label="Queue the existing-library backup">
       <div className="check-field">
@@ -710,7 +711,7 @@ function ExistingBackupStatus({ data, run, busy }: { data: Audible; run: Run; bu
           Shelfarr found purchases that may be eligible. <a href="#audible-sync">Review and confirm under Library sync</a>.
         </p>
       ) : existing.available ? (
-        <ExistingBackupForm run={run} busy={busy} confirmText="I understand this background batch may take a long time and use a lot of bandwidth and disk space." />
+        <ExistingBackupForm run={run} busy={busy} locked={existing.locked} confirmText="I understand this background batch may take a long time and use a lot of bandwidth and disk space." />
       ) : (
         <p className="field-hint">No unattempted purchased audiobooks are left to check.</p>
       )}

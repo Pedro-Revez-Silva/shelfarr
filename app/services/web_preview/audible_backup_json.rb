@@ -183,6 +183,7 @@ module WebPreview
       {
         available: summary.backlog_backup_available,
         prompt: summary.backlog_backup_prompt,
+        locked: summary.auth_active?,
         total: summary.backlog_backup_total,
         remaining: summary.backlog_backup_remaining,
         processed: summary.backlog_backup_processed,

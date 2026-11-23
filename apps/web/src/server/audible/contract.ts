@@ -62,6 +62,7 @@ const audibleFields = {
   existing_backup: z.object({
     available: z.boolean(),
     prompt: z.boolean(),
+    locked: z.boolean(),
     total: z.number().int().nonnegative(),
     remaining: z.number().int().nonnegative(),
     processed: z.number().int().nonnegative(),

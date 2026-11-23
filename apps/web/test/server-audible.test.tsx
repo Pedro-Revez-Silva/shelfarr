@@ -33,7 +33,7 @@ function state(overrides: Partial<Audible> = {}): Audible {
     sync: { state: "succeeded", recoverable: false, job_recorded: false, refreshing: true, started_at: null, last_synced_at: "2026-11-23T09:00:00Z", error: null, action: "Sync library", available: true },
     library: { total: 3, purchased: 2, subscription: 1 },
     active_backups: { total: 0, counts: [] },
-    existing_backup: { available: true, prompt: false, total: 0, remaining: 0, processed: 0, counts: [] },
+    existing_backup: { available: true, prompt: false, locked: false, total: 0, remaining: 0, processed: 0, counts: [] },
     automation: {
       scheduled_sync_enabled: false,
       interval_minutes: 1440,
@@ -251,7 +251,7 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
   test("the first-sync prompt queues the existing library only after the box is ticked, and Not now puts it off", async () => {
     const user = userEvent.setup();
     const prompted = state({ existing_backup: { ...state().existing_backup, prompt: true } });
-    const running = state({ existing_backup: { available: true, prompt: false, total: 4, remaining: 3, processed: 1, counts: [{ status: "pending", count: 3 }, { status: "completed", count: 1 }] }, working: true });
+    const running = state({ existing_backup: { available: true, prompt: false, locked: false, total: 4, remaining: 3, processed: 1, counts: [{ status: "pending", count: 3 }, { status: "completed", count: 1 }] }, working: true });
     const server = adminServer(prompted)
       .on("POST", /\/admin\/audible\/existing_backup$/, () => answer(running, "4 existing Audible purchases added to the background backup queue. Libation processes one title at a time."))
       .on("POST", /\/admin\/audible\/existing_backup\/dismiss$/, () => answer(state(), "Existing-library backup skipped for now. You can start it later under Automation."));
@@ -468,5 +468,13 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(section("audible-sync").textContent).not.toContain("Connected to the Libation companion");
     reply.resolve(answer(current, "Audible library sync queued."));
     expect(await within(section("audible-sync")).findByText("Audible library sync queued.")).toBeTruthy();
+  });
+
+  test("while a sign-in is waiting the existing-library batch says to finish it instead of offering the form", async () => {
+    const pending = { ...state().sign_in, state: "pending" as const, login_url: LOGIN, sign_in_token: TOKEN, expires_at: "2099-01-01T00:00:00Z" };
+    await openLibrary(adminServer(state({ sign_in: pending, existing_backup: { ...state().existing_backup, prompt: true, locked: true } })));
+    const sync = section("audible-sync");
+    expect(within(sync).queryByRole("button", { name: "Queue eligible backups" })).toBeNull();
+    expect(sync.textContent).toContain("Finish the current Audible sign-in before backing up the existing library.");
   });
 });

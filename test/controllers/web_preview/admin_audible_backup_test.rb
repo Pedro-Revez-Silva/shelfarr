@@ -555,7 +555,7 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     VCR.turned_off do
       stub_accounts
       body = state
-      assert_equal({ "available" => true, "prompt" => true, "total" => 0, "remaining" => 0, "processed" => 0, "counts" => [] }, body.fetch("existing_backup"))
+      assert_equal({ "available" => true, "prompt" => true, "locked" => false, "total" => 0, "remaining" => 0, "processed" => 0, "counts" => [] }, body.fetch("existing_backup"))
 
       write :post, web_preview_api_admin_audible_existing_backup_path, { confirm: "1" }
       assert_response :bad_request
@@ -707,7 +707,11 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
 
     proof = pending_sign_in(connection)
     offline = Object.new
-    offline.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED" }
+    offline.define_singleton_method(:complete_auth) do |**|
+      raise Errno::ECONNREFUSED
+    rescue Errno::ECONNREFUSED
+      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED"
+    end
     assert_equal :failed, completing_with(offline, connection, proof).status
     assert_equal "companion-session-7", connection.reload.auth_session_id
     assert connection.auth_pending?
@@ -789,7 +793,11 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
       rescue ActiveRecord::RecordNotFound => e
         e
       end
-      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Net::ReadTimeout"
+      begin
+        raise Net::ReadTimeout
+      rescue Net::ReadTimeout
+        raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Net::ReadTimeout"
+      end
     end
     assert_equal :failed, completing_with(slow, connection, proof).status
     travel_back
@@ -821,6 +829,51 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert connection.reload.auth_pending?
     assert title.reload.active?
     assert_equal "pending", waiting.reload.status
+  end
+
+  test "a completion that never reached Libation puts back the catalogue and automation it retired" do
+    connection = create_connection(last_synced_at: 2.hours.ago, scheduled_sync_enabled: true)
+    connection.update!(automatic_backup_enabled: true, automatic_backup_user: @admin)
+    before = connection.reload.attributes.slice(*OwnedLibraryConnectionWorkflow::RETIRED_ATTRIBUTES)
+    title = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Kept purchase", ownership_type: "purchased")
+    proof = pending_sign_in(connection)
+    refused = Object.new
+    refused.define_singleton_method(:complete_auth) do |**|
+      raise Errno::ECONNREFUSED
+    rescue Errno::ECONNREFUSED
+      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Errno::ECONNREFUSED"
+    end
+    assert_equal :failed, completing_with(refused, connection, proof).status
+    assert title.reload.active?
+    assert_nil title.absent_since
+    assert_equal before, connection.reload.attributes.slice(*OwnedLibraryConnectionWorkflow::RETIRED_ATTRIBUTES)
+    assert connection.auth_pending?
+    assert_equal "companion-session-7", connection.auth_session_id
+  end
+
+  test "Test catches the token the version request used even when the file changes right before and after it is read" do
+    file = File.join(@audiobook_output_path, "bridge.token")
+    File.write(file, "first-token-1100aa\n")
+    with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
+      connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
+      sign_in_as(@admin)
+      original = OutboundUrlGuard.method(:validate!)
+      rotating = lambda do |url, **options|
+        File.write(file, "1.2.3\n") if url.end_with?("/version")
+        original.call(url, **options)
+      end
+      VCR.turned_off do
+        stub_request(:get, "#{connection.url}/health").to_return(status: 200, body: { status: "ok" }.to_json)
+        stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer 1.2.3" }).to_return do
+          File.write(file, "last-token-3300cc\n")
+          { status: 200, body: { companionVersion: "1.2.3", libationVersion: "14.2.0" }.to_json }
+        end
+        stub_request(:get, "#{connection.url}/v1/accounts").to_return(status: 200, body: { accounts: [] }.to_json)
+        OutboundUrlGuard.stub(:validate!, rotating) { write :post, web_preview_api_admin_audible_test_path }
+      end
+      assert_equal "Connected to the Libation companion (14.2.0); status: ok.", response.parsed_body.dig("outcome", "message")
+      assert_equal [ nil, "14.2.0" ], [ connection.reload.companion_version, connection.provider_version ]
+    end
   end
 
   test "an address that is not an https Amazon or Audible page is refused before anything is claimed or sent" do
