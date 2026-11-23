@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
@@ -38,17 +38,19 @@ export function DownloadsPage() {
   const [removing, setRemoving] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const account = guard.account;
+  const latest = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!offline) return;
+    const request = ++latest.current;
     try {
       const next = await unchangedOr(offline.boot, HIDDEN, () => list(offline, account));
-      if (guard.isActive()) {
+      if (request === latest.current && guard.isActive()) {
         setListing(next);
         setFailed(false);
       }
     } catch {
-      setFailed(true);
+      if (request === latest.current) setFailed(true);
     }
   }, [offline, account, guard]);
 

@@ -280,6 +280,37 @@ describe("going offline straight after the Rails session changed", () => {
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
   });
 
+  test("online, a listing read that spanned a marker change never replaces a newer listing", async () => {
+    const store = await accountAWithSavedBook();
+    withRegisteredWorker();
+    const cookies = new EventTarget();
+    Object.defineProperty(globalThis, "cookieStore", { value: cookies, configurable: true });
+    restores.push(() => Reflect.deleteProperty(globalThis, "cookieStore"));
+    let release: (value: boolean) => void = () => undefined;
+    let asked = 0;
+    const held = new Promise<boolean>((resolve) => (release = resolve));
+    const storage = Object.getOwnPropertyDescriptor(navigator, "storage");
+    Object.defineProperty(navigator, "storage", { value: { persisted: () => (asked++ === 0 ? held : Promise.resolve(true)) }, configurable: true });
+    restores.push(() => (storage ? Object.defineProperty(navigator, "storage", storage) : Reflect.deleteProperty(navigator, "storage")));
+    const server = new FakeServer()
+      .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600, offline_continuity: "mA" } }))
+      .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: "5" } }));
+    renderApp(server, store);
+    await waitFor(() => expect(asked).toBe(1));
+    setMarker("mA2");
+    expect(await store.confirm(confirmed("5", "mA2", Date.now()))).toBe(true);
+    await act(async () => {
+      cookies.dispatchEvent(Object.assign(new Event("change"), { changed: [{ name: NAME, value: "mA2" }], deleted: [] }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(await screen.findByRole("heading", { name: "Account A's Private Book" })).toBeTruthy();
+    await act(async () => {
+      release(true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.getByRole("heading", { name: "Account A's Private Book" })).toBeTruthy();
+  });
+
   test("an open offline page hides A's books as soon as the browser reports the marker changed, without waiting for storage", async () => {
     const store = await accountAWithSavedBook();
     const cookies = new EventTarget();
