@@ -186,7 +186,6 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     }, body.fetch("connection"))
     assert_equal "not_ready", body.dig("sign_in", "state")
     assert_equal "never_synced", body.dig("sync", "state")
-    assert_equal "unsaved", body.fetch("catalogue_generation")
     assert_equal false, body.dig("sync", "available")
     assert_equal %w[us uk australia canada france germany india italy japan spain], body.fetch("marketplaces").map { |entry| entry.fetch("value") }
     assert_equal [ 60, 360, 720, 1_440, 4_320, 10_080 ], body.dig("automation", "intervals").map { |entry| entry.fetch("minutes") }
@@ -888,25 +887,34 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_not_includes response.body, "title-token-77aa"
   end
 
-  test "the state and the catalogue carry the same catalogue generation, which a token replacement or a changed title moves" do
+  test "the catalogue carries the state's revision, which a changed title, a queued batch or a token replacement moves" do
     connection = create_connection(last_synced_at: 1.hour.ago)
     title = connection.owned_library_items.create!(external_id: "B0GENE0001", title: "Dune", authors: [ "Frank Herbert" ], ownership_type: "purchased")
     stub_accounts
-    before = state.fetch("catalogue_generation")
+    before = state.fetch("revision")
     preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
     assert_equal before, response.parsed_body.fetch("generation")
     assert_match(/\A[0-9a-f]{16}\z/, before)
 
     travel 1.minute do
       title.update!(title: "Dune (Unabridged)")
-      assert_not_equal before, state.fetch("catalogue_generation")
+      assert_not_equal before, state.fetch("revision")
     end
-    moved = state.fetch("catalogue_generation")
+    renamed = state.fetch("revision")
 
-    body = write :put, web_preview_api_admin_audible_companion_path, { companion: { url: COMPANION, bridge_token: "replacement-#{"b" * 32}", enabled: true, allow_private_network: false, timeout_seconds: 30 } }
-    assert_response :success
-    assert_not_equal moved, body.fetch("catalogue_generation")
+    body = write :post, web_preview_api_admin_audible_existing_backup_path, { confirm: true }
+    assert_equal [ "pending" ], title.owned_media_imports.pluck(:status)
+    assert_not_equal renamed, body.fetch("revision")
     preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
-    assert_equal [ body.fetch("catalogue_generation"), 0 ], response.parsed_body.values_at("generation", "total")
+    row = response.parsed_body.fetch("items").first
+    assert_equal [ body.fetch("revision"), "waiting", false ], [ response.parsed_body.fetch("generation"), row.fetch("state"), row.dig("action", "available") ]
+    queued = body.fetch("revision")
+
+    OwnedMediaImport.delete_all
+    body = write :put, web_preview_api_admin_audible_companion_path, { companion: { url: COMPANION, bridge_token: "replacement-#{"b" * 32}", enabled: true, allow_private_network: false, timeout_seconds: 30 } }
+    assert_equal "Audible backup connection saved.", body.dig("outcome", "message")
+    assert_not_equal queued, body.fetch("revision")
+    preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+    assert_equal [ body.fetch("revision"), 0 ], response.parsed_body.values_at("generation", "total")
   end
 end

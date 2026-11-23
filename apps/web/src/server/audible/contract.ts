@@ -81,7 +81,6 @@ const audibleFields = {
   marketplaces: z.array(z.object({ value: z.string(), label: z.string() })),
   working: z.boolean(),
   revision: z.string().regex(/^(?:unsaved|[0-9a-f]{16})$/),
-  catalogue_generation: z.string().regex(/^(?:unsaved|[0-9a-f]{16})$/),
 };
 
 export const audibleSchema = z.object(audibleFields);

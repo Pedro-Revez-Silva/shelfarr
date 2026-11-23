@@ -54,7 +54,6 @@ function state(overrides: Partial<Audible> = {}): Audible {
     ],
     working: false,
     revision: "0000000000000000",
-    catalogue_generation: "1111111111111111",
     ...overrides,
   };
 }
@@ -71,7 +70,7 @@ function catalogue(overrides: Partial<Catalogue> = {}): Catalogue {
     pages: 2,
     total: 3,
     synced: true,
-    generation: "1111111111111111",
+    generation: current.revision,
     items: [
       item(),
       item({ id: "6", title: "Dune Local", state: "possible_match", action: { label: "Back up separately", separate_edition: true, available: true } }),
@@ -565,10 +564,10 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     const user = userEvent.setup();
     let failing = false;
     const server = adminServer()
-      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => (failing ? { status: 500, body: { error: "server_error" } } : { body: catalogue({ generation: current.catalogue_generation }) }))
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => (failing ? { status: 500, body: { error: "server_error" } } : { body: catalogue({ generation: current.revision }) }))
       .on("PUT", /\/admin\/audible\/companion$/, () => {
         failing = true;
-        return answer(state({ revision: "4444444444444444", catalogue_generation: "5555555555555555" }), "Audible backup connection saved.");
+        return answer(state({ revision: "4444444444444444" }), "Audible backup connection saved.");
       });
     await openLibrary(server);
     const list = section("audible-catalogue");
@@ -594,10 +593,10 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     const later = deferred<{ body: Catalogue }>();
     let saved = false;
     const server = adminServer()
-      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, (request) => (saved && request.path.includes("q=Dune") ? later.promise : { body: catalogue({ generation: current.catalogue_generation }) }))
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, (request) => (saved && request.path.includes("q=Dune") ? later.promise : { body: catalogue({ generation: current.revision }) }))
       .on("PUT", /\/admin\/audible\/companion$/, () => {
         saved = true;
-        return answer(state({ revision: "4444444444444444", catalogue_generation: "5555555555555555" }), "Audible backup connection saved.");
+        return answer(state({ revision: "4444444444444444" }), "Audible backup connection saved.");
       });
     await openLibrary(server, "?audible_q=Dune");
     const list = section("audible-catalogue");
@@ -614,9 +613,8 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await user.type(within(list).getByLabelText("Title or author"), "Dune");
     await user.click(within(list).getByRole("button", { name: "Filter" }));
     await waitFor(() => expect(server.called("GET", /audible\/catalogue\?q=Dune/).length).toBeGreaterThan(1));
-    expect(within(list).getByText("The catalogue changed. Reading it again…")).toBeTruthy();
     expect(backUp().disabled).toBe(true);
-    later.resolve({ body: catalogue({ generation: "5555555555555555" }) });
+    later.resolve({ body: catalogue({ generation: "4444444444444444" }) });
     await waitFor(() => expect(backUp().disabled).toBe(false));
   });
 
@@ -633,5 +631,32 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(reads).toBe(2);
     expect(server.called("GET", /admin\/audible$/)).toHaveLength(2);
+  });
+  test("titles cannot be backed up while the catalogue is read again after the existing library is queued", async () => {
+    const user = userEvent.setup();
+    const prompted = state({ existing_backup: { ...state().existing_backup, prompt: true } });
+    const queued = state({ existing_backup: { available: true, prompt: false, total: 1, remaining: 1, processed: 0, counts: [{ status: "pending", count: 1 }] }, working: true, revision: "8888888888888888" });
+    const later = deferred<{ body: Catalogue }>();
+    let confirmed = false;
+    const server = adminServer(prompted, () => catalogue())
+      .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, () => (confirmed ? later.promise : { body: catalogue() }))
+      .on("POST", /\/admin\/audible\/existing_backup$/, () => {
+        confirmed = true;
+        return answer(queued, "1 existing Audible purchase added to the background backup queue. Libation will process one title at a time.");
+      });
+    await openLibrary(server);
+    const list = section("audible-catalogue");
+    const backUp = () => within(list).getByRole("button", { name: "Back up Dune" }) as HTMLButtonElement;
+    await within(list).findByRole("button", { name: "Back up Dune" });
+    const sync = section("audible-sync");
+    await user.click(within(sync).getByLabelText(/I understand this queues every eligible personal backup/));
+    await user.click(within(sync).getByRole("button", { name: "Queue eligible backups" }));
+    expect(await screen.findByText(/added to the background backup queue/)).toBeTruthy();
+    expect(backUp().disabled).toBe(true);
+    await user.click(backUp());
+    expect(server.called("POST", /items\/\d+\/backup$/)).toHaveLength(0);
+    later.resolve({ body: catalogue({ generation: "8888888888888888", items: [item({ state: "waiting", origin: "existing", action: { label: "Waiting in batch…", separate_edition: false, available: false } })] }) });
+    expect(await within(list).findByRole("button", { name: "Waiting in batch… Dune" })).toBeTruthy();
+    expect(within(list).queryByRole("button", { name: "Back up Dune" })).toBeNull();
   });
 });

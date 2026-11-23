@@ -29,15 +29,6 @@ module WebPreview
       Digest::SHA256.hexdigest(marks.join("|")).first(16)
     end
 
-    def self.catalogue_generation(connection)
-      return "unsaved" unless connection.persisted?
-
-      titles = connection.owned_library_items.active
-      marks = [ connection.last_synced_at, titles.count, titles.maximum(:updated_at) ]
-        .map { |mark| mark.respond_to?(:utc) ? mark.utc.iso8601(6) : mark.to_s }
-      Digest::SHA256.hexdigest(marks.join("|")).first(16)
-    end
-
     def self.sign_in_host?(host)
       host = host.to_s.downcase
       LibationCompanionClient::AUTH_HOST_SUFFIXES.any? { |suffix| host == suffix || host.end_with?(".#{suffix}") }
@@ -64,7 +55,7 @@ module WebPreview
       @user = user
     end
 
-    def state(summary, revision:, catalogue_generation:)
+    def state(summary, revision:)
       {
         connection: connection_json(summary),
         sign_in: sign_in_json(summary),
@@ -75,8 +66,7 @@ module WebPreview
         automation: automation_json,
         marketplaces: LibationCompanionClient::AUDIBLE_MARKETPLACES.map { |value| { value: value, label: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(value) } },
         working: working?(summary),
-        revision: revision,
-        catalogue_generation: catalogue_generation
+        revision: revision
       }
     end
 

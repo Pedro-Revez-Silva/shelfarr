@@ -736,7 +736,7 @@ function CatalogueBody({ data, run, busy }: { data: Audible; run: Run; busy: boo
   const query = search.audible_q ?? "";
   const page = Number(search.audible_page ?? "1");
   const catalogue = useCatalogue(query, page, data.working);
-  const currency = useCurrentCatalogue(catalogue, data.catalogue_generation);
+  const currency = useCurrentCatalogue(catalogue, data.revision);
   const [text, setText] = useState(query);
   const [shownQuery, setShownQuery] = useState(query);
   if (shownQuery !== query) {
@@ -794,18 +794,14 @@ function CatalogueBody({ data, run, busy }: { data: Audible; run: Run; busy: boo
         <Loading label="Loading the Audible catalogue…" />
       ) : (
         <>
-          {currency.current ? null : currency.stuck ? (
+          {currency.stuck ? (
             <p className="refresh-problem" role="alert">
               <span aria-hidden="true">⚠ </span>The catalogue changed and has not been read again. These titles may be out of date, so they cannot be backed up.{" "}
               <button type="button" className="button button--subtle" onClick={currency.retry}>
                 Try again
               </button>
             </p>
-          ) : (
-            <p className="field-hint" role="status">
-              The catalogue changed. Reading it again…
-            </p>
-          )}
+          ) : null}
           <CatalogueList catalogue={catalogue.data} stale={catalogue.isPlaceholderData} current={currency.current} run={run} busy={busy} onPage={(next) => go(query, next)} onShowAll={() => go("", 1)} />
         </>
       )}

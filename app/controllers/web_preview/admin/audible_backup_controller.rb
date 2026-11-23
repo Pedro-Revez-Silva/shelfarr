@@ -31,7 +31,7 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     raise Malformed, "Send the filter as text" unless [ query, page ].all? { |value| value.nil? || value.is_a?(String) }
     raise Malformed, "Send the page as a positive number" unless page.blank? || page.match?(/\A[1-9]\d{0,8}\z/)
 
-    generation = WebPreview::AudibleBackupJson.catalogue_generation(connection)
+    generation = WebPreview::AudibleBackupJson.revision(connection)
     render json: { account: web_preview_account_id, **presenter.catalogue(workflow.catalogue(query: query, page: page), generation: generation) }
   end
 
@@ -178,9 +178,8 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
 
   def answer(auth_pending: false, **extra)
     revision = WebPreview::AudibleBackupJson.revision(connection)
-    generation = WebPreview::AudibleBackupJson.catalogue_generation(connection)
     summary = workflow.summary(auth_pending: auth_pending, quiet_during_backlog: true)
-    { account: web_preview_account_id, **presenter.state(summary, revision: revision, catalogue_generation: generation), **extra }
+    { account: web_preview_account_id, **presenter.state(summary, revision: revision), **extra }
   end
 
   def body
