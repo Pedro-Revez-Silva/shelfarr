@@ -81,7 +81,7 @@ export function useAddPerson() {
 export function useSaveProfile(id: string, self: boolean) {
   const { api } = useServices();
   return usePeopleWrite(
-    ({ values, version }: { values: peopleApi.ProfileValues; version: string }) => peopleApi.saveProfile(api, id, values, version),
+    ({ values, version, administrators }: { values: peopleApi.ProfileValues; version: string; administrators: number | null }) => peopleApi.saveProfile(api, id, values, version, administrators),
     (answer, publish) => {
       publishPerson(answer, publish);
       if (self && answer.kind === "saved" && answer.person.user.role !== "administrator") publish.roleChanged();

@@ -64,8 +64,12 @@ module Admin
       case action_name
       when "index" then web_preview_server_category_path(category: "people", anchor: "users")
       when "new" then web_preview_server_new_person_path
-      else web_preview_server_person_path(@user) unless @user.deleted?
+      else web_preview_server_person_path(@user) unless @user.deleted? || own_classic_edit?
       end
+    end
+
+    def own_classic_edit?
+      action_name == "edit" && @user == Current.user
     end
 
     def user_params

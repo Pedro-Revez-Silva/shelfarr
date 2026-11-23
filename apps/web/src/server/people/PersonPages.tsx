@@ -219,7 +219,7 @@ function useLeaveGuard() {
     withResolver: true,
   });
   const dialog = blocker.status === "blocked" ? <LeaveDialog count={count} onStay={blocker.reset} onLeave={blocker.proceed} /> : null;
-  return { mark, dialog };
+  return { mark, dialog, unsaved: count > 0 };
 }
 
 function useGate() {
@@ -250,8 +250,9 @@ export function NewPersonPage() {
 function NewPersonView() {
   useDocumentTitle("Add a person · Server");
   const gate = useGate();
+  const admin = useIsAdministrator();
   return (
-    <ServerShell current="people" settings={undefined} headingId="new-person-heading" title="Add a person" summary="Give someone their own sign-in to this server." rail>
+    <ServerShell current="people" settings={undefined} headingId="new-person-heading" title="Add a person" summary="Give someone their own sign-in to this server." rail={admin}>
       <BackToPeople />
       {gate ?? <NewPersonForm />}
     </ServerShell>
@@ -355,27 +356,28 @@ export function PersonPage() {
 
 function PersonView({ id }: { id: string }) {
   const gate = useGate();
+  const admin = useIsAdministrator();
   const person = usePerson(id);
   const record = person.data?.user;
   useDocumentTitle(`${record?.name ?? "Person"} · Server`);
   const summary = record ? `${ROLE_LABELS[record.role]} · ${record.username}${record.self ? " · This is you" : ""}` : "";
   const body =
     gate ??
-    (person.data ? (
-      <PersonCards envelope={person.data} />
-    ) : isRemovedPerson(person.error) ? (
+    (isRemovedPerson(person.error) ? (
       <EmptyState title="This person is not on this server">
         <p>They may have been removed. Their requests and history stay on the server.</p>
       </EmptyState>
     ) : person.isError && failureKind(person.error) === "not_found" ? (
       <AdministratorsOnly />
+    ) : person.data ? (
+      <PersonCards envelope={person.data} />
     ) : person.isError ? (
       <ErrorPanel error={person.error} onRetry={() => void person.refetch()} />
     ) : (
       <Loading label="Loading this person…" />
     ));
   return (
-    <ServerShell current="people" settings={undefined} headingId="person-heading" title={record?.name ?? "Person"} summary={summary} rail>
+    <ServerShell current="people" settings={undefined} headingId="person-heading" title={record?.name ?? "Person"} summary={summary} rail={admin}>
       <BackToPeople />
       {body}
     </ServerShell>
@@ -385,7 +387,7 @@ function PersonView({ id }: { id: string }) {
 function PersonCards({ envelope }: { envelope: PersonEnvelope }) {
   const person = envelope.user;
   const arrival = useArrival(person.id);
-  const { mark, dialog } = useLeaveGuard();
+  const { mark, dialog, unsaved } = useLeaveGuard();
   const markProfile = useCallback((dirty: boolean) => mark("profile", dirty), [mark]);
   const markPassword = useCallback((dirty: boolean) => mark("password", dirty), [mark]);
   return (
@@ -398,7 +400,7 @@ function PersonCards({ envelope }: { envelope: PersonEnvelope }) {
       <DetailsCard person={person} />
       <ProfileCard envelope={envelope} onDirtyChange={markProfile} />
       {person.self ? <OwnPasswordCard /> : <PasswordCard person={person} onDirtyChange={markPassword} />}
-      <RemoveCard person={person} />
+      <RemoveCard person={person} unsaved={unsaved} />
       {dialog}
     </>
   );
@@ -431,7 +433,7 @@ function DetailsCard({ person }: { person: PersonRecord }) {
   );
 }
 
-type Confirmation = { values: ProfileValues; version: string; shown: string };
+type Confirmation = { values: ProfileValues; version: string; shown: string; administrators: number };
 
 function sameValues(left: ProfileValues, right: ProfileValues): boolean {
   return PROFILE_FIELDS.every((field) => left[field] === right[field]);
@@ -453,25 +455,31 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   const dirty = PROFILE_FIELDS.some((field) => values[field] !== base[field]);
   const version = dirty && startedOn ? startedOn : base.version;
   const demotingSelf = base.self && base.role === "administrator" && values.role === "member";
-  const confirming = confirmation !== null && demotingSelf && !writing && confirmation.version === version && confirmation.shown === base.version && sameValues(confirmation.values, values);
+  const confirming =
+    confirmation !== null && demotingSelf && !writing && confirmation.version === version && confirmation.shown === base.version && confirmation.administrators === envelope.administrators && sameValues(confirmation.values, values);
 
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => {
-    if (!dirty && startedOn !== null) setStartedOn(null);
-  }, [dirty, startedOn]);
+    if (dirty) return;
+    if (startedOn !== null) setStartedOn(null);
+    if (Object.keys(edits).length > 0) setEdits({});
+  }, [dirty, startedOn, edits]);
+  useEffect(() => {
+    if (confirmation !== null && !confirming) setConfirmation(null);
+  }, [confirmation, confirming]);
 
   const edit = (field: keyof ProfileValues, value: string) => {
     setStartedOn((current) => current ?? base.version);
-    setEdits((current) => ({ ...current, [field]: value }));
+    setEdits(({ [field]: _replaced, ...rest }) => (value === base[field] ? rest : { ...rest, [field]: value }));
     clear();
     if (errors[field]) setErrors(({ [field]: _cleared, ...rest }) => rest);
   };
 
-  const send = (sent: ProfileValues, sentVersion: string) => {
+  const send = (sent: ProfileValues, sentVersion: string, administrators: number | null) => {
     setConfirmation(null);
     save.mutate(
-      { values: sent, version: sentVersion },
+      { values: sent, version: sentVersion, administrators },
       {
         onSuccess: (answer) => {
           if (answer.kind === "saved") {
@@ -515,10 +523,10 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
       return;
     }
     if (demotingSelf) {
-      setConfirmation({ values, version, shown: base.version });
+      setConfirmation({ values, version, shown: base.version, administrators: envelope.administrators });
       return;
     }
-    send(values, version);
+    send(values, version, null);
   };
 
   const discard = () => {
@@ -547,7 +555,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
         {confirming ? (
           <DemoteSelf
             alone={envelope.administrators <= 1}
-            onConfirm={() => send(confirmation.values, confirmation.version)}
+            onConfirm={() => send(confirmation.values, confirmation.version, confirmation.administrators)}
             onCancel={() => {
               setConfirmation(null);
               saveButton.current?.focus();
@@ -624,7 +632,7 @@ function PasswordCard({ person, onDirtyChange }: { person: PersonRecord; onDirty
         if (answer.kind === "saved") {
           element.reset();
           setTyped(false);
-          say("success", `New password set. ${answer.person.user.name} can sign in with it now. They stay signed in where they already are, and two-factor sign-in, if they use it, still asks for their code.`);
+          say("success", `New password set for ${answer.person.user.name}. Browsers where they are already signed in stay signed in.`);
           return;
         }
         if (answer.kind === "rejected") {
@@ -664,7 +672,7 @@ function PasswordCard({ person, onDirtyChange }: { person: PersonRecord; onDirty
   );
 }
 
-function RemoveCard({ person }: { person: PersonRecord }) {
+function RemoveCard({ person, unsaved }: { person: PersonRecord; unsaved: boolean }) {
   const navigate = useNavigate();
   const remove = useRemovePerson(person.id);
   const writing = usePeopleWriting();
@@ -702,7 +710,7 @@ function RemoveCard({ person }: { person: PersonRecord }) {
       summary="Removing signs them out of every browser and stops their apps, API tokens and Kobo readers from connecting. Their Hardcover follows are paused and their Hardcover account is disconnected. Their requests and reading history stay on the server, and their username can be given to a new account. This cannot be undone in Shelfarr."
     >
       <div className="settings-card-actions">
-        <RemoveZone key={person.version} label={`Remove ${person.name}`} confirmLabel="Remove" question={`Remove ${person.name} (${person.username}) from this server?`} busy={remove.isPending || writing} onRemove={confirm} />
+        <RemoveZone key={person.version} label={`Remove ${person.name}`} confirmLabel="Remove" question={`Remove ${person.name} (${person.username}) from this server?${unsaved ? " Your unsaved changes on this page will be lost." : ""}`} busy={remove.isPending || writing} onRemove={confirm} />
       </div>
       <Status said={said} />
     </SettingsCard>

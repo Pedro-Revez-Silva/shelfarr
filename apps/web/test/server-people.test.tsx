@@ -3,7 +3,8 @@ import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ServerSettings } from "../src/server/contract";
 import { peopleSchema, personEnvelopeSchema, type PersonEnvelope, type PersonRecord, type PersonRow } from "../src/server/people/contract";
-import { ACCOUNT, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
+import { libraryServer, renderGo, signedIn } from "./go-helpers";
+import { ACCOUNT, deferred, renderApp, session, standardServer, type FakeServer } from "./helpers";
 
 afterEach(cleanup);
 
@@ -47,6 +48,14 @@ function peopleServer(records: Record<string, PersonRecord> = { [SELF.id]: SELF,
 
 function card(name: string): HTMLElement {
   return screen.getByRole("heading", { name, level: 3 }).closest("section") as HTMLElement;
+}
+
+async function eventually(reached: () => boolean) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (reached()) return;
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  }
+  throw new Error("The page did not reach the expected state");
 }
 
 async function typeInto(container: HTMLElement, label: string, text: string) {
@@ -220,7 +229,7 @@ describe("People in the Rails preview", () => {
     await userEvent.click(within(profile).getByRole("button", { name: "Make me a member" }));
 
     await waitFor(() => expect(services.guard.getState().status).toBe("access_changed"));
-    expect(server.called("PUT", /\/admin\/users\/12$/).map((request) => request.body)).toEqual([{ name: "Ada R", username: "ada", role: "member", version: "v-12-1" }]);
+    expect(server.called("PUT", /\/admin\/users\/12$/).map((request) => request.body)).toEqual([{ name: "Ada R", username: "ada", role: "member", version: "v-12-1", administrators: 1 }]);
   }, 15000);
 
   test("your own record keeps password and removal with Account", async () => {
@@ -242,7 +251,7 @@ describe("People in the Rails preview", () => {
     await typeInto(password, "Confirm new password", SECRET);
     await userEvent.click(within(password).getByRole("button", { name: "Set password" }));
 
-    expect(await within(password).findByText("New password set. Rowan Ash can sign in with it now. They stay signed in where they already are, and two-factor sign-in, if they use it, still asks for their code.")).toBeTruthy();
+    expect(await within(password).findByText("New password set for Rowan Ash. Browsers where they are already signed in stay signed in.")).toBeTruthy();
     expect(server.called("PUT", /\/password$/).map((request) => request.body)).toEqual([{ password: SECRET, password_confirmation: SECRET }]);
     expect((within(password).getByLabelText("New password") as HTMLInputElement).value).toBe("");
     expect(document.body.textContent).not.toContain(SECRET);
@@ -370,10 +379,86 @@ describe("People in the Rails preview", () => {
     expect((await screen.findByRole("link", { name: "Manage people" })).getAttribute("href")).toBe("/sub/preview/server/people#users");
   });
 
-  test("other runtimes do not offer the people pages", async () => {
-    const server = new FakeServer().on("GET", /\/api\/v1\/session$/, () => ({ body: session(ADMIN) }));
+  test("an address that is not a person's number is not a page", async () => {
+    const server = peopleServer();
     renderApp({ server, url: "/sub/preview/server/people/users/abc" });
     expect(await screen.findByRole("heading", { name: "That page is not part of this preview" })).toBeTruthy();
     expect(server.requests.filter((request) => request.path.includes("/admin/users"))).toEqual([]);
+  });
+
+  test("the experimental Go server does not offer the people pages", async () => {
+    const server = libraryServer(() => signedIn());
+    renderGo({ server, url: "/preview/server/people/users/5" });
+    expect(await screen.findByRole("heading", { name: "That page is not part of this preview" })).toBeTruthy();
+    expect(server.requests.filter((request) => request.path.includes("/admin/users"))).toEqual([]);
+  });
+
+  test("a member opening a person's address sees no Server navigation", async () => {
+    renderApp({ server: standardServer(), url: "/sub/preview/server/people/users/5" });
+    expect(await screen.findByRole("heading", { name: "Only administrators can see this page" })).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Server" })).toBeNull();
+  });
+
+  test("an edit put back to the saved value does not hide a newer value read later", async () => {
+    let current = ROWAN;
+    const server = peopleServer()
+      .on("GET", /\/admin\/users\/5$/, () => ({ body: envelope(current) }))
+      .on("PUT", /\/admin\/users\/5$/, (request) => ({ body: envelope({ ...current, ...(request.body as object), version: "v-5-3" }) }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    const profile = card("Name, username and role");
+    await typeInto(profile, "Name", "Rowan Oak");
+    await typeInto(profile, "Name", "Rowan Ash");
+    expect(within(profile).queryByText("Unsaved changes")).toBeNull();
+
+    current = { ...ROWAN, name: "Rowan Elm", version: "v-5-2" };
+    await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
+    await waitFor(() => expect((within(profile).getByLabelText("Name") as HTMLInputElement).value).toBe("Rowan Elm"));
+    await userEvent.click(within(profile).getByRole("radio", { name: "Administrator" }));
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+
+    expect(await within(profile).findByText("Changes saved.")).toBeTruthy();
+    expect(server.called("PUT", /\/admin\/users\/5$/).map((request) => request.body)).toEqual([{ name: "Rowan Elm", username: "rowan", role: "administrator", version: "v-5-2" }]);
+  });
+
+  test("the question about making yourself a member is withdrawn when the number of administrators changes, and does not come back", async () => {
+    let administrators = 2;
+    const server = peopleServer().on("GET", /\/admin\/users\/12$/, () => ({ body: envelope(SELF, administrators) }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/12" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    const profile = card("Name, username and role");
+    await userEvent.click(within(profile).getByRole("radio", { name: "Member" }));
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+    expect(within(profile).getByRole("group", { name: /Make yourself a member\?/ }).textContent).toContain("Another administrator can make you an administrator again.");
+
+    administrators = 1;
+    await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
+    await eventually(() => profile.querySelector(".people-confirm") === null);
+    await typeInto(profile, "Name", "Ada R");
+    await typeInto(profile, "Name", "Ada Reader");
+    expect(profile.querySelector(".people-confirm")).toBeNull();
+
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+    expect(profile.querySelector(".people-confirm")?.textContent).toContain("No one else is an administrator");
+    expect(server.called("PUT", /\/admin\/users\/12$/)).toEqual([]);
+  });
+
+  test("a person removed elsewhere replaces the page that was already showing them", async () => {
+    let gone = false;
+    const server = peopleServer().on("GET", /\/admin\/users\/5$/, () => (gone ? { status: 404, body: { error: "user_not_found" } } : { body: envelope(ROWAN) }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    gone = true;
+    await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
+    expect(await screen.findByRole("heading", { name: "This person is not on this server" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+  });
+
+  test("the removal question says when unsaved changes on the page will be lost", async () => {
+    renderApp({ server: peopleServer(), url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    await typeInto(card("Name, username and role"), "Name", "Rowan Oak");
+    await userEvent.click(within(card("Remove")).getByRole("button", { name: "Remove Rowan Ash" }));
+    expect(within(card("Remove")).getByRole("group", { name: "Remove Rowan Ash (rowan) from this server? Your unsaved changes on this page will be lost." })).toBeTruthy();
   });
 });

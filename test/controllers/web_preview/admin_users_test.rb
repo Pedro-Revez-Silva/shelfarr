@@ -205,7 +205,8 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
       { name: "" } => { "name" => [ "can't be blank" ] },
       { password: "short", password_confirmation: "short" } => { "password" => [ "is too short (minimum is 12 characters)", "must include at least one lowercase letter, one uppercase letter, and one number" ] },
       { password_confirmation: "Different-Secret-42" } => { "password_confirmation" => [ "doesn't match Password" ] },
-      { password: "", password_confirmation: "" } => { "password" => [ "can't be blank" ] }
+      { password: "", password_confirmation: "" } => { "password" => [ "can't be blank" ] },
+      { password: "   ", password_confirmation: "   " } => { "password" => [ "can't be blank" ] }
     }
 
     cases.each do |overrides, errors|
@@ -313,13 +314,102 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
     other_person(username: "boss", role: :admin)
     version = read_user(@admin).fetch("version")
 
-    body = save_profile(@admin, version: version, role: "member")
+    save_profile(@admin, version: version, role: "member")
+    assert_response :bad_request
+    assert @admin.reload.admin?
+
+    body = save_profile(@admin, version: version, role: "member", administrators: 2)
 
     assert_response :success
     assert_equal [ "member", true, 1 ], [ body.dig("user", "role"), body.dig("user", "self"), body.fetch("administrators") ]
     assert @admin.reload.user?
     preview_get web_preview_api_admin_users_path, user: @admin
     assert_response :not_found
+  end
+
+  test "making yourself a member is refused when the number of administrators changed since it was confirmed" do
+    second = other_person(username: "second", role: :admin)
+    before = admin_get(web_preview_api_admin_user_path(@admin))
+    second.update!(role: :user)
+
+    body = save_profile(@admin, version: before.dig("user", "version"), role: "member", administrators: before.fetch("administrators"))
+
+    assert_response :conflict
+    assert_equal [ "user_changed", 1 ], [ body.fetch("error"), body.fetch("administrators") ]
+    assert @admin.reload.admin?
+  end
+
+  def changing_while(method_id, owner: WebPreview::Admin::UsersController, change:, &request)
+    happened = false
+    trace = TracePoint.new(:call) do |event|
+      next if happened || event.defined_class != owner || event.method_id != method_id
+
+      happened = true
+      change.call
+    end
+    trace.enable(&request)
+    assert happened, "the change was not made during #{method_id}"
+  end
+
+  test "an administrator demoted or removed while their write is on its way changes nothing" do
+    changes = { demote: -> { User.find(@admin.id).update!(role: :user) }, remove: -> { User.find(@admin.id).soft_delete! } }
+    writes = {
+      create: ->(_target, _version) { create_person(username: "late_arrival") },
+      update: ->(target, version) { save_profile(target, version: version, name: "Written late") },
+      password: ->(target, _version) { write(:put, web_preview_api_admin_user_password_path(target), { password: NEW_PASSWORD, password_confirmation: NEW_PASSWORD }) },
+      remove: ->(target, version) { write(:post, web_preview_api_admin_user_remove_path(target), { version: version }) }
+    }
+    changes.each do |change_name, change|
+      writes.each do |action, request|
+        @admin.update_columns(role: User.roles[:admin], deleted_at: nil)
+        target = other_person(username: "#{action}_#{change_name}")
+        version = read_user(target).fetch("version")
+        before = snapshot(target)
+
+        changing_while(action, change: change) { request.call(target, version) }
+
+        assert_response :not_found, "#{action} after #{change_name}"
+        assert_equal before, snapshot(target), "#{action} after #{change_name}"
+        assert_nil User.active.find_by(username: "late_arrival")
+      end
+    end
+  end
+
+  test "a removal and a password set check the person again inside the write" do
+    target = other_person
+    version = read_user(target).fetch("version")
+    changing_while(:soft_delete!, owner: User, change: -> { User.find(target.id).update!(name: "Renamed meanwhile") }) do
+      write(:post, web_preview_api_admin_user_remove_path(target), { version: version })
+    end
+    assert_response :conflict
+    assert_equal "Renamed meanwhile", response.parsed_body.dig("user", "name")
+    assert_not target.reload.deleted?
+
+    changing_while(:password, change: -> { User.find(target.id).soft_delete! }) do
+      write(:put, web_preview_api_admin_user_password_path(target), { password: NEW_PASSWORD, password_confirmation: NEW_PASSWORD })
+    end
+    assert_response :not_found
+    assert target.reload.authenticate(OLD_PASSWORD)
+
+    other = other_person(username: "other")
+    version = read_user(other).fetch("version")
+    @admin.update!(role: :user)
+    write(:post, web_preview_api_admin_user_remove_path(other), { version: version })
+    assert_response :not_found
+    assert_not other.reload.deleted?
+  end
+
+  test "values are read only from the request body, never from the address" do
+    target = other_person
+    sign_in_as(@admin)
+
+    put web_preview_api_admin_user_password_path(target, password: NEW_PASSWORD, password_confirmation: NEW_PASSWORD), params: "{}", headers: json_headers
+    assert_response :bad_request
+    post web_preview_api_admin_users_path(name: "Q", username: "query", role: "member", password: NEW_PASSWORD, password_confirmation: NEW_PASSWORD), params: "{}", headers: json_headers
+    assert_response :bad_request
+
+    assert target.reload.authenticate(OLD_PASSWORD)
+    assert_nil User.find_by(username: "query")
   end
 
   test "an administrator who is removed meanwhile is signed out and changes nothing" do
@@ -353,6 +443,7 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
     sign_in_as(@admin)
     cases = {
       [ "", "" ] => { "password" => [ "can't be blank" ] },
+      [ "   ", "   " ] => { "password" => [ "can't be blank" ] },
       [ "lowercaseonly1234", "lowercaseonly1234" ] => { "password" => [ "must include at least one lowercase letter, one uppercase letter, and one number" ] },
       [ NEW_PASSWORD, "Something-Else-99" ] => { "password_confirmation" => [ "doesn't match Password" ] },
       [ "#{'Aa1' * 30}", "#{'Aa1' * 30}" ] => { "password" => [ "is too long" ] }
@@ -413,10 +504,13 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
 
   test "passwords are never answered back or written to the log" do
     target = other_person
+    target.update!(oidc_provider: "fixture-provider", oidc_uid: "synthetic-oidc-subject-41")
     log = StringIO.new
     previous = Rails.logger
-    Rails.logger = ActiveSupport::Logger.new(log)
+    previous_record_logger = ActiveRecord::Base.logger
+    Rails.logger = ActiveSupport::Logger.new(log).tap { |logger| logger.level = :debug }
     ActionController::Base.logger = Rails.logger
+    ActiveRecord::Base.logger = Rails.logger
     begin
       sign_in_as(@admin)
       answers = []
@@ -429,10 +523,12 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
     ensure
       Rails.logger = previous
       ActionController::Base.logger = previous
+      ActiveRecord::Base.logger = previous_record_logger
     end
 
     text = answers.to_json
-    [ NEW_PASSWORD, "short-secret", target.reload.password_digest ].each do |secret|
+    assert_includes log.string, "UPDATE \"users\""
+    [ NEW_PASSWORD, "short-secret", target.reload.password_digest, "synthetic-oidc-subject-41" ].each do |secret|
       assert_not_includes text, secret
       assert_not_includes log.string, secret
     end
@@ -463,6 +559,11 @@ class WebPreview::AdminUsersTest < ActionDispatch::IntegrationTest
     assert_redirected_to web_preview_server_person_path(@member)
     get edit_admin_user_path(@member)
     assert_redirected_to web_preview_server_person_path(@member)
+    get admin_user_path(@admin)
+    assert_redirected_to web_preview_server_person_path(@admin)
+    get edit_admin_user_path(@admin)
+    assert_response :success
+    assert_select "h1", "Edit User"
 
     get admin_user_path(gone)
     assert_response :success

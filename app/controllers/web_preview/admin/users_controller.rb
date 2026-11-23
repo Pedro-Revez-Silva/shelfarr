@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
+  class Refused < StandardError
+    attr_reader :outcome
+
+    def initialize(outcome)
+      @outcome = outcome
+      super(outcome.to_s)
+    end
+  end
+
   ROLES = { "member" => "user", "administrator" => "admin" }.freeze
   PASSWORD_FIELDS = %w[password password_confirmation].freeze
   OWN_ACCOUNT = {
@@ -20,24 +29,36 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
   end
 
   def create
-    values = text_values(%w[name username role] + PASSWORD_FIELDS)
+    values = body_values(%w[name username role] + PASSWORD_FIELDS)
     role = ROLES[values&.dig("role")]
     return render_error("invalid_request", :bad_request) unless role
 
     user = User.new(values.slice("name", "username", *PASSWORD_FIELDS).merge(role: role))
-    return render_user(user, status: :created) if user.save
+    return render_rejection(user) unless acceptable?(user, values["password"])
 
-    render_rejection(user)
+    outcome = User.transaction do
+      next :forbidden unless acting_administrator?
+
+      user.save ? :saved : :rejected
+    end
+    @user = user
+    answer_write(outcome, status: :created)
   end
 
   def update
-    values = text_values(%w[name username role version])
+    values = body_values(%w[name username role version])
     role = ROLES[values&.dig("role")]
     return render_error("invalid_request", :bad_request) unless role
 
+    administrators_seen = request.request_parameters["administrators"]
+    demoting_self = @user == Current.user && @user.admin? && role == "user"
+    return render_error("invalid_request", :bad_request) if demoting_self && !administrators_seen.is_a?(Integer)
+
     outcome = @user.with_lock do
+      next :forbidden unless acting_administrator?
       next :removed if @user.deleted?
       next :changed unless values["version"] == version(@user)
+      next :changed if demoting_self && administrators_seen != User.active.admin.count
 
       @user.update(name: values["name"], username: values["username"], role: role) ? :saved : :rejected
     end
@@ -45,33 +66,32 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
   end
 
   def password
-    values = text_values(PASSWORD_FIELDS)
+    values = body_values(PASSWORD_FIELDS)
     return render_error("invalid_request", :bad_request) unless values
     return render_own_account(:password) if @user == Current.user
 
-    if values["password"].empty?
+    if values["password"].blank?
       @user.errors.add(:password, :blank)
       return render_rejection(@user)
     end
-    return render_user(@user) if @user.update(values)
+    outcome = @user.with_lock do
+      next :forbidden unless acting_administrator?
+      next :removed if @user.deleted?
 
-    render_rejection(@user)
+      @user.update(values) ? :saved : :rejected
+    end
+    answer_write(outcome)
   end
 
   def remove
-    values = text_values(%w[version])
+    values = body_values(%w[version])
     return render_error("invalid_request", :bad_request) unless values
     return render_own_account(:remove) if @user == Current.user
 
-    outcome = @user.with_lock do
-      next :removed if @user.deleted?
-
-      values["version"] == version(@user) ? :current : :changed
-    end
-    return answer_write(outcome) unless outcome == :current
-
-    @user.soft_delete!
+    @user.soft_delete! { confirm_removal(values["version"]) }
     render json: { account: web_preview_account_id, removed: @user.id.to_s }
+  rescue Refused => refusal
+    answer_write(refusal.outcome)
   end
 
   private
@@ -81,16 +101,35 @@ class WebPreview::Admin::UsersController < WebPreview::Admin::BaseController
     render_missing unless @user
   end
 
-  def text_values(fields)
-    values = fields.index_with { |field| params[field] }
+  def body_values(fields)
+    body = request.request_parameters
+    values = fields.index_with { |field| body[field] }
     values if values.values.all?(String)
   end
 
-  def answer_write(outcome)
+  def acting_administrator?
+    User.active.admin.exists?(id: Current.user.id)
+  end
+
+  def acceptable?(user, password)
+    user.valid?
+    user.errors.add(:password, :blank) if password.blank? && !user.errors.added?(:password, :blank)
+    user.errors.empty?
+  end
+
+  def confirm_removal(expected_version)
+    @user.lock!
+    raise Refused, :forbidden unless acting_administrator?
+    raise Refused, :removed if @user.deleted?
+    raise Refused, :changed unless expected_version == version(@user)
+  end
+
+  def answer_write(outcome, status: :ok)
     case outcome
-    when :saved then render_user(@user)
+    when :saved then render_user(@user, status: status)
     when :rejected then render_rejection(@user)
     when :removed then render_missing
+    when :forbidden then render_error("not_found", :not_found)
     else render json: { account: web_preview_account_id, error: "user_changed", **user_json(@user.reload) }, status: :conflict
     end
   end

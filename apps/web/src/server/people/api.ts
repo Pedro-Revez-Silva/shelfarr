@@ -56,7 +56,7 @@ export async function addPerson(api: ApiClient, values: NewPerson): Promise<Pers
   return personAnswer(await api.request<PersonEnvelope | PersonRejected | OwnAccount>({ path: "/admin/users", schema: personEnvelopeSchema, rejection: refusal, method: "POST", body: values, account }));
 }
 
-export async function saveProfile(api: ApiClient, id: string, values: ProfileValues, version: string): Promise<PersonAnswer> {
+export async function saveProfile(api: ApiClient, id: string, values: ProfileValues, version: string, administrators: number | null): Promise<PersonAnswer> {
   return personAnswer(
     await api.request<PersonEnvelope | PersonRejected | OwnAccount | PersonChanged>({
       path: personPath(id),
@@ -64,7 +64,7 @@ export async function saveProfile(api: ApiClient, id: string, values: ProfileVal
       rejection: refusal,
       conflict: personChangedSchema,
       method: "PUT",
-      body: { ...values, version },
+      body: administrators === null ? { ...values, version } : { ...values, version, administrators },
       account,
     }),
   );
