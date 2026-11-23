@@ -1670,7 +1670,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     assert messages.none? { |message| message.include?(private_error) }
   end
 
-  test "destroy with torrent removal contacts the client after the request is gone and leaves a job another request owns" do
+  test "destroy with torrent removal leaves a client job that another request now owns" do
     client = DownloadClient.create!(name: "Shared job guard #{SecureRandom.hex(4)}", client_type: :qbittorrent, url: "http://127.0.0.1:8080", enabled: true, priority: 0)
     @pending_request.downloads.create!(name: "Mine", status: :queued, download_client: client, external_id: "own-hash")
     @pending_request.downloads.create!(name: "Old", status: :failed, download_client: client, external_id: "shared-hash")
@@ -1689,7 +1689,7 @@ class RequestsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to requests_path
-    assert_equal [ [ "own-hash", false, false ] ], seen
+    assert_equal [ [ "own-hash", false, true ] ], seen
     assert owner.reload.downloading?
   end
 

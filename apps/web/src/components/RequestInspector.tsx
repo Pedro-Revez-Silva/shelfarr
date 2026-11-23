@@ -159,7 +159,7 @@ function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; w
           <p id={questionId}>Cancel this request?</p>
           <div id={consequenceId} className="withdraw-consequence">
             <p>It is removed from your requests and Shelfarr stops working on it. Files already in the library stay.</p>
-            {offer.starting ? <p>A download is being handed to the download client right now. Shelfarr stops it, and the download client removes it together with anything it already downloaded.</p> : null}
+            {offer.starting ? <p>A download is starting right now. Shelfarr stops it, and if it was going to a download client, the client removes it together with anything it already downloaded.</p> : null}
             {offer.client_jobs > 0 ? (
               <div className="check-field">
                 <input id={jobsId} type="checkbox" checked={removeJobs} disabled={withdraw.isPending} aria-describedby={jobsHintId} onChange={(event) => setRemoveJobs(event.currentTarget.checked)} />

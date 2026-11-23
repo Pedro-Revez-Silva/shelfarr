@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import type { ManualLink, RequestCopyChoice, RequestWithdrawal } from "./api/client";
 import { useServices } from "./services";
 
@@ -36,10 +36,12 @@ export function useRemoveRequest(requestId: string) {
 export function useWithdrawRequest(requestId: string) {
   const { api } = useServices();
   const navigate = useNavigate();
+  const router = useRouter();
+  const page = `/requests/${requestId}`;
   return useRequestChange(
     requestId,
     (withdrawal: RequestWithdrawal) => api.withdrawRequest(requestId, withdrawal),
-    (answer) => (answer.request.status === "removed" ? void navigate({ to: "/requests", replace: true }) : undefined),
+    (answer) => (answer.request.status === "removed" && router.state.location.pathname === page ? void navigate({ to: "/requests", replace: true }) : undefined),
   );
 }
 

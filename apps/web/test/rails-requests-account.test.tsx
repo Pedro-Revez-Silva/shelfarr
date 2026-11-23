@@ -279,12 +279,12 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
     await waitFor(() => expect(server.called("POST", /withdraw$/).map((call) => call.body)).toEqual([{ expected_revision: first, remove_client_jobs: false }]));
   });
 
-  test("a download being handed to the client is named with what the client does to it, and several jobs are counted", async () => {
+  test("a download that is starting is named with what a client does to it, and several jobs are counted", async () => {
     renderApp({ server: railsServer(offering(2, first, true)), url: "/sub/preview/requests/7" });
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Cancel request" }));
     const question = screen.getByRole("group", { name: "Cancel this request?" });
-    expect(within(question).getByText("A download is being handed to the download client right now. Shelfarr stops it, and the download client removes it together with anything it already downloaded.")).toBeTruthy();
+    expect(within(question).getByText("A download is starting right now. Shelfarr stops it, and if it was going to a download client, the client removes it together with anything it already downloaded.")).toBeTruthy();
     expect(within(question).queryByText("No download client is contacted.")).toBeNull();
     await user.click(within(question).getByRole("checkbox", { name: "Also remove its 2 downloads from the download client" }));
     expect(within(question).getByRole("button", { name: "Yes, cancel it and remove the 2 downloads" })).toBeTruthy();
@@ -322,6 +322,21 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
     await waitFor(() => expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull());
     await act(async () => answer());
     await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  }, 15000);
+
+  test("an answer that arrives after the person moved to another page leaves them there", async () => {
+    let answer: () => void = () => undefined;
+    const server = railsServer(offering(1)).on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
+    const { router } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    await act(async () => void router.navigate({ to: "/find" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/find"));
+    await act(async () => answer());
+    await waitFor(() => expect(server.called("POST", /withdraw$/)).toHaveLength(1));
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
+    expect(router.state.location.pathname).toBe("/find");
   }, 15000);
 
   test("a question left open while the request changes is withdrawn and forgotten, so it never returns by itself", async () => {

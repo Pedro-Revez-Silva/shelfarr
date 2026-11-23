@@ -264,14 +264,14 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert @mine.reload.downloading?
   end
 
-  test "a revision built for a request awaiting direct recovery is refused instead of stopping it and deleting its client files" do
+  test "a revision built for a request awaiting direct recovery is refused with the model's reason instead of stopping it and deleting its client files" do
     download = torrent
     @mine.downloads.create!(name: "Direct", status: :downloading, direct_reservation_token: "reservation")
     sign_in_as(@member)
     assert_nil withdrawal
     crafted = WebPreview::RequestJson.withdrawal_offer(@mine.reload).fetch(:revision)
     assert_no_enqueued_jobs(only: DirectDownloadRecoveryJob) do
-      assert_equal "request_changed", withdraw(revision: crafted, remove_torrent: false).fetch("error")
+      assert_equal({ "error" => "cannot_remove", "message" => @mine.direct_acquisition_recovery_message }, withdraw(revision: crafted, remove_torrent: false))
     end
     assert_response :conflict
     assert_empty @removed
@@ -279,7 +279,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert download.reload.downloading?
   end
 
-  test "a download being handed to the client is named in the offer, and one that starts after the read is refused" do
+  test "a download that is starting is named in the offer, and one that starts after the read is refused" do
     sign_in_as(@member)
     revision = withdrawal.fetch("revision")
     dispatching = @mine.downloads.create!(name: "Dispatching", status: :downloading, download_client: @client)
@@ -293,20 +293,18 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert_empty @removed
   end
 
-  test "a direct download being fetched is not described as a download client handoff" do
-    result = @mine.search_results.create!(guid: "gutenberg-1", title: "The Dispossessed", source: SearchResult::SOURCE_GUTENBERG, download_url: "https://files.example.test/d.epub")
-    @mine.downloads.create!(name: "Direct fetch", status: :downloading, search_result: result)
-    sign_in_as(@member)
-    assert_equal [ 0, false ], withdrawal.values_at("client_jobs", "starting")
-  end
-
-  test "a client that fails unexpectedly still lets the request go, as an unreachable one does, instead of failing the page" do
-    torrent(external_id: "crashing-hash")
+  test "a removal interrupted at the client keeps the claimed request and its client job, so it can be submitted again" do
+    torrent(external_id: "interrupted-hash")
     adapter = Object.new
-    adapter.define_singleton_method(:remove_torrent) { |*| raise ArgumentError, "adapter bug" }
+    adapter.define_singleton_method(:remove_torrent) { |*| raise ArgumentError, "interrupted" }
     sign_in_as(@member)
-    withdraw(remove_torrent: true, adapter: adapter)
+    assert_raises(ArgumentError) { withdraw(remove_torrent: true, adapter: adapter) }
+    assert @mine.reload.failed?
+    offer = withdrawal
+    assert_equal 1, offer.fetch("client_jobs")
+    withdraw(revision: offer.fetch("revision"), remove_torrent: true)
     assert_response :success
+    assert_equal [ [ "interrupted-hash", false ] ], @removed
     assert_not Request.exists?(@mine.id)
   end
 
@@ -322,24 +320,24 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert owner.reload.downloading?
   end
 
-  test "the client is only contacted once the request is gone, so a second tab or an upload can't act on it in between" do
-    torrent(status: :failed, external_id: "failed-hash")
-    @mine.update!(status: :failed)
+  test "a request started again while its client job was being removed is kept, with the reason, and nothing of the new attempt is destroyed" do
+    torrent(external_id: "old-hash")
     sign_in_as(@member)
     revision = withdrawal.fetch("revision")
     request_id = @mine.id
-    seen = []
     adapter = Object.new
-    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
-      seen << [ external_id, delete_files, Request.exists?(request_id) ]
+    adapter.define_singleton_method(:remove_torrent) do |*, delete_files:|
+      restarted = Request.find(request_id)
+      restarted.downloads.create!(name: "New attempt", status: :queued)
+      restarted.update!(status: :downloading)
       true
     end
-    withdraw(revision: revision, remove_torrent: true, adapter: adapter)
-    assert_response :success
-    assert_equal [ [ "failed-hash", false, false ] ], seen
-    withdraw(revision: revision, remove_torrent: true, adapter: adapter)
-    assert_response :not_found
-    assert_equal 1, seen.size
+    assert_no_difference -> { cancellations } do
+      assert_equal({ "error" => "cannot_remove", "message" => RequestWithdrawal::REOPENED }, withdraw(revision: revision, remove_torrent: true, adapter: adapter))
+    end
+    assert_response :conflict
+    assert @mine.reload.downloading?
+    assert_equal [ "New attempt" ], @mine.downloads.where(status: :queued).pluck(:name)
   end
 
   test "a requester promoted to administrator just before the claim is refused under the lock" do

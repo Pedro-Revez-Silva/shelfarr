@@ -23,9 +23,9 @@ module WebPreview
 
     def self.withdrawal_offer(request)
       facts = RequestWithdrawal.facts(request)
-      shown = [ request.id, request.user_id, request.status, request.direct_acquisition_recovery_pending?, facts.client_dispatch_in_progress,
+      shown = [ request.id, request.user_id, request.status, request.direct_acquisition_recovery_pending?, facts.dispatch_in_progress,
         facts.client_jobs.map { |job| [ job.download_id, job.download_client_id ] } ]
-      { revision: Digest::SHA256.hexdigest(shown.to_json).first(32), client_jobs: facts.client_jobs.size, starting: facts.client_dispatch_in_progress }
+      { revision: Digest::SHA256.hexdigest(shown.to_json).first(32), client_jobs: facts.client_jobs.size, starting: facts.dispatch_in_progress }
     end
 
     def initialize(request, viewer:, routes:, opens_in_browser:)
