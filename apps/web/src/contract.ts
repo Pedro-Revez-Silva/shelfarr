@@ -684,8 +684,6 @@ export const bookSearchSchema = z.object({
 });
 export type BookSearch = z.infer<typeof bookSearchSchema>;
 
-export const notificationTypes = ["request_completed", "request_failed", "request_attention"] as const;
-
 export const notificationSchema = z.object({
   id: identifier,
   type: z.string().min(1),

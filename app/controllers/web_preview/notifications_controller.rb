@@ -15,9 +15,7 @@ class WebPreview::NotificationsController < WebPreview::APIController
 
     answer do
       notification = notifications.find(params[:id])
-      changed = notification.read? ? 0 : 1
-      notification.mark_as_read!
-      changed
+      notifications.unread.where(id: notification.id).update_all(read_at: Time.current)
     end
   end
 

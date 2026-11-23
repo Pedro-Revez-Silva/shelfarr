@@ -244,20 +244,43 @@ describe("notifications in the Rails preview", () => {
     expect(await screen.findByRole("heading", { name: /^Book Ready/ })).toBeTruthy();
   }, 15000);
 
-  test("the bell is read again when the inbox's unread count differs from it", async () => {
+  test("the bell takes the inbox's newer unread count without waiting for another session read", async () => {
     const list = deferred<{ body: unknown }>();
     const server = railsServer({ list: () => list.promise });
     let sessions = 0;
     server.on("GET", /\/api\/v1\/session$/, () => {
       sessions += 1;
-      return { body: session({ notifications: { url: "/sub/notifications", unread: sessions === 1 ? 7 : 2 } }) };
+      return { body: session({ notifications: { url: "/sub/notifications", unread: 7 } }) };
     });
     renderApp({ server, url: "/sub/preview/notifications" });
     expect(await screen.findByRole("link", { name: "Notifications, 7 unread" })).toBeTruthy();
     await act(async () => list.resolve({ body: inbox(SAMPLE) }));
     expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
-    expect(sessions).toBe(2);
+    expect(sessions).toBe(1);
   });
+
+  test("a confirmed write sets the bell even when the session cannot be read again", async () => {
+    let read = false;
+    let sessions = 0;
+    const server = railsServer({ list: () => ({ body: inbox(read ? SAMPLE.map((entry) => ({ ...entry, read_at: entry.read_at ?? "2026-11-21T08:00:00.000Z" })) : SAMPLE) }) });
+    server.on("GET", /\/api\/v1\/session$/, () => {
+      sessions += 1;
+      return sessions === 1 ? { body: session({ notifications: { url: "/sub/notifications", unread: 2 } }) } : { status: 503, body: { error: "server_busy" } };
+    });
+    server.on("POST", /\/notifications\/read$/, () => {
+      read = true;
+      return { body: { account: ACCOUNT, unread: 0, total: 3, changed: 2 } };
+    });
+    renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
+    await user.click(await screen.findByRole("button", { name: "Mark all as read" }));
+    expect(await screen.findByText("All notifications marked as read.")).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Notifications" })).toBeTruthy();
+    await waitFor(() => expect(sessions).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("link", { name: "Notifications" })).toBeTruthy();
+    expect(screen.getByText("All read · 3 notifications")).toBeTruthy();
+  }, 15000);
 
   test("an older read that answers after an action never replaces the newer inbox", async () => {
     let cleared = false;

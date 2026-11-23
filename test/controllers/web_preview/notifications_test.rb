@@ -126,6 +126,17 @@ class WebPreview::NotificationsTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a stored alert of a type this version does not know is listed and can still be marked read" do
+    unknown = notify(@member, at: 1.minute.ago)
+    unknown.update_column(:notification_type, "future_kind")
+    with_preview_users(@member) do
+      sign_in_as(@member)
+      assert_equal [ "future_kind" ], listing(@member).fetch("items").map { |item| item.fetch("type") }
+      assert_equal({ "account" => @member.id.to_s, "unread" => 0, "total" => 1, "changed" => 1 }, command(web_preview_api_notification_read_path(unknown), user: @member))
+      assert unknown.reload.read?
+    end
+  end
+
   test "mark all as read and clear all change only what the page had shown, never a newer alert or another account's" do
     older = notify(@member, at: 3.minutes.ago)
     shown = notify(@member, at: 2.minutes.ago)
