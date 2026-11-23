@@ -158,12 +158,12 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     assert_equal({
       "id" => @local.id.to_s, "version" => version(@local), "name" => "Local provider", "url" => "http://provider.test", "url_hidden" => false,
       "api_key_saved" => true, "enabled" => true, "allow_private_network" => false, "supports_ebooks" => true, "supports_audiobooks" => true,
-      "supports_comicbooks" => false, "timeout_seconds" => 30, "priority" => 0, "position" => 1
+      "supports_comicbooks" => false, "timeout_seconds" => 30, "priority" => 0
     }, body.dig("providers", 0))
     assert_equal({
       "id" => @comics.id.to_s, "version" => version(@comics), "name" => "Comic shelf", "url" => "http://comics.test/api", "url_hidden" => true,
       "api_key_saved" => false, "enabled" => false, "allow_private_network" => true, "supports_ebooks" => false, "supports_audiobooks" => false,
-      "supports_comicbooks" => true, "timeout_seconds" => 90, "priority" => 1, "position" => 3
+      "supports_comicbooks" => true, "timeout_seconds" => 90, "priority" => 1
     }, body.dig("providers", 2))
     assert_equal({ "enabled" => true, "allow_private_network" => false, "supports_ebooks" => true, "supports_audiobooks" => true, "supports_comicbooks" => false, "timeout_seconds" => 30 },
       body.fetch("defaults"))
@@ -229,6 +229,8 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     before = snapshot
     [
       { provider: { name: [ "Odd" ], url: "http://x.test" } },
+      { provider: { name: "Odd", url: "http://x.test", api_key: nil } },
+      { provider: { name: nil, url: "http://x.test" } },
       { provider: { name: "Odd", url: "http://x.test", enabled: "maybe" } },
       { provider: { name: "Odd", url: "http://x.test", timeout_seconds: 30.5 } },
       { provider: "name=Odd" },
@@ -240,6 +242,8 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     end
 
     write :put, provider_path(@local), { provider: { name: "No version" } }
+    assert_response :bad_request
+    write :put, provider_path(@local), { version: version(@local), provider: { name: "Renamed", api_key: nil } }
     assert_response :bad_request
     write :delete, provider_path(@local), {}
     assert_response :bad_request
@@ -328,6 +332,15 @@ class WebPreview::AdminAcquisitionProvidersTest < ActionDispatch::IntegrationTes
     changing_while(:expected_version, change: changes[:demote]) { write :delete, provider_path(@local), { version: current } }
     assert_response :not_found
     assert AcquisitionProvider.exists?(@local.id)
+
+    @admin.update_columns(role: User.roles[:admin], deleted_at: nil)
+    sign_in_as(@admin)
+    VCR.turned_off do
+      health = stub_request(:get, "http://provider.test/health").to_return(status: 204)
+      changing_while(:find, change: changes[:demote]) { write :post, probe_path(@local) }
+      assert_response :not_found
+      assert_not_requested health
+    end
   end
 
   test "removing a provider removes it like the classic form and keeps the results it found without it" do

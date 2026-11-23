@@ -16,8 +16,7 @@ export const acquisitionProviderSchema = z.object({
   supports_audiobooks: z.boolean(),
   supports_comicbooks: z.boolean(),
   timeout_seconds: z.number().int(),
-  priority: z.number().int(),
-  position: z.number().int().positive(),
+  priority: z.number().int().nonnegative(),
 });
 export type AcquisitionProvider = z.infer<typeof acquisitionProviderSchema>;
 

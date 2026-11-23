@@ -22,13 +22,15 @@ export function providerFields(provider: AcquisitionProvider | null): { basic: S
   return {
     basic: [
       field("name", "Name", "text", "Shown in Shelfarr and beside the copies this provider finds.", { placeholder: "Local provider" }),
-      field("url", "Address", "url", "The provider's base address with http or https. It must answer POST /search and POST /acquire; Test calls GET /health.", { placeholder: "http://192.168.1.50:4567" }),
+      provider?.url_hidden
+        ? field("url", "Address", "url", `The saved address is ${provider.url} with parts that are not shown. Leave this empty to keep it, or type the whole new address.`, { placeholder: provider.url })
+        : field("url", "Address", "url", "The provider's base address with http or https. It must answer POST /search and POST /acquire; Test calls GET /health.", { placeholder: "http://192.168.1.50:4567" }),
       field("api_key", "Bearer token", "secret", "Optional. Sent as a bearer token with every call to this provider.", { configured: provider?.api_key_saved ?? false, clearable: false }),
       field(MEDIA_KEY, "Book types", "events", "Shelfarr asks this provider only for requests of the ticked types.", { options: MEDIA_TYPES.map(({ value, label }) => ({ value, label })) }),
       field("allow_private_network", "Allow private network", "toggle", "Lets this provider and the download links it returns use local addresses such as localhost or 192.168.x.x. Turn this on only for a provider on your own network."),
       field("enabled", "Use this provider", "toggle", "A turned-off provider is not searched, and copies it already found cannot be downloaded."),
     ],
-    advanced: [field("timeout_seconds", "Timeout in seconds", "number", "How long Shelfarr waits for this provider to answer a search or a download. Test waits at most 10 seconds.", { min: 1, max: 120 })],
+    advanced: [field("timeout_seconds", "Timeout in seconds", "number", "How long Shelfarr waits for this provider to answer a search or a download. Test uses this or 10 seconds, whichever is shorter.", { min: 1, max: 120 })],
   };
 }
 
@@ -46,7 +48,7 @@ export function initialProviderDraft(provider: AcquisitionProvider | null, defau
   const source = provider ?? defaults;
   return {
     name: provider?.name ?? "",
-    url: provider?.url ?? "",
+    url: provider && !provider.url_hidden ? provider.url : "",
     api_key: "",
     [MEDIA_KEY]: mediaOf(source),
     allow_private_network: source.allow_private_network,
@@ -64,4 +66,8 @@ export function providerSubmission(provider: AcquisitionProvider | null, drafts:
     for (const type of MEDIA_TYPES) values[type.attribute] = media.includes(type.value);
   }
   return values;
+}
+
+export function providerErrors(errors: { field: string; message: string }[]): { field: string; message: string }[] {
+  return errors.map((error) => (error.field === "base" ? { ...error, field: MEDIA_KEY } : error));
 }

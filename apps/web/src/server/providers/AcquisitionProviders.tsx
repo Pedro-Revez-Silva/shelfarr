@@ -20,7 +20,7 @@ import {
 } from "../downloads/DownloadManagement";
 import { useProviders, useProvidersCommand, type ProvidersCommand } from "./api";
 import type { AcquisitionProvider, Providers } from "./contract";
-import { PROVIDER_KEYS, initialProviderDraft, mediaLabels, providerFields, providerSubmission } from "./forms";
+import { PROVIDER_KEYS, initialProviderDraft, mediaLabels, providerErrors, providerFields, providerSubmission } from "./forms";
 
 const CARD_ID = "acquisition_providers";
 
@@ -159,10 +159,10 @@ function ProviderRow({
 
   useEffect(() => {
     if (!arrival) return;
-    if (arrival.edit) {
+    if (arrival.edit && !editing) {
       restart();
       setEditing(true);
-    } else {
+    } else if (!arrival.edit) {
       bringIntoView(id);
     }
   }, [arrival]);
@@ -211,7 +211,7 @@ function ProviderRow({
           ))}
           {provider.enabled ? null : <span className="badge record-off">Turned off</span>}
           {provider.allow_private_network ? <span className="badge">Private network allowed</span> : null}
-          <span>Priority {provider.position}</span>
+          <span>Priority {provider.priority + 1}</span>
           <span>Timeout {provider.timeout_seconds} s</span>
           {provider.api_key_saved ? <span>Bearer token saved</span> : null}
         </p>
@@ -290,7 +290,7 @@ function ProviderForm({
     if (advanced.some((entry) => entry.key === key)) setAdvancedOpen(true);
     focusSoon(() => {
       const target = `${scope}-${key}`;
-      return formRef.current?.querySelector<HTMLElement>(`#${CSS.escape(target)}`) ?? formRef.current?.querySelector<HTMLElement>(`[aria-describedby^="${CSS.escape(target)}-"]`);
+      return formRef.current?.querySelector<HTMLElement>(`#${CSS.escape(target)}`) ?? formRef.current?.querySelector<HTMLElement>(`input[id^="${CSS.escape(target)}-"]`);
     });
   };
 
@@ -306,7 +306,7 @@ function ProviderForm({
     const request: ProvidersCommand = provider && version ? { kind: "update", id: provider.id, version, values } : { kind: "create", values };
     command.mutate(request, {
       onSuccess: (answer) => {
-        if (answer.kind === "rejected") return form.reject(answer, PROVIDER_KEYS, focusField);
+        if (answer.kind === "rejected") return form.reject({ errors: providerErrors(answer.errors) }, PROVIDER_KEYS, focusField);
         if (answer.kind === "changed") {
           const fresh = provider ? answer.providers.providers.find((entry) => entry.id === provider.id) : undefined;
           if (fresh) onVersion?.(fresh.version);
@@ -341,6 +341,7 @@ function ProviderForm({
         onError: (error) => {
           onRemoving?.(dirtyId, false);
           form.setGeneral(commandFailureText(error));
+          if (failureKind(error) === "not_found") say("error", `${provider.name} was not removed here. ${commandFailureText(error)}`);
         },
       },
     );

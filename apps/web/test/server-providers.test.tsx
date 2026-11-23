@@ -26,12 +26,11 @@ function provider(overrides: Partial<AcquisitionProvider> = {}): AcquisitionProv
     supports_comicbooks: false,
     timeout_seconds: 30,
     priority: 0,
-    position: 1,
     ...overrides,
   };
 }
 
-const COMICS = provider({ id: "2", name: "Comic shelf", url: "http://comics.test/api", url_hidden: true, api_key_saved: false, enabled: false, allow_private_network: true, supports_ebooks: false, supports_audiobooks: false, supports_comicbooks: true, timeout_seconds: 90, priority: 1, position: 2 });
+const COMICS = provider({ id: "2", name: "Comic shelf", url: "http://comics.test/api", url_hidden: true, api_key_saved: false, enabled: false, allow_private_network: true, supports_ebooks: false, supports_audiobooks: false, supports_comicbooks: true, timeout_seconds: 90, priority: 1 });
 
 function providersFixture(overrides: Partial<Providers> = {}): Providers {
   return {
@@ -151,12 +150,32 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     expect((within(form).getByLabelText("Comics & Manga") as HTMLInputElement).checked).toBe(false);
     expect((within(form).getByLabelText("Address") as HTMLInputElement).value).toBe("http://provider.test");
 
-    await userEvent.click(within(row("Comic shelf")).getByRole("button", { name: "Edit" }));
-    expect(within(row("Comic shelf")).getByText("The saved address has parts that are not shown. Leave the address unchanged to keep them.")).toBeTruthy();
+  });
+
+  test("an address with hidden parts starts empty, is kept when left empty and replaced by whatever is typed, even its shown base", async () => {
+    const server = adminServer().on("PUT", /acquisition_providers\/2$/, () => action(providersFixture(), "Provider “Comic shelf” saved."));
+    await openSources(server);
+    const user = userEvent.setup();
+    const comics = row("Comic shelf");
+    await user.click(within(comics).getByRole("button", { name: "Edit" }));
+    const address = within(comics).getByLabelText("Address") as HTMLInputElement;
+    expect(address.value).toBe("");
+    expect(within(comics).getByText(/The saved address is http:\/\/comics\.test\/api with parts that are not shown\. Leave this empty to keep it/)).toBeTruthy();
+    await user.click(within(comics).getByLabelText("Use this provider"));
+    await user.click(within(comics).getByRole("button", { name: "Save" }));
+    await within(card()).findByText("Provider “Comic shelf” saved.");
+    await user.click(within(row("Comic shelf")).getByRole("button", { name: "Edit" }));
+    await user.type(within(row("Comic shelf")).getByLabelText("Address"), "http://comics.test/api");
+    await user.click(within(row("Comic shelf")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(server.called("PUT", /acquisition_providers\/2$/)).toHaveLength(2));
+    expect(server.called("PUT", /acquisition_providers\/2$/).map((request) => request.body)).toEqual([
+      { version: VERSION, provider: { enabled: true } },
+      { version: VERSION, provider: { url: "http://comics.test/api" } },
+    ]);
   });
 
   test("adding a provider sends the form, confirms and focuses the new row", async () => {
-    const added = providersFixture({ providers: [provider(), COMICS, provider({ id: "9", name: "Home provider", url: "http://home.test:4567", api_key_saved: true, priority: 2, position: 3 })] });
+    const added = providersFixture({ providers: [provider(), COMICS, provider({ id: "9", name: "Home provider", url: "http://home.test:4567", api_key_saved: true, priority: 2 })] });
     const server = adminServer().on("POST", /\/admin\/acquisition_providers$/, () => ({ status: 201, ...action(added, "Provider “Home provider” added.", { created: "9" }) }));
     await openSources(server);
     const user = userEvent.setup();
@@ -179,7 +198,7 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await waitFor(() => expect(document.activeElement?.textContent).toBe("Home provider"));
   });
 
-  test("a refused provider marks its fields and shows the book type rule, keeping what was typed", async () => {
+  test("a refused provider marks its fields, the book types included, keeping what was typed", async () => {
     const server = adminServer().on("POST", /acquisition_providers$/, () => ({
       status: 422,
       body: {
@@ -201,12 +220,30 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await user.type(address, "http://192.168.1.5");
     await user.click(within(form).getByRole("button", { name: "Add provider" }));
     expect(await within(form).findByText(/points to a private network address/)).toBeTruthy();
-    expect(within(form).getByRole("alert").textContent).toContain("Provider must support ebooks, audiobooks, or Comics & Manga");
+    expect(within(within(form).getByRole("group", { name: "Book types" })).getByText("Provider must support ebooks, audiobooks, or Comics & Manga")).toBeTruthy();
     expect(address.getAttribute("aria-invalid")).toBe("true");
     expect(within(form).getByText("Timeout must be less than or equal to 120")).toBeTruthy();
     expect(form.querySelector("details")?.open).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(address));
     expect((address as HTMLInputElement).value).toBe("http://192.168.1.5");
+  });
+
+  test("a provider refused only for its book types marks that group and moves focus into it", async () => {
+    const server = adminServer().on("PUT", /acquisition_providers\/1$/, () => ({
+      status: 422,
+      body: { account: ACCOUNT, error: "invalid_record", errors: [{ field: "base", message: "Provider must support ebooks, audiobooks, or Comics & Manga" }] },
+    }));
+    await openSources(server);
+    const user = userEvent.setup();
+    const local = row("Local provider");
+    await user.click(within(local).getByRole("button", { name: "Edit" }));
+    await user.click(within(local).getByLabelText("Ebooks"));
+    await user.click(within(local).getByLabelText("Audiobooks"));
+    await user.click(within(local).getByRole("button", { name: "Save" }));
+    const types = await within(local).findByRole("group", { name: "Book types" });
+    expect(within(types).getByText("Provider must support ebooks, audiobooks, or Comics & Manga")).toBeTruthy();
+    await waitFor(() => expect(document.activeElement).toBe(within(local).getByLabelText("Ebooks")));
+    expect(server.called("PUT", /acquisition_providers\/1$/)[0]!.body).toEqual({ version: VERSION, provider: { supports_ebooks: false, supports_audiobooks: false, supports_comicbooks: false } });
   });
 
   test("an edit sends only the changed fields with its version, and an out-of-date copy keeps the edits", async () => {
@@ -280,6 +317,38 @@ describe("Server ▸ Catalogues and sources ▸ Custom providers in the Rails pr
     await user.click(within(comics).getByRole("button", { name: "Remove" }));
     expect(await within(comics).findByText(/Nothing was removed: this was changed somewhere else/)).toBeTruthy();
     expect(row("Comic shelf")).toBeTruthy();
+  });
+
+  test("a removal of a provider already removed elsewhere says so after its row disappears", async () => {
+    const server = adminServer().on("DELETE", /acquisition_providers\/2$/, () => {
+      current = providersFixture({ providers: [provider()] });
+      return { status: 404, body: { error: "not_found" } };
+    });
+    await openSources(server);
+    const user = userEvent.setup();
+    const comics = row("Comic shelf");
+    await user.click(within(comics).getByRole("button", { name: "Edit" }));
+    await user.click(within(comics).getByRole("button", { name: "Remove provider" }));
+    await user.click(within(comics).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByRole("listitem", { name: "Comic shelf" })).toBeNull());
+    expect(within(card()).getByText(/Comic shelf was not removed here\. It is no longer there, or you are no longer an administrator\./)).toBeTruthy();
+  });
+
+  test("coming back to an edit address while its form has unsaved changes keeps the version the edit started from", async () => {
+    const server = adminServer().on("PUT", /acquisition_providers\/1$/, () => ({ status: 409, body: { ...current, error: "provider_changed" } }));
+    const { router } = await openSources(server, "#acquisition-provider-1-edit");
+    const user = userEvent.setup();
+    const local = row("Local provider");
+    const name = await within(local).findByLabelText("Name");
+    await user.type(name, " mine");
+    current = providersFixture({ providers: [provider({ version: "v2", name: "Theirs" }), COMICS] });
+    await user.click(within(row("Local provider")).getByRole("button", { name: "Test" }));
+    await screen.findByRole("heading", { name: "Theirs", level: 5 });
+    await router.navigate({ to: "/server/$category", params: { category: "sources" }, hash: "acquisition_providers" });
+    await router.navigate({ to: "/server/$category", params: { category: "sources" }, hash: "acquisition-provider-1-edit" });
+    await user.click(within(row("Theirs")).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(server.called("PUT", /acquisition_providers\/1$/)).toHaveLength(1));
+    expect(server.called("PUT", /acquisition_providers\/1$/)[0]!.body).toEqual({ version: VERSION, provider: { name: "Local provider mine" } });
   });
 
   test("old addresses open the provider's form, the add form, the row or the card once the list has loaded", async () => {

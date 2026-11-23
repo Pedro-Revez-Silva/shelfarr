@@ -7,16 +7,15 @@ module WebPreview
     end
 
     def representation
-      providers = AcquisitionProvider.by_priority.to_a
       {
-        providers: providers.each_with_index.map { |provider, index| provider_json(provider, index + 1) },
+        providers: AcquisitionProvider.by_priority.map { |provider| provider_json(provider) },
         defaults: defaults_json
       }
     end
 
     private
 
-    def provider_json(provider, position)
+    def provider_json(provider)
       address = parsed_address(provider.url)
       {
         id: provider.id.to_s,
@@ -31,8 +30,7 @@ module WebPreview
         supports_audiobooks: provider.supports_audiobooks?,
         supports_comicbooks: provider.supports_comicbooks?,
         timeout_seconds: provider.timeout_seconds,
-        priority: provider.priority,
-        position: position
+        priority: provider.priority
       }
     end
 

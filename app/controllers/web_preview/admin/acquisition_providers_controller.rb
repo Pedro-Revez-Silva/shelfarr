@@ -68,6 +68,8 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
 
   def test
     provider = find
+    raise Forbidden unless acting_administrator?
+
     render json: answer(outcome: test_outcome(provider), tested: provider.id.to_s)
   end
 
@@ -115,7 +117,7 @@ class WebPreview::Admin::AcquisitionProvidersController < WebPreview::Admin::Bas
     raise Malformed, "Send the provider as an object of names and values" unless raw.is_a?(Hash)
 
     values = raw.slice(*ATTRIBUTES)
-    wrong_text = TEXTS.select { |key| values.key?(key) && !values[key].nil? && !values[key].is_a?(String) }
+    wrong_text = TEXTS.select { |key| values.key?(key) && !values[key].is_a?(String) }
     wrong_switch = SWITCHES.select { |key| values.key?(key) && !SWITCH_VALUES.include?(values[key]) }
     wrong_number = NUMBERS.select { |key| values.key?(key) && !(values[key].is_a?(Integer) || values[key].is_a?(String)) }
     wrong = wrong_text + wrong_switch + wrong_number
