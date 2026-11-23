@@ -382,7 +382,7 @@ describe("a request's copies for an administrator", () => {
     cleanup();
 
     const unreadable = { ...copy("91", { title: "Chosen.epub", state: "selected" }), details: { ...copyDetails(), choice: "picked" } };
-    const skipped = { ...copy("93", { title: "Failed.epub", state: "rejected", skipped: true }), details: { ...copyDetails(), choice: "picked" } };
+    const skipped = { ...copy("93", { title: "Failed.epub", state: "rejected", skipped: true }), details: { ...copyDetails(), choice: "picked", score: 96, blocklist_reason: "Wrong book" } };
     const copies = { selectable: false, revision: "r1", looking_for: "English", search_blocked: null, candidates: [unreadable, copy("92", { state: "rejected" }, { choice: "select_instead", score: 70 }), skipped] };
     const next = railsServer(detail(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: { ...detail({ status: "downloading", requested_by: { name: "Rae", self: false }, actions: adminActions }), copies } } }));
     renderApp({ server: next, url: "/sub/preview/requests/7#copies" });
@@ -391,9 +391,27 @@ describe("a request's copies for an administrator", () => {
     expect((within(table).getByLabelText("Chosen.epub") as HTMLInputElement).disabled).toBe(true);
     expect(within(table).getAllByRole("row").map((row) => row.children.length)).toEqual([8, 8, 8, 8]);
     expect([...within(table).getAllByRole("row")[1]!.querySelectorAll("td[data-label]")].map((cell) => cell.textContent)).toEqual(["EPUB", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"]);
-    expect(within(table).getAllByRole("row").slice(1).map((row) => row.querySelector("th")?.textContent)).toEqual(["Chosen.epub · chosen", "Copy 92.epub", "Failed.epub · skipped before"]);
+    expect(within(table).getAllByRole("row").slice(1).map((row) => row.querySelector("th")?.textContent)).toEqual(["Chosen.epub · chosen", "Copy 92.epub", "Failed.epub · skipped beforeSkipped because: Wrong book"]);
+    expect([...within(table).getAllByRole("row")[3]!.querySelectorAll("td[data-label]")].map((cell) => cell.textContent)).toEqual(["EPUB", "1000 B", "English", "Prowlarr", "96%", "Not listed"]);
     await userEvent.setup().click(within(table).getByLabelText("Failed.epub"));
     expect(within(table).getByRole("button", { name: "Try this copy again anyway" })).toBeTruthy();
+  });
+
+  test("a copy rewritten by a new search is no longer the one picked, so the old pick can't carry over to it", async () => {
+    let rewritten = false;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: false, revision: rewritten ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: [copy("95", { title: rewritten ? "Different.epub" : "Original.epub", state: "rejected", skipped: true }, { choice: "retry_anyway" })] } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText("Original.epub"));
+    expect((screen.getByLabelText("Original.epub") as HTMLInputElement).checked).toBe(true);
+    rewritten = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    const renamed = (await screen.findByLabelText("Different.epub")) as HTMLInputElement;
+    expect(renamed.checked).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Download this copy" }));
+    expect(screen.getByRole("alert").textContent).toContain("Choose one copy that can be downloaded first.");
+    expect(server.called("POST", /selection$/)).toHaveLength(0);
   });
 
   test("when a new search clears the copies under an open choice, focus and the refusal stay on screen", async () => {

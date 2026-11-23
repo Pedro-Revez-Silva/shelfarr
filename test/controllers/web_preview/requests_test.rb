@@ -282,6 +282,19 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal revision(@mine), copies.fetch("revision")
   end
 
+  test "a choice read before its provider was edited is refused" do
+    provider = AcquisitionProvider.create!(name: "Shelf Provider", url: "http://provider.test", enabled: true, supports_ebooks: true, priority: 0, timeout_seconds: 30)
+    offered = @mine.search_results.create!(guid: "custom", title: "Emile.epub", source: SearchResult::SOURCE_CUSTOM, acquisition_provider: provider,
+      provider_result_id: "42", provider_payload: { "download_type" => "torrent", "magnet_url" => magnet("a") })
+    sign_in_as(@admin)
+    read_before_edit = detail(@mine, user: @admin).dig("request", "copies", "revision")
+
+    provider.update!(name: "Other Provider", url: "http://other-provider.test")
+    assert_no_difference -> { Download.count } do
+      assert_equal "copies_changed", choose(@mine, offered, expected_revision: read_before_edit, replace_library_file: false).fetch("error")
+    end
+  end
+
   test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
     @theirs.search_results.create!(guid: "odd", title: "Odd.m4b", source: SearchResult::SOURCE_PROWLARR, indexer: "Prowlarr", magnet_url: magnet("a"), seeders: 5, confidence_score: 60,
       score_breakdown: { "audiobook_structure" => 1, "preference_adjustment" => [ 1 ], "auto_select_allowed" => true })

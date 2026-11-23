@@ -343,7 +343,7 @@ export type CopyChoiceKind = (typeof copyChoices)[number];
 const copyTally = z.number().int().nonnegative();
 
 export const copyDetailsSchema = z.object({
-  choice: z.enum(copyChoices),
+  choice: z.enum(copyChoices).nullable().catch(null),
   indexer: z.string().nullable().catch(null),
   seeders: copyTally.nullable().catch(null),
   leechers: copyTally.nullable().catch(null),

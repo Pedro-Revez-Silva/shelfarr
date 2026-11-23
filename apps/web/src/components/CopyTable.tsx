@@ -15,10 +15,19 @@ const SUBMIT_LABELS: Record<ChoosableKind, string> = {
 const REPLACEMENT_PROMPT = "Replace the existing library file? The current file stays until the new download imports successfully. A failed download leaves it unchanged.";
 
 function choosableKind(copy: ListedCopy): ChoosableKind | null {
-  if (copy.details === null) return fallbackKind(copy);
-  if (!copy.details) return copy.downloadable ? "select" : null;
-  const choice = copy.details.choice;
+  if (copy.details === undefined) return copy.downloadable ? "select" : null;
+  const choice = copy.details?.choice ?? null;
+  if (choice === null) return fallbackKind(copy);
   return choice === "select" || choice === "select_instead" || choice === "retry_anyway" ? choice : null;
+}
+
+function isChosen(copy: ListedCopy): boolean {
+  const choice = copy.details?.choice ?? null;
+  return choice === null ? copy.details !== undefined && copy.state === "selected" : choice === "selected";
+}
+
+function shownAs(copy: ListedCopy): string {
+  return JSON.stringify(copy);
 }
 
 function fallbackKind(copy: BookCopy): ChoosableKind | null {
@@ -28,7 +37,8 @@ function fallbackKind(copy: BookCopy): ChoosableKind | null {
 }
 
 function firstChoice(copies: ListedCopy[]): string {
-  return copies.find((copy) => choosableKind(copy) && !copy.skipped)?.id ?? copies.find((copy) => choosableKind(copy))?.id ?? "";
+  const first = copies.find((copy) => choosableKind(copy) && !copy.skipped) ?? copies.find((copy) => choosableKind(copy));
+  return first ? shownAs(first) : "";
 }
 
 export type CopyChoice = { mutate: (resultId: string) => void; isPending: boolean; isError: boolean; error: unknown };
@@ -62,7 +72,7 @@ export function CopyTable({
   const kindOf = (copy: ListedCopy) => (locked ? null : choosableKind(copy));
   const detailed = copies.some((copy) => copy.details);
   const firstChoosableId = copies.find((copy) => kindOf(copy))?.id;
-  const chosenCopy = copies.find((copy) => copy.id === picked && kindOf(copy));
+  const chosenCopy = copies.find((copy) => shownAs(copy) === picked && kindOf(copy));
   const chosen = chosenCopy?.id ?? "";
   const chosenKind = chosenCopy ? kindOf(chosenCopy) : null;
   const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
@@ -137,7 +147,7 @@ export function CopyTable({
                     checked={chosen === copy.id}
                     disabled={!kindOf(copy)}
                     onChange={() => {
-                      setPicked(copy.id);
+                      setPicked(shownAs(copy));
                       setMissing(false);
                       setAskedFor(null);
                     }}
@@ -145,7 +155,7 @@ export function CopyTable({
                 </td>
                 <th scope="row">
                   <label htmlFor={`copy-${copy.id}`}>{copy.title}</label>
-                  {copy.details?.choice === "selected" || (copy.details === null && copy.state === "selected") ? <span className="copy-flag copy-flag--chosen"> · chosen</span> : null}
+                  {isChosen(copy) ? <span className="copy-flag copy-flag--chosen"> · chosen</span> : null}
                   {copy.skipped ? <span className="copy-flag"> · skipped before</span> : null}
                   {copy.details?.choice === "skipped" ? <span className="copy-flag"> · skipped</span> : null}
                   {!copy.downloadable ? <span className="copy-flag"> · no download link</span> : null}
