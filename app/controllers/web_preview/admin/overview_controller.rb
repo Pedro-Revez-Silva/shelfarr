@@ -50,7 +50,6 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
 
   def pending_screens
     [
-      [ "Custom acquisition providers", admin_acquisition_providers_path ],
       [ "Audible backup", admin_owned_library_connections_path ],
       [ "Activity log", admin_activity_logs_path ]
     ].map { |label, url| { label: label, url: url } }

@@ -8,7 +8,7 @@ import { ErrorPanel, Loading } from "../../components/States";
 import { same, type DraftValue, type Drafts } from "../draft";
 import { Said, useSay } from "../extras";
 import { AdvancedSection, CardActions, HealthStatus, RemoveZone, SettingControl, SettingsCard, TestResult, useScope, type TestOutcome } from "../primitives";
-import { useDownloads, useDownloadsCommand, type DownloadsAnswer, type DownloadsCommand } from "./api";
+import { useDownloads, useDownloadsCommand, type DownloadsCommand } from "./api";
 import type { DownloadClient, Downloads, RoutingRule } from "./contract";
 import {
   NAME_FIELD,
@@ -33,12 +33,12 @@ export const DOWNLOAD_CARDS = [
   { id: "routing_rules", title: "Routing rules" },
 ] as const;
 
-type DirtyReporter = (id: string, dirty: boolean) => void;
-type RemovalMarker = (id: string, removing: boolean) => void;
-type Say = ReturnType<typeof useSay>["say"];
+export type DirtyReporter = (id: string, dirty: boolean) => void;
+export type RemovalMarker = (id: string, removing: boolean) => void;
+export type Say = ReturnType<typeof useSay>["say"];
 
-const CHANGED_ELSEWHERE = "Nothing was saved: this was changed somewhere else after you opened it. Your edits are kept; once the latest values are shown here, check them and save again.";
-const REMOVED_ELSEWHERE = "Nothing was removed: this was changed somewhere else after you opened it. Close it and open it again to see what removing it would remove now.";
+export const CHANGED_ELSEWHERE = "Nothing was saved: this was changed somewhere else after you opened it. Your edits are kept; once the latest values are shown here, check them and save again.";
+export const REMOVED_ELSEWHERE = "Nothing was removed: this was changed somewhere else after you opened it. Close it and open it again to see what removing it would remove now.";
 const ONLY_HIDDEN_EDITS = "There is nothing to save: your changes are only to fields this type does not use.";
 
 export function commandFailureText(error: unknown): string {
@@ -58,7 +58,7 @@ export function commandFailureText(error: unknown): string {
 
 const FOCUS_WAIT_MS = 2_000;
 
-function focusSoon(find: () => HTMLElement | null | undefined, deadline = Date.now() + FOCUS_WAIT_MS) {
+export function focusSoon(find: () => HTMLElement | null | undefined, deadline = Date.now() + FOCUS_WAIT_MS) {
   requestAnimationFrame(() => {
     const target = find();
     if (target && !target.matches(":disabled")) target.focus();
@@ -76,7 +76,7 @@ export function DownloadManagement({ onDirtyChange }: { onDirtyChange: DirtyRepo
   );
 }
 
-function useEditVersion(live: string) {
+export function useEditVersion(live: string) {
   const [version, setVersion] = useState(live);
   const [awaiting, setAwaiting] = useState<string | null>(null);
   useEffect(() => {
@@ -92,7 +92,7 @@ function useEditVersion(live: string) {
   return { version, restart, adoptOnceShown: setAwaiting };
 }
 
-function useLostDraftNotice(records: { id: string; name: string }[] | undefined, prefix: string, say: Say, onDirtyChange: DirtyReporter) {
+export function useLostDraftNotice(records: { id: string; name: string }[] | undefined, prefix: string, say: Say, onDirtyChange: DirtyReporter) {
   const dirty = useRef(new Set<string>());
   const removing = useRef(new Set<string>());
   const seen = useRef<{ id: string; name: string }[] | undefined>(undefined);
@@ -125,7 +125,7 @@ function useLostDraftNotice(records: { id: string; name: string }[] | undefined,
   return { track, markRemoving };
 }
 
-function useRevalidateAccessWhenDenied(denied: boolean) {
+export function useRevalidateAccessWhenDenied(denied: boolean) {
   const { keys } = useServices();
   const settingsKey = useServerKeys().settings;
   const client = useQueryClient();
@@ -139,8 +139,8 @@ function useRevalidateAccessWhenDenied(denied: boolean) {
   }, [denied]);
 }
 
-function CardBody({ query, label, children }: { query: UseQueryResult<Downloads>; label: string; children: (data: Downloads) => ReactNode }) {
-  if (query.isError && failureKind(query.error) === "not_found") return <p className="field-hint">Only administrators can manage download clients.</p>;
+export function CardBody<T>({ query, label, denied = "Only administrators can manage download clients.", children }: { query: UseQueryResult<T>; label: string; denied?: string; children: (data: T) => ReactNode }) {
+  if (query.isError && failureKind(query.error) === "not_found") return <p className="field-hint">{denied}</p>;
   if (query.data) {
     return (
       <>
@@ -362,7 +362,7 @@ function ClientRow({ client, downloads, say, onDirtyChange, onRemoving, onRemove
   );
 }
 
-function useRecordForm(dirtyId: string, keysOf: (drafts: Drafts) => string[], initial: Drafts, onDirtyChange: DirtyReporter) {
+export function useRecordForm(dirtyId: string, keysOf: (drafts: Drafts) => string[], initial: Drafts, onDirtyChange: DirtyReporter) {
   const [edits, setEdits] = useState<Drafts>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [general, setGeneral] = useState<string | null>(null);
@@ -379,7 +379,7 @@ function useRecordForm(dirtyId: string, keysOf: (drafts: Drafts) => string[], in
     if (errors[key]) setErrors(({ [key]: _cleared, ...rest }) => rest);
   };
   const replace = (next: Drafts) => setEdits(Object.fromEntries(Object.entries(next).filter(([key, value]) => value !== initial[key])));
-  const reject = (answer: Extract<DownloadsAnswer, { kind: "rejected" }>, known: string[], focus: (key: string) => void) => {
+  const reject = (answer: { errors: { field: string; message: string }[] }, known: string[], focus: (key: string) => void) => {
     const { byField, general: rest } = fieldErrors(answer.errors, known);
     setErrors(byField);
     setGeneral(rest.length > 0 ? rest.join(" ") : null);
@@ -394,7 +394,7 @@ function useRecordForm(dirtyId: string, keysOf: (drafts: Drafts) => string[], in
   return { drafts, keys, changed, stray, dirty, edits, setEdits, errors, general, setGeneral, edit, replace, reject, clear, said, say };
 }
 
-function FormProblem({ text }: { text: string | null }) {
+export function FormProblem({ text }: { text: string | null }) {
   if (!text) return null;
   return (
     <p className="field-error" role="alert">
