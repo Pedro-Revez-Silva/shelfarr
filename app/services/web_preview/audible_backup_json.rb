@@ -48,7 +48,7 @@ module WebPreview
       @user = user
     end
 
-    def state(summary)
+    def state(summary, revision:)
       {
         connection: connection_json(summary),
         sign_in: sign_in_json(summary),
@@ -59,7 +59,7 @@ module WebPreview
         automation: automation_json,
         marketplaces: LibationCompanionClient::AUDIBLE_MARKETPLACES.map { |value| { value: value, label: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(value) } },
         working: working?(summary),
-        revision: self.class.revision(@connection)
+        revision: revision
       }
     end
 
@@ -90,7 +90,7 @@ module WebPreview
     end
 
     def companion_secrets
-      @companion_secrets ||= @connection.client.secret_values.select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
+      @companion_secrets ||= @connection.client.secret_values.sort_by { |secret| -secret.length }
     end
 
     def shown_address(address)

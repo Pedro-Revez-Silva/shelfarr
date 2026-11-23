@@ -790,4 +790,32 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
       assert_equal [ nil, "14.2.0" ], body.fetch("connection").values_at("companion_version", "provider_version")
     end
   end
+
+  test "a state read whose counts are overtaken while Libation lists accounts carries a revision the next check sees as old" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    item = connection.owned_library_items.create!(external_id: "B0PLAIN001", title: "Dune", ownership_type: "purchased")
+    sign_in_as(@admin)
+    body = nil
+    VCR.turned_off do
+      stub_request(:get, "#{COMPANION}/v1/accounts").to_return do
+        travel 1.second
+        item.owned_media_imports.create!(status: "queued", requested_by: users(:two))
+        { status: 200, body: { accounts: [ { account: "reader@example.com", locale: "us", authenticated: true } ] }.to_json }
+      end
+      body = state
+    end
+    travel_back
+    assert_equal [ false, 0 ], [ body.fetch("working"), body.dig("active_backups", "total") ]
+    preview_get web_preview_api_admin_audible_revision_path, user: @admin
+    assert_not_equal body.fetch("revision"), response.parsed_body.fetch("revision")
+  end
+
+  test "a short custom bridge token is hidden in backup diagnostics too" do
+    connection = create_connection(bridge_token: "1.2", last_synced_at: 1.hour.ago)
+    item = connection.owned_library_items.create!(external_id: "B0FAIL0001", title: "Dune", ownership_type: "purchased")
+    item.owned_media_imports.create!(status: "failed", requested_by: @admin, error_message: "Bridge value 1.2 was rejected")
+    sign_in_as(@admin)
+    preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+    assert_equal "Bridge value [hidden] was rejected", response.parsed_body.dig("items", 0, "detail")
+  end
 end

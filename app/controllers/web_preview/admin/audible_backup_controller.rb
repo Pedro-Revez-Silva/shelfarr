@@ -175,7 +175,9 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
   end
 
   def answer(auth_pending: false, **extra)
-    { account: web_preview_account_id, **presenter.state(workflow.summary(auth_pending: auth_pending, quiet_during_backlog: true)), **extra }
+    revision = WebPreview::AudibleBackupJson.revision(connection)
+    summary = workflow.summary(auth_pending: auth_pending, quiet_during_backlog: true)
+    { account: web_preview_account_id, **presenter.state(summary, revision: revision), **extra }
   end
 
   def body

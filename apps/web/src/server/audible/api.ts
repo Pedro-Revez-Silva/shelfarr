@@ -144,7 +144,9 @@ export function useAudibleCommand() {
     onSuccess: async (answer) => {
       if (!guard.isActive() || answer.kind !== "done") return;
       await client.cancelQueries({ queryKey: keys.state });
-      client.setQueryData<Audible>(keys.state, audibleSchema.parse(answer.action));
+      const state = audibleSchema.parse(answer.action);
+      client.setQueryData<Audible>(keys.state, state);
+      client.setQueryData<string>(keys.revision, state.revision);
       await client.invalidateQueries({ queryKey: keys.catalogue });
     },
     onError: (error) => {

@@ -157,7 +157,7 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
   test("Save sends the whole companion form with a blank token, then Test answers inside the card", async () => {
     const user = userEvent.setup();
     const server = adminServer()
-      .on("PUT", /\/admin\/audible\/companion$/, () => answer(state({ connection: { ...state().connection, timeout_seconds: 45 } }), "Audible backup connection saved."))
+      .on("PUT", /\/admin\/audible\/companion$/, () => answer(state({ connection: { ...state().connection, timeout_seconds: 45 }, revision: "2222222222222222" }), "Audible backup connection saved."))
       .on("POST", /\/admin\/audible\/test$/, () => answer(current, "Connected to the Libation companion (1.4.0 / Libation 14.2.1); status: ok."));
     await openLibrary(server);
     const connection = section("audible-connection");
@@ -170,6 +170,8 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(server.called("PUT", /companion$/)[0]!.body).toEqual({ companion: { url: "http://shelfarr-libation:8080", bridge_token: "", enabled: true, allow_private_network: true, timeout_seconds: "45" } });
     expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
     await waitFor(() => expect(within(connection).queryByText("Unsaved changes")).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.called("GET", /admin\/audible$/)).toHaveLength(1);
 
     await user.click(within(connection).getByRole("button", { name: "Test" }));
     expect(await within(connection).findByText(/Connected to the Libation companion \(1\.4\.0 \/ Libation 14\.2\.1\); status: ok\./)).toBeTruthy();
