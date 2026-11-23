@@ -19,13 +19,15 @@ const OFFLINE = { worker: `${MOUNT}/offline-worker.js`, scope: `${MOUNT}/library
 const PLACE = { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { cfi: "epubcfi(/6/4!/4/2/1:0)", progression: 0.5, totalProgression: 0.75 } };
 const OFFLINE_AT = "2026-11-20T11:00:00.000Z";
 
-let marker: string | null = null;
+function setMarker(value: string | null) {
+  document.cookie = value === null ? `${NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT` : `${NAME}=${value}; path=/`;
+}
 let previousFactory: IDBFactory | undefined;
 let previousBlob: typeof Blob;
 const restores: (() => void)[] = [];
 
 beforeEach(() => {
-  marker = null;
+  setMarker(null);
   previousFactory = globalThis.indexedDB as IDBFactory | undefined;
   previousBlob = globalThis.Blob;
   globalThis.indexedDB = new IDBFactory();
@@ -39,7 +41,7 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, "indexedDB");
 });
 
-const continuity = () => marker;
+const continuity = () => cookieValue(document.cookie, NAME);
 
 function confirmed(account: string, continuityValue: string | undefined, confirmedAt = Date.now() - 1000): ConfirmedAccount {
   return { account, confirmedAt, validForMs: 30 * DAY, ...(continuityValue === undefined ? {} : { continuity: continuityValue }) };
@@ -110,13 +112,13 @@ describe("the Rails session's offline marker", () => {
   });
 
   test("a confirmation stays usable only while the browser keeps the marker it was confirmed under", async () => {
-    marker = "mA";
+    setMarker("mA");
     const store = new IndexedDbOfflineStore("continuity-a", continuity);
     await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", "mA"));
     expect((await store.accountState()).record?.account).toBe("5");
     expect(await store.touch("5", Date.now())).toBe(true);
 
-    marker = "signedOut";
+    setMarker("signedOut");
     expect((await store.accountState()).record).toBeNull();
     expect(await store.touch("5", Date.now())).toBe(false);
     expect(await store.updateBook("5", "7", (book) => ({ ...book, title: "Changed" }), Date.now())).toBe("refused");
@@ -125,14 +127,14 @@ describe("the Rails session's offline marker", () => {
     expect(await store.books("5")).toEqual([]);
     expect((await new IndexedDbOfflineStore("continuity-a").books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
 
-    marker = "mA2";
+    setMarker("mA2");
     expect(await store.confirm(confirmed("5", "mA2", Date.now()))).toBe(true);
     expect((await store.accountState()).record?.continuity).toBe("mA2");
     expect((await store.open("5", "7"))?.book.title).toBe("Account A's Book");
   });
 
   test("an answer that carries an earlier marker is refused and changes nothing, even if it arrives last", async () => {
-    marker = "mB";
+    setMarker("mB");
     const store = new IndexedDbOfflineStore("continuity-stale", continuity);
     await store.prepare();
     expect(await store.confirm(confirmed("4", "mB", Date.now() - 500))).toBe(true);
@@ -141,49 +143,60 @@ describe("the Rails session's offline marker", () => {
   });
 
   test("the marker is compared when storage answers, so a sign-out that lands while storage is slow still hides the books", async () => {
-    marker = "mA";
+    setMarker("mA");
     const store = new IndexedDbOfflineStore("continuity-slow", continuity);
     await seed(store, savedBook(), confirmed("5", "mA"));
     const reading = store.accountState();
-    marker = "signedOut";
+    setMarker("signedOut");
     expect((await reading).record).toBeNull();
   });
 
   test("an answer that carries no marker is refused once the browser has one, so a slow first answer for A cannot outlast B's sign-in", async () => {
     const store = new IndexedDbOfflineStore("continuity-markerless", continuity);
     await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", undefined));
-    marker = "mB";
+    setMarker("mB");
     expect(await store.confirm(confirmed("5", undefined, Date.now()))).toBe(false);
     expect((await store.accountState()).record).toBeNull();
     expect(await store.books("5")).toEqual([]);
   });
 
   test("saved books, files and unfinished saves already being read when the marker changes are never handed back", async () => {
-    marker = "mA";
+    setMarker("mA");
     const store = new IndexedDbOfflineStore("continuity-reads", continuity);
     await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", "mA"));
     await store.begin({ key: "5|8", account: "5", id: "8", title: "Unfinished", assetId: EPUB_ID, token: "t", startedAt: 1, failure: null });
     expect((await store.books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
 
     const reads = [store.books("5"), store.book("5", "7"), store.open("5", "7"), store.attempts("5")] as const;
-    marker = "signedOut";
+    setMarker("signedOut");
     expect(await Promise.all(reads)).toEqual([[], null, null, []]);
 
-    marker = "mA";
+    setMarker("mA");
     expect((await store.open("5", "7"))?.book.title).toBe("Account A's Book");
     expect(await store.books("4")).toEqual([]);
   });
 
-  test("a copy confirmed before the marker existed stays readable until the server first issues one, then never again", async () => {
+  test("a refusal asked before a newer confirmation never discards it, even when a late answer changed the marker", async () => {
+    setMarker("mB");
+    const store = new IndexedDbOfflineStore("continuity-late-refusal", continuity);
+    await seed(store, savedBook({ key: "4|7", account: "4", title: "Account B's Book" }), confirmed("4", "mB", Date.now()));
+    setMarker("fromALateRefusal");
+    expect(await store.release(Date.now() - 60_000)).toBe(false);
+    expect((await new IndexedDbOfflineStore("continuity-late-refusal").accountState()).record).toMatchObject({ account: "4", continuity: "mB" });
+    setMarker("mB");
+    expect((await store.books("4")).map((book) => book.title)).toEqual(["Account B's Book"]);
+  });
+
+  test("a copy confirmed before the marker existed stays readable only while the browser has no marker", async () => {
     const store = new IndexedDbOfflineStore("continuity-legacy", continuity);
     await seed(store, savedBook(), confirmed("5", undefined));
     expect((await store.accountState()).record?.account).toBe("5");
-    marker = "signedOut";
+    setMarker("signedOut");
     expect((await store.accountState()).record).toBeNull();
   });
 
   test("without a marker name, as on the Go runtime, markers are ignored", async () => {
-    marker = "anything";
+    setMarker("anything");
     const store = new IndexedDbOfflineStore("continuity-go");
     await seed(store, savedBook(), confirmed("5", "other"));
     expect((await store.accountState()).record?.account).toBe("5");
@@ -203,7 +216,7 @@ describe("the Rails session's offline marker", () => {
 
 describe("going offline straight after the Rails session changed", () => {
   async function accountAWithSavedBook() {
-    marker = "mA";
+    setMarker("mA");
     const store = new IndexedDbOfflineStore("continuity-flow", continuity);
     const book = savedBook({ title: "Account A's Private Book", devicePlace: { asset_id: EPUB_ID, locator: PLACE, observedAt: OFFLINE_AT, recordedAt: Date.now() - 1000, upload: { state: "pending", request: null, rebases: 0 } } });
     await seed(store, book, confirmed("5", "mA"));
@@ -213,19 +226,61 @@ describe("going offline straight after the Rails session changed", () => {
   test("with no page script having run after sign-out or after signing in as B, neither Downloads nor the reader shows A's books", async () => {
     const store = await accountAWithSavedBook();
     const counter = countingOpens(store);
-    marker = "mAfterSignOut";
+    setMarker("mAfterSignOut");
     const signedOutView = renderApp(unreachable(), store);
     expect(await screen.findByRole("heading", { name: "Shelfarr can't be reached" })).toBeTruthy();
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
     signedOutView.unmount();
 
-    marker = "mB";
+    setMarker("mB");
     const readerView = renderApp(unreachable(), store, "reader", `${MOUNT}/library/7/read`);
     expect(await screen.findByRole("heading", { name: "Shelfarr can't be reached" })).toBeTruthy();
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
     readerView.unmount();
     expect(counter.opens).toBe(0);
     expect((await new IndexedDbOfflineStore("continuity-flow").books("5")).map((book) => book.title)).toEqual(["Account A's Private Book"]);
+  });
+
+  test("a Downloads listing still being gathered when the marker changes never shows A's books", async () => {
+    const store = await accountAWithSavedBook();
+    let persisted: (value: boolean) => void = () => undefined;
+    const storage = Object.getOwnPropertyDescriptor(navigator, "storage");
+    let asked = 0;
+    const held = new Promise<boolean>((resolve) => (persisted = resolve));
+    Object.defineProperty(navigator, "storage", { value: { persisted: () => (asked++ === 0 ? held : Promise.resolve(true)) }, configurable: true });
+    restores.push(() => (storage ? Object.defineProperty(navigator, "storage", storage) : Reflect.deleteProperty(navigator, "storage")));
+    const reading = store.books.bind(store);
+    let firstRead: () => void = () => undefined;
+    const readOnce = new Promise<void>((resolve) => (firstRead = resolve));
+    store.books = async (account) => {
+      const books = await reading(account);
+      firstRead();
+      return books;
+    };
+    renderApp(unreachable(), store);
+    await readOnce;
+    setMarker("mAfterSignOut");
+    await act(async () => {
+      persisted(true);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
+  });
+
+  test("an open offline page hides A's books as soon as the browser reports the marker changed", async () => {
+    const store = await accountAWithSavedBook();
+    const cookies = new EventTarget();
+    Object.defineProperty(globalThis, "cookieStore", { value: cookies, configurable: true });
+    restores.push(() => Reflect.deleteProperty(globalThis, "cookieStore"));
+    renderApp(unreachable(), store);
+    expect(await screen.findByRole("heading", { name: "Account A's Private Book" })).toBeTruthy();
+    setMarker("mB");
+    await act(async () => {
+      cookies.dispatchEvent(Object.assign(new Event("change"), { changed: [{ name: NAME, value: "mB" }], deleted: [] }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(await screen.findByRole("heading", { name: "Offline access ended" })).toBeTruthy();
+    expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
   });
 
   test("while the marker is unchanged, the same account still reads its saved books offline", async () => {
@@ -238,7 +293,7 @@ describe("going offline straight after the Rails session changed", () => {
   test("when A signs in again and reconnects, A's copies come back and the waiting place is sent exactly once", async () => {
     const store = await accountAWithSavedBook();
     withRegisteredWorker();
-    marker = "mA2";
+    setMarker("mA2");
     const server = new FakeServer()
       .on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5", "fresh-token"), offline_expires_in: 3600, offline_continuity: "mA2" } }))
       .on("GET", /\/api\/v1\/session$/, () => ({ body: { account: "5" } }))
@@ -270,7 +325,7 @@ describe("going offline straight after the Rails session changed", () => {
     const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => new Promise((resolve) => (answer = resolve)) as never);
     const view = renderApp(server, store);
     await waitFor(() => expect(server.called("GET", /\/auth\/bootstrap$/)).toHaveLength(1));
-    marker = "mAfterSignOut";
+    setMarker("mAfterSignOut");
     await act(async () => {
       answer({ body: { ...signedIn("5"), offline_expires_in: 3600, offline_continuity: "mA" } });
       await new Promise((resolve) => setTimeout(resolve, 50));

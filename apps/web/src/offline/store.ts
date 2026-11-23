@@ -97,15 +97,16 @@ export class IndexedDbOfflineStore implements OfflineStore {
     if (!continuous(value, this.continuity)) return false;
     return this.run(["account"], "readwrite", async (stores) => {
       const next = confirmedState(await readAccount(stores, this.continuity), value);
-      if (next) await writeAccount(stores, next);
-      return next !== null;
+      if (!next || !continuous(value, this.continuity)) return false;
+      await writeAccount(stores, next);
+      return true;
     });
   }
 
   async release(askedAt: number): Promise<boolean> {
     if (!(await this.exists())) return true;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = releasedState(await readAccount(stores, this.continuity), askedAt);
+      const next = releasedState(await readAccount(stores, null), askedAt);
       await writeAccount(stores, next);
       return next.record === null;
     });

@@ -14,7 +14,7 @@ import { ConnectPage } from "./ConnectPage";
 import { GoSessionProvider, type GoSession } from "./session";
 import { SignInPage, type LoginToken } from "./SignInPage";
 import { LockedScreen } from "../components/LockedScreen";
-import { confirmationFrom, OfflineProvider, type Offline } from "../offline/context";
+import { confirmationFrom, OfflineProvider, onContinuityChange, type Offline } from "../offline/context";
 import { DownloadsPage } from "../offline/DownloadsPage";
 import type { ConfirmedAccount, OfflineStore } from "../offline/model";
 import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
@@ -264,13 +264,15 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   });
   const { csrf, services, router } = built;
 
-  useEffect(
-    () =>
-      services.guard.subscribe(() => {
-        void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
-      }),
-    [services, boot, auth, store],
-  );
+  useEffect(() => {
+    const refresh = () => void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
+    const stopLocks = services.guard.subscribe(refresh);
+    const stopContinuity = onContinuityChange(boot.offline, refresh);
+    return () => {
+      stopLocks();
+      stopContinuity();
+    };
+  }, [services, boot, auth, store]);
 
   const [offline] = useState<Offline | null>(() =>
     boot.offline ? createOnlineOffline({ server: { mount: boot.mount, api: boot.api, offline: boot.offline }, auth, store, guard: services.guard, confirmation, fetcher }) : null,

@@ -15,7 +15,7 @@ class WebPreview::BooksController < WebPreview::APIController
       API::Consumer::V1::RequestsController.creation_lock(Current.user.id).synchronize { request_chosen_formats(book_page) }
     end
     return render_error("invalid_request", :unprocessable_entity) if outcome == :invalid
-    return web_preview_signed_out if outcome == :signed_out || !Session.exists?(Current.session.id)
+    return web_preview_without_session if outcome == :signed_out || !Session.exists?(Current.session.id)
     return web_preview_refused unless WebPreview::Access.current.allows?(Current.session.user.reload)
     return render_error("request_rejected", :unprocessable_entity, message: outcome) if outcome.is_a?(String)
 

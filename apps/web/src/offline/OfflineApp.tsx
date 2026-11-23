@@ -7,7 +7,7 @@ import { PageHeading } from "../components/PageHeading";
 import type { GoBoot, OfflineBoot } from "../contract";
 import { createServices, ServicesProvider, useGuardState } from "../services";
 import { useDocumentTitle } from "../title";
-import { OfflineProvider, confirmationFrom, type Offline } from "./context";
+import { OfflineProvider, confirmationFrom, onContinuityChange, type Offline } from "./context";
 import { DownloadsPage } from "./DownloadsPage";
 import { offlineUntil, type ConfirmedAccount, type OfflineStore } from "./model";
 import { OfflineReader } from "./OfflineReader";
@@ -115,6 +115,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
     window.addEventListener("focus", show);
     window.addEventListener("online", show);
     document.addEventListener("visibilitychange", visible);
+    const stopContinuity = onContinuityChange(boot.offline, () => void recheck());
     const checks = setInterval(() => void recheck(), CHECK_INTERVAL_MS);
     const probes = setInterval(() => void probe(), PROBE_INTERVAL_MS);
     return () => {
@@ -123,11 +124,12 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
       window.removeEventListener("focus", show);
       window.removeEventListener("online", show);
       document.removeEventListener("visibilitychange", visible);
+      stopContinuity();
       clearInterval(checks);
       clearInterval(probes);
       root.removeAttribute("data-offline-check");
     };
-  }, [recheck, probe]);
+  }, [recheck, probe, boot.offline]);
 
   return (
     <ServicesProvider services={services}>

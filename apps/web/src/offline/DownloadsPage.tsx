@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
-import { announceChange, onChange, useOffline, type Offline } from "./context";
+import { announceChange, onChange, onContinuityChange, steady, useOffline, type Offline } from "./context";
 import { ACCOUNT_LIMIT_BYTES, describeLocator, laterDevicePlace, offlineUntil, type Attempt, type SavedBook } from "./model";
 import { FAILURES, formatDay, formatMoment, uploadText } from "./text";
 
@@ -40,7 +40,7 @@ export function DownloadsPage() {
   const refresh = useCallback(async () => {
     if (!offline) return;
     try {
-      const next = await list(offline, account);
+      const next = await steady(offline.boot, () => list(offline, account));
       if (guard.isActive()) {
         setListing(next);
         setFailed(false);
@@ -51,15 +51,18 @@ export function DownloadsPage() {
   }, [offline, account, guard]);
 
   const sync = offline?.sync;
+  const offlineBoot = offline?.boot;
   useEffect(() => {
     void refresh();
     const stop = onChange(() => void refresh());
     const stopSync = sync?.subscribe(() => void refresh());
+    const stopContinuity = onContinuityChange(offlineBoot, () => void refresh());
     return () => {
       stop();
       stopSync?.();
+      stopContinuity();
     };
-  }, [refresh, sync]);
+  }, [refresh, sync, offlineBoot]);
 
   if (!offline) return null;
   const confirmation = offline.confirmation;

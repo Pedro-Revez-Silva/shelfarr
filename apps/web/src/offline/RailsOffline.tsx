@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { AuthClient } from "../go/auth";
 import type { Services } from "../services";
-import { confirmationFrom, OfflineProvider, type Offline } from "./context";
+import { confirmationFrom, OfflineProvider, onContinuityChange, type Offline } from "./context";
 import type { OfflineStore } from "./model";
 import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "./online";
 import { definitiveRefusal } from "./reachability";
@@ -23,6 +23,7 @@ export function RailsOffline({ services, store = offlineStoreFor(services.boot.m
     let current = true;
     const stopRefusals = guard.subscribeRefusals((refusedAt) => void store.release(refusedAt).catch(() => undefined));
     const stopLocks = guard.subscribe(() => void refreshOfflineAccount(target.offline, auth, store).catch(() => undefined));
+    const stopContinuity = onContinuityChange(target.offline, () => void refreshOfflineAccount(target.offline, auth, store).catch(() => undefined));
     const askedAt = Date.now();
     auth.bootstrap().then(
       async (answer) => {
@@ -39,6 +40,7 @@ export function RailsOffline({ services, store = offlineStoreFor(services.boot.m
       current = false;
       stopRefusals();
       stopLocks();
+      stopContinuity();
     };
   }, [auth, boot.api, boot.mount, worker, scope, downloads, guard, store, fetcher]);
 

@@ -219,6 +219,23 @@ class OfflineContinuityTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a session ended while its request is being created is answered signed out with a new marker" do
+    with_preview_users(users(:one)) do
+      sign_in_as(users(:one))
+      session = Current.session
+      ending = lambda do |*|
+        session.destroy!
+        { title: "Middlemarch", author: "George Eliot" }
+      end
+      BookMetadataLookupService.stub(:call, ending) do
+        post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "ebook", language: "en" },
+          headers: account_headers(users(:one)), as: :json
+      end
+      assert_equal [ 401, { "error" => "signed_out" } ], [ response.status, response.parsed_body ]
+      issued_marker
+    end
+  end
+
   test "accepting the account keeps the marker untouched on ordinary preview requests" do
     with_preview_users(users(:one)) do
       sign_in_as(users(:one))
