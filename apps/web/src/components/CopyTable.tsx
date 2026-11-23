@@ -15,10 +15,16 @@ const SUBMIT_LABELS: Record<ChoosableKind, string> = {
 const REPLACEMENT_PROMPT = "Replace the existing library file? The current file stays until the new download imports successfully. A failed download leaves it unchanged.";
 
 function choosableKind(copy: ListedCopy): ChoosableKind | null {
-  if (copy.details === null) return copy.downloadable && copy.state !== "selected" ? "select" : null;
+  if (copy.details === null) return fallbackKind(copy);
   if (!copy.details) return copy.downloadable ? "select" : null;
   const choice = copy.details.choice;
   return choice === "select" || choice === "select_instead" || choice === "retry_anyway" ? choice : null;
+}
+
+function fallbackKind(copy: BookCopy): ChoosableKind | null {
+  if (!copy.downloadable || copy.state === "selected") return null;
+  if (copy.skipped) return "retry_anyway";
+  return copy.state === "rejected" ? "select_instead" : "select";
 }
 
 function firstChoice(copies: ListedCopy[]): string {
@@ -139,7 +145,7 @@ export function CopyTable({
                 </td>
                 <th scope="row">
                   <label htmlFor={`copy-${copy.id}`}>{copy.title}</label>
-                  {copy.details?.choice === "selected" ? <span className="copy-flag copy-flag--chosen"> · chosen</span> : null}
+                  {copy.details?.choice === "selected" || (copy.details === null && copy.state === "selected") ? <span className="copy-flag copy-flag--chosen"> · chosen</span> : null}
                   {copy.skipped ? <span className="copy-flag"> · skipped before</span> : null}
                   {copy.details?.choice === "skipped" ? <span className="copy-flag"> · skipped</span> : null}
                   {!copy.downloadable ? <span className="copy-flag"> · no download link</span> : null}
@@ -193,7 +199,7 @@ export function CopyTable({
   );
 }
 
-function focusLeftThePage(): boolean {
+export function focusLeftThePage(): boolean {
   return document.activeElement === null || document.activeElement === document.body;
 }
 

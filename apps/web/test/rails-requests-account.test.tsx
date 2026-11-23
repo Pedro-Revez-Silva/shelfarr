@@ -382,14 +382,36 @@ describe("a request's copies for an administrator", () => {
     cleanup();
 
     const unreadable = { ...copy("91", { title: "Chosen.epub", state: "selected" }), details: { ...copyDetails(), choice: "picked" } };
-    const copies = { selectable: false, revision: "downloading/91/4", looking_for: "English", search_blocked: null, candidates: [unreadable, copy("92", { state: "rejected" }, { choice: "select_instead", score: 70 })] };
+    const skipped = { ...copy("93", { title: "Failed.epub", state: "rejected", skipped: true }), details: { ...copyDetails(), choice: "picked" } };
+    const copies = { selectable: false, revision: "r1", looking_for: "English", search_blocked: null, candidates: [unreadable, copy("92", { state: "rejected" }, { choice: "select_instead", score: 70 }), skipped] };
     const next = railsServer(detail(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: { ...detail({ status: "downloading", requested_by: { name: "Rae", self: false }, actions: adminActions }), copies } } }));
     renderApp({ server: next, url: "/sub/preview/requests/7#copies" });
-    const table = (await screen.findByText("Copies (2)")).closest("details");
+    const table = (await screen.findByText("Copies (3)")).closest("details");
     if (!table) throw new Error("Copies section missing");
     expect((within(table).getByLabelText("Chosen.epub") as HTMLInputElement).disabled).toBe(true);
-    expect(within(table).getAllByRole("row").map((row) => row.children.length)).toEqual([8, 8, 8]);
+    expect(within(table).getAllByRole("row").map((row) => row.children.length)).toEqual([8, 8, 8, 8]);
     expect([...within(table).getAllByRole("row")[1]!.querySelectorAll("td[data-label]")].map((cell) => cell.textContent)).toEqual(["EPUB", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"]);
+    expect(within(table).getAllByRole("row").slice(1).map((row) => row.querySelector("th")?.textContent)).toEqual(["Chosen.epub · chosen", "Copy 92.epub", "Failed.epub · skipped before"]);
+    await userEvent.setup().click(within(table).getByLabelText("Failed.epub"));
+    expect(within(table).getByRole("button", { name: "Try this copy again anyway" })).toBeTruthy();
+  });
+
+  test("when a new search clears the copies under an open choice, focus and the refusal stay on screen", async () => {
+    let cleared = false;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: !cleared, revision: cleared ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: cleared ? [] : [copy("85")] } });
+    const server = railsServer(found(), true)
+      .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }))
+      .on("POST", /\/requests\/7\/selection$/, () => {
+        cleared = true;
+        return { status: 404, body: { error: "not_found" } };
+      });
+    renderApp({ server, url: "/sub/preview/requests/7" });
+    const button = await screen.findByRole("button", { name: "Download this copy" });
+    button.focus();
+    await userEvent.setup().keyboard("{Enter}");
+    const note = await screen.findByText("No copies found yet. The search may still be running.");
+    await waitFor(() => expect(document.activeElement).toBe(note));
+    expect(screen.getByRole("alert").textContent).toBe("The choice could not be sent. Nothing was changed.");
   });
 
   test("when the last copy that could be chosen becomes the chosen one, focus stays in the copies", async () => {

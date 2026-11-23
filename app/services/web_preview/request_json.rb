@@ -11,7 +11,12 @@ module WebPreview
     UNREADABLE_SCORING = { structure: nil, bitrate_kbps: nil, preference_adjustment: 0, size_limit: nil }.freeze
 
     def self.copies_revision(request)
-      [ Request.where(id: request.id).pick(:status), request.search_results.selected.order(:id).ids.join(","), request.downloads.maximum(:id) ].join("/")
+      shown = [
+        Request.where(id: request.id).pick(:status, :search_generation),
+        request.search_results.order(:id).pluck(:id, :updated_at).map { |id, updated_at| [ id, updated_at.iso8601(6) ] },
+        request.downloads.order(:id).pluck(:id, :status)
+      ]
+      Digest::SHA256.hexdigest(shown.to_json).first(32)
     end
 
     def initialize(request, viewer:, routes:, opens_in_browser:)

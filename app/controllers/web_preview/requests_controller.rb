@@ -12,6 +12,7 @@ class WebPreview::RequestsController < WebPreview::APIController
     superseded: "Another recovery attempt took over this request."
   }.freeze
   NOT_RETRYABLE = "This request can't be retried in its current state."
+  ACTIVE_DOWNLOADS = %w[queued downloading paused].freeze
   NOT_CHOOSABLE = "This copy can no longer be chosen. The page shows what can be chosen now."
   COPIES_CHANGED = "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one."
   REPLACEMENT_UNCONFIRMED = "This book is already in the library. Confirm that this copy replaces the library file, then choose it again."
@@ -119,7 +120,7 @@ class WebPreview::RequestsController < WebPreview::APIController
 
   def choose_copy(request, result)
     return [ "invalid_request", :bad_request ] unless params[:expected_revision].is_a?(String)
-    return if result.selected?
+    return if result.selected? && request.downloads.where(search_result: result, status: ACTIVE_DOWNLOADS).exists?
     return [ "copies_changed", :conflict, COPIES_CHANGED ] unless params[:expected_revision] == WebPreview::RequestJson.copies_revision(request)
 
     replace = params[:replace_library_file] == true

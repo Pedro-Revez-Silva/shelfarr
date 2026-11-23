@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
 import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
-import { CopyTable } from "./CopyTable";
+import { CopyTable, focusLeftThePage } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
 type Pending = { isPending: boolean; isError: boolean; error: unknown };
@@ -258,6 +258,13 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
     error: choose.error,
   };
   const count = copies.candidates.length;
+  const emptyNote = useRef<HTMLParagraphElement>(null);
+  const listed = useRef(count > 0);
+  useEffect(() => {
+    const emptied = listed.current && count === 0;
+    listed.current = count > 0;
+    if (emptied && focusLeftThePage()) emptyNote.current?.focus();
+  }, [count]);
   return (
     <>
       <div className="copies-heading">
@@ -273,7 +280,12 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
       {count > 0 ? (
         <CopyTable copies={copies.candidates} choose={choice} preselect={copies.selectable} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={revision === null && !copies.selectable} />
       ) : (
-        <p className="request-note">No copies found yet. The search may still be running.</p>
+        <>
+          <p ref={emptyNote} className="request-note" tabIndex={-1}>
+            No copies found yet. The search may still be running.
+          </p>
+          {choose.isError ? <Failure error={choose.error} fallback="The choice could not be sent. Nothing was changed." /> : null}
+        </>
       )}
       <div role="status">{choose.isSuccess ? <p className="form-success">Download queued. This page updates as it goes.</p> : null}</div>
     </>

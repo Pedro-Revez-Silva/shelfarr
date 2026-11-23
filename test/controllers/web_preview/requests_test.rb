@@ -246,9 +246,23 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_no_difference -> { Download.count } do
       assert_equal "copies_changed", choose(@theirs, second, expected_revision: read_before_cancelling, replace_library_file: false).fetch("error")
+      assert_equal "copies_changed", choose(@theirs, first, expected_revision: read_before_cancelling, replace_library_file: false).fetch("error")
     end
     assert_equal "failed", @theirs.reload.status
     assert_not second.reload.selected?
+  end
+
+  test "a choice read before a new search rewrote the same copy in place is refused" do
+    rewritten = @mine.search_results.create!(guid: "same-guid", title: "Emile and the Lighthouse Old EPUB", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"),
+      status: :rejected, blocklisted_at: Time.current, blocklist_reason: "Import failed")
+    sign_in_as(@admin)
+    read_before_search = detail(@mine, user: @admin).dig("request", "copies", "revision")
+
+    rewritten.update!(title: "Emile and the Lighthouse Different EPUB", magnet_url: magnet("c"))
+    assert_no_difference -> { Download.count } do
+      assert_equal "copies_changed", choose(@mine, rewritten, expected_revision: read_before_search, replace_library_file: false).fetch("error")
+    end
+    assert rewritten.reload.blocklisted?
   end
 
   test "the copies and their revision describe the same moment even when a choice lands while the request is read" do
@@ -265,7 +279,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
 
     shown = copies.fetch("candidates").select { |copy| copy.dig("details", "choice") == "selected" }.map { |copy| copy.fetch("id") }
     assert_equal [ landing.id.to_s ], shown
-    assert_equal shown.join(","), copies.fetch("revision").split("/")[1]
+    assert_equal revision(@mine), copies.fetch("revision")
   end
 
   test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
@@ -276,7 +290,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal({ "structure" => nil, "bitrate_kbps" => nil, "preference_adjustment" => 0, "size_limit" => nil, "seeders" => 5, "score" => 60 },
       copies.fetch("candidates").sole.fetch("details").slice("structure", "bitrate_kbps", "preference_adjustment", "size_limit", "seeders", "score"))
-    assert_equal "not_found//", copies.fetch("revision")
+    assert_match(/\A\h{32}\z/, copies.fetch("revision"))
   end
 
   test "choosing a copy for a book already in the library replaces its file only when the administrator confirms it" do

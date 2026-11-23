@@ -2543,6 +2543,7 @@ thead th {
   }
   .copy-table td[data-label] {
     grid-column: 2;
+    overflow-wrap: anywhere;
     color: var(--muted);
     font-size: 14px;
   }
