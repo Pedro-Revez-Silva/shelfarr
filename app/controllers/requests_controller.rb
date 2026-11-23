@@ -187,36 +187,11 @@ class RequestsController < ApplicationController
       return
     end
 
-    # A direct acquisition may have a complete atomic publication which has
-    # not yet been committed to Book/Request state. Keep its recovery owner
-    # durable instead of cascading the Download row away. Recovery either
-    # finalizes those bytes or safely removes stale private staging later.
-    if @request.direct_acquisition_recovery_pending?
-      @request.cancel!(allow_direct_recovery: true)
-      DirectDownloadRecoveryJob.perform_later
+    if RequestWithdrawal.call(@request, remove_torrents: params[:remove_torrent] == "1") == :awaiting_direct_recovery
       redirect_to @request,
         notice: "Request cancellation recorded. Direct download cleanup will finish in the background.",
         status: :see_other
       return
-    end
-
-    # This durable, idempotent claim is the authoritative cancellation guard.
-    # It makes the request non-fulfillable and stops active Download rows under
-    # the same lock used by upload/Audible admission before any external or
-    # activity-log side effect is attempted.
-    @request.claim_destructive_cancellation!
-
-    if params[:remove_torrent] == "1"
-      remove_associated_torrents(@request)
-    end
-
-    book = @request.book
-    @request.destroy!
-    ActivityTracker.track("request.cancelled", trackable: @request)
-
-    # Clean up orphaned books with no requests and no file
-    if book.requests.empty? && !book.acquisition_blocked?
-      book.destroy
     end
 
     redirect_to destroy_redirect_location, notice: "Request cancelled", status: :see_other
@@ -423,22 +398,6 @@ class RequestsController < ApplicationController
     end
 
     lookup_metadata.merge(request_metadata_attrs.compact).merge(cached_metadata)
-  end
-
-  def remove_associated_torrents(request)
-    request.downloads.each do |download|
-      next unless download.external_id.present? && download.download_client.present?
-
-      begin
-        client = download.download_client.adapter
-        client.remove_torrent(download.external_id, delete_files: false)
-        Rails.logger.info "[RequestsController] Removed torrent for download ##{download.id}"
-      rescue DownloadClients::Base::Error => e
-        Rails.logger.warn(
-          "[RequestsController] Failed to remove torrent for download ##{download.id}: #{e.class}"
-        )
-      end
-    end
   end
 
   def request_metadata_attrs
