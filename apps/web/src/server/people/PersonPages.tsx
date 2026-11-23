@@ -452,7 +452,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   const [startedOn, setStartedOn] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [saving, setSaving] = useState<{ from: string; saved: string | null } | null>(null);
+  const [saving, setSaving] = useState<{ saved: string | null } | null>(null);
   const sending = saving !== null;
   const { said, say, clear } = useSay();
   const values: ProfileValues = { name: edits.name ?? base.name, username: edits.username ?? base.username, role: edits.role ?? base.role };
@@ -468,7 +468,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
     if (Object.keys(edits).length === 0 && startedOn !== null) setStartedOn(null);
   }, [startedOn, edits]);
   useEffect(() => {
-    if (saving?.saved == null || (base.version === saving.from && saving.saved !== saving.from)) return;
+    if (saving?.saved == null || base.version !== saving.saved) return;
     setEdits({});
     setSaving(null);
   }, [saving, base.version]);
@@ -486,8 +486,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
 
   const send = (sent: ProfileValues, sentVersion: string, administrators: number | null) => {
     setConfirmation(null);
-    const from = base.version;
-    setSaving({ from, saved: null });
+    setSaving({ saved: null });
     save.mutate(
       { values: sent, version: sentVersion, administrators },
       {
@@ -496,7 +495,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
           say("error", peopleFailureText(error));
         },
         onSuccess: (answer) => {
-          setSaving(answer.kind === "saved" ? { from, saved: answer.person.user.version } : null);
+          setSaving(answer.kind === "saved" ? { saved: answer.person.user.version } : null);
           if (answer.kind === "saved") {
             setErrors({});
             say("success", "Changes saved.");

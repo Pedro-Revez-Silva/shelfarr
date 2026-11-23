@@ -42,7 +42,10 @@ function usePeopleWrite<Input, Answer extends { kind: string }>(write: (input: I
   const serverKeys = useServerKeys();
   const client = useQueryClient();
   const publish: Publish = {
-    person: (envelope) => client.setQueryData(keys.person(envelope.user.id), envelope),
+    person: (envelope) => {
+      if (isRemovedPerson(client.getQueryState(keys.person(envelope.user.id))?.error)) return;
+      client.setQueryData(keys.person(envelope.user.id), envelope);
+    },
     forget: (id) => {
       client.removeQueries({ queryKey: keys.person(id), exact: true });
       client.setQueryData<People>(keys.list, (current) => (current ? { ...current, users: current.users.filter((entry) => entry.id !== id) } : current));

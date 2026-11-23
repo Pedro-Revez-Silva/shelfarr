@@ -389,6 +389,57 @@ describe("People in the Rails preview", () => {
     expect(server.called("PUT", /\/admin\/users\/5$/).map((request) => request.body)).toEqual([{ name: "ROWAN Oak", username: "rowan", role: "member", version: "v-5-1" }]);
   });
 
+  test("a record read while a save is on its way is never shown as the unlocked result", async () => {
+    const held = deferred<{ status: number; body: unknown }>();
+    let current = ROWAN;
+    const server = peopleServer()
+      .on("GET", /\/admin\/users\/5$/, () => ({ body: envelope(current) }))
+      .on("PUT", /\/admin\/users\/5$/, () => held.promise);
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    const profile = card("Name, username and role");
+    const name = within(profile).getByLabelText("Name") as HTMLInputElement;
+    await typeInto(profile, "Name", "Rowan Oak");
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+    current = { ...ROWAN, name: "Rowan Elm", version: "v-5-9" };
+    await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
+    await eventually(() => screen.getByRole("heading", { level: 1 }).textContent === "Rowan Elm");
+
+    const unlocked: string[] = [];
+    const watcher = new MutationObserver(() => {
+      if (!name.readOnly) unlocked.push(name.value);
+    });
+    watcher.observe(profile, { subtree: true, attributes: true, childList: true, characterData: true });
+    held.resolve({ status: 200, body: envelope({ ...ROWAN, name: "Rowan Oak", version: "v-5-2" }) });
+    expect(await within(profile).findByText("Changes saved.")).toBeTruthy();
+    await eventually(() => !name.readOnly);
+    watcher.disconnect();
+
+    expect(name.value).toBe("Rowan Oak");
+    expect(unlocked.every((value) => value === "Rowan Oak")).toBe(true);
+  });
+
+  test("a save answer that arrives after the person was found removed does not bring their page back", async () => {
+    const held = deferred<{ status: number; body: unknown }>();
+    let gone = false;
+    const server = peopleServer()
+      .on("GET", /\/admin\/users\/5$/, () => (gone ? { status: 404, body: { error: "user_not_found" } } : { body: envelope(ROWAN) }))
+      .on("PUT", /\/admin\/users\/5$/, () => held.promise);
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    await typeInto(card("Name, username and role"), "Name", "Rowan Oak");
+    await userEvent.click(within(card("Name, username and role")).getByRole("button", { name: "Save changes" }));
+    gone = true;
+    await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
+    expect(await screen.findByRole("heading", { name: "This person is not on this server" })).toBeTruthy();
+
+    held.resolve({ status: 200, body: envelope({ ...ROWAN, name: "Rowan Oak", version: "v-5-2" }) });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    expect(screen.getByRole("heading", { name: "This person is not on this server" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Person");
+    expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+  });
+
   test("leaving with an unsaved edit asks first", async () => {
     renderApp({ server: peopleServer(), url: "/sub/preview/server/people/users/5" });
     await screen.findByRole("heading", { name: "Details", level: 3 });
