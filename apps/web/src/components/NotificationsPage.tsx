@@ -19,7 +19,7 @@ const TONES: Record<string, { mark: string; tone: string }> = {
 };
 
 type Said = { text: string; tone: "success" | "error"; serial: number };
-type FocusTarget = { kind: "heading" } | { kind: "item"; id: string } | null;
+type FocusTarget = (({ kind: "heading" } | { kind: "item"; id: string }) & { trigger: Element | null }) | null;
 
 export function NotificationsPage() {
   const { mode } = useServices();
@@ -59,6 +59,11 @@ function Inbox() {
 
   useEffect(() => {
     if (!focus || list.isFetching) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== focus.trigger) {
+      setFocus(null);
+      return;
+    }
     const target = focus.kind === "heading" ? document.getElementById(HEADING_ID) : document.getElementById(itemHeadingId(focus.id));
     (target ?? document.getElementById(HEADING_ID))?.focus();
     setFocus(null);
@@ -70,16 +75,17 @@ function Inbox() {
   };
 
   const run = (input: NotificationCommand, title: string | null = null) => {
+    const trigger = document.activeElement;
     command.mutate(input, {
       onSuccess: (answer) => {
         say("success", outcomeText(input, answer, title));
-        setFocus(input.kind === "read" ? { kind: "item", id: input.id } : { kind: "heading" });
+        setFocus(input.kind === "read" ? { kind: "item", id: input.id, trigger } : { kind: "heading", trigger });
       },
       onError: (error) => {
         if (input.kind === "read" && isApiError(error) && error.kind === "not_found") {
           revalidate();
           say("error", "That notification is no longer here. The list now shows what is left.");
-          setFocus({ kind: "heading" });
+          setFocus({ kind: "heading", trigger });
           return;
         }
         say("error", actionFailure(error, NOT_SENT));

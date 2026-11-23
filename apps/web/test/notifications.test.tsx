@@ -450,6 +450,44 @@ describe("notifications in the Rails preview", () => {
     expect(screen.getByRole("link", { name: "Notifications" })).toBeTruthy();
   });
 
+  test("a write made while the first session read is still loading reads the session again once that read lands", async () => {
+    const held = deferred<{ body: unknown }>();
+    let unread = 1;
+    let sessions = 0;
+    const server = railsServer({ list: () => ({ body: inbox(unread > 0 ? [SAMPLE[0]!] : [{ ...SAMPLE[0]!, read_at: "2026-11-21T08:00:00.000Z" }]) }) });
+    server.on("GET", /\/api\/v1\/session$/, () => {
+      sessions += 1;
+      return sessions === 1 ? held.promise : { body: session({ notifications: { url: "/sub/notifications", unread } }) };
+    });
+    server.on("POST", /\/notifications\/read$/, () => {
+      unread = 0;
+      return { body: { account: ACCOUNT, unread: 0, total: 1, changed: 1 } };
+    });
+    renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mark all as read" }));
+    expect(await screen.findByText("All read · 1 notification")).toBeTruthy();
+    expect(sessions).toBe(1);
+    await act(async () => held.resolve({ body: session({ notifications: { url: "/sub/notifications", unread: 1 } }) }));
+    await waitFor(() => expect(sessions).toBe(2));
+    expect(await screen.findByRole("link", { name: "Notifications" })).toBeTruthy();
+  });
+
+  test("an action that answers after focus moved elsewhere leaves focus where the person put it", async () => {
+    const answer = deferred<{ body: unknown }>();
+    const server = railsServer();
+    server.on("POST", /\/notifications\/5\/read$/, () => answer.promise);
+    renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mark as read Book Ready" }));
+    const account = screen.getByRole("link", { name: "Account" });
+    account.focus();
+    await act(async () => answer.resolve({ body: { account: ACCOUNT, unread: 1, total: 3, changed: 1 } }));
+    expect(await screen.findByText("Marked “Book Ready” as read.")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(document.activeElement).toBe(account);
+  });
+
   test("an older read that answers after an action never replaces the newer inbox", async () => {
     let cleared = false;
     const late = deferred<{ body: unknown }>();

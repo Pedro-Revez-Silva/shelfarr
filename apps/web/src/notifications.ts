@@ -1,9 +1,25 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, type QueryClient } from "@tanstack/react-query";
 import type { NotificationChange } from "./contract";
 import { useServices, type Services } from "./services";
 
+const waitingForFirstSession = new WeakSet<QueryClient>();
+
 function readSessionAgain({ keys, guard, queryClient }: Services) {
-  if (guard.isActive()) void queryClient.invalidateQueries({ queryKey: keys.session, exact: true });
+  if (!guard.isActive()) return;
+  const filter = { queryKey: keys.session, exact: true };
+  const first = queryClient.getQueryState(keys.session);
+  if (first?.data !== undefined || first?.fetchStatus !== "fetching") {
+    void queryClient.invalidateQueries(filter);
+    return;
+  }
+  if (waitingForFirstSession.has(queryClient)) return;
+  waitingForFirstSession.add(queryClient);
+  void queryClient
+    .refetchQueries(filter, { cancelRefetch: false })
+    .then(() => {
+      waitingForFirstSession.delete(queryClient);
+      if (guard.isActive()) return queryClient.invalidateQueries(filter);
+    });
 }
 
 export function useNotifications() {
@@ -21,7 +37,8 @@ export function useNotifications() {
 export type NotificationCommand = { kind: "read"; id: string } | { kind: "read_all"; through: string } | { kind: "clear"; through: string };
 
 export function useNotificationCommand() {
-  const { api, keys, guard, queryClient } = useServices();
+  const services = useServices();
+  const { api, keys, guard, queryClient } = services;
   return useMutation({
     mutationFn: (command: NotificationCommand): Promise<NotificationChange> => {
       if (command.kind === "read") return api.markNotificationRead(command.id);
@@ -31,7 +48,7 @@ export function useNotificationCommand() {
     onSettled: () => {
       if (!guard.isActive()) return;
       void queryClient.invalidateQueries({ queryKey: keys.notifications });
-      void queryClient.invalidateQueries({ queryKey: keys.session, exact: true });
+      readSessionAgain(services);
     },
   });
 }
