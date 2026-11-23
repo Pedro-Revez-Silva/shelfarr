@@ -33,6 +33,10 @@ module ActiveSupport
       ENV["KOBO_KEPUB_CACHE_PATH"] = @kobo_kepub_cache_env
     end
 
+    teardown do
+      Thread.current.keys.grep(/\Aturbo-refresh-debouncer-/).each { |key| Thread.current[key]&.wait }
+    end
+
     def stub_qbittorrent_connection(url, session_id: "test_session_id")
       stub_request(:post, "#{url}/api/v2/auth/login")
         .to_return(
