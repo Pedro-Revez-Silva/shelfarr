@@ -683,3 +683,24 @@ export const bookSearchSchema = z.object({
   q: z.string().max(200).optional().catch(undefined),
 });
 export type BookSearch = z.infer<typeof bookSearchSchema>;
+
+export const notificationTypes = ["request_completed", "request_failed", "request_attention"] as const;
+
+export const notificationSchema = z.object({
+  id: identifier,
+  type: z.string().min(1),
+  title: z.string(),
+  message: z.string().nullable(),
+  created_at: timestamp,
+  read_at: timestamp.nullable(),
+  request: z.discriminatedUnion("state", [z.object({ state: z.literal("available"), id: identifier }), z.object({ state: z.literal("unavailable") })]).nullable(),
+});
+export type NotificationItem = z.infer<typeof notificationSchema>;
+
+const notificationCounts = { account: identifier, unread: z.number().int().nonnegative(), total: z.number().int().nonnegative() };
+
+export const notificationListSchema = z.object({ ...notificationCounts, items: z.array(notificationSchema) });
+export type NotificationList = z.infer<typeof notificationListSchema>;
+
+export const notificationChangeSchema = z.object({ ...notificationCounts, changed: z.number().int().nonnegative() });
+export type NotificationChange = z.infer<typeof notificationChangeSchema>;

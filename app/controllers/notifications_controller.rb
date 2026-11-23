@@ -4,6 +4,8 @@ class NotificationsController < ApplicationController
   rescue_from ActiveRecord::RecordNotFound, with: :record_not_found
 
   def index
+    return redirect_to(web_preview_notifications_path) if warm_notifications?
+
     @notifications = Current.user.notifications.recent.includes(:notifiable)
   end
 
@@ -28,6 +30,10 @@ class NotificationsController < ApplicationController
   end
 
   private
+
+  def warm_notifications?
+    request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+  end
 
   def record_not_found
     head :not_found

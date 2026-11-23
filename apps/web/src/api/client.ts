@@ -22,6 +22,7 @@ import { metadataConflictSchema, metadataRejectionSchema, metadataSettingsSchema
 import { accountEnvelopeSchema, accountRejectionSchema, type AccountEnvelope, type AccountRejection, type PasswordChange, type Profile } from "../contract";
 import { backupCodesSchema, createdTokenSchema, twoFactorSetupSchema, type CreatedToken, type RequestActionAnswer, type TwoFactorSetup } from "../contract";
 import { connectDecisionSchema, connectInspectSchema, type ConnectDecision, type ConnectInspect } from "../contract";
+import { notificationChangeSchema, notificationListSchema, type NotificationChange, type NotificationList } from "../contract";
 import {
   progressConflictSchema,
   progressEnvelopeSchema,
@@ -278,6 +279,26 @@ export class ApiClient {
 
   private requestAction(path: string, body: unknown, signal: AbortSignal | undefined): Promise<RequestActionAnswer> {
     return this.request({ path, schema: requestActionSchema, method: "POST", body, signal, account: (value) => value.account });
+  }
+
+  notifications(signal?: AbortSignal): Promise<NotificationList> {
+    return this.request({ path: "/notifications", schema: notificationListSchema, signal, account: (value) => value.account });
+  }
+
+  markNotificationRead(id: string, signal?: AbortSignal): Promise<NotificationChange> {
+    return this.notificationChange(`/notifications/${encodeURIComponent(id)}/read`, {}, signal);
+  }
+
+  markNotificationsRead(through: string, signal?: AbortSignal): Promise<NotificationChange> {
+    return this.notificationChange("/notifications/read", { through }, signal);
+  }
+
+  clearNotifications(through: string, signal?: AbortSignal): Promise<NotificationChange> {
+    return this.notificationChange("/notifications/clear", { through }, signal);
+  }
+
+  private notificationChange(path: string, body: unknown, signal: AbortSignal | undefined): Promise<NotificationChange> {
+    return this.request({ path, schema: notificationChangeSchema, method: "POST", body, signal, account: (value) => value.account });
   }
 
   serverOverview(signal?: AbortSignal): Promise<ServerOverview> {
