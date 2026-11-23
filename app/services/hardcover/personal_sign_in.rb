@@ -44,11 +44,11 @@ module Hardcover
       @user = user
     end
 
-    def connect_api_key(api_key, expected_version: ConnectionManager::ANY)
-      ConnectionManager.connect!(user: @user, auth_method: "personal_token", access_token: api_key, expected_version: expected_version, started_at: Time.current.to_f)
+    def connect_api_key(api_key, generation: nil)
+      ConnectionManager.connect!(user: @user, auth_method: "personal_token", access_token: api_key, expected_generation: generation)
     end
 
-    def start_oauth(base_url, warm: false, expected_version: ConnectionManager::ANY)
+    def start_oauth(base_url, warm: false, generation: nil)
       redirect_uri = HardcoverIntegration.redirect_uri(base_url)
       return unless HardcoverIntegration.redirect_uri_acceptable?(redirect_uri)
 
@@ -60,7 +60,7 @@ module Hardcover
         "redirect_uri" => redirect_uri,
         "user_id" => @user.id,
         "expires_at" => Oauth::PENDING_TTL.from_now.to_i,
-        **expectation(expected_version)
+        **bound_to(generation)
       }
       Oauth.authorization_url(state: state, code_challenge: challenge, redirect_uri: redirect_uri)
     end
@@ -78,7 +78,7 @@ module Hardcover
       connect_tokens(Oauth.exchange_code(code: code, code_verifier: pending["verifier"], redirect_uri: pending["redirect_uri"]), pending)
     end
 
-    def start_device(expected_version: ConnectionManager::ANY)
+    def start_device(generation: nil)
       authorization = Oauth.start_device_authorization
       @session[DEVICE_KEY] = {
         "device_code" => authorization.device_code,
@@ -89,7 +89,7 @@ module Hardcover
         "expires_at" => authorization.expires_at.to_i,
         "next_poll_at" => (Time.current + authorization.interval).to_i,
         "user_id" => @user.id,
-        **expectation(expected_version)
+        **bound_to(generation)
       }
     end
 
@@ -147,8 +147,8 @@ module Hardcover
 
     private
 
-    def expectation(expected_version)
-      expected_version == ConnectionManager::ANY ? {} : { "expected_version" => expected_version, "started_at" => Time.current.to_f }
+    def bound_to(generation)
+      generation.nil? ? {} : { "generation" => generation }
     end
 
     def connect_tokens(token_set, pending)
@@ -159,8 +159,7 @@ module Hardcover
         refresh_token: token_set.refresh_token,
         expires_at: token_set.expires_at,
         scope: token_set.scope,
-        expected_version: pending.key?("expected_version") ? pending["expected_version"] : ConnectionManager::ANY,
-        started_at: pending["started_at"]
+        expected_generation: pending["generation"]
       )
     end
   end

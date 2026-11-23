@@ -19,6 +19,8 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
   def create
     return unavailable(API_KEY_OFF) unless HardcoverIntegration.personal_tokens_allowed?
+
+    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
     return unless expected_connection?
 
     raw = request.request_parameters["api_key"]
@@ -27,7 +29,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
     api_key = Hardcover::PersonalSignIn.api_key(raw)
     return refuse("invalid_api_key", "Paste a Hardcover API key to connect.", :unprocessable_entity) unless api_key
 
-    connection = sign_in.connect_api_key(api_key, expected_version: expected_version)
+    connection = sign_in.connect_api_key(api_key, generation: generation)
     render_state(notice: "Connected Hardcover account @#{connection.hardcover_username}.")
   rescue Hardcover::ConnectionManager::ConnectionChanged
     refuse("hardcover_changed", CHANGED, :conflict)
@@ -37,9 +39,11 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
   def authorize
     return unavailable(SIGN_IN_OFF) unless HardcoverIntegration.oauth_configured?
+
+    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
     return unless expected_connection?
 
-    url = sign_in.start_oauth(request.base_url, warm: true, expected_version: expected_version)
+    url = sign_in.start_oauth(request.base_url, warm: true, generation: generation)
     return unavailable(INSECURE_REDIRECT) unless url
 
     render json: { account: web_preview_account_id, authorization_url: url }
@@ -47,9 +51,11 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
   def device
     return unavailable(CODE_OFF) unless HardcoverIntegration.device_flow_enabled?
+
+    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
     return unless expected_connection?
 
-    sign_in.start_device(expected_version: expected_version)
+    sign_in.start_device(generation: generation)
     render_state
   rescue Hardcover::Oauth::Error => e
     refuse("hardcover_refused", Hardcover::PersonalSignIn.error_message(e), :unprocessable_entity)
@@ -65,6 +71,7 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
   def cancel_device
     sign_in.forget_device
+    Hardcover::ConnectionManager.end_sign_ins!(Current.user)
     render_state
   end
 
@@ -109,10 +116,6 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
     refuse("hardcover_changed", CHANGED, :conflict)
     false
-  end
-
-  def expected_version
-    request.request_parameters["version"]
   end
 
   def state(outcome: nil)
