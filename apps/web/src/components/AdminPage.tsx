@@ -125,7 +125,17 @@ function OverviewBody({ overview, rails, actions }: { overview: ServerOverview; 
     <>
       <Attention overview={overview} rails={rails} />
       <dl className="overview-counts">
-        <Tally label="Users" value={counts.users} />
+        <Tally
+          label="Users"
+          value={counts.users}
+          action={
+            rails ? (
+              <Link to="/server/$category" params={{ category: "people" }} hash="users" className="health-fix">
+                Manage people
+              </Link>
+            ) : null
+          }
+        />
         <Tally label="Books" value={counts.books} />
         <Tally label="Requests in progress" value={counts.active_requests} />
         <Tally label="Need attention" value={counts.attention_requests} alert={counts.attention_requests > 0} />
@@ -144,11 +154,12 @@ function OverviewBody({ overview, rails, actions }: { overview: ServerOverview; 
   );
 }
 
-function Tally({ label, value, alert = false }: { label: string; value: number; alert?: boolean }) {
+function Tally({ label, value, alert = false, action = null }: { label: string; value: number; alert?: boolean; action?: ReactNode }) {
   return (
     <div className={`overview-tally${alert ? " overview-tally--alert" : ""}`}>
       <dt>{label}</dt>
       <dd>{value.toLocaleString("en")}</dd>
+      {action ? <dd className="overview-tally-action">{action}</dd> : null}
     </div>
   );
 }

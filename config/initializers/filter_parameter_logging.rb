@@ -1,6 +1,6 @@
 Rails.application.config.filter_parameters += [
   :passw, :email, :secret, :token, :_key, :crypt, :salt, :certificate, :otp, :ssn, :cvv, :cvc,
-  :nzb_url, :download_url, :webhook_url, :response_url, :authorization_code, :account, :session_id, :userkey,
+  :nzb_url, :download_url, :webhook_url, :response_url, :authorization_code, :account, :session_id, :userkey, :oidc_uid,
   :readingstates, :currentbookmark,
   :locator, :position_seconds,
   :activation_code, :activation_poll_url, :kobo_user_id, :kobo_user_key,

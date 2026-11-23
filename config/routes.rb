@@ -263,6 +263,8 @@ Rails.application.routes.draw do
   get "preview/server", to: "web_preview/shell#show", as: :web_preview_server
   get "preview/server/setup", to: "web_preview/shell#show", as: :web_preview_server_setup
   get "preview/admin/setup_wizard", to: "web_preview/shell#show", as: :web_preview_admin_setup_wizard
+  get "preview/server/people/users/new", to: "web_preview/shell#show", as: :web_preview_server_new_person
+  get "preview/server/people/users/:id", to: "web_preview/shell#show", as: :web_preview_server_person, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/server/:category", to: "web_preview/shell#show", as: :web_preview_server_category,
     constraints: { category: /policy|sources|downloads|library|notifications|people|system/ }
   scope "preview/api/v1/admin", module: "web_preview/admin", as: :web_preview_api_admin, defaults: { format: :json } do
@@ -296,6 +298,14 @@ Rails.application.routes.draw do
     get "uploads/:id/matches", to: "uploads#matches", as: :upload_matches
     post "uploads/:id/match", to: "uploads#match", as: :upload_match
     delete "uploads/:id", to: "uploads#destroy", as: :upload
+    get "users", to: "users#index", as: :users
+    post "users", to: "users#create"
+    constraints id: /[1-9]\d{0,18}/ do
+      get "users/:id", to: "users#show", as: :user
+      put "users/:id", to: "users#update", as: nil
+      put "users/:id/password", to: "users#password", as: :user_password
+      post "users/:id/remove", to: "users#remove", as: :user_remove
+    end
   end
 
   namespace :integrations, defaults: { format: :json } do

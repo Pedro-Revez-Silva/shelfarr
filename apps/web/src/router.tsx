@@ -10,6 +10,7 @@ import { RequestPage } from "./components/RequestPage";
 import { RequestsPage } from "./components/RequestsPage";
 import { ServerSettingsPage } from "./components/ServerSettingsPage";
 import { ServerCategoryPage } from "./server/ServerCategoryPage";
+import { NewPersonPage, PersonPage } from "./server/people/PersonPages";
 import { LegacySetupRedirect } from "./server/setup/RunSetupAgain";
 import { ServerSetupPage } from "./server/setup/SetupPage";
 import { Shell } from "./components/Shell";
@@ -151,7 +152,19 @@ const serverCategoryRoute = createRoute({
   component: ServerCategoryPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute]);
+const newPersonRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server/people/users/new",
+  component: NewPersonPage,
+});
+
+const personRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/server/people/users/$userId",
+  component: PersonPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

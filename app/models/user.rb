@@ -153,6 +153,7 @@ class User < ApplicationRecord
   def soft_delete!
     hardcover_token = nil
     transaction do
+      yield if block_given?
       sessions.destroy_all
       now = Time.current
       api_tokens.where(revoked_at: nil).update_all(revoked_at: now, updated_at: now)
