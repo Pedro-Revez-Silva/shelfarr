@@ -2456,6 +2456,7 @@ thead th {
 }
 .copy-table {
   font-size: 17px;
+  overflow-wrap: break-word;
 }
 .copy-table thead th {
   font-size: 15px;
