@@ -387,6 +387,47 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_nil @member.reload.hardcover_connection
   end
 
+  test "a disconnect that completes while an older sign-in is still finishing wins" do
+    with_hardcover_memory_cache do
+      stub_request(:post, REVOKE_URL).to_return(status: 200, body: "{}")
+      stub_me(id: 77, username: "between")
+      oauth_state = state_of(start_oauth(version: nil))
+      stub_device
+      send_json(web_preview_api_hardcover_device_path, version: nil)
+      sign_in_session = session.to_hash.slice("hardcover_oauth", "hardcover_device")
+      connect_and_disconnect_elsewhere = lambda do
+        between = create_hardcover_connection(@member, hardcover_user_id: 77, username: "between")
+        assert Hardcover::ConnectionManager.disconnect!(between, expected_version: between.version)
+      end
+      stub_request(:post, TOKEN_URL).to_return do
+        connect_and_disconnect_elsewhere.call
+        { status: 200, body: { access_token: "hc_at_late", refresh_token: "hc_rt_late", expires_in: 604_800 }.to_json }
+      end
+      stub_me(id: 4242, username: "late_approval")
+
+      get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
+      assert_returned_to_warm_page("error", "Your Hardcover connection changed after this page was shown. Review it and try again.")
+      assert_nil @member.reload.hardcover_connection
+
+      assert_equal sign_in_session.keys.sort, %w[hardcover_device hardcover_oauth]
+      travel 6.seconds do
+        answer = send_json(web_preview_api_hardcover_device_poll_path)
+        assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
+      end
+      assert_nil @member.reload.hardcover_connection
+      assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_late"), times: 2
+
+      stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
+        connect_and_disconnect_elsewhere.call
+        { "me" => [ { "id" => 5150, "username" => "slow_key" } ] }
+      })
+      answer = send_json(web_preview_api_hardcover_api_key_path, api_key: "hc_pat_slow", version: nil)
+      assert_response :conflict
+      assert_equal "hardcover_changed", answer.fetch("error")
+      assert_nil @member.reload.hardcover_connection
+    end
+  end
+
   test "an API key checked while another connection is made does not replace it" do
     stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
       create_hardcover_connection(@member, hardcover_user_id: 4242, username: "made_meanwhile") unless @member.hardcover_connection

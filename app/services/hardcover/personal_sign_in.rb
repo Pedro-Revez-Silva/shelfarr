@@ -45,7 +45,7 @@ module Hardcover
     end
 
     def connect_api_key(api_key, expected_version: ConnectionManager::ANY)
-      ConnectionManager.connect!(user: @user, auth_method: "personal_token", access_token: api_key, expected_version: expected_version)
+      ConnectionManager.connect!(user: @user, auth_method: "personal_token", access_token: api_key, expected_version: expected_version, started_at: Time.current.to_f)
     end
 
     def start_oauth(base_url, warm: false, expected_version: ConnectionManager::ANY)
@@ -75,7 +75,7 @@ module Hardcover
     end
 
     def finish_oauth(pending, code)
-      connect_tokens(Oauth.exchange_code(code: code, code_verifier: pending["verifier"], redirect_uri: pending["redirect_uri"]), expected_of(pending))
+      connect_tokens(Oauth.exchange_code(code: code, code_verifier: pending["verifier"], redirect_uri: pending["redirect_uri"]), pending)
     end
 
     def start_device(expected_version: ConnectionManager::ANY)
@@ -119,7 +119,7 @@ module Hardcover
       case poll.status
       when :approved
         forget_device
-        DevicePoll.new(status: :approved, message: nil, connection: connect_tokens(poll.token_set, expected_of(pending)))
+        DevicePoll.new(status: :approved, message: nil, connection: connect_tokens(poll.token_set, pending))
       when :pending, :slow_down
         interval = pending["interval"].to_i + poll.interval.to_i
         @session[DEVICE_KEY] = pending.merge("interval" => interval, "next_poll_at" => (Time.current + interval).to_i)
@@ -148,14 +148,10 @@ module Hardcover
     private
 
     def expectation(expected_version)
-      expected_version == ConnectionManager::ANY ? {} : { "expected_version" => expected_version }
+      expected_version == ConnectionManager::ANY ? {} : { "expected_version" => expected_version, "started_at" => Time.current.to_f }
     end
 
-    def expected_of(pending)
-      pending.key?("expected_version") ? pending["expected_version"] : ConnectionManager::ANY
-    end
-
-    def connect_tokens(token_set, expected_version)
+    def connect_tokens(token_set, pending)
       ConnectionManager.connect!(
         user: @user,
         auth_method: "oauth",
@@ -163,7 +159,8 @@ module Hardcover
         refresh_token: token_set.refresh_token,
         expires_at: token_set.expires_at,
         scope: token_set.scope,
-        expected_version: expected_version
+        expected_version: pending.key?("expected_version") ? pending["expected_version"] : ConnectionManager::ANY,
+        started_at: pending["started_at"]
       )
     end
   end

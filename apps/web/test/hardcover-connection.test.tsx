@@ -125,7 +125,7 @@ describe("Hardcover in Account ▸ Connections", () => {
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ device: { ...DEVICE, verification_uri: address } }) }).success).toBe(false);
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following: "/sub/hardcover/subscriptions", api_key_page: address } }) }).success).toBe(false);
     }
-    for (const following of ["https://evil.example/follow", "//evil.example/follow", "/\\evil.example/follow", "/\t/evil.example/follow", "/\n/evil.example/follow", "hardcover/subscriptions"]) {
+    for (const following of ["https://evil.example/follow", "//evil.example/follow", "/\\evil.example/follow", "/\t/evil.example/follow", "/\n/evil.example/follow", "/hardcover/\nsubscriptions", "//shelfarr.invalid/reading", "hardcover/subscriptions"]) {
       expect(hardcoverEnvelopeSchema.safeParse({ account: ACCOUNT, hardcover: state({ links: { following } }) }).success).toBe(false);
     }
     expect(hardcoverRefusalSchema.safeParse({ account: ACCOUNT, error: "hardcover_changed", message: "Changed", hardcover: state() }).success).toBe(true);

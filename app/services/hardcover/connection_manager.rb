@@ -14,6 +14,8 @@ module Hardcover
     class ConnectionChanged < HardcoverClient::Error; end
 
     ANY = :any
+    DISCONNECTED_KEY = "hardcover:connection:disconnected-at:%d"
+    DISCONNECT_MEMORY = 1.hour
 
     module_function
 
@@ -29,7 +31,7 @@ module Hardcover
     # Verification happens outside any transaction and can take a while, so
     # the user is read again inside the write transaction. One deleted in the
     # meantime gets no connection, and a new OAuth grant is revoked.
-    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil, expected_version: ANY)
+    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil, expected_version: ANY, started_at: nil)
       account = Hardcover::API.me(credential: HardcoverClient.credential_for_token(access_token))
       replaced_token = nil
       previews = []
@@ -43,6 +45,7 @@ module Hardcover
 
           connection = HardcoverConnection.find_by(user_id: user.id) || HardcoverConnection.new(user: user)
           raise ConnectionChanged, "The Hardcover connection changed while signing in" unless expected_version == ANY || expected_version == (connection.persisted? ? connection.version : nil)
+          raise ConnectionChanged, "The Hardcover account was disconnected while signing in" if expected_version != ANY && disconnected_since?(user, started_at)
 
           replaced_token = connection.persisted? ? revocable_token(connection) : nil
           connection.assign_attributes(
@@ -89,6 +92,7 @@ module Hardcover
 
         if current
           token = revocable_token(current)
+          remember_disconnect(user)
           HardcoverConnection.where(id: current.id).delete_all
         end
         user.hardcover_subscriptions.requiring_connection.where(status: %w[draft active]).find_each do |subscription|
@@ -109,6 +113,25 @@ module Hardcover
     def active_user?(user)
       current = User.lock.find_by(id: user.id)
       current.present? && !current.deleted?
+    end
+
+    def remember_disconnect(user)
+      Rails.cache.write(format(DISCONNECTED_KEY, user.id), Time.current.to_f, expires_in: DISCONNECT_MEMORY)
+    rescue StandardError => error
+      Rails.logger.warn("[Hardcover::ConnectionManager] Could not record a disconnect: #{error.class}")
+      RemoteResult::Failed.new(error)
+    end
+
+    def disconnected_since?(user, started_at)
+      disconnected_at = last_disconnect(user)
+      started_at.is_a?(Numeric) && disconnected_at.is_a?(Numeric) && disconnected_at >= started_at
+    end
+
+    def last_disconnect(user)
+      Rails.cache.read(format(DISCONNECTED_KEY, user.id))
+    rescue StandardError => error
+      Rails.logger.warn("[Hardcover::ConnectionManager] Could not read the last disconnect: #{error.class}")
+      RemoteResult::Failed.new(error)
     end
 
     def revocable_token(connection)
