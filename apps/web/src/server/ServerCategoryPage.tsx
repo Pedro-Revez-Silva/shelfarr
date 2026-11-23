@@ -6,6 +6,7 @@ import { useSession } from "../queries";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import type { SettingCategory, SettingGroup } from "./contract";
+import { DOWNLOAD_CARDS, DownloadManagement } from "./downloads/DownloadManagement";
 import { SettingsGroupCard } from "./SettingsGroupCard";
 import { CATEGORY_LABELS, isCategory, ServerShell } from "./ServerShell";
 import { useIsAdministrator, useServerSettings } from "./queries";
@@ -114,13 +115,14 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
     <>
       <nav className="card-index" aria-label={`${category.title} cards`}>
         <ul>
-          {category.groups.map((group) => (
+          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...category.groups].map((group) => (
             <li key={group.id}>
               <a href={`#${group.id}`}>{group.title}</a>
             </li>
           ))}
         </ul>
       </nav>
+      {category.id === "downloads" ? <DownloadManagement onDirtyChange={onDirtyChange} /> : null}
       {headings(category.groups).map((run, index) => (
         <div key={`${run.heading ?? "cards"}-${index}`} className="card-run" role={run.heading ? "group" : undefined} aria-label={run.heading ?? undefined}>
           {run.heading ? <h2 className="card-run-heading">{run.heading}</h2> : null}

@@ -6,9 +6,9 @@ import type { LibraryInventory, RoleRow, SettingGroup, SettingNotes, TelegramCha
 import { RemoveZone, useScope } from "./primitives";
 import { useLibrarySync, useTelegramChatCommand, useTelegramChats } from "./queries";
 
-type Said = { tone: "success" | "error"; text: string; serial: number };
+export type Said = { tone: "success" | "error"; text: string; serial: number };
 
-function useSay() {
+export function useSay() {
   const [said, setSaid] = useState<Said | null>(null);
   const serial = useRef(0);
   const say = (tone: Said["tone"], text: string) => {
@@ -18,7 +18,7 @@ function useSay() {
   return { said, say };
 }
 
-function Said({ said }: { said: Said | null }) {
+export function Said({ said }: { said: Said | null }) {
   return (
     <div className="settings-card-status" role="status">
       {said ? (

@@ -5,7 +5,7 @@ module Admin
     before_action :set_download_client, only: [:show, :edit, :update, :destroy, :test, :move_up, :move_down]
 
     def index
-      @download_clients = DownloadClient.order(client_type: :asc, priority: :asc)
+      @download_clients = DownloadClientAdministration.ordered
     end
 
     def show
@@ -16,12 +16,9 @@ module Admin
     end
 
     def create
-      @download_client = DownloadClient.new(download_client_params.except(:clear_api_key))
-      @download_client.priority = next_priority_for(@download_client.client_type)
+      @download_client = DownloadClientAdministration.create(download_client_params)
 
-      if @download_client.save
-        run_download_client_health_check
-        sync_download_monitor
+      if @download_client.persisted?
         redirect_to admin_download_clients_path, notice: "Download client was successfully created."
       else
         render :new, status: :unprocessable_entity
@@ -32,27 +29,17 @@ module Admin
     end
 
     def update
-      update_params = download_client_params
       @api_key_saved = @download_client.api_key.present?
-      api_key_submitted = update_params[:api_key].present?
-      # Don't overwrite password/api_key if left blank
-      update_params = update_params.except(:password) if update_params[:password].blank?
-      @clear_api_key = update_params.delete(:clear_api_key) == "1"
-      if @clear_api_key
-        update_params[:api_key] = nil
-      elsif update_params[:api_key].blank?
-        update_params = update_params.except(:api_key)
-      end
+      result = DownloadClientAdministration.update(@download_client, download_client_params)
+      @clear_api_key = result.clear_api_key
 
-      if @download_client.update(update_params)
-        run_download_client_health_check
-        sync_download_monitor
+      if result.saved?
         redirect_to admin_download_clients_path, notice: "Download client was successfully updated."
       else
         # The rejected replacement must not remain in controller/view state.
         # The persisted encrypted value was never changed because the save failed.
         @download_client.api_key = nil
-        if api_key_submitted && !@clear_api_key
+        if result.api_key_submitted && !@clear_api_key
           @download_client.errors.add(:api_key, "replacement was not saved; re-enter it after correcting the other errors")
         end
         render :edit, status: :unprocessable_entity
@@ -60,33 +47,26 @@ module Admin
     end
 
     def destroy
-      @download_client.destroy
-      run_download_client_health_check
-      sync_download_monitor
+      DownloadClientAdministration.destroy(@download_client)
       redirect_to admin_download_clients_path, notice: "Download client was successfully deleted."
     end
 
     def test
-      if RemoteResult.succeeded?(@download_client.test_connection)
-        run_download_client_health_check
-        redirect_to admin_download_clients_path, notice: "Connection to '#{@download_client.name}' successful!"
+      outcome = DownloadClientAdministration.test(@download_client)
+      if outcome.success?
+        redirect_to admin_download_clients_path, notice: outcome.message
       else
-        run_download_client_health_check
-        redirect_to admin_download_clients_path, alert: "Connection to '#{@download_client.name}' failed."
+        redirect_to admin_download_clients_path, alert: outcome.message
       end
-    rescue StandardError => e
-      run_download_client_health_check
-      redirect_to admin_download_clients_path,
-        alert: "Connection to '#{@download_client.name}' failed: #{ConnectionErrorClassifier.with_localhost_hint(ConnectionErrorClassifier.describe(e), @download_client.url)}"
     end
 
     def move_up
-      swap_priority(:up)
+      DownloadClientAdministration.move(@download_client, :up)
       redirect_to admin_download_clients_path
     end
 
     def move_down
-      swap_priority(:down)
+      DownloadClientAdministration.move(@download_client, :down)
       redirect_to admin_download_clients_path
     end
 
@@ -97,45 +77,7 @@ module Admin
     end
 
     def download_client_params
-      params.require(:download_client).permit(
-        :name, :client_type, :url, :username, :password, :api_key, :clear_api_key, :category, :download_path, :enabled,
-        :torrent_verification_max_attempts, :torrent_verification_wait_time
-      )
-    end
-
-    def next_priority_for(client_type)
-      max = DownloadClient.where(client_type: client_type).maximum(:priority) || -1
-      max + 1
-    end
-
-    def swap_priority(direction)
-      same_type_clients = DownloadClient.where(client_type: @download_client.client_type).order(priority: :asc).to_a
-      index = same_type_clients.index(@download_client)
-      return unless index
-
-      swap_index = direction == :up ? index - 1 : index + 1
-      return if swap_index < 0 || swap_index >= same_type_clients.length
-
-      other = same_type_clients[swap_index]
-      @download_client.priority, other.priority = other.priority, @download_client.priority
-      @download_client.save!
-      other.save!
-    end
-
-    def run_download_client_health_check
-      HealthCheckJob.perform_now(service: "download_client")
-    rescue => e
-      Rails.logger.warn "[DownloadClientsController] Failed to run download client health check: #{e.message}"
-    end
-
-    def sync_download_monitor
-      if DownloadClient.enabled.exists?
-        DownloadMonitorJob.ensure_running!
-      else
-        DownloadMonitorJob.clear_schedule!
-      end
-    rescue => e
-      Rails.logger.warn "[DownloadClientsController] Failed to sync download monitor: #{e.message}"
+      params.require(:download_client).permit(*DownloadClientAdministration::ATTRIBUTES)
     end
   end
 end

@@ -164,6 +164,15 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "update clears the API key only for the form's checkbox value" do
+    client = create_download_client(api_key: QBITTORRENT_API_KEY)
+
+    patch admin_download_client_url(client), params: { download_client: { clear_api_key: 1 } }, as: :json
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal QBITTORRENT_API_KEY, client.reload.api_key
+  end
+
   test "failed update retains saved API key and clear selection" do
     client = create_download_client(api_key: QBITTORRENT_API_KEY)
 
@@ -240,6 +249,18 @@ class Admin::DownloadClientsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to admin_download_clients_path
     assert_equal 0, first.reload.priority
     assert_equal 1, second.reload.priority
+  end
+
+  test "move actions leave tied priorities as they are" do
+    first = create_download_client(name: "Tied One", url: "http://localhost:8081")
+    second = create_download_client(name: "Tied Two", url: "http://localhost:8082")
+    first.update!(priority: 7)
+    second.update!(priority: 7)
+
+    post move_down_admin_download_client_url(first)
+
+    assert_redirected_to admin_download_clients_path
+    assert_equal [ 7, 7 ], [ first.reload.priority, second.reload.priority ]
   end
 
   test "move actions ignore boundary clients" do
