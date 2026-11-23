@@ -211,7 +211,8 @@ as it already does for `/read`, and so does the 404 page a signed-in account get
 saved files stay, hidden, until that account confirms again. A refusal the browser only learns from a media request, or
 one it cannot learn because the server is unreachable, leaves that account's own saved books readable on that browser until
 its offline window ends (at most the session's remaining life, at most 30 days). The single sign-on hand-off waits up to
-1.5 s for the release and then continues anyway, so storage that is slower than that or fails leaves the same limit. The
+1.5 s for the release and then continues anyway, so storage that is slower than that or fails leaves the same limit, as does
+a sign-in submitted before the page's scripts have loaded. The
 `/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
 `/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
 server is unreachable, exactly as after a Go rollback.

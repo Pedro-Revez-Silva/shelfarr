@@ -10,6 +10,7 @@ async function controllerWith(preview) {
   const { default: Redirect } = await import(moduleURL(source))
   const controller = new Redirect()
   controller.baseValue = "/shelf"
+  controller.hasBaseValue = true
   const listeners = []
   controller.hasFormTarget = true
   controller.formTarget = {
@@ -54,4 +55,13 @@ test("pressing Continue before the release finishes is held until the page submi
   await new Promise(done => setTimeout(done, 10))
   controller.formTarget.pressContinue()
   expect(globalThis.events).toEqual(["held", ["released", "/shelf"], "submit", "continued"])
+})
+
+test("the account-linking hand-off, which names no deployment, releases nothing and continues at once", async () => {
+  globalThis.events = []
+  const controller = await controllerWith("export const releasePreviewAccount = async base => globalThis.events.push(['released', base])")
+  controller.hasBaseValue = false
+  await controller.connect()
+  await new Promise(done => setTimeout(done, 10))
+  expect(globalThis.events).toEqual(["submit"])
 })
