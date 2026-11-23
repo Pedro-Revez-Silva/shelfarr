@@ -337,6 +337,18 @@ Rails.application.routes.draw do
     post "downloads/rules", to: "downloads#create_rule", as: :download_rules
     put "downloads/rules/:id", to: "downloads#update_rule", as: :download_rule
     delete "downloads/rules/:id", to: "downloads#destroy_rule"
+    get "audible", to: "audible_backup#show", as: :audible
+    get "audible/catalogue", to: "audible_backup#catalogue", as: :audible_catalogue
+    get "audible/revision", to: "audible_backup#revision", as: :audible_revision
+    put "audible/companion", to: "audible_backup#update_connection", as: :audible_companion
+    post "audible/test", to: "audible_backup#test", as: :audible_test
+    post "audible/sign_in", to: "audible_backup#start_sign_in", as: :audible_sign_in
+    post "audible/sign_in/complete", to: "audible_backup#complete_sign_in", as: :audible_sign_in_complete
+    post "audible/sync", to: "audible_backup#sync", as: :audible_sync
+    post "audible/existing_backup", to: "audible_backup#back_up_existing", as: :audible_existing_backup
+    post "audible/existing_backup/dismiss", to: "audible_backup#dismiss_existing_backup", as: :audible_existing_backup_dismiss
+    put "audible/automation", to: "audible_backup#update_automation", as: :audible_automation
+    post "audible/items/:item_id/backup", to: "audible_backup#back_up_item", as: :audible_item_backup, constraints: { item_id: /[1-9]\d{0,18}/ }
     post "uploads/:id/retry", to: "uploads#retry", as: :upload_retry
     get "uploads/:id/matches", to: "uploads#matches", as: :upload_matches
     post "uploads/:id/match", to: "uploads#match", as: :upload_match

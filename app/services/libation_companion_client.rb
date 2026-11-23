@@ -119,6 +119,12 @@ class LibationCompanionClient
       connection.url == OwnedLibraryConnection.default_libation_url
   end
 
+  def secret_values
+    [ connection.bridge_token, (token_from_file if token_file_managed?) ].compact_blank.uniq
+  rescue NotConfiguredError
+    [ connection.bridge_token ].compact_blank
+  end
+
   def health
     get_json("/health", authenticated: false)
   end
