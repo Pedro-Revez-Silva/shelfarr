@@ -74,7 +74,7 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_response :success
     get "#{BASE}/preview/api/v1/requests/#{mine.id}", headers: account_headers(users(:one))
     revision = response.parsed_body.dig("request", "actions", "withdraw", "revision")
-    post "#{BASE}/preview/api/v1/requests/#{mine.id}/withdraw", params: { expected_revision: revision, remove_torrent: false }, headers: account_headers(users(:one)), as: :json
+    post "#{BASE}/preview/api/v1/requests/#{mine.id}/withdraw", params: { expected_revision: revision, remove_client_jobs: false }, headers: account_headers(users(:one)), as: :json
     assert_response :success
     assert_equal "removed", response.parsed_body.dig("request", "status")
     assert_not Request.exists?(mine.id)

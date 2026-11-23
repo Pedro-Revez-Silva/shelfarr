@@ -187,7 +187,7 @@ class RequestsController < ApplicationController
       return
     end
 
-    if RequestWithdrawal.call(@request, remove_torrents: params[:remove_torrent] == "1") == :awaiting_direct_recovery
+    if RequestWithdrawal.call(@request, remove_client_jobs: params[:remove_torrent] == "1") == :awaiting_direct_recovery
       redirect_to @request,
         notice: "Request cancellation recorded. Direct download cleanup will finish in the background.",
         status: :see_other

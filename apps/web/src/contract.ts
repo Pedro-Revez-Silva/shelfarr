@@ -376,7 +376,7 @@ export const requestActionsSchema = z.object({
   cancel: z.boolean(),
   remove: z.enum(["admin_remove", "delete_history"]).nullable(),
   withdraw: z
-    .object({ revision: z.string().regex(/^[0-9a-f]{32}$/), torrents: z.number().int().nonnegative() })
+    .object({ revision: z.string().regex(/^[0-9a-f]{32}$/), client_jobs: z.number().int().nonnegative(), starting: z.boolean() })
     .nullable()
     .catch(null),
   retry: z.boolean(),

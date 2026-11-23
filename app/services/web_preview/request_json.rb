@@ -22,7 +22,8 @@ module WebPreview
     end
 
     def self.withdrawal_revision(request)
-      shown = [ request.id, request.user_id, request.status, request.direct_acquisition_recovery_pending?, RequestWithdrawal.torrents(request).map { |download| [ download.id, download.download_client_id ] } ]
+      shown = [ request.id, request.user_id, request.status, request.direct_acquisition_recovery_pending?, request.download_dispatch_in_progress?,
+        RequestWithdrawal.client_jobs(request).map { |job| [ job.download_id, job.download_client_id ] } ]
       Digest::SHA256.hexdigest(shown.to_json).first(32)
     end
 
@@ -122,7 +123,7 @@ module WebPreview
     def withdrawal
       return unless own? && !admin? && @request.can_be_cancelled?
 
-      { revision: RequestJson.withdrawal_revision(@request), torrents: RequestWithdrawal.torrents(@request).size }
+      { revision: RequestJson.withdrawal_revision(@request), client_jobs: RequestWithdrawal.client_jobs(@request).size, starting: @request.download_dispatch_in_progress? }
     end
 
     def upload_url

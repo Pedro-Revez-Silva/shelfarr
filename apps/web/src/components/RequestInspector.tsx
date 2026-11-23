@@ -43,8 +43,7 @@ function MainActions({ request, actions, admin }: { request: RequestDetail; acti
       ) : null}
       {admin && actions.retry ? <ActionButton label="Retry now" busy="Retrying…" state={retry} onClick={() => retry.mutate(undefined)} /> : null}
       {searchHere ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
-      {actions.cancel ? <CancelTracked request={request} /> : null}
-      {withdrawal ? <WithdrawRequest offer={withdrawal} withdraw={withdraw} /> : null}
+      {withdrawal ? <WithdrawRequest offer={withdrawal} withdraw={withdraw} /> : actions.cancel ? <CancelTracked request={request} /> : null}
       {memberUpload ? (
         <Link className="button" to="/library/uploads" search={{ request: request.id }}>
           Upload a file for this request
@@ -115,19 +114,25 @@ function CancelTracked({ request }: { request: RequestDetail }) {
 function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; withdraw: ReturnType<typeof useWithdrawRequest> }) {
   const navigate = useNavigate();
   const [askedOn, setAskedOn] = useState<string | null>(null);
-  const [removeTorrent, setRemoveTorrent] = useState(false);
+  const [removeJobs, setRemoveJobs] = useState(false);
+  const [lapsed, setLapsed] = useState(false);
   const ask = useRef<HTMLButtonElement>(null);
   const keep = useRef<HTMLButtonElement>(null);
   const wasAsking = useRef(false);
   const questionId = useId();
   const consequenceId = useId();
-  const torrentId = useId();
-  const torrentHintId = useId();
+  const jobsId = useId();
+  const jobsHintId = useId();
   const asking = askedOn !== null && (askedOn === offer.revision || withdraw.isPending);
-  const lapsed = askedOn !== null && !asking;
-  const torrent = offer.torrents === 1 ? "the torrent" : `its ${offer.torrents} torrents`;
-  const choosesTorrent = offer.torrents > 0 && removeTorrent;
+  const jobs = clientJobWords(offer.client_jobs);
+  const choosesJobs = offer.client_jobs > 0 && removeJobs;
 
+  useEffect(() => {
+    if (asking || askedOn === null) return;
+    setAskedOn(null);
+    setRemoveJobs(false);
+    setLapsed(true);
+  }, [asking, askedOn]);
   useEffect(() => {
     if (asking) keep.current?.focus();
     else if (wasAsking.current && focusLeftThePage()) ask.current?.focus();
@@ -136,13 +141,17 @@ function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; w
 
   const open = () => {
     withdraw.reset();
-    setRemoveTorrent(false);
+    setRemoveJobs(false);
+    setLapsed(false);
     setAskedOn(offer.revision);
+  };
+  const close = () => {
+    if (!withdraw.isPending) setAskedOn(null);
   };
   const confirm = () => {
     if (withdraw.isPending) return;
     withdraw.mutate(
-      { expected_revision: offer.revision, remove_torrent: choosesTorrent },
+      { expected_revision: offer.revision, remove_client_jobs: choosesJobs },
       { onSuccess: (answer) => (answer.request.status === "removed" ? void navigate({ to: "/requests", replace: true }) : undefined) },
     );
   };
@@ -150,41 +159,47 @@ function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; w
   return (
     <>
       {asking ? (
-        <div className="cancel-confirm withdraw-confirm" role="group" aria-labelledby={questionId} aria-describedby={consequenceId}>
-          <p id={questionId}>Remove this request?</p>
+        <div className="cancel-confirm withdraw-confirm" role="group" aria-labelledby={questionId} aria-describedby={consequenceId} aria-busy={withdraw.isPending ? true : undefined}>
+          <p id={questionId}>Cancel this request?</p>
           <div id={consequenceId} className="withdraw-consequence">
-            <p>It leaves your requests and Shelfarr stops working on it. Files already in the library stay.</p>
-            {offer.torrents > 0 ? (
+            <p>It is removed from your requests and Shelfarr stops working on it. Files already in the library stay.</p>
+            {offer.starting ? <p>A download is being handed to the download client right now. Shelfarr stops it, and the download client removes it together with anything it already downloaded.</p> : null}
+            {offer.client_jobs > 0 ? (
               <div className="check-field">
-                <input id={torrentId} type="checkbox" checked={removeTorrent} aria-describedby={torrentHintId} onChange={(event) => setRemoveTorrent(event.currentTarget.checked)} />
-                <label htmlFor={torrentId}>Also remove {torrent} from the download client</label>
-                <p id={torrentHintId} className="field-hint">
-                  {choosesTorrent
-                    ? `Shelfarr asks the download client to remove ${torrent}. The files already downloaded stay on disk. If the client can't be reached, the request is still removed and ${torrent} stays.`
-                    : `The download client keeps ${torrent} and the files already downloaded.`}
+                <input id={jobsId} type="checkbox" checked={removeJobs} disabled={withdraw.isPending} aria-describedby={jobsHintId} onChange={(event) => setRemoveJobs(event.currentTarget.checked)} />
+                <label htmlFor={jobsId}>Also remove {jobs.its} from the download client</label>
+                <p id={jobsHintId} className="field-hint">
+                  {choosesJobs
+                    ? `Shelfarr asks the download client to remove ${jobs.them}. Files already downloaded stay on disk. If the client can't be reached, the request is still removed and the client keeps ${jobs.them}.`
+                    : `The download client keeps ${jobs.them} and the files already downloaded.`}
                 </p>
               </div>
-            ) : (
+            ) : offer.starting ? null : (
               <p>No download client is contacted.</p>
             )}
           </div>
           <span className="withdraw-buttons">
             <button type="button" className="button button--danger" aria-disabled={withdraw.isPending ? true : undefined} onClick={confirm}>
-              {withdraw.isPending ? "Removing…" : choosesTorrent ? `Yes, remove it and ${torrent}` : "Yes, remove it"}
+              {withdraw.isPending ? "Cancelling…" : choosesJobs ? `Yes, cancel it and remove ${jobs.the}` : "Yes, cancel it"}
             </button>
-            <button ref={keep} type="button" className="button button--subtle" onClick={() => setAskedOn(null)}>
+            <button ref={keep} type="button" className="button button--subtle" aria-disabled={withdraw.isPending ? true : undefined} onClick={close}>
               Keep it
             </button>
           </span>
         </div>
       ) : (
         <button ref={ask} type="button" className="button button--subtle" onClick={open}>
-          Remove request
+          Cancel request
         </button>
       )}
-      {lapsed && !withdraw.isError ? <p role="status">This request changed while you were deciding. Check what removing it does now and ask again.</p> : null}
+      {lapsed && !withdraw.isError ? <p role="status">This request changed while you were deciding. Check what cancelling it does now and ask again.</p> : null}
     </>
   );
+}
+
+function clientJobWords(count: number): { its: string; them: string; the: string } {
+  if (count === 1) return { its: "its download", them: "it", the: "the download" };
+  return { its: `its ${count} downloads`, them: "them", the: `the ${count} downloads` };
 }
 
 function RemoveRequest({ request, mode }: { request: RequestDetail; mode: NonNullable<RequestActions["remove"]> }) {

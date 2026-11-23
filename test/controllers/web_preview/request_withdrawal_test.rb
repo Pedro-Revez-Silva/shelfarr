@@ -41,7 +41,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
 
   def withdraw(request = @mine, user: @member, revision: withdrawal(request, user: user)&.fetch("revision"), remove_torrent: false, adapter: recording_adapter)
     DownloadClients::Qbittorrent.stub(:new, adapter) do
-      post web_preview_api_request_withdraw_path(request), params: { expected_revision: revision, remove_torrent: remove_torrent }, headers: account_headers(user), as: :json
+      post web_preview_api_request_withdraw_path(request), params: { expected_revision: revision, remove_client_jobs: remove_torrent }, headers: account_headers(user), as: :json
     end
     response.parsed_body
   end
@@ -77,9 +77,10 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     @mine.downloads.create!(name: "No id", status: :failed, download_client: @client)
     sign_in_as(@member)
     offer = withdrawal
-    assert_equal [ "revision", "torrents" ], offer.keys
+    assert_equal [ "revision", "client_jobs", "starting" ], offer.keys
     assert_match(/\A[0-9a-f]{32}\z/, offer.fetch("revision"))
-    assert_equal 2, offer.fetch("torrents")
+    assert_equal 2, offer.fetch("client_jobs")
+    assert_not offer.fetch("starting")
     assert_equal offer, withdrawal, "the same state reads as the same revision"
     first.update!(progress: 60)
     assert_equal offer, withdrawal, "download progress does not change what removal does"
@@ -104,7 +105,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
         assert_response :conflict
         assert Request.exists?(request.id)
       else
-        assert_equal 0, offer.fetch("torrents"), status
+        assert_equal 0, offer.fetch("client_jobs"), status
         assert_equal({ "id" => request.id.to_s, "status" => "removed" }, withdraw(request).fetch("request"), status)
         assert_not Request.exists?(request.id), status
       end
@@ -263,10 +264,87 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert @mine.reload.downloading?
   end
 
+  test "a revision built for a request awaiting direct recovery is refused instead of stopping it and deleting its client files" do
+    download = torrent
+    @mine.downloads.create!(name: "Direct", status: :downloading, direct_reservation_token: "reservation")
+    sign_in_as(@member)
+    assert_nil withdrawal
+    crafted = WebPreview::RequestJson.withdrawal_revision(@mine.reload)
+    assert_no_enqueued_jobs(only: DirectDownloadRecoveryJob) do
+      assert_equal "request_changed", withdraw(revision: crafted, remove_torrent: false).fetch("error")
+    end
+    assert_response :conflict
+    assert_empty @removed
+    assert @mine.reload.downloading?
+    assert download.reload.downloading?
+  end
+
+  test "a download being handed to the client is named in the offer, and one that starts after the read is refused" do
+    sign_in_as(@member)
+    revision = withdrawal.fetch("revision")
+    dispatching = @mine.downloads.create!(name: "Dispatching", status: :downloading, download_client: @client)
+    withdraw(revision: revision)
+    assert_response :conflict
+    assert dispatching.reload.downloading?
+    offer = withdrawal
+    assert_equal [ 0, true ], offer.values_at("client_jobs", "starting")
+    withdraw(revision: offer.fetch("revision"))
+    assert_response :success
+    assert_empty @removed
+  end
+
+  test "a client job that another account's download now owns is neither offered nor removed" do
+    torrent(status: :failed, external_id: "shared-hash")
+    theirs = Request.create!(book: Book.create!(title: "Theirs", book_type: :ebook), user: @other, status: :downloading)
+    owner = torrent(theirs, external_id: "shared-hash")
+    sign_in_as(@member)
+    assert_equal 0, withdrawal.fetch("client_jobs")
+    withdraw(remove_torrent: true)
+    assert_response :success
+    assert_empty @removed
+    assert owner.reload.downloading?
+  end
+
+  test "the client is only contacted once the request is gone, so a second tab or an upload can't act on it in between" do
+    torrent(status: :failed, external_id: "failed-hash")
+    @mine.update!(status: :failed)
+    sign_in_as(@member)
+    revision = withdrawal.fetch("revision")
+    request_id = @mine.id
+    seen = []
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
+      seen << [ external_id, delete_files, Request.exists?(request_id) ]
+      true
+    end
+    withdraw(revision: revision, remove_torrent: true, adapter: adapter)
+    assert_response :success
+    assert_equal [ [ "failed-hash", false, false ] ], seen
+    withdraw(revision: revision, remove_torrent: true, adapter: adapter)
+    assert_response :not_found
+    assert_equal 1, seen.size
+  end
+
+  test "a requester promoted to administrator just before the claim is refused under the lock" do
+    sign_in_as(@member)
+    revision = withdrawal.fetch("revision")
+    member = @member
+    original = RequestWithdrawal.method(:call)
+    promoting = lambda do |*arguments, **options, &admission|
+      member.update!(role: :admin)
+      original.call(*arguments, **options, &admission)
+    end
+    RequestWithdrawal.stub(:call, promoting) do
+      assert_equal "request_changed", withdraw(revision: revision).fetch("error")
+    end
+    assert_response :conflict
+    assert @mine.reload.downloading?
+  end
+
   test "the page must name the revision it read and the torrent choice it showed" do
     sign_in_as(@member)
     revision = withdrawal.fetch("revision")
-    [ { remove_torrent: false }, { expected_revision: revision }, { expected_revision: revision, remove_torrent: "1" }, { expected_revision: [ revision ], remove_torrent: false } ].each do |body|
+    [ { remove_client_jobs: false }, { expected_revision: revision }, { expected_revision: revision, remove_client_jobs: "1" }, { expected_revision: revision, remove_torrent: true }, { expected_revision: [ revision ], remove_client_jobs: false } ].each do |body|
       post web_preview_api_request_withdraw_path(@mine), params: body, headers: account_headers(@member), as: :json
       assert_response :bad_request
       assert_equal "invalid_request", response.parsed_body.fetch("error")
@@ -284,7 +362,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
       assert_response :unprocessable_entity
       assert_equal "invalid_csrf", response.parsed_body.fetch("error")
     end
-    post web_preview_api_request_withdraw_path(@mine), params: { expected_revision: revision, remove_torrent: false }, headers: account_headers(@other), as: :json
+    post web_preview_api_request_withdraw_path(@mine), params: { expected_revision: revision, remove_client_jobs: false }, headers: account_headers(@other), as: :json
     assert_response :unauthorized
     assert_equal "account_changed", response.parsed_body.fetch("error")
     ENV[WebPreview::Access::VARIABLE] = @admin.id.to_s
