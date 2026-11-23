@@ -186,14 +186,49 @@ class Hardcover::ConnectionsControllerTest < ActionDispatch::IntegrationTest
     follow_redirect!
     assert_select "p", text: "ABCD-1234"
 
-    post device_poll_hardcover_connection_path(format: :json)
+    post device_poll_hardcover_connection_path(format: :json), params: { user_code: "ABCD-1234" }
     assert_equal "pending", response.parsed_body["status"]
     assert_not_requested token
 
     travel 6.seconds do
-      post device_poll_hardcover_connection_path(format: :json)
+      post device_poll_hardcover_connection_path(format: :json), params: { user_code: "ABCD-1234" }
     end
     assert_equal "approved", response.parsed_body["status"]
+    assert_requested token, times: 1
+    assert_equal 4242, @user.reload.hardcover_connection.hardcover_user_id
+  end
+
+  test "an old classic code page cannot poll the replacement sign-in" do
+    SettingsService.set(:hardcover_oauth_device_flow_enabled, true)
+    start = stub_request(:post, "https://api.hardcover.app/oauth2/device")
+    start.to_return(*[ "ABCD-1234", "EFGH-5678" ].map.with_index do |code, index|
+      { status: 200, body: { device_code: "dev-#{index}", user_code: code, verification_uri: "https://hardcover.app/link", expires_in: 900, interval: 5 }.to_json }
+    end)
+    token = stub_request(:post, TOKEN_URL)
+      .to_return(status: 200, body: { access_token: "hc_at_dev", refresh_token: "hc_rt_dev", expires_in: 604_800 }.to_json)
+    stub_hardcover_graphql("ShelfarrMe" => { "me" => [ { "id" => 4242, "username" => "reader" } ] })
+
+    post device_hardcover_connection_path
+    follow_redirect!
+    assert_select "p", text: "ABCD-1234"
+    post device_hardcover_connection_path
+
+    travel 6.seconds do
+      post device_poll_hardcover_connection_path(format: :json), params: { user_code: "ABCD-1234" }
+      assert_equal "failed", response.parsed_body["status"]
+      post device_poll_hardcover_connection_path(format: :json)
+      assert_equal "failed", response.parsed_body["status"]
+      post device_poll_hardcover_connection_path, params: { user_code: "ABCD-1234" }
+      assert_redirected_to profile_path
+      assert_not_requested token
+      assert_nil @user.reload.hardcover_connection
+
+      get device_hardcover_connection_path
+      assert_select "p", text: "EFGH-5678"
+      assert_select "form[data-hardcover-device-target='form'] input[name='user_code'][value='EFGH-5678']"
+      post device_poll_hardcover_connection_path, params: { user_code: "EFGH-5678" }
+      assert_redirected_to hardcover_subscriptions_path
+    end
     assert_requested token, times: 1
     assert_equal 4242, @user.reload.hardcover_connection.hardcover_user_id
   end

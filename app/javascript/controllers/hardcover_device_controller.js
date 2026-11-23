@@ -3,7 +3,7 @@ import { Controller } from "@hotwired/stimulus"
 // Polls the device sign-in endpoint at the interval Hardcover requested.
 // The server enforces the same interval, so this only drives the UI.
 export default class extends Controller {
-  static targets = ["status"]
+  static targets = ["status", "form"]
   static values = { url: String, interval: Number }
 
   connect() {
@@ -25,7 +25,8 @@ export default class extends Controller {
       const response = await fetch(this.urlValue, {
         method: "POST",
         headers: { "Accept": "application/json", "X-CSRF-Token": token },
-        credentials: "same-origin"
+        credentials: "same-origin",
+        body: new FormData(this.formTarget)
       })
       const result = await response.json()
       if (result.status === "pending") {

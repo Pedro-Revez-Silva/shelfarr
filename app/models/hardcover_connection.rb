@@ -72,6 +72,10 @@ class HardcoverConnection < ApplicationRecord
     false
   end
 
+  def version
+    Digest::SHA256.hexdigest([ id, hardcover_user_id, auth_method, last_verified_at&.utc&.iso8601(6) ].join(":")).first(24)
+  end
+
   def scope_list
     granted_scopes.to_s.split(/\s+/).compact_blank
   end

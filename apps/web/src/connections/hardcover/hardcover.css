@@ -1,0 +1,58 @@
+.hardcover-connection,
+.hardcover-connect {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.hardcover-connection p,
+.hardcover-code p {
+  margin: 0;
+}
+.hardcover-break {
+  overflow-wrap: anywhere;
+}
+.hardcover-code {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.hardcover-code h3 {
+  margin: 0;
+}
+.hardcover-code ol {
+  margin: 0;
+  padding-inline-start: 1.25rem;
+}
+.hardcover-user-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(1.6rem, 7vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.hardcover-key {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.hardcover-key summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.hardcover-key[open] summary {
+  margin-block-end: 8px;
+}
+.hardcover-connection p a,
+.hardcover-code li a,
+.hardcover-key p a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}

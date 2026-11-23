@@ -1,4 +1,4 @@
-ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_210000) do
   create_table "acquisition_providers", force: :cascade do |t|
     t.boolean "allow_private_network", default: false, null: false
     t.string "api_key"
@@ -900,6 +900,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_12_150000) do
     t.datetime "created_at", null: false
     t.datetime "deleted_at"
     t.integer "failed_login_count", default: 0, null: false
+    t.integer "hardcover_sign_in_generation", default: 0, null: false
     t.datetime "last_failed_login_at"
     t.string "last_failed_login_ip"
     t.datetime "locked_until"

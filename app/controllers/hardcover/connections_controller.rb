@@ -11,129 +11,65 @@ module Hardcover
     before_action :require_oauth, only: [ :authorize, :callback ]
     before_action :require_device_flow, only: [ :device, :device_poll ]
 
-    OAUTH_SESSION_KEY = :hardcover_oauth
-    DEVICE_SESSION_KEY = :hardcover_device
-
     def create
       unless HardcoverIntegration.personal_tokens_allowed?
         redirect_to profile_path, alert: "Personal API keys are not enabled on this Shelfarr instance."
         return
       end
 
-      api_key = params[:api_key].to_s.strip.sub(/\ABearer\s+/i, "")
-      if api_key.blank? || api_key.length > 2_000
+      api_key = PersonalSignIn.api_key(params[:api_key].to_s)
+      unless api_key
         redirect_to profile_path, alert: "Paste a Hardcover API key to connect."
         return
       end
 
-      connection = ConnectionManager.connect!(user: Current.user, auth_method: "personal_token", access_token: api_key)
+      connection = sign_in.connect_api_key(api_key)
       redirect_to hardcover_subscriptions_path, notice: "Connected Hardcover account @#{connection.hardcover_username}."
     rescue HardcoverClient::Error => e
-      redirect_to profile_path, alert: connection_error_message(e)
+      redirect_to profile_path, alert: PersonalSignIn.error_message(e)
     end
 
     def authorize
-      redirect_uri = HardcoverIntegration.redirect_uri(request.base_url)
-      unless HardcoverIntegration.redirect_uri_acceptable?(redirect_uri)
+      url = sign_in.start_oauth(request.base_url)
+      unless url
         redirect_to profile_path, alert: "Hardcover only accepts HTTPS redirect addresses (or localhost). Use sign-in with a code, or ask an administrator to set the redirect URI."
         return
       end
 
-      state = SecureRandom.urlsafe_base64(32)
-      verifier, challenge = Oauth.generate_pkce
-      session[OAUTH_SESSION_KEY] = {
-        "state" => state,
-        "verifier" => verifier,
-        "redirect_uri" => redirect_uri,
-        "user_id" => Current.user.id,
-        "expires_at" => Oauth::PENDING_TTL.from_now.to_i
-      }
-      redirect_to Oauth.authorization_url(state: state, code_challenge: challenge, redirect_uri: redirect_uri), allow_other_host: true
+      redirect_to url, allow_other_host: true
     end
 
     def callback
-      pending = session.delete(OAUTH_SESSION_KEY)
-      unless valid_pending_oauth?(pending)
-        redirect_to profile_path, alert: "That Hardcover sign-in expired or was started elsewhere. Please try again."
-        return
-      end
+      pending = sign_in.take_oauth(params[:state])
+      return refuse("That Hardcover sign-in expired or was started elsewhere. Please try again.") unless pending
 
       if params[:error].present?
-        message = params[:error] == "access_denied" ? "Hardcover sign-in was cancelled." : "Hardcover sign-in failed."
-        redirect_to profile_path, alert: message
-        return
+        return refuse(params[:error] == "access_denied" ? "Hardcover sign-in was cancelled." : "Hardcover sign-in failed.")
       end
+      return refuse("Hardcover sign-in failed: the response did not come from Hardcover.") unless Oauth.valid_issuer?(params[:iss])
+      return refuse("Hardcover sign-in failed: no authorization code was returned.") if params[:code].blank?
 
-      unless Oauth.valid_issuer?(params[:iss])
-        redirect_to profile_path, alert: "Hardcover sign-in failed: the response did not come from Hardcover."
-        return
-      end
-
-      if params[:code].blank?
-        redirect_to profile_path, alert: "Hardcover sign-in failed: no authorization code was returned."
-        return
-      end
-
-      token_set = Oauth.exchange_code(code: params[:code].to_s, code_verifier: pending["verifier"], redirect_uri: pending["redirect_uri"])
-      connect_oauth!(token_set)
+      connected(sign_in.finish_oauth(pending, params[:code].to_s))
     rescue Oauth::Error, HardcoverClient::Error => e
-      redirect_to profile_path, alert: connection_error_message(e)
+      refuse(PersonalSignIn.error_message(e))
     end
 
     def device
-      authorization = Oauth.start_device_authorization
-      session[DEVICE_SESSION_KEY] = {
-        "device_code" => authorization.device_code,
-        "user_code" => authorization.user_code,
-        "verification_uri" => authorization.verification_uri,
-        "verification_uri_complete" => authorization.verification_uri_complete,
-        "interval" => authorization.interval,
-        "expires_at" => authorization.expires_at.to_i,
-        "next_poll_at" => (Time.current + authorization.interval).to_i,
-        "user_id" => Current.user.id
-      }
+      sign_in.start_device
       redirect_to device_hardcover_connection_path
     rescue Oauth::Error => e
-      redirect_to profile_path, alert: connection_error_message(e)
+      redirect_to profile_path, alert: PersonalSignIn.error_message(e)
     end
 
     def show_device
-      @device = pending_device
+      @device = sign_in.pending_device
       redirect_to profile_path, alert: "Start Hardcover sign-in again." unless @device
     end
 
-    # Polled by the device page. Hardcover sets the polling interval; this
-    # endpoint enforces it server-side so a busy browser cannot exceed it.
     def device_poll
-      pending = pending_device
-      return device_poll_response(:failed, "Hardcover sign-in expired. Start again.") unless pending
-      return device_poll_response(:pending) if Time.current.to_i < pending["next_poll_at"].to_i
-
-      poll = Oauth.poll_device_authorization(pending["device_code"])
-      case poll.status
-      when :approved
-        session.delete(DEVICE_SESSION_KEY)
-        connection = ConnectionManager.connect!(
-          user: Current.user,
-          auth_method: "oauth",
-          access_token: poll.token_set.access_token,
-          refresh_token: poll.token_set.refresh_token,
-          expires_at: poll.token_set.expires_at,
-          scope: poll.token_set.scope
-        )
-        flash[:notice] = "Connected Hardcover account @#{connection.hardcover_username}."
-        device_poll_response(:approved)
-      when :pending, :slow_down
-        interval = pending["interval"].to_i + poll.interval.to_i
-        session[DEVICE_SESSION_KEY] = pending.merge("interval" => interval, "next_poll_at" => (Time.current + interval).to_i)
-        device_poll_response(:pending)
-      else
-        session.delete(DEVICE_SESSION_KEY)
-        device_poll_response(:failed, poll.status == :denied ? "Hardcover sign-in was declined." : "The sign-in code expired. Start again.")
-      end
-    rescue Oauth::Error, HardcoverClient::Error => e
-      session.delete(DEVICE_SESSION_KEY)
-      device_poll_response(:failed, connection_error_message(e))
+      poll = sign_in.poll_device(user_code: request.request_parameters["user_code"])
+      flash[:notice] = "Connected Hardcover account @#{poll.connection.hardcover_username}." if poll.status == :approved
+      device_poll_response(poll.status, poll.message)
     end
 
     def destroy
@@ -148,16 +84,20 @@ module Hardcover
 
     private
 
+    def sign_in
+      @sign_in ||= PersonalSignIn.new(session: session, user: Current.user)
+    end
+
     def require_hardcover
       return if HardcoverIntegration.enabled?
 
-      redirect_to profile_path, alert: "Hardcover is disabled on this Shelfarr instance."
+      refuse("Hardcover is disabled on this Shelfarr instance.")
     end
 
     def require_oauth
       return if HardcoverIntegration.oauth_configured?
 
-      redirect_to profile_path, alert: "Hardcover sign-in is not configured. An administrator can add a Hardcover OAuth client in Settings."
+      refuse("Hardcover sign-in is not configured. An administrator can add a Hardcover OAuth client in Settings.")
     end
 
     def require_device_flow
@@ -166,32 +106,28 @@ module Hardcover
       redirect_to profile_path, alert: "Sign-in with a code is not enabled on this Shelfarr instance."
     end
 
-    def valid_pending_oauth?(pending)
-      return false unless pending.is_a?(Hash)
-      return false unless pending["user_id"] == Current.user.id
-      return false if pending["expires_at"].to_i < Time.current.to_i
-
-      ActiveSupport::SecurityUtils.secure_compare(pending["state"].to_s, params[:state].to_s)
+    def warm_callback?
+      action_name == "callback" && PersonalSignIn.warm_state?(params[:state]) && WebPreview::Access.current.allows?(Current.user)
     end
 
-    def pending_device
-      pending = session[DEVICE_SESSION_KEY]
-      return unless pending.is_a?(Hash) && pending["user_id"] == Current.user.id
-      return if pending["expires_at"].to_i < Time.current.to_i
+    def refuse(message)
+      return redirect_to(profile_path, alert: message) unless warm_callback?
 
-      pending
+      return_to_warm_page("error", message)
     end
 
-    def connect_oauth!(token_set)
-      connection = ConnectionManager.connect!(
-        user: Current.user,
-        auth_method: "oauth",
-        access_token: token_set.access_token,
-        refresh_token: token_set.refresh_token,
-        expires_at: token_set.expires_at,
-        scope: token_set.scope
-      )
-      redirect_to hardcover_subscriptions_path, notice: "Connected Hardcover account @#{connection.hardcover_username}."
+    def connected(connection)
+      message = "Connected Hardcover account @#{connection.hardcover_username}."
+      return redirect_to(hardcover_subscriptions_path, notice: message) unless warm_callback?
+
+      return_to_warm_page("success", message)
+    end
+
+    def return_to_warm_page(tone, message)
+      sign_in.remember_outcome(tone, message)
+      response.headers["Cache-Control"] = "private, no-store"
+      response.headers["Referrer-Policy"] = "no-referrer"
+      redirect_to web_preview_account_section_path(section: "connections", anchor: "hardcover"), status: :see_other
     end
 
     def device_poll_response(status, message = nil)
@@ -210,21 +146,6 @@ module Hardcover
           else redirect_to device_hardcover_connection_path, notice: "Waiting for approval on Hardcover."
           end
         end
-      end
-    end
-
-    def connection_error_message(error)
-      case error
-      when HardcoverClient::ScopeError
-        "#{error.message}. Create the key with the read:me:content, read:library, read:lists, and read:catalog permissions."
-      when HardcoverClient::AuthenticationError
-        "Hardcover rejected that key. Check that it is current and has not been revoked."
-      when HardcoverClient::RateLimitError
-        "Hardcover's rate limit was reached. Try again in a few minutes."
-      when Oauth::AuthorizationError
-        "Hardcover did not accept the sign-in (#{error.message}). Check the client ID, secret, and registered redirect URI."
-      else
-        "Could not connect to Hardcover: #{error.message}"
       end
     end
   end

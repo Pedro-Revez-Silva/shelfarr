@@ -11,6 +11,9 @@ module Hardcover
 
     # The Shelfarr user was deleted while Hardcover was verifying the token.
     class UserUnavailable < HardcoverClient::Error; end
+    class ConnectionChanged < HardcoverClient::Error; end
+
+    ANY = :any
 
     module_function
 
@@ -26,7 +29,7 @@ module Hardcover
     # Verification happens outside any transaction and can take a while, so
     # the user is read again inside the write transaction. One deleted in the
     # meantime gets no connection, and a new OAuth grant is revoked.
-    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil)
+    def connect!(user:, auth_method:, access_token:, refresh_token: nil, expires_at: nil, scope: nil, expected_generation: nil)
       account = Hardcover::API.me(credential: HardcoverClient.credential_for_token(access_token))
       replaced_token = nil
       previews = []
@@ -37,6 +40,8 @@ module Hardcover
         attempts += 1
         HardcoverConnection.transaction do
           raise UserUnavailable, "This Shelfarr account is no longer active" unless active_user?(user)
+
+          raise ConnectionChanged, "The Hardcover connection changed while signing in" if expected_generation && sign_in_generation(user) != expected_generation
 
           connection = HardcoverConnection.find_by(user_id: user.id) || HardcoverConnection.new(user: user)
           replaced_token = connection.persisted? ? revocable_token(connection) : nil
@@ -54,12 +59,13 @@ module Hardcover
             refreshed_at: nil
           )
           connection.save!
+          end_sign_ins!(user)
           previews = rebind_personal_subscriptions(user, account)
         end
       rescue ActiveRecord::StaleObjectError, ActiveRecord::RecordNotUnique
         retry if attempts < MAX_ATTEMPTS
         raise
-      rescue UserUnavailable
+      rescue UserUnavailable, ConnectionChanged
         Hardcover::Oauth.revoke(refresh_token.presence || access_token) if auth_method == "oauth"
         raise
       end
@@ -73,19 +79,26 @@ module Hardcover
     # Deletes the stored tokens unconditionally. A refresh still in flight
     # then fails its versioned write and revokes what it received, so it
     # cannot bring the connection back.
-    def disconnect!(connection)
+    def disconnect!(connection, expected_version: ANY)
       user = connection.user
       token = nil
+      replaced = false
       HardcoverConnection.transaction do
         current = HardcoverConnection.find_by(id: connection.id)
+        replaced = expected_version != ANY && current&.version != expected_version
+        next if replaced
+
         if current
           token = revocable_token(current)
           HardcoverConnection.where(id: current.id).delete_all
+          end_sign_ins!(user)
         end
         user.hardcover_subscriptions.requiring_connection.where(status: %w[draft active]).find_each do |subscription|
           subscription.pause!(HardcoverSubscription::PAUSE_DISCONNECTED)
         end
       end
+      return false if replaced
+
       user.association(:hardcover_connection).reset
       Hardcover::Oauth.revoke(token) if token.present?
       true
@@ -98,6 +111,20 @@ module Hardcover
     def active_user?(user)
       current = User.lock.find_by(id: user.id)
       current.present? && !current.deleted?
+    end
+
+    def sign_in_generation(user)
+      User.uncached { User.where(id: user.id).pick(:hardcover_sign_in_generation).to_i }
+    end
+
+    def begin_sign_in!(user, expected_generation)
+      advanced = User.where(id: user.id, hardcover_sign_in_generation: expected_generation)
+        .update_all("hardcover_sign_in_generation = hardcover_sign_in_generation + 1")
+      expected_generation + 1 if advanced == 1
+    end
+
+    def end_sign_ins!(user)
+      User.where(id: user.id).update_all("hardcover_sign_in_generation = hardcover_sign_in_generation + 1")
     end
 
     def revocable_token(connection)

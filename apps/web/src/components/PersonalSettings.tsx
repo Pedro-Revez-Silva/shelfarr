@@ -7,6 +7,7 @@ import type { AccountSettings, ApiToken, CreatedToken, Profile, TwoFactorSetup }
 import { useServices } from "../services";
 import { KoboReadersCard } from "../devices/kobo/KoboReadersCard";
 import { KoboAccountsCard } from "../devices/kobo-accounts/KoboAccountsCard";
+import { HardcoverCard } from "../connections/hardcover/HardcoverCard";
 import { describeWriteFailure } from "./accountFields";
 import { absoluteTime, Time } from "./requestText";
 
@@ -524,13 +525,7 @@ export function DevicesSection({ settings }: { settings: AccountSettings }) {
 }
 
 export function ConnectionsSection({ settings }: { settings: AccountSettings }) {
-  return (
-    <Card title="Hardcover" description="Connect your Hardcover account to follow reading lists and authors. Connecting still opens on its current page while it moves here.">
-      <p>
-        <a href={settings.links.hardcover}>Manage the Hardcover connection</a>
-      </p>
-    </Card>
-  );
+  return <HardcoverCard admin={settings.admin} />;
 }
 
 export function AboutSection({ settings }: { settings: AccountSettings }) {
