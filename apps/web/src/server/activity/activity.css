@@ -77,7 +77,7 @@
 .activity-action {
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 0.8rem;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .activity-details {
   display: grid;
@@ -116,6 +116,10 @@
   }
   .activity-table td:empty {
     display: none;
+  }
+  .activity-action {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   .activity-table td::before {
     content: attr(data-label) ": ";
