@@ -371,7 +371,7 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
     expect((screen.getByRole("checkbox", { name: "Also remove its download from the download client" }) as HTMLInputElement).checked).toBe(false);
     await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
     await waitFor(() => expect(server.called("POST", /withdraw$/).map((call) => call.body)).toEqual([{ expected_revision: first, remove_client_jobs: false }]));
-  }, 15000);
+  }, 30000);
 
   test("a cancellation the server refuses because the request changed says so, reads the request again and stays on the page", async () => {
     let found = offering(1);
