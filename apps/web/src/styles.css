@@ -2591,6 +2591,9 @@ thead th {
   flex-wrap: wrap;
   gap: 8px 12px;
 }
+.withdraw-buttons .button {
+  scroll-margin-bottom: calc(var(--nav-height) + 16px + env(safe-area-inset-bottom));
+}
 .open-list {
   display: grid;
   gap: 12px;
