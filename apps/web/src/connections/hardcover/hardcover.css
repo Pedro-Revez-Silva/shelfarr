@@ -48,3 +48,11 @@
 .hardcover-key[open] summary {
   margin-block-end: 8px;
 }
+.hardcover-connection p a,
+.hardcover-code li a,
+.hardcover-key p a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}

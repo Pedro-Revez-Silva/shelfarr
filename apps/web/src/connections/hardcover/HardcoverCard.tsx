@@ -105,7 +105,7 @@ function Connected({ connection, following, say }: { connection: HardcoverConnec
   const active = connection.state === "active";
   return (
     <div className="hardcover-connection">
-      <p className="token-name hardcover-break">
+      <p className="hardcover-break">
         Connected as{" "}
         {connection.profile_url ? (
           <a href={connection.profile_url} target="_blank" rel="noopener noreferrer">
