@@ -169,7 +169,7 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   def withdrawal_admitted?(locked, revision)
-    !locked.direct_acquisition_recovery_pending? && User.find(Current.user.id).user? && revision == WebPreview::RequestJson.withdrawal_revision(locked)
+    !locked.direct_acquisition_recovery_pending? && User.find(Current.user.id).user? && revision == WebPreview::RequestJson.withdrawal_offer(locked).fetch(:revision)
   end
 
   def require_admin

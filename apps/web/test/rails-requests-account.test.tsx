@@ -307,6 +307,23 @@ describe("a requester cancels and removes an unfinished request in the Rails pre
     await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
   }, 15000);
 
+  test("a refresh that finds the request already gone while the answer is pending still returns to the list", async () => {
+    let answer: () => void = () => undefined;
+    let gone = false;
+    const server = railsServer(offering(1))
+      .on("GET", /\/api\/v1\/requests\/7$/, () => (gone ? { status: 404, body: { error: "not_found" } } : { body: { account: ACCOUNT, request: offering(1) } }))
+      .on("POST", /\/requests\/7\/withdraw$/, () => new Promise((resolve) => (answer = () => resolve(removed()))));
+    const { router, services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Cancel request" }));
+    await user.click(screen.getByRole("button", { name: "Yes, cancel it" }));
+    gone = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Cancel this request?" })).toBeNull());
+    await act(async () => answer());
+    await waitFor(() => expect(router.state.location.pathname).toBe("/requests"));
+  }, 15000);
+
   test("a question left open while the request changes is withdrawn and forgotten, so it never returns by itself", async () => {
     let found = offering(1);
     const server = railsServer(found)

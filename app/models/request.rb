@@ -557,10 +557,6 @@ class Request < ApplicationRecord
     not_found? && next_retry_at.present? && next_retry_at <= Time.current
   end
 
-  def download_dispatch_in_progress?
-    downloads.downloading.where(external_id: [ nil, "" ]).exists?
-  end
-
   def manual_download_allowed?
     return false if processing? || download_dispatch_in_progress?
 
@@ -1079,6 +1075,10 @@ class Request < ApplicationRecord
     uri.is_a?(URI::HTTP) && uri.host.present?
   rescue URI::InvalidURIError
     false
+  end
+
+  def download_dispatch_in_progress?
+    downloads.downloading.where(external_id: [ nil, "" ]).exists?
   end
 
   def direct_publication_in_progress?

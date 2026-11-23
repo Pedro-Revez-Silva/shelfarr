@@ -269,7 +269,7 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     @mine.downloads.create!(name: "Direct", status: :downloading, direct_reservation_token: "reservation")
     sign_in_as(@member)
     assert_nil withdrawal
-    crafted = WebPreview::RequestJson.withdrawal_revision(@mine.reload)
+    crafted = WebPreview::RequestJson.withdrawal_offer(@mine.reload).fetch(:revision)
     assert_no_enqueued_jobs(only: DirectDownloadRecoveryJob) do
       assert_equal "request_changed", withdraw(revision: crafted, remove_torrent: false).fetch("error")
     end
@@ -291,6 +291,23 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     withdraw(revision: offer.fetch("revision"))
     assert_response :success
     assert_empty @removed
+  end
+
+  test "a direct download being fetched is not described as a download client handoff" do
+    result = @mine.search_results.create!(guid: "gutenberg-1", title: "The Dispossessed", source: SearchResult::SOURCE_GUTENBERG, download_url: "https://files.example.test/d.epub")
+    @mine.downloads.create!(name: "Direct fetch", status: :downloading, search_result: result)
+    sign_in_as(@member)
+    assert_equal [ 0, false ], withdrawal.values_at("client_jobs", "starting")
+  end
+
+  test "a client that fails unexpectedly still lets the request go, as an unreachable one does, instead of failing the page" do
+    torrent(external_id: "crashing-hash")
+    adapter = Object.new
+    adapter.define_singleton_method(:remove_torrent) { |*| raise ArgumentError, "adapter bug" }
+    sign_in_as(@member)
+    withdraw(remove_torrent: true, adapter: adapter)
+    assert_response :success
+    assert_not Request.exists?(@mine.id)
   end
 
   test "a client job that another account's download now owns is neither offered nor removed" do

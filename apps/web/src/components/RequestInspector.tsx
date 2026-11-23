@@ -112,7 +112,6 @@ function CancelTracked({ request }: { request: RequestDetail }) {
 }
 
 function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; withdraw: ReturnType<typeof useWithdrawRequest> }) {
-  const navigate = useNavigate();
   const [askedOn, setAskedOn] = useState<string | null>(null);
   const [removeJobs, setRemoveJobs] = useState(false);
   const [lapsed, setLapsed] = useState(false);
@@ -150,10 +149,7 @@ function WithdrawRequest({ offer, withdraw }: { offer: RequestWithdrawalOffer; w
   };
   const confirm = () => {
     if (withdraw.isPending) return;
-    withdraw.mutate(
-      { expected_revision: offer.revision, remove_client_jobs: choosesJobs },
-      { onSuccess: (answer) => (answer.request.status === "removed" ? void navigate({ to: "/requests", replace: true }) : undefined) },
-    );
+    withdraw.mutate({ expected_revision: offer.revision, remove_client_jobs: choosesJobs });
   };
 
   return (
