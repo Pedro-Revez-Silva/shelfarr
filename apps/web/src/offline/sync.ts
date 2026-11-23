@@ -164,7 +164,7 @@ export function createSyncRunner(deps: SyncDeps, locks: Pick<LockManager, "reque
   };
   const once = async (): Promise<SyncResult> => {
     if (!locks) return syncPlaces(deps);
-    const result = await locks.request(`shelfarr-go-preview-offline-sync|${deps.account}`, { ifAvailable: true }, (lock) => (lock ? syncPlaces(deps) : ({ kind: "retry" } as const)));
+    const result = await locks.request(`${deps.store.name}-sync|${deps.account}`, { ifAvailable: true }, (lock) => (lock ? syncPlaces(deps) : ({ kind: "retry" } as const)));
     return result as SyncResult;
   };
   const run = async (): Promise<void> => {

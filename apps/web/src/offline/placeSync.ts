@@ -33,7 +33,7 @@ export function createPlaceSync({ boot, auth, store, guard, fetcher }: PlaceSync
       await store.release(askedAt);
       return { kind: "stop" };
     }
-    const confirmation = confirmationFrom(answer.account, answer.offline_expires_in, askedAt);
+    const confirmation = confirmationFrom(answer, askedAt);
     if (!confirmation) {
       await store.release(askedAt);
       return { kind: "stop" };

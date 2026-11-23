@@ -2,11 +2,11 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderAsset } from "../contract";
 import { Loading } from "../components/States";
 import { EpubReader } from "../reader/EpubReader";
-import { readerPublicationId } from "../reader/ReaderApp";
+import { readerPublicationId } from "../reader/links";
 import { ReaderFrame } from "../reader/ReaderFrame";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
-import { useOffline, type Offline } from "./context";
+import { unchangedOr, useOffline, type Offline } from "./context";
 import { DevicePlaces, type DeviceSaveState } from "./devicePlaces";
 import { openingLocator, type SavedBook, type Upload } from "./model";
 import { uploadText } from "./text";
@@ -32,20 +32,20 @@ function placeMessage(state: DeviceSaveState, upload: Upload | undefined | null)
 
 export function OfflineReader({ engine }: { engine: string | undefined }) {
   const offline = useOffline();
-  const { boot, guard } = useServices();
-  const id = readerPublicationId(window.location.pathname, boot.mount);
+  const { boot, guard, mode } = useServices();
+  const id = readerPublicationId(window.location.pathname, boot.mount, mode);
   const [opened, setOpened] = useState<Opened>({ kind: "loading" });
   useDocumentTitle(opened.kind === "ready" ? opened.book.title : opened.kind === "missing" ? "Not saved on this device" : "Opening saved book");
 
   const store = offline?.store;
+  const offlineBoot = offline?.boot;
   useEffect(() => {
-    if (!store || !id) {
+    if (!store || !offlineBoot || !id) {
       setOpened({ kind: "missing" });
       return;
     }
     let current = true;
-    store
-      .open(guard.account, id)
+    unchangedOr(offlineBoot, null, () => store.open(guard.account, id))
       .then((saved) => {
         if (current) setOpened(saved && guard.isActive() ? { kind: "ready", book: saved.book, blob: saved.blob } : { kind: "missing" });
       })
@@ -53,7 +53,7 @@ export function OfflineReader({ engine }: { engine: string | undefined }) {
     return () => {
       current = false;
     };
-  }, [store, id, guard]);
+  }, [store, offlineBoot, id, guard]);
 
   const downloads = offline?.boot.downloads ?? `${boot.mount}/library`;
   const back = { href: downloads, label: "Back to downloads", returns: false };

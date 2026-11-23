@@ -1,7 +1,7 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { render } from "@testing-library/react";
 import { App } from "../src/App";
-import type { LibraryPage, PublicationDetail, PublicationSummary, Session } from "../src/contract";
+import type { Boot, LibraryPage, PublicationDetail, PublicationSummary, Session } from "../src/contract";
 import { resetFirstPage } from "../src/components/PageHeading";
 import { createAppRouter } from "../src/router";
 import { createServices, type Services } from "../src/services";
@@ -104,9 +104,9 @@ export function standardServer(): FakeServer {
     .on("GET", /\/api\/v1\/library(\?|$)/, () => ({ body: page([summary()]) }));
 }
 
-export function renderApp(options: { server: FakeServer; url?: string; csrf?: string | null; mount?: string }): { services: Services; router: ReturnType<typeof createAppRouter>; view: ReturnType<typeof render> } {
+export function renderApp(options: { server: FakeServer; url?: string; csrf?: string | null; mount?: string; boot?: Boot }): { services: Services; router: ReturnType<typeof createAppRouter>; view: ReturnType<typeof render> } {
   resetFirstPage();
-  const services = createServices({ boot, csrfToken: () => (options.csrf === undefined ? "token-123" : options.csrf), fetcher: options.server.fetcher });
+  const services = createServices({ boot: options.boot ?? boot, csrfToken: () => (options.csrf === undefined ? "token-123" : options.csrf), fetcher: options.server.fetcher });
   const history = createMemoryHistory({ initialEntries: [options.url ?? `${MOUNT}/library`] });
   const router = createAppRouter({ basepath: options.mount ?? MOUNT, history });
   const view = render(<App services={services} router={router} />);

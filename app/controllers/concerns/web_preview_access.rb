@@ -11,11 +11,21 @@ module WebPreviewAccess
   private
 
   def enforce_web_preview_access
-    return web_preview_not_found unless WebPreview::Access.current.configured?
-    return web_preview_signed_out unless resume_session
-    return web_preview_not_found unless WebPreview::Access.current.allows?(Current.user)
+    return web_preview_refused unless WebPreview::Access.current.configured?
+    return web_preview_without_session unless resume_session
+    return web_preview_refused unless WebPreview::Access.current.allows?(Current.user)
 
     web_preview_verify_account
+  end
+
+  def web_preview_refused
+    rotate_offline_continuity
+    web_preview_not_found
+  end
+
+  def web_preview_without_session
+    rotate_offline_continuity
+    web_preview_signed_out
   end
 
   def web_preview_verify_account

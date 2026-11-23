@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { BootError, readCsrfToken, readStartup } from "./boot";
 import { GoApp } from "./go/GoApp";
+import { RailsOffline } from "./offline/RailsOffline";
 import { createAppRouter } from "./router";
 import { createServices } from "./services";
 import "./styles.css";
@@ -24,7 +25,9 @@ try {
     const router = createAppRouter({ basepath: startup.boot.mount });
     createRoot(container).render(
       <StrictMode>
-        <App services={services} router={router} />
+        <RailsOffline services={services}>
+          <App services={services} router={router} />
+        </RailsOffline>
       </StrictMode>,
     );
   }

@@ -8,9 +8,8 @@ import { AudioSession } from "../src/reader/audio";
 import { loadEngine, type ReaderEngine } from "../src/reader/engine";
 import { EpubSession } from "../src/reader/epub";
 import { pageKey, playKey } from "../src/reader/keys";
-import { goReaderLink, goSummaryReaderLink } from "../src/reader/links";
+import { goReaderLink, goSummaryReaderLink, readerPublicationId } from "../src/reader/links";
 import { ProgressSession, type SaveState } from "../src/reader/progress";
-import { readerPublicationId } from "../src/reader/ReaderApp";
 import { backTarget } from "../src/reader/ReaderFrame";
 import { ACCOUNT, boot, deferred, detail, FakeServer, summary } from "./helpers";
 
@@ -208,9 +207,11 @@ describe("Go reader links", () => {
     expect(goSummaryReaderLink(summary({ format_label: "Comic" }), "/preview")).toBeNull();
   });
 
-  test("the reader address names exactly one book under the mount", () => {
-    expect(readerPublicationId("/preview/library/12/read", "/preview")).toBe("12");
-    for (const path of ["/preview/library/012/read", "/preview/library/12/read/", "/preview/library/12", "/other/library/12/read", "/preview/library/12/read?x"]) expect(readerPublicationId(path, "/preview")).toBeNull();
+  test("the reader address names exactly one book under the mount, in the runtime's own form", () => {
+    expect(readerPublicationId("/preview/library/12/read", "/preview", "go")).toBe("12");
+    for (const path of ["/preview/library/012/read", "/preview/library/12/read/", "/preview/library/12", "/other/library/12/read", "/preview/library/12/read?x", "/preview/read/12"]) expect(readerPublicationId(path, "/preview", "go")).toBeNull();
+    expect(readerPublicationId("/preview/read/12", "/preview", "rails")).toBe("12");
+    for (const path of ["/preview/read/012", "/preview/read/12/", "/preview/read/downloads", "/other/read/12", "/preview/library/12/read"]) expect(readerPublicationId(path, "/preview", "rails")).toBeNull();
   });
 
   test("the engine must come from this server and expose the expected engine", async () => {

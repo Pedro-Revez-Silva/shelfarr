@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { PublicationSummary } from "../contract";
-import { goSummaryReaderLink } from "../reader/links";
+import { summaryReaderHref } from "../reader/links";
 import { useServices } from "../services";
 import { Cover } from "./Cover";
 
@@ -21,8 +21,7 @@ export function ContinueShelf({ items }: { items: PublicationSummary[] }) {
 }
 
 function ResumeCard({ item }: { item: PublicationSummary }) {
-  const { mode, boot } = useServices();
-  const href = mode === "go" ? goSummaryReaderLink(item, boot.mount, boot.reader_formats) : item.reader_url;
+  const href = summaryReaderHref(item, useServices());
   return (
     <article className="resume-card">
       <Cover publication={item} />

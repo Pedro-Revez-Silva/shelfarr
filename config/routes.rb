@@ -204,6 +204,11 @@ Rails.application.routes.draw do
   get "preview", to: "web_preview/shell#index", as: :web_preview
   get "preview/library", to: "web_preview/shell#show", as: :web_preview_library
   get "preview/library/:id", to: "web_preview/shell#show", as: :web_preview_publication, constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/library/:id/read", to: "web_preview/shell#moved_reader", constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/library/downloads", to: "web_preview/shell#moved_downloads"
+  get "preview/read/downloads", to: "web_preview/shell#downloads", as: :web_preview_downloads
+  get "preview/read/offline-worker.js", to: "web_preview/offline_worker#show", as: :web_preview_offline_worker, format: false
+  get "preview/read/:id", to: "web_preview/shell#reader", as: :web_preview_reader, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/discover", to: "web_preview/shell#show", as: :web_preview_discover
   get "preview/books/:source/:source_id", to: "web_preview/shell#show", as: :web_preview_book,
     constraints: { source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ }
@@ -218,6 +223,12 @@ Rails.application.routes.draw do
     get "library", to: "library#index"
     get "library/:id", to: "library#show"
     put "library/:id/reading_status", to: "library#reading_status"
+    get "auth/bootstrap", to: "bootstrap#show"
+    get "library/:id/reader", to: "reader#show", as: :reader
+    get "library/:id/progress", to: "reader#progress", as: :progress
+    put "library/:id/progress", to: "reader#save_progress"
+    get "library/:id/assets/:asset_id/reading_order", to: "reader#reading_order", as: :reading_order
+    get "accounts/:account/library/:id/assets/:asset_id", to: "media#show", as: :media
     get "discover", to: "discover#index"
     constraints source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ do
       get "books/:source/:source_id", to: "books#show", as: :book

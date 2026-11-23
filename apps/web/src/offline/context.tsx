@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react";
 import type { OfflineBoot } from "../contract";
 import type { ConfirmedAccount, OfflineStore } from "./model";
+import { cookieValue } from "./store";
 import type { SyncRunner } from "./sync";
 
 export type Offline = {
@@ -20,8 +21,36 @@ export function useOffline(): Offline | null {
   return useContext(OfflineContext);
 }
 
-export function confirmationFrom(account: string, expiresIn: number | undefined, now: number): ConfirmedAccount | null {
-  return expiresIn === undefined ? null : { account, confirmedAt: now, validForMs: expiresIn * 1000 };
+type Confirmable = { account: string; offline_expires_in?: number | undefined; offline_continuity?: string | undefined };
+
+export function confirmationFrom({ account, offline_expires_in: expiresIn, offline_continuity: continuity }: Confirmable, now: number): ConfirmedAccount | null {
+  if (expiresIn === undefined) return null;
+  const confirmation: ConfirmedAccount = { account, confirmedAt: now, validForMs: expiresIn * 1000 };
+  return continuity === undefined ? confirmation : { ...confirmation, continuity };
+}
+
+export function continuityOf(boot: OfflineBoot): string | null {
+  return boot.continuity_cookie === undefined ? null : cookieValue(document.cookie, boot.continuity_cookie);
+}
+
+type CookieChange = Event & { changed?: { name: string }[]; deleted?: { name: string }[] };
+
+export function onContinuityChange(boot: OfflineBoot | undefined, listener: () => void): () => void {
+  const name = boot?.continuity_cookie;
+  const cookies = (globalThis as { cookieStore?: EventTarget }).cookieStore;
+  if (name === undefined || !cookies) return () => undefined;
+  const changed = (event: Event) => {
+    const { changed: set = [], deleted = [] } = event as CookieChange;
+    if ([...set, ...deleted].some((cookie) => cookie.name === name)) listener();
+  };
+  cookies.addEventListener("change", changed);
+  return () => cookies.removeEventListener("change", changed);
+}
+
+export async function unchangedOr<T>(boot: OfflineBoot, hidden: T, read: () => Promise<T>): Promise<T> {
+  const before = continuityOf(boot);
+  const value = await read();
+  return continuityOf(boot) === before ? value : hidden;
 }
 
 const CHANNEL = "shelfarr-go-preview-offline";

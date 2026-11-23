@@ -168,12 +168,17 @@ export type PasswordChange = { current_password: string; password: string; passw
 
 export const errorEnvelopeSchema = z.object({ error: z.string(), message: z.string().optional() });
 
+export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath, continuity_cookie: z.string().regex(/^[A-Za-z0-9_]{1,64}$/).optional() });
+export type OfflineBoot = z.infer<typeof offlineBootSchema>;
+
 export const bootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
   account: identifier,
   mount: z.string(),
   api: z.string().startsWith("/"),
   classic_library: sitePath,
+  reader_formats: z.array(z.string()).optional(),
+  offline: offlineBootSchema.optional(),
 });
 
 export const goViews = ["library", "details", "connect", "reader", "account", "discover", "requests", "request", "admin", "server_settings", "downloads"] as const;
@@ -186,12 +191,9 @@ export const pageEngineSchema = z.object({
 });
 export type PageEngine = z.infer<typeof pageEngineSchema>;
 
-export const offlineBootSchema = z.object({ worker: sitePath, scope: sitePath, downloads: sitePath });
-export type OfflineBoot = z.infer<typeof offlineBootSchema>;
-
 export const goBootSchema = z.object({
   version: z.literal(CONTRACT_VERSION),
-  runtime: z.literal("go"),
+  runtime: z.enum(["go", "rails"]),
   view: z.enum(goViews),
   mount: sitePath,
   api: sitePath,
@@ -199,6 +201,7 @@ export const goBootSchema = z.object({
   reader_formats: z.array(z.string()).optional(),
   page_engine: pageEngineSchema.optional(),
   offline: offlineBootSchema.optional(),
+  classic_downloads: sitePath.optional(),
 });
 export type GoBoot = z.infer<typeof goBootSchema>;
 
@@ -210,10 +213,12 @@ export type Boot = {
   classic_library: string | null;
   runtime?: "go";
   reader_formats?: readonly string[];
+  offline?: OfflineBoot;
+  classic_downloads?: string;
 };
 
 export const bootstrapSchema = z.discriminatedUnion("authenticated", [
-  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative(), offline_expires_in: z.number().int().nonnegative().optional() }),
+  z.object({ authenticated: z.literal(true), account: identifier, csrf_token: z.string().min(1), expires_in: z.number().int().nonnegative(), offline_expires_in: z.number().int().nonnegative().optional(), offline_continuity: z.string().min(1).optional() }),
   z.object({
     authenticated: z.literal(false),
     csrf_token: z.string().min(1),
@@ -415,7 +420,7 @@ const assetIdentifier = z.string().min(1).max(128);
 
 export const locatorSchema = z.looseObject({
   href: z.string(),
-  type: z.string().optional(),
+  type: z.string().nullable().optional(),
   locations: z
     .looseObject({
       progression: z.number().nullable().optional(),
@@ -463,6 +468,7 @@ export const readerPublicationSchema = z.object({
   assets: z.array(readerAssetSchema),
   other_formats: z.array(z.string()),
   progress: storedProgressSchema.nullable(),
+  classic_reader: z.object({ url: sitePath, read_along: z.boolean() }).optional(),
 });
 export type ReaderPublication = z.infer<typeof readerPublicationSchema>;
 

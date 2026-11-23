@@ -14,6 +14,10 @@ import {
 } from "./model";
 
 export const DATABASE_NAME = "shelfarr-go-preview-offline";
+export const RAILS_DATABASE_NAME = "shelfarr-rails-preview-offline";
+export type OfflineRuntime = "go" | "rails";
+const DATABASES: Record<OfflineRuntime, string> = { go: DATABASE_NAME, rails: RAILS_DATABASE_NAME };
+const DEFAULT_MOUNT = "/preview";
 const DATABASE_VERSION = 1;
 const ACCOUNT_KEY = "current";
 
@@ -29,9 +33,24 @@ function completed<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-async function readAccount(stores: Stores): Promise<AccountState> {
+type Continuity = () => string | null;
+
+async function readAccount(stores: Stores, continuity: Continuity | null): Promise<AccountState> {
   const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
-  return { record: stored?.record ?? null, clearedAt: stored?.clearedAt ?? 0 };
+  const record = stored?.record ?? null;
+  return { record: record && continuous(record, continuity) ? record : null, clearedAt: stored?.clearedAt ?? 0 };
+}
+
+export function continuous(record: ConfirmedAccount, continuity: Continuity | null): boolean {
+  return continuity === null || (record.continuity ?? null) === continuity();
+}
+
+export function cookieValue(cookies: string, name: string): string | null {
+  for (const pair of cookies.split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator >= 0 && pair.slice(0, separator).trim() === name) return pair.slice(separator + 1).trim() || null;
+  }
+  return null;
 }
 
 function writeAccount(stores: Stores, state: AccountState): Promise<IDBValidKey> {
@@ -48,13 +67,25 @@ export function releasedState(current: AccountState, askedAt: number): AccountSt
   return { record, clearedAt: Math.max(current.clearedAt, askedAt) };
 }
 
+export function databaseNameFor(mount: string, runtime: OfflineRuntime = "go"): string {
+  const name = DATABASES[runtime];
+  return mount === DEFAULT_MOUNT ? name : `${name}|${mount}`;
+}
+
 export class IndexedDbOfflineStore implements OfflineStore {
   private opened: Promise<IDBDatabase> | null = null;
+  readonly name: string;
+  private readonly continuity: Continuity | null;
+
+  constructor(name: string = DATABASE_NAME, continuity: Continuity | null = null) {
+    this.name = name;
+    this.continuity = continuity;
+  }
 
   async exists(): Promise<boolean> {
     if (this.opened) return true;
     if (typeof indexedDB.databases !== "function") return true;
-    return (await indexedDB.databases()).some((database) => database.name === DATABASE_NAME);
+    return (await indexedDB.databases()).some((database) => database.name === this.name);
   }
 
   async prepare(): Promise<void> {
@@ -63,21 +94,23 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async accountState(): Promise<AccountState> {
     if (!(await this.exists())) return { record: null, clearedAt: 0 };
-    return this.run(["account"], "readonly", readAccount);
+    return this.run(["account"], "readonly", (stores) => readAccount(stores, this.continuity));
   }
 
-  confirm(value: ConfirmedAccount): Promise<boolean> {
+  async confirm(value: ConfirmedAccount): Promise<boolean> {
+    if (!continuous(value, this.continuity)) return false;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = confirmedState(await readAccount(stores), value);
-      if (next) await writeAccount(stores, next);
-      return next !== null;
+      const next = confirmedState(await readAccount(stores, this.continuity), value);
+      if (!next || !continuous(value, this.continuity)) return false;
+      await writeAccount(stores, next);
+      return true;
     });
   }
 
   async release(askedAt: number): Promise<boolean> {
     if (!(await this.exists())) return true;
     return this.run(["account"], "readwrite", async (stores) => {
-      const next = releasedState(await readAccount(stores), askedAt);
+      const next = releasedState(await readAccount(stores, null), askedAt);
       await writeAccount(stores, next);
       return next.record === null;
     });
@@ -86,7 +119,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
   async forget(account?: string, at: number = Date.now()): Promise<void> {
     if (!(await this.exists())) return;
     await this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
+      const current = await readAccount(stores, this.continuity);
       if (account !== undefined && current.record?.account !== account) return;
       await writeAccount(stores, { record: null, clearedAt: Math.max(current.clearedAt, at, current.record?.confirmedAt ?? 0) });
     });
@@ -94,7 +127,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   touch(account: string, now: number): Promise<boolean> {
     return this.run(["account"], "readwrite", async (stores) => {
-      const current = await readAccount(stores);
+      const current = await readAccount(stores, this.continuity);
       const record = current.record;
       const ownedSince = record?.account === account ? record.confirmedAt : null;
       if (!usable(record, account, now)) {
@@ -108,18 +141,18 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async books(account: string): Promise<SavedBook[]> {
     if (!(await this.exists())) return [];
-    const books = await this.run(["books"], "readonly", (stores) => completed<SavedBook[]>(stores.books.index("account").getAll(account)));
+    const books = await this.owned(account, ["books"], [], (stores) => completed<SavedBook[]>(stores.books.index("account").getAll(account)));
     return books.sort((left, right) => right.savedAt - left.savedAt);
   }
 
   async book(account: string, id: string): Promise<SavedBook | null> {
     if (!(await this.exists())) return null;
-    return (await this.run(["books"], "readonly", (stores) => completed<SavedBook | undefined>(stores.books.get(bookKey(account, id))))) ?? null;
+    return (await this.owned(account, ["books"], undefined, (stores) => completed<SavedBook | undefined>(stores.books.get(bookKey(account, id))))) ?? null;
   }
 
   async open(account: string, id: string): Promise<{ book: SavedBook; blob: Blob } | null> {
     if (!(await this.exists())) return null;
-    return this.run(["books", "files"], "readonly", async (stores) => {
+    return this.owned(account, ["books", "files"], null, async (stores) => {
       const key = bookKey(account, id);
       const book = await completed<SavedBook | undefined>(stores.books.get(key));
       const file = await completed<StoredFile | undefined>(stores.files.get(key));
@@ -130,7 +163,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async attempts(account: string): Promise<Attempt[]> {
     if (!(await this.exists())) return [];
-    return this.run(["attempts"], "readonly", (stores) => completed<Attempt[]>(stores.attempts.index("account").getAll(account)));
+    return this.owned(account, ["attempts"], [], (stores) => completed<Attempt[]>(stores.attempts.index("account").getAll(account)));
   }
 
   begin(attempt: Attempt): Promise<void> {
@@ -148,7 +181,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   commit(book: SavedBook, blob: Blob, token: string, now: number): Promise<CommitOutcome> {
     return this.run(["account", "books", "files", "attempts"], "readwrite", async (stores): Promise<CommitOutcome> => {
-      if (!usable((await readAccount(stores)).record, book.account, now)) return "account";
+      if (!usable((await readAccount(stores, this.continuity)).record, book.account, now)) return "account";
       const attempt = await completed<Attempt | undefined>(stores.attempts.get(book.key));
       if (!attempt || attempt.token !== token || attempt.assetId !== book.asset.id) return "removed";
       const saved = await completed<SavedBook[]>(stores.books.index("account").getAll(book.account));
@@ -165,7 +198,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
   updateBook(account: string, id: string, change: (book: SavedBook) => SavedBook | null, now: number): Promise<UpdateOutcome> {
     return this.run(["account", "books"], "readwrite", async (stores): Promise<UpdateOutcome> => {
       const book = await completed<SavedBook | undefined>(stores.books.get(bookKey(account, id)));
-      if (!usable((await readAccount(stores)).record, account, now) || !book) return "refused";
+      if (!usable((await readAccount(stores, this.continuity)).record, account, now) || !book) return "refused";
       const next = change(book);
       if (!next || next === book) return "unchanged";
       await completed(stores.books.put(next));
@@ -198,9 +231,20 @@ export class IndexedDbOfflineStore implements OfflineStore {
     });
   }
 
+  private async owned<T>(account: string, names: StoreName[], hidden: T, read: (stores: Stores) => Promise<T>): Promise<T> {
+    const continuity = this.continuity;
+    if (continuity === null) return this.run(names, "readonly", read);
+    const { value, record } = await this.run([...names, "account"], "readonly", async (stores) => {
+      const found = await read(stores);
+      const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
+      return { value: found, record: stored?.record ?? null };
+    });
+    return record?.account === account && continuous(record, continuity) ? value : hidden;
+  }
+
   private database(): Promise<IDBDatabase> {
     this.opened ??= new Promise((resolve, reject) => {
-      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      const request = indexedDB.open(this.name, DATABASE_VERSION);
       request.onupgradeneeded = () => {
         const database = request.result;
         database.createObjectStore("account", { keyPath: "id" });
@@ -254,4 +298,13 @@ export class IndexedDbOfflineStore implements OfflineStore {
   }
 }
 
-export const offlineStore: OfflineStore = new IndexedDbOfflineStore();
+const stores = new Map<string, OfflineStore>();
+
+export function offlineStoreFor(runtime: OfflineRuntime, mount: string, continuityCookie?: string): OfflineStore {
+  const name = databaseNameFor(mount, runtime);
+  const known = stores.get(name);
+  if (known) return known;
+  const created = new IndexedDbOfflineStore(name, continuityCookie === undefined ? null : () => cookieValue(document.cookie, continuityCookie));
+  stores.set(name, created);
+  return created;
+}

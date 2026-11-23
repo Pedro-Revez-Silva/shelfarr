@@ -183,10 +183,76 @@ With the Go runtime's `-web-offline` option an EPUB can also be saved in the bro
 server is unreachable, through a worker scoped to `/preview/library/` and kept apart from the Rails `/read` worker and
 its storage; see [`go-http-migration.md`](go-http-migration.md#offline-epub-reading-opt-in).
 
+## Rails-served reader and Downloads (dev preview)
+
+Under Rails the preview now opens its own reader and player instead of handing off to `/read/:id`, using the same
+TypeScript reader, page reader and offline code as the Go runtime. Rails answers the Go browser contract through a small
+session adapter, so the client code is shared rather than forked:
+
+| Route | Answer |
+| --- | --- |
+| `GET /preview/read/:id`, `GET /preview/read/downloads` | A static shell, identical for every visitor (no account, no CSRF meta), with the Go boot shape and `runtime: "rails"`. Reader policy as in Go; Downloads uses the Library policy. Access rules as the other preview shells (404 off/not listed, sign-in redirect). |
+| `GET /preview/library/:id/read`, `GET /preview/library/downloads` | After the same access rules, `302` to `/preview/read/:id` and `/preview/read/downloads` under the deployment path. These interim addresses lie inside the experimental Go runtime's worker scope, so Rails serves nothing else there. |
+| `GET /preview/api/v1/auth/bootstrap` | Signed in: `{authenticated:true, account, csrf_token, expires_in:7200, offline_expires_in}`. The token is Rails' own form token; `offline_expires_in` is the session's remaining life: the earlier of `created_at` + `session_max_age_days` and the expiry signed into the `session_id` cookie, capped at 30 days; `offline_continuity` is this browser's offline marker (below) exactly as the request carried it, and is absent when it carried none; a signed-in bootstrap never sets the marker (signed-out and 404 answers replace it, below). Signed out: `{authenticated:false, csrf_token, expires_in, sign_in:{available:false, reason:"rails_sign_in"}}`; the page then links to Rails' sign-in, which returns to it. 404 when the preview is off or the account is not listed. |
+| `GET /preview/api/v1/library/:id/reader` | The Go reader publication. Every browser format (EPUB, PDF, CBZ, audio) is listed with an account-bound media URL; `other_formats` is always empty. Adds `classic_reader:{url, read_along}` so the reader can offer `/read/:id` for read-along books. |
+| `GET`, `PUT /preview/api/v1/library/:id/progress` | `Consumer::ProgressWriter`, unchanged rules. `{account, progress}`, `409 {account, error:"progress_conflict", progress}`, `422 invalid_progress`, `422 invalid_csrf`. |
+| `GET /preview/api/v1/library/:id/assets/:asset_id/reading_order` | `{account, asset_id, format:"cbz", items}`; `403 cross_site_refused` for a cross-site fetch; `410 asset_unavailable`. |
+| `GET /preview/api/v1/accounts/:account/library/:id/assets/:asset_id` | The existing range-capable media response, refused `401 account_changed` when the path account is not the session's and `403 cross_site_refused` before the session is read. `Cross-Origin-Resource-Policy: same-origin`, `Referrer-Policy: no-referrer`, document sandbox policy. |
+| `GET /preview/read/offline-worker.js` | The shared worker source (`apps/server/internal/gohttp/offline_worker.js`) with a configuration naming the two shells above, their `reads` path (`{prefix:"/preview/read", suffix:""}`), its own `cache` prefix and the SHA-256 of the bundle, stylesheet, fonts and reader engine it precaches. Registered with the scope `/preview/read/`. Account-free; 404 when the preview is off. Rails does not answer the Go worker's `/preview/offline-worker.js`. |
+
+The Library shell's boot gains `reader_formats` and `offline`; clients that do not know them ignore them, and without
+`reader_formats` every link keeps its `/read/:id` address. The engines are Rails' own digested copies of the vendored
+EPUB.js and PDF.js files.
+
+Offline copies saved through Rails live in their own `shelfarr-rails-preview-offline` database under the worker scope
+`/preview/read/`, with worker caches named `shelfarr-rails-preview-offline.v1|<version>`; a deployment under a subpath uses
+`shelfarr-rails-preview-offline|<subpath>/preview` and `shelfarr-rails-preview-offline.v1@<subpath>/preview|<version>`. The
+experimental Go runtime keeps `shelfarr-go-preview-offline`, the scope `/preview/library/`, the worker
+`/preview/offline-worker.js` and its `shelfarr-go-preview-offline.v1|` caches, and Rails never opens, releases or deletes
+them. So two deployments, or the two runtimes, on one origin never see or delete each other's copies, and a Go worker or
+bundle still installed in a browser cannot open a book saved through Rails. The reader and Downloads links of each runtime
+name its own address, and each runtime's reader only accepts its own address form.
+
+Offline access is tied to the Rails cookie session by an **offline marker**: a random, non-authenticating value in the cookie
+`shelfarr_offline_<first 16 hex of SHA-256(mount)>` (named in the boot's `offline.continuity_cookie`), with `Path=<subpath>/preview`,
+`SameSite=Lax`, `Secure` over HTTPS, readable by the page and lasting 400 days. Only Rails' answers to a session change or a
+refusal set it, always to a new random value: starting a session (password, two-step code, single sign-on, sign-up), ending
+one (sign-out, an expired or deleted session, a `session_id` that names no session, a session that ends while a request is
+being created), and any page or API answer under `/preview` (other than the worker script) to a browser without a session, to
+an account the allowlist does not name, or while the preview is off. Linking a single sign-on identity, failed sign-ins,
+signed-in bootstraps and ordinary requests leave it alone. Each offline confirmation stores the marker the bootstrap echoed,
+and the store compares it with the cookie when storage answers, both for the confirmation and for every read of saved books,
+files and unfinished saves; Downloads and the offline reader show nothing from a read during which the cookie changed, and an
+open offline page ends as soon as the browser reports a marker change (Cookie Store `change` event, compared with the cookie
+without waiting for storage; browsers without that API recheck on focus, visibility and every 30 s). Since nothing ever sets an earlier value again, once the browser has received a sign-out, a sign-in to any
+account or a refusal, the previous account's saved books stay hidden offline whether or not any page script ran, however slow
+IndexedDB is, and whatever an earlier bootstrap answers late. A confirmation saved before the marker existed is honoured only
+while the browser has no marker. The files stay, hidden, until that account confirms again online, which also sends any
+waiting place. A refusal that arrives after a later sign-in replaces that sign-in's marker too, so that account's copies stay
+hidden until its next page load confirms it again (fail-closed); a confirmation whose marker changes while it is being
+written can report success but is never readable. The local
+sign-in page (which also clears `/read`'s offline account, as before) and the allowlist 404 page still clear the stored
+preview confirmation, but nothing depends on them finishing, and the single sign-on hand-off no longer waits for anything. A
+change the browser cannot receive, because the server is unreachable or the session was ended elsewhere and the browser has
+not contacted Rails since, leaves that account's own saved books readable on that browser until its offline window ends (at
+most the session's remaining life, at most 30 days); so does a media request refused only because its file is gone. The Go
+runtime does not use the marker: its boot names no cookie and its own sign-in and sign-out do not set it. A Go offline worker
+still installed when the same origin moves to Rails therefore keeps answering `/preview/library/:id/read` and
+`/preview/library/downloads` while the server is unreachable, with the Go app and the Go database, under the offline window
+the Go runtime granted when it last confirmed that account. It never sees what was saved through Rails. The
+`/read` worker, its `shelfarr-offline` database, caches and outbox are never read, moved or deleted; Downloads links to
+`/read/downloads` for what was saved there. Turning the preview off leaves a dormant worker that only answers when the
+server is unreachable, exactly as after a Go rollback; the first page or API answer under the preview after that hides the saved books.
+
+Not ported yet (each says so on screen and links to `/read/:id` or `/read/downloads`): read-along narration, choosing
+among a book's several files, offline audiobooks, PDFs and comics, and showing the `/read` downloads in the new Downloads
+list. The reader still lives under
+`/preview`; moving it to `/read/:id` needs the worker, outbox and manifest transition in `backend-migration.md`.
+
 ## Not in this slice
 
 Full frontend parity, Go authentication or write ownership, moving `/read` or the PWA identity,
-rewriting Discover/Requests/Admin, a service worker or offline use for the preview, progress
-writes from the preview, production rollout. Safari and real devices have not been exercised:
+rewriting Discover/Requests/Admin, production rollout. (A later slice added the preview's reader, progress writes and
+offline EPUBs; see "Rails-served reader and Downloads" above.) Safari and real devices have not been exercised:
 only Chromium ran. The patterns used (popover-free navigation, native form controls, CSS
 `:has`, grid, `dvh`) are Baseline, but that is not an acceptance claim.

@@ -1,6 +1,6 @@
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import type { PublicationDetail } from "../contract";
-import { goReaderLink } from "../reader/links";
+import { publicationReaderHref } from "../reader/links";
 import { failureKind } from "../api/errors";
 import { usePublication } from "../queries";
 import { useServices } from "../services";
@@ -9,7 +9,7 @@ import { Cover } from "./Cover";
 import { PageHeading } from "./PageHeading";
 import { ReadingStatusForm } from "./ReadingStatusForm";
 import { ErrorPanel, Loading } from "./States";
-import { SaveForOffline } from "../offline/SaveForOffline";
+import { OfflineNotSavable, SaveForOffline } from "../offline/SaveForOffline";
 
 const routeApi = getRouteApi("/library/$publicationId");
 
@@ -84,9 +84,10 @@ function savableEpub(publication: PublicationDetail): string | null {
 
 function Details({ publication }: { publication: PublicationDetail }) {
   const available = publication.availability === "available";
-  const { mode, boot, api } = useServices();
-  const readerLink = mode === "go" ? goReaderLink(publication, boot.mount, boot.reader_formats) : publication.reader_url;
-  const epub = mode === "go" && readerLink ? savableEpub(publication) : null;
+  const services = useServices();
+  const { mode, api } = services;
+  const readerLink = publicationReaderHref(publication, services);
+  const epub = readerLink ? savableEpub(publication) : null;
   return (
     <article className="details" aria-labelledby="publication-heading">
       <BackToLibrary />
@@ -124,7 +125,11 @@ function Details({ publication }: { publication: PublicationDetail }) {
             </p>
           )}
 
-          {epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub} load={(signal) => api.reader(publication.id, signal)} /> : null}
+          {epub ? (
+            <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub} load={(signal) => api.reader(publication.id, signal)} />
+          ) : readerLink ? (
+            <OfflineNotSavable kind={publication.action === "listen" ? "listen" : publication.format_label} fallback={mode === "rails" ? publication.reader_url : null} />
+          ) : null}
 
           <ReadingStatusForm publication={publication} />
 

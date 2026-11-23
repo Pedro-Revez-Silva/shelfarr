@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
+import { readerPath } from "../reader/links";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
-import { announceChange, onChange, useOffline, type Offline } from "./context";
+import { announceChange, onChange, onContinuityChange, unchangedOr, useOffline, type Offline } from "./context";
 import { ACCOUNT_LIMIT_BYTES, describeLocator, laterDevicePlace, offlineUntil, type Attempt, type SavedBook } from "./model";
 import { FAILURES, formatDay, formatMoment, uploadText } from "./text";
 
@@ -19,6 +20,8 @@ async function list(offline: Offline, account: string): Promise<Listing> {
   return { books, unfinished: attempts.filter((attempt) => !saved.has(attempt.key)), others, persisted };
 }
 
+const HIDDEN: Listing = { books: [], unfinished: [], others: { books: 0, bytes: 0 }, persisted: null };
+
 function placeText(book: SavedBook): string {
   const own = book.devicePlace?.asset_id === book.asset.id ? book.devicePlace : null;
   const device = own?.upload && own.upload.state !== "synced" ? own : laterDevicePlace(book);
@@ -29,37 +32,42 @@ function placeText(book: SavedBook): string {
 
 export function DownloadsPage() {
   const offline = useOffline();
-  const { guard, boot } = useServices();
+  const { guard, boot, mode } = useServices();
   useDocumentTitle("Downloads");
   const [listing, setListing] = useState<Listing | null>(null);
   const [failed, setFailed] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const account = guard.account;
+  const latest = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!offline) return;
+    const request = ++latest.current;
     try {
-      const next = await list(offline, account);
-      if (guard.isActive()) {
+      const next = await unchangedOr(offline.boot, HIDDEN, () => list(offline, account));
+      if (request === latest.current && guard.isActive()) {
         setListing(next);
         setFailed(false);
       }
     } catch {
-      setFailed(true);
+      if (request === latest.current) setFailed(true);
     }
   }, [offline, account, guard]);
 
   const sync = offline?.sync;
+  const offlineBoot = offline?.boot;
   useEffect(() => {
     void refresh();
     const stop = onChange(() => void refresh());
     const stopSync = sync?.subscribe(() => void refresh());
+    const stopContinuity = onContinuityChange(offlineBoot, () => void refresh());
     return () => {
       stop();
       stopSync?.();
+      stopContinuity();
     };
-  }, [refresh, sync]);
+  }, [refresh, sync, offlineBoot]);
 
   if (!offline) return null;
   const confirmation = offline.confirmation;
@@ -135,7 +143,7 @@ export function DownloadsPage() {
               <p className="downloads-meta">{`EPUB · ${formatBytes(book.asset.size_bytes)} · saved ${formatDay(book.savedAt)}`}</p>
               <p className="downloads-place">{placeText(book)}</p>
               <div className="downloads-actions">
-                <a className="button button--primary" href={`${boot.mount}/library/${book.id}/read`}>
+                <a className="button button--primary" href={readerPath(mode, boot.mount, book.id)}>
                   Read<span className="sr-only"> {book.title}</span>
                 </a>
                 {removing === book.key ? (
@@ -179,6 +187,15 @@ export function DownloadsPage() {
               </li>
             ))}
           </ul>
+        </section>
+      ) : null}
+      {boot.classic_downloads ? (
+        <section className="downloads-elsewhere" aria-labelledby="elsewhere-heading">
+          <h2 id="elsewhere-heading">Saved in the web reader</h2>
+          <p>Audiobooks, PDFs, comics and books you downloaded in the web reader stay in its own list on this device, with their places. Nothing here changes them.</p>
+          <a className="button" href={boot.classic_downloads}>
+            Open those downloads
+          </a>
         </section>
       ) : null}
       {listing ? (

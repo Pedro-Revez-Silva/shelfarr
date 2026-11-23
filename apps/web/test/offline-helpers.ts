@@ -7,6 +7,7 @@ export const NEWER_ID = "f".repeat(64);
 export const DAY = 86_400_000;
 
 export class MemoryOfflineStore implements OfflineStore {
+  readonly name = "memory-offline-store";
   record: ConfirmedAccount | null = null;
   clearedAt = 0;
   readonly saved = new Map<string, SavedBook>();

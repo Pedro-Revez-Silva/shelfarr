@@ -19,10 +19,9 @@ import { DownloadsPage } from "../offline/DownloadsPage";
 import type { ConfirmedAccount, OfflineStore } from "../offline/model";
 import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
 import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
-import { SaveFailure } from "../offline/save";
-import { createPlaceSync } from "../offline/placeSync";
-import { offlineStore } from "../offline/store";
-import { hasWorker, retireWorker } from "../offline/worker";
+import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "../offline/online";
+import { offlineStoreFor } from "../offline/store";
+import { retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
 import { useGuardState } from "../services";
 
@@ -41,28 +40,6 @@ type Load = { notice?: string; focus?: boolean };
 
 const RETIRED_WORKER = { scope: "/preview/library/", worker: "/preview/offline-worker.js" };
 const SAVED_VIEWS: readonly GoBoot["view"][] = ["reader", "downloads"];
-
-async function keepOfflineAccount(boot: GoBoot, store: OfflineStore, confirmation: ConfirmedAccount | null, askedAt: number): Promise<void> {
-  if (!boot.offline) return;
-  if (!confirmation) {
-    await store.release(askedAt);
-    return;
-  }
-  if ((await hasWorker(boot.offline)) || (await store.accountState()).record) await store.confirm(confirmation);
-}
-
-async function refreshOfflineAccount(boot: GoBoot, auth: AuthClient, store: OfflineStore): Promise<void> {
-  if (!boot.offline) return;
-  const askedAt = Date.now();
-  let answer: Bootstrap;
-  try {
-    answer = await auth.bootstrap();
-  } catch (error) {
-    if (definitiveRefusal(error)) await store.release(askedAt);
-    return;
-  }
-  await keepOfflineAccount(boot, store, answer.authenticated ? confirmationFrom(answer.account, answer.offline_expires_in, askedAt) : null, askedAt);
-}
 
 async function retireOffline(store: OfflineStore): Promise<void> {
   await store.forget().catch(() => undefined);
@@ -83,7 +60,7 @@ function describeUnavailable(error: unknown): { message: string; retry: boolean 
   return { message: "The server answered with something these screens do not understand. Reload the page to try again.", retry: true };
 }
 
-export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
+export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.runtime, boot.mount, boot.offline?.continuity_cookie) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
   const auth = useMemo(() => new AuthClient(boot.api, fetcher), [boot.api, fetcher]);
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [epoch, setEpoch] = useState(0);
@@ -97,7 +74,7 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
         const result = await auth.bootstrap();
         setEpoch((value) => value + 1);
         const next = fromBootstrap(result, options, sentAt);
-        void keepOfflineAccount(boot, store, next.kind === "signed_in" ? next.confirmation : null, sentAt).catch(() => undefined);
+        await keepOfflineAccount(boot.offline, store, next.kind === "signed_in" ? next.confirmation : null, sentAt).catch(() => undefined);
         setState(next);
       } catch (error) {
         if (definitiveRefusal(error)) await store.release(sentAt).catch(() => undefined);
@@ -117,8 +94,8 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
     (result: LoginResult) => {
       markPageNavigated();
       setEpoch((value) => value + 1);
-      const confirmation = confirmationFrom(result.account, result.offline_expires_in, Date.now());
-      void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+      const confirmation = confirmationFrom(result, Date.now());
+      void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
       setState({ kind: "signed_in", account: result.account, token: result.csrf_token, expiresIn: result.expires_in, confirmation });
     },
     [boot, auth, store],
@@ -137,6 +114,7 @@ export function GoApp({ boot, fetcher, store = offlineStore }: { boot: GoBoot; f
     case "unavailable":
       return <Unavailable message={state.message} retry={state.retry} onRetry={() => void load()} />;
     case "signed_out":
+      if (boot.runtime === "rails") return <SignInWithServer intro={introFor(boot.view)} notice={state.notice} />;
       return (
         <SignInPage
           key={epoch}
@@ -191,7 +169,7 @@ function fromBootstrap(result: Bootstrap, options: Load, sentAt: number): AuthSt
       account: result.account,
       token: result.csrf_token,
       expiresIn: result.expires_in,
-      confirmation: confirmationFrom(result.account, result.offline_expires_in, sentAt),
+      confirmation: confirmationFrom(result, sentAt),
     };
   }
   return {
@@ -201,6 +179,28 @@ function fromBootstrap(result: Bootstrap, options: Load, sentAt: number): AuthSt
     notice: options.notice ?? null,
     focus: options.focus ?? false,
   };
+}
+
+function SignInWithServer({ intro, notice }: { intro: string; notice: string | null }) {
+  useDocumentTitle("Sign in");
+  return (
+    <AuthFrame>
+      <section className="auth-card" aria-labelledby="sign-in-heading">
+        <PageHeading id="sign-in-heading">Sign in</PageHeading>
+        <p className="lede">{intro}</p>
+        {notice ? (
+          <p className="notice" role="status">
+            {notice}
+          </p>
+        ) : null}
+        <div className="state-actions">
+          <a className="button button--primary button--large" href={window.location.href}>
+            Sign in to Shelfarr
+          </a>
+        </div>
+      </section>
+    </AuthFrame>
+  );
 }
 
 function Unavailable({ message, retry, onRetry }: { message: string; retry: boolean; onRetry: () => void }) {
@@ -241,7 +241,16 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
     const guard = new AccountGuard(account);
     const csrf = new CsrfSession(auth, guard, token, expiresIn);
     const services = createServices({
-      boot: { version: 1, account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go", ...(boot.reader_formats ? { reader_formats: boot.reader_formats } : {}) },
+      boot: {
+        version: 1,
+        account,
+        mount: boot.mount,
+        api: boot.api,
+        classic_library: null,
+        ...(boot.runtime === "go" ? { runtime: "go" } : {}),
+        ...(boot.reader_formats ? { reader_formats: boot.reader_formats } : {}),
+        ...(boot.classic_downloads ? { classic_downloads: boot.classic_downloads } : {}),
+      },
       guard,
       csrfToken: csrf.token,
       mutations: csrf.lifecycle,
@@ -258,68 +267,16 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   useEffect(
     () =>
       services.guard.subscribe(() => {
-        void refreshOfflineAccount(boot, auth, store).catch(() => undefined);
+        void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
       }),
     [services, boot, auth, store],
   );
 
   const [offline] = useState<Offline | null>(() =>
-    boot.offline
-      ? {
-          boot: boot.offline,
-          store,
-          confirmation,
-          connected: true,
-          confirm: async () => {
-            await store.prepare();
-            const sentAt = Date.now();
-            let answer: Bootstrap;
-            try {
-              answer = await auth.bootstrap();
-            } catch (error) {
-              if (definitiveRefusal(error)) {
-                await store.release(sentAt);
-                throw new SaveFailure("signed_out");
-              }
-              throw new SaveFailure("network");
-            }
-            if (!answer.authenticated) {
-              await store.release(sentAt);
-              services.guard.lock("signed_out", sentAt);
-              throw new SaveFailure("signed_out");
-            }
-            if (answer.account !== account) {
-              services.guard.lock("account_changed", sentAt);
-              throw new SaveFailure("signed_out");
-            }
-            const fresh = confirmationFrom(answer.account, answer.offline_expires_in, sentAt);
-            if (!fresh) throw new SaveFailure("unsupported");
-            if (!(await store.confirm(fresh))) throw new SaveFailure("signed_out");
-            return fresh;
-          },
-          sync: createPlaceSync({ boot, auth, store, guard: services.guard, fetcher }),
-        }
-      : null,
+    boot.offline ? createOnlineOffline({ server: { mount: boot.mount, api: boot.api, offline: boot.offline }, auth, store, guard: services.guard, confirmation, fetcher }) : null,
   );
 
-  useEffect(() => {
-    const sync = offline?.sync;
-    if (!sync) return;
-    const request = () => sync.request();
-    const visible = () => document.visibilityState === "visible" && request();
-    const stop = services.guard.subscribe(() => sync.stop());
-    request();
-    window.addEventListener("focus", request);
-    window.addEventListener("online", request);
-    document.addEventListener("visibilitychange", visible);
-    return () => {
-      stop();
-      sync.stop();
-      window.removeEventListener("focus", request);
-      window.removeEventListener("online", request);
-      document.removeEventListener("visibilitychange", visible);
-    };
-  }, [offline, services]);
+  useEffect(() => runOfflineSync(offline, services.guard), [offline, services]);
 
   useEffect(() => {
     const queryClient = services.queryClient;
