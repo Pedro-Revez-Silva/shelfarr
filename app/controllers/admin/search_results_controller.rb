@@ -44,7 +44,7 @@ module Admin
     private
 
     def warm_copies?
-      request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+      request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.preview_built?
     end
 
     def set_request

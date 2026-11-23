@@ -135,6 +135,19 @@ class WarmEntryTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "the preview counts as built only when both its stylesheet and its script are there to serve" do
+    manifest = { "web/preview.css" => { "digested_path" => "web/preview-1.css", "integrity" => nil },
+                 "web/preview.js" => { "digested_path" => "web/preview-1.js", "integrity" => nil } }
+
+    with_precompiled_assets(manifest, files: [ "web/preview-1.css", "web/preview-1.js" ]) do
+      assert WarmEntry.preview_built?
+    end
+    with_precompiled_assets(manifest, files: [ "web/preview-1.css" ]) do
+      assert WarmEntry.stylesheet_built?
+      assert_not WarmEntry.preview_built?
+    end
+  end
+
   test "without a servable bundle the current sign-in page renders instead of failing" do
     WarmEntry.stub(:stylesheet_built?, false) do
       with_warm_entry { get new_session_path }

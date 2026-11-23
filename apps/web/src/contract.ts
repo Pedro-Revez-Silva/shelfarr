@@ -344,26 +344,32 @@ const copyTally = z.number().int().nonnegative();
 
 export const copyDetailsSchema = z.object({
   choice: z.enum(copyChoices),
-  indexer: z.string().nullable(),
-  seeders: copyTally.nullable(),
-  leechers: copyTally.nullable(),
-  score: z.number().int().min(0).max(100).nullable(),
-  high_confidence: z.boolean(),
-  language_matches: z.boolean(),
-  structure: z.enum(["single_file", "multi_file"]).nullable(),
-  bitrate_kbps: z.number().int().positive().nullable(),
-  preference_adjustment: z.number().int(),
-  size_limit: z.object({ label: z.string(), explanation: z.string().nullable() }).nullable(),
-  manual_review: z.boolean(),
-  blocklist_reason: z.string().nullable(),
+  indexer: z.string().nullable().catch(null),
+  seeders: copyTally.nullable().catch(null),
+  leechers: copyTally.nullable().catch(null),
+  score: z.number().int().min(0).max(100).nullable().catch(null),
+  high_confidence: z.boolean().catch(false),
+  language_matches: z.boolean().catch(true),
+  structure: z.enum(["single_file", "multi_file"]).nullable().catch(null),
+  bitrate_kbps: z.number().int().positive().nullable().catch(null),
+  preference_adjustment: z.number().int().catch(0),
+  size_limit: z.object({ label: z.string(), explanation: z.string().nullable() }).nullable().catch(null),
+  manual_review: z.boolean().catch(false),
+  blocklist_reason: z.string().nullable().catch(null),
   info_url: webUrl.nullable().catch(null),
 });
 export type CopyDetails = z.infer<typeof copyDetailsSchema>;
 
-export const requestCopySchema = bookCopySchema.extend({ details: copyDetailsSchema });
+export const requestCopySchema = bookCopySchema.extend({ details: copyDetailsSchema.nullable().catch(null) });
 export type RequestCopy = z.infer<typeof requestCopySchema>;
 
-export const requestCopiesSchema = z.object({ selectable: z.boolean(), looking_for: z.string(), search_blocked: z.string().nullable(), candidates: z.array(requestCopySchema) });
+export const requestCopiesSchema = z.object({
+  selectable: z.boolean(),
+  revision: z.string().nullable().catch(null),
+  looking_for: z.string().nullable().catch(null),
+  search_blocked: z.string().nullable().catch(null),
+  candidates: z.array(requestCopySchema),
+});
 export type RequestCopies = z.infer<typeof requestCopiesSchema>;
 
 export const requestActionsSchema = z.object({

@@ -287,7 +287,7 @@ module Admin
     end
 
     test "an old Manage Results address opens the warm request page's Copies section for a preview administrator, and stays classic otherwise" do
-      WarmEntry.stub(:stylesheet_built?, true) do
+      WarmEntry.stub(:preview_built?, true) do
         with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
           get admin_request_search_results_path(@request_record)
           assert_redirected_to "http://www.example.com/preview/requests/#{@request_record.id}#copies"
@@ -312,14 +312,14 @@ module Admin
           assert_response :success
         end
       end
-      WarmEntry.stub(:stylesheet_built?, false) do
+      WarmEntry.stub(:preview_built?, false) do
         with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
           get admin_request_search_results_path(@request_record)
           assert_response :success
           assert_select "h2", /Search Results for/
         end
       end
-      WarmEntry.stub(:stylesheet_built?, true) do
+      WarmEntry.stub(:preview_built?, true) do
         with_env(WebPreview::Access::VARIABLE => @admin.id.to_s) do
           get "/admin/requests/#{@request_record.id}/search_results", env: { "SCRIPT_NAME" => "/shelf" }
           assert_redirected_to "http://www.example.com/shelf/preview/requests/#{@request_record.id}#copies"

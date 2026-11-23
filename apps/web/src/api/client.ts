@@ -36,7 +36,7 @@ import { ApiError, type FailureKind } from "./errors";
 export const ACCOUNT_HEADER = "X-Shelfarr-Account";
 
 export type ManualLink = { kind: "magnet" | "nzb"; url: string; replace_library_file: boolean };
-export type RequestCopyChoice = { result_id: string; expected_selected_id: string | null; replace_library_file: boolean };
+export type RequestCopyChoice = { result_id: string } | { result_id: string; expected_revision: string; replace_library_file: boolean };
 
 export type ApiDependencies = {
   boot: Boot;

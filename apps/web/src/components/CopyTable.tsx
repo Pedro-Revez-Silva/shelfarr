@@ -3,7 +3,7 @@ import type { BookCopy, CopyChoiceKind, CopyDetails } from "../contract";
 import { formatBytes } from "./DetailsPage";
 import { actionFailure } from "./requestText";
 
-type ListedCopy = BookCopy & { details?: CopyDetails };
+type ListedCopy = BookCopy & { details?: CopyDetails | null };
 type ChoosableKind = Extract<CopyChoiceKind, "select" | "select_instead" | "retry_anyway">;
 
 const SUBMIT_LABELS: Record<ChoosableKind, string> = {
@@ -26,13 +26,28 @@ function firstChoice(copies: ListedCopy[]): string {
 
 export type CopyChoice = { mutate: (resultId: string) => void; isPending: boolean; isError: boolean; error: unknown };
 
-export function CopyTable({ copies, choose, preselect = true, replaces = false, lookingFor = null }: { copies: ListedCopy[]; choose: CopyChoice; preselect?: boolean; replaces?: boolean; lookingFor?: string | null }) {
+export function CopyTable({
+  copies,
+  choose,
+  preselect = true,
+  replaces = false,
+  lookingFor = null,
+  stateKey = null,
+}: {
+  copies: ListedCopy[];
+  choose: CopyChoice;
+  preselect?: boolean;
+  replaces?: boolean;
+  lookingFor?: string | null;
+  stateKey?: string | null;
+}) {
   const [picked, setPicked] = useState(() => (preselect ? firstChoice(copies) : ""));
   const [missing, setMissing] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [askedFor, setAskedFor] = useState<{ id: string; stateKey: string | null } | null>(null);
   const captionId = useId();
   const errorId = useId();
   const firstChoosable = useRef<HTMLInputElement>(null);
+  const tableRegion = useRef<HTMLDivElement>(null);
   const submitButton = useRef<HTMLButtonElement>(null);
   const keepButton = useRef<HTMLButtonElement>(null);
   const detailed = copies.some((copy) => copy.details);
@@ -40,9 +55,16 @@ export function CopyTable({ copies, choose, preselect = true, replaces = false, 
   const chosenCopy = copies.find((copy) => copy.id === picked && choosableKind(copy));
   const chosen = chosenCopy?.id ?? "";
   const chosenKind = chosenCopy ? choosableKind(chosenCopy) : null;
+  const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
+  const offeredChoice = useRef(Boolean(firstChoosableId));
   useEffect(() => {
     if (confirming) keepButton.current?.focus();
   }, [confirming]);
+  useEffect(() => {
+    const lostActions = offeredChoice.current && !firstChoosableId;
+    offeredChoice.current = Boolean(firstChoosableId);
+    if (lostActions && (document.activeElement === null || document.activeElement === document.body)) tableRegion.current?.focus();
+  }, [firstChoosableId]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (choose.isPending) return;
@@ -53,23 +75,23 @@ export function CopyTable({ copies, choose, preselect = true, replaces = false, 
     }
     setMissing(false);
     if (replaces) {
-      setConfirming(true);
+      setAskedFor({ id: chosen, stateKey });
       return;
     }
     choose.mutate(chosen);
   };
   const confirmReplacement = () => {
-    setConfirming(false);
-    if (chosen) choose.mutate(chosen);
+    setAskedFor(null);
+    if (confirming) choose.mutate(chosen);
     submitButton.current?.focus();
   };
   const keepFile = () => {
-    setConfirming(false);
+    setAskedFor(null);
     submitButton.current?.focus();
   };
   return (
     <form className="copy-form" onSubmit={submit} noValidate>
-      <div className="copy-table-wrap" role="region" aria-labelledby={captionId} tabIndex={0}>
+      <div ref={tableRegion} className="copy-table-wrap" role="region" aria-labelledby={captionId} tabIndex={0}>
         <table className="copy-table" aria-describedby={missing ? errorId : undefined}>
           <caption id={captionId} className="sr-only">
             Copies found; choose one to download
@@ -103,7 +125,7 @@ export function CopyTable({ copies, choose, preselect = true, replaces = false, 
                     onChange={() => {
                       setPicked(copy.id);
                       setMissing(false);
-                      setConfirming(false);
+                      setAskedFor(null);
                     }}
                   />
                 </td>
@@ -111,6 +133,7 @@ export function CopyTable({ copies, choose, preselect = true, replaces = false, 
                   <label htmlFor={`copy-${copy.id}`}>{copy.title}</label>
                   {copy.details?.choice === "selected" ? <span className="copy-flag copy-flag--chosen"> · chosen</span> : null}
                   {copy.skipped ? <span className="copy-flag"> · skipped before</span> : null}
+                  {copy.details?.choice === "skipped" ? <span className="copy-flag"> · skipped</span> : null}
                   {!copy.downloadable ? <span className="copy-flag"> · no download link</span> : null}
                   {copy.details ? <CopyFacts title={copy.title} details={copy.details} /> : null}
                 </th>
@@ -183,7 +206,7 @@ function CopyFacts({ title, details }: { title: string; details: CopyDetails }) 
   if (details.bitrate_kbps !== null) facts.push(`${details.bitrate_kbps} kbps`);
   if (details.preference_adjustment !== 0) facts.push(`Preference ${signed(details.preference_adjustment)}`);
   if (details.size_limit) facts.push(details.size_limit.explanation ? `${details.size_limit.label}: ${details.size_limit.explanation}` : details.size_limit.label);
-  if (details.manual_review) facts.push("Format preferences ask for a manual choice");
+  if (details.manual_review) facts.push("Manual review");
   if (details.blocklist_reason) facts.push(`Skipped because: ${details.blocklist_reason}`);
   if (facts.length === 0 && !details.info_url) return null;
   return (

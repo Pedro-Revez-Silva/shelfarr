@@ -8,6 +8,11 @@ module WebPreview
     TEXT_LIMIT = 500
     EVENT_LIMIT = 10
     COPY_STRUCTURES = { single_file: "single_file", multi_file: "multi_file" }.freeze
+    UNREADABLE_SCORING = { structure: nil, bitrate_kbps: nil, preference_adjustment: 0, size_limit: nil }.freeze
+
+    def self.copies_revision(request)
+      [ request.search_results.selected.order(:id).ids.join(","), request.downloads.maximum(:id) ].join("/")
+    end
 
     def initialize(request, viewer:, routes:, opens_in_browser:)
       @request = request
@@ -129,6 +134,7 @@ module WebPreview
       candidates = @request.search_results.best_first.includes(:acquisition_provider).to_a
       {
         selectable: BookPage.choosing_allowed?(@request) && candidates.any?(&:downloadable?),
+        revision: self.class.copies_revision(@request),
         looking_for: @request.language_display_name.to_s.first(TEXT_LIMIT),
         search_blocked: @request.search_refresh_allowed? ? nil : @request.search_refresh_blocked_message,
         candidates: candidates.map { |result| BookPage.candidate(result).merge(details: copy_details(result)) }
@@ -144,14 +150,22 @@ module WebPreview
         score: result.confidence_score&.clamp(0, 100),
         high_confidence: result.high_confidence?,
         language_matches: result.language_matches_request?,
-        structure: COPY_STRUCTURES[result.audiobook_structure],
-        bitrate_kbps: count(result.audio_bitrate_kbps)&.nonzero?,
-        preference_adjustment: result.preference_adjustment,
-        size_limit: size_limit(result),
+        **scoring_facts(result),
         manual_review: !result.auto_select_allowed_by_preferences?,
         blocklist_reason: result.blocklisted? ? result.blocklist_reason.to_s.first(TEXT_LIMIT).presence : nil,
         info_url: result.safe_info_url
       }
+    end
+
+    def scoring_facts(result)
+      {
+        structure: COPY_STRUCTURES[result.audiobook_structure],
+        bitrate_kbps: count(result.audio_bitrate_kbps)&.nonzero?,
+        preference_adjustment: result.preference_adjustment,
+        size_limit: size_limit(result)
+      }
+    rescue NoMethodError, TypeError
+      UNREADABLE_SCORING
     end
 
     def copy_choice(result)

@@ -43,7 +43,7 @@ class WebPreview::RequestsController < WebPreview::APIController
     result = request.search_results.find(identifier(params[:result_id]))
     refusal = request.with_lock do
       result.reload
-      params.key?(:expected_selected_id) ? choose_copy(request, result) : choose_waiting_copy(request, result)
+      params.key?(:expected_revision) ? choose_copy(request, result) : choose_waiting_copy(request, result)
     end
     code, status, message = refusal
     code ? render_error(code, status, message: message) : render_action(request)
@@ -118,10 +118,9 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   def choose_copy(request, result)
-    expected = params[:expected_selected_id]
-    return [ "invalid_request", :bad_request ] unless expected.nil? || expected.is_a?(String)
+    return [ "invalid_request", :bad_request ] unless params[:expected_revision].is_a?(String)
     return if result.selected?
-    return [ "copies_changed", :conflict, COPIES_CHANGED ] unless request.search_results.selected.ids.map(&:to_s) == [ expected ].compact
+    return [ "copies_changed", :conflict, COPIES_CHANGED ] unless params[:expected_revision] == WebPreview::RequestJson.copies_revision(request)
 
     replace = params[:replace_library_file] == true
     return [ "replacement_unconfirmed", :conflict, REPLACEMENT_UNCONFIRMED ] if request.book.acquired? && !replace

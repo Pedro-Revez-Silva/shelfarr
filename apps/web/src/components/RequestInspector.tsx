@@ -249,10 +249,10 @@ function Section({ id, title, open = false, target = false, children }: { id: st
 function Copies({ request, copies, actions }: { request: RequestDetail; copies: RequestCopies; actions: RequestActions }) {
   const search = useSearchRequestAgain(request.id);
   const choose = useChooseRequestCopy(request.id);
-  const selectedId = copies.candidates.find((copy) => copy.details.choice === "selected")?.id ?? null;
   const replaces = actions.replaces_library_file;
+  const revision = copies.revision;
   const choice = {
-    mutate: (resultId: string) => choose.mutate({ result_id: resultId, expected_selected_id: selectedId, replace_library_file: replaces }),
+    mutate: (resultId: string) => choose.mutate(revision === null ? { result_id: resultId } : { result_id: resultId, expected_revision: revision, replace_library_file: replaces }),
     isPending: choose.isPending,
     isError: choose.isError,
     error: choose.error,
@@ -262,7 +262,8 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
     <>
       <div className="copies-heading">
         <p className="request-meta">
-          Looking for {copies.looking_for} · {count === 1 ? "1 copy found" : `${count} copies found`}, best first
+          {copies.looking_for ? `Looking for ${copies.looking_for} · ` : ""}
+          {count === 1 ? "1 copy found" : `${count} copies found`}, best first
         </p>
         {actions.search_again ? <ActionButton label="Search again" busy="Searching…" state={search} onClick={() => search.mutate(undefined)} /> : null}
       </div>
@@ -270,7 +271,7 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
       <div role="status">{search.isSuccess ? <p className="form-success">Searching again. Copies found by this search appear here.</p> : null}</div>
       {count > 0 ? (
-        <CopyTable copies={copies.candidates} choose={choice} preselect={copies.selectable} replaces={replaces} lookingFor={copies.looking_for} />
+        <CopyTable copies={copies.candidates} choose={choice} preselect={copies.selectable} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} />
       ) : (
         <p className="request-note">No copies found yet. The search may still be running.</p>
       )}

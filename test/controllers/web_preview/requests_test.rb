@@ -111,6 +111,10 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     "magnet:?xt=urn:btih:#{letter * 40}"
   end
 
+  def revision(request)
+    WebPreview::RequestJson.copies_revision(request.reload)
+  end
+
   def choose(request, result, user: @admin, **body)
     post_action(web_preview_api_request_selection_path(request), user: user, result_id: result.id.to_s, **body)
   end
@@ -151,7 +155,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_not request.key?("copies")
     %w[Emile.Retail.epub TorrentLeech tracker.example Import\ failed].each { |fact| assert_not_includes response.body, fact }
     assert_equal "downloading", request.fetch("status")
-    choose(@mine, other, user: @member, expected_selected_id: chosen.id.to_s)
+    choose(@mine, other, user: @member, expected_revision: revision(@mine))
     assert_response :not_found
     assert chosen.reload.selected?
   end
@@ -168,7 +172,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal "not_selectable", response.parsed_body.fetch("error")
     assert chosen.reload.selected?
 
-    body = choose(@theirs, instead, expected_selected_id: chosen.id.to_s, replace_library_file: false)
+    body = choose(@theirs, instead, expected_revision: revision(@theirs), replace_library_file: false)
     assert_response :success
     assert_equal({ "id" => @theirs.id.to_s, "status" => "downloading" }, body.fetch("request"))
     assert instead.reload.selected?
@@ -182,27 +186,64 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     second = @mine.search_results.create!(guid: "second", title: "Emile.Second.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"))
     sign_in_as(@admin)
 
-    choose(@mine, first, expected_selected_id: nil, replace_library_file: false)
+    seen = revision(@mine)
+    choose(@mine, first, expected_revision: seen, replace_library_file: false)
     assert_response :success
     assert first.reload.selected?
     assert_no_difference -> { Download.count } do
-      choose(@mine, first, expected_selected_id: nil, replace_library_file: false)
+      choose(@mine, first, expected_revision: seen, replace_library_file: false)
       assert_response :success
     end
 
     assert_no_difference -> { Download.count } do
-      body = choose(@mine, second, expected_selected_id: nil, replace_library_file: false)
+      body = choose(@mine, second, expected_revision: seen, replace_library_file: false)
       assert_response :conflict
       assert_equal "copies_changed", body.fetch("error")
       assert_equal WebPreview::RequestsController::COPIES_CHANGED, body.fetch("message")
     end
     assert first.reload.selected?
 
-    choose(@mine, second, expected_selected_id: 7, replace_library_file: false)
+    choose(@mine, second, expected_revision: 7, replace_library_file: false)
     assert_response :bad_request
-    choose(@mine, first.tap { first.update!(magnet_url: nil, status: :rejected) }, expected_selected_id: nil)
+    choose(@mine, first.tap { first.update!(magnet_url: nil, status: :rejected) }, expected_revision: revision(@mine))
     assert_response :conflict
     assert_equal "not_selectable", response.parsed_body.fetch("error")
+  end
+
+  test "a choice read before a download failed or was retried is refused rather than undoing the newer attempt" do
+    SettingsService.set(:auto_select_enabled, false)
+    first = @mine.search_results.create!(guid: "first", title: "Emile.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"))
+    second = @mine.search_results.create!(guid: "second", title: "Emile.Second.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"))
+    sign_in_as(@admin)
+
+    before_choice = revision(@mine)
+    choose(@mine, first, expected_revision: before_choice, replace_library_file: false)
+    assert_response :success
+    @mine.reload.handle_download_failure!(@mine.downloads.sole, reason: "the archive held no book")
+    assert first.reload.blocklisted?
+    assert_no_difference -> { Download.count } do
+      assert_equal "copies_changed", choose(@mine, first, expected_revision: before_choice, replace_library_file: false).fetch("error")
+    end
+    assert first.reload.blocklisted?
+
+    choose(@mine, first, expected_revision: revision(@mine), replace_library_file: false)
+    assert_response :success
+    read_while_downloading = revision(@mine)
+    retried = @mine.downloads.create!(name: first.title, search_result: first, status: :queued)
+    assert_equal "copies_changed", choose(@mine, second, expected_revision: read_while_downloading, replace_library_file: false).fetch("error")
+    assert_equal "queued", retried.reload.status
+    assert first.reload.selected?
+  end
+
+  test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
+    @theirs.search_results.create!(guid: "odd", title: "Odd.m4b", source: SearchResult::SOURCE_PROWLARR, indexer: "Prowlarr", magnet_url: magnet("a"), seeders: 5, confidence_score: 60,
+      score_breakdown: { "audiobook_structure" => 1, "preference_adjustment" => [ 1 ], "auto_select_allowed" => true })
+    sign_in_as(@admin)
+    copies = detail(@theirs, user: @admin).dig("request", "copies")
+    assert_response :success
+    assert_equal({ "structure" => nil, "bitrate_kbps" => nil, "preference_adjustment" => 0, "size_limit" => nil, "seeders" => 5, "score" => 60 },
+      copies.fetch("candidates").sole.fetch("details").slice("structure", "bitrate_kbps", "preference_adjustment", "size_limit", "seeders", "score"))
+    assert_equal "/", copies.fetch("revision")
   end
 
   test "choosing a copy for a book already in the library replaces its file only when the administrator confirms it" do
@@ -215,16 +256,16 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal "select_instead", request.dig("copies", "candidates").find { |copy| copy.fetch("id") == better.id.to_s }.dig("details", "choice")
 
     assert_no_difference -> { Download.count } do
-      body = choose(@mine, better, expected_selected_id: kept.id.to_s, replace_library_file: false)
+      body = choose(@mine, better, expected_revision: revision(@mine), replace_library_file: false)
       assert_response :conflict
       assert_equal "replacement_unconfirmed", body.fetch("error")
     end
     assert_no_difference -> { Download.count } do
-      choose(@mine, better, expected_selected_id: kept.id.to_s, replace_library_file: "1")
+      choose(@mine, better, expected_revision: revision(@mine), replace_library_file: "1")
       assert_response :conflict
     end
 
-    choose(@mine, better, expected_selected_id: kept.id.to_s, replace_library_file: true)
+    choose(@mine, better, expected_revision: revision(@mine), replace_library_file: true)
     assert_response :success
     assert better.reload.selected?
     assert_equal [ true ], @mine.downloads.where(search_result: better).pluck(:replace_library_file)
@@ -236,7 +277,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
       blocklisted_at: Time.current, blocklist_reason: "Import failed")
     @mine.update!(status: :not_found)
     sign_in_as(@admin)
-    choose(@mine, blocked, expected_selected_id: nil, replace_library_file: false)
+    choose(@mine, blocked, expected_revision: revision(@mine), replace_library_file: false)
     assert_response :success
     assert_not blocked.reload.blocklisted?
     assert blocked.selected?
