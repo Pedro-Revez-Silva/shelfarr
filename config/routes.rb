@@ -316,6 +316,13 @@ Rails.application.routes.draw do
     get "uploads/:id/matches", to: "uploads#matches", as: :upload_matches
     post "uploads/:id/match", to: "uploads#match", as: :upload_match
     delete "uploads/:id", to: "uploads#destroy", as: :upload
+    get "acquisition_providers", to: "acquisition_providers#show", as: :acquisition_providers
+    post "acquisition_providers", to: "acquisition_providers#create"
+    constraints id: /[1-9]\d{0,18}/ do
+      put "acquisition_providers/:id", to: "acquisition_providers#update", as: :acquisition_provider
+      delete "acquisition_providers/:id", to: "acquisition_providers#destroy", as: nil
+      post "acquisition_providers/:id/test", to: "acquisition_providers#test", as: :acquisition_provider_test
+    end
     get "users", to: "users#index", as: :users
     post "users", to: "users#create"
     constraints id: /[1-9]\d{0,18}/ do

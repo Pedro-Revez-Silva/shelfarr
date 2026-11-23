@@ -13,6 +13,7 @@ import { useIsAdministrator, useServerSettings } from "./queries";
 import { RunSetupAgainCard } from "./setup/RunSetupAgain";
 import { ServerUploads, UPLOAD_CARDS } from "../uploads/ServerUploads";
 import { PeopleCard } from "./people/PeopleCard";
+import { AcquisitionProviders, PROVIDER_CARDS } from "./providers/AcquisitionProviders";
 
 export function AdministratorsOnly() {
   return (
@@ -120,7 +121,7 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
     <>
       <nav className="card-index" aria-label={`${category.title} cards`}>
         <ul>
-          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...category.groups, ...(category.id === "library" ? UPLOAD_CARDS : [])].map((group) => (
+          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...category.groups, ...(category.id === "sources" ? PROVIDER_CARDS : []), ...(category.id === "library" ? UPLOAD_CARDS : [])].map((group) => (
             <li key={group.id}>
               <a href={`#${group.id}`}>{group.title}</a>
             </li>
@@ -128,12 +129,13 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
         </ul>
       </nav>
       {category.id === "downloads" ? <DownloadManagement onDirtyChange={onDirtyChange} /> : null}
-      {headings(category.groups).map((run, index) => (
+      {headings(category.groups).map((run, index, runs) => (
         <div key={`${run.heading ?? "cards"}-${index}`} className="card-run" role={run.heading ? "group" : undefined} aria-label={run.heading ?? undefined}>
           {run.heading ? <h2 className="card-run-heading">{run.heading}</h2> : null}
           {run.groups.map((group) => (
             <SettingsGroupCard key={group.id} group={group} settings={settings} onDirtyChange={onDirtyChange} />
           ))}
+          {category.id === "sources" && index === runs.length - 1 ? <AcquisitionProviders onDirtyChange={onDirtyChange} /> : null}
         </div>
       ))}
       {category.id === "library" ? <ServerUploads /> : null}

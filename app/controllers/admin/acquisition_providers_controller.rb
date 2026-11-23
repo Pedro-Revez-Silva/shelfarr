@@ -3,6 +3,7 @@
 module Admin
   class AcquisitionProvidersController < BaseController
     before_action :set_provider, only: [ :show, :edit, :update, :destroy, :test ]
+    before_action :open_warm_page, only: [ :index, :new, :show, :edit ]
 
     def index
       @providers = AcquisitionProvider.by_priority
@@ -12,12 +13,12 @@ module Admin
     end
 
     def new
-      @provider = AcquisitionProvider.new(timeout_seconds: 30, supports_ebooks: true, supports_audiobooks: true, supports_comicbooks: false)
+      @provider = AcquisitionProvider.new(AcquisitionProvider::FORM_DEFAULTS)
     end
 
     def create
       @provider = AcquisitionProvider.new(provider_params)
-      @provider.priority = next_priority
+      @provider.priority = AcquisitionProvider.next_priority
 
       if @provider.save
         redirect_to admin_acquisition_providers_path, notice: "Acquisition provider was successfully created."
@@ -65,8 +66,19 @@ module Admin
       )
     end
 
-    def next_priority
-      (AcquisitionProvider.maximum(:priority) || -1) + 1
+    def open_warm_page
+      return unless request.get? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+
+      redirect_to web_preview_server_category_path(category: "sources", anchor: warm_anchor)
+    end
+
+    def warm_anchor
+      case action_name
+      when "index" then "acquisition_providers"
+      when "new" then "acquisition_providers-new"
+      when "show" then "acquisition-provider-#{@provider.id}"
+      else "acquisition-provider-#{@provider.id}-edit"
+      end
     end
   end
 end

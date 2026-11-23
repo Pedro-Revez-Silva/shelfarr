@@ -3,6 +3,8 @@
 require "uri"
 
 class AcquisitionProvider < ApplicationRecord
+  FORM_DEFAULTS = { timeout_seconds: 30, supports_ebooks: true, supports_audiobooks: true, supports_comicbooks: false }.freeze
+
   encrypts :api_key
 
   has_many :search_results, dependent: :nullify
@@ -31,6 +33,10 @@ class AcquisitionProvider < ApplicationRecord
       all
     end
   }
+
+  def self.next_priority
+    (maximum(:priority) || -1) + 1
+  end
 
   def client
     CustomAcquisitionProviderClient.new(self)
