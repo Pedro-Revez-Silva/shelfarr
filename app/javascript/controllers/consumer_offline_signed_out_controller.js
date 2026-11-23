@@ -7,9 +7,11 @@ export default class extends Controller {
   static values = { base: String }
 
   async connect() {
+    const signedOutAt = Date.now()
     try {
       const offline = await import("consumer_offline")
       if (await offline.hasWorker(this.baseValue)) await offline.clearAccount(this.baseValue)
     } catch (_) { /* nothing was stored */ }
+    await import("web_preview_offline_release").then(preview => preview.releasePreviewAccount(this.baseValue, signedOutAt)).catch(() => false)
   }
 }

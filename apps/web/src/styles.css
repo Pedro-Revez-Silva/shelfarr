@@ -2117,8 +2117,12 @@ thead th {
   margin: 0;
   color: var(--muted);
 }
-.downloads-storage p {
+.downloads-storage p,
+.downloads-elsewhere p {
   color: var(--muted);
+}
+.downloads-elsewhere {
+  margin: 0 0 32px;
 }
 .offline-reconnected {
   display: flex;

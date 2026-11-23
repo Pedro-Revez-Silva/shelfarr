@@ -1,6 +1,7 @@
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Locator, PageEngine, ProgressPlace, ReaderAsset, ReaderPublication, StoredProgress } from "../contract";
+import { failureKind } from "../api/errors";
 import { LockedScreen } from "../components/LockedScreen";
 import { ErrorPanel, Loading } from "../components/States";
 import { useAccountRevalidation } from "../revalidation";
@@ -16,7 +17,7 @@ import { SaveStatus } from "./SaveStatus";
 import { useOffline } from "../offline/context";
 import { savedEpub } from "../offline/model";
 import { useRememberedPlace } from "../offline/remembered";
-import { SaveForOffline } from "../offline/SaveForOffline";
+import { OfflineNotSavable, SaveForOffline } from "../offline/SaveForOffline";
 
 const READER_PATH = /^\/library\/([1-9]\d{0,18})\/read$/;
 
@@ -55,7 +56,7 @@ function MissingReader({ mount }: { mount: string }) {
 }
 
 function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
-  const { api, keys } = useServices();
+  const { api, keys, revalidate } = useServices();
   useAccountRevalidation();
   const reader = useQuery({
     queryKey: [...keys.root, "reader", id],
@@ -65,6 +66,10 @@ function ActiveReader({ id, engine, pageEngine }: { id: string } & Engines) {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const refused = reader.isError && failureKind(reader.error) === "not_found";
+  useEffect(() => {
+    if (refused) revalidate();
+  }, [refused, revalidate]);
   useDocumentTitle(reader.data?.title ?? (reader.isError ? "Book unavailable" : "Opening book"));
   if (reader.isPending) {
     return (
@@ -207,7 +212,11 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
       <Unreadable publication={publication} />
     );
   const epub = savedEpub(publication);
-  const tools = epub ? <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub.id} load={async () => publication} compact /> : null;
+  const tools = epub ? (
+    <SaveForOffline id={publication.id} title={publication.title} currentAsset={epub.id} load={async () => publication} compact />
+  ) : publication.assets.length > 0 ? (
+    <OfflineNotSavable kind={listening ? "listen" : (UNSAVED_FORMATS[asset?.format ?? ""] ?? "")} fallback={publication.classic_reader?.url ?? null} compact />
+  ) : null;
   const elsewhere = listening ? null : savedCopy.elsewhere(asset?.id ?? null);
   const openElsewhere = () => {
     const target = publication.assets.find((candidate) => candidate.id === elsewhere?.assetId);
@@ -219,6 +228,22 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
         <p className="notice reader-notice" role="status">
           {remoteNote}
         </p>
+      ) : null}
+      {publication.classic_reader?.read_along ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>This book has read-along narration, which this reader doesn't play yet. Your place is shared, so you can switch at any time.</p>
+          <a className="button" href={publication.classic_reader.url}>
+            Open with read-along
+          </a>
+        </div>
+      ) : null}
+      {publication.classic_reader && !listening && publication.assets.length > 1 ? (
+        <div className="notice reader-notice reader-offer" role="note">
+          <p>{`This book has ${publication.assets.length} files and this reader opens one. To read another, choose it in the web reader.`}</p>
+          <a className="button" href={publication.classic_reader.url}>
+            Choose a file
+          </a>
+        </div>
       ) : null}
       {elsewhere ? (
         <div className="notice reader-notice reader-offer" role="note">
@@ -236,6 +261,8 @@ function OpenReader({ publication, engine, pageEngine }: { publication: ReaderPu
 function isPageAsset(asset: ReaderAsset): asset is ReaderAsset & { format: "pdf" | "cbz" } {
   return isPageFormat(asset.format);
 }
+
+const UNSAVED_FORMATS: Record<string, string> = { pdf: "PDF", cbz: "Comic" };
 
 const FORMAT_NAMES: Record<string, string> = { pdf: "PDF", cbz: "comic (CBZ)", epub: "EPUB" };
 

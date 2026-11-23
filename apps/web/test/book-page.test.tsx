@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { Book, BookFormat, BookRequest, CatalogueAnswer } from "../src/contract";
 import { bookRefreshInterval } from "../src/queries";
 import { requestSteps } from "../src/components/BookPage";
-import { ACCOUNT, detail, FakeServer, page, renderApp, session, standardServer, summary } from "./helpers";
+import { ACCOUNT, boot as appBoot, detail, FakeServer, page, renderApp, session, standardServer, summary } from "./helpers";
 
 afterEach(cleanup);
 
@@ -214,6 +214,14 @@ describe("the Book page", () => {
     expect(screen.queryByRole("region", { name: "Ebook request progress" })).toBeNull();
     expect(screen.getByRole("link", { name: "Reading status and files of The Quiet Library" }).getAttribute("href")).toBe("/sub/preview/library/7");
     expect(screen.getByText("Details from your library ·", { exact: false })).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
+  test("when the server serves the shared reader, the ebook row and Open it open it there", async () => {
+    const publication = summary({ id: "7", reading_status: "in_progress", progress: { asset_id: "a", position_seconds: null, fraction: 0.42, page: null, version: 3, observed_at: null, updated_at: "2026-11-22T10:00:00Z" }, reader_url: "/sub/read/7" });
+    renderApp({ server: bookServer(book({ details: "library", formats: [format("ebook", { state: "in_library", publication }), format("audiobook")] })), url: BOOK_URL, boot: { ...appBoot, reader_formats: ["cbz", "epub", "pdf"] } });
+    const card = await screen.findByRole("region", { name: "On this server" });
+    expect(within(card).getByRole("link", { name: "Continue reading · 42% The Quiet Library in the reader" }).getAttribute("href")).toBe("/sub/preview/library/7/read");
   });
 
   test("an owned ebook whose file is gone says so instead of offering to read it", async () => {

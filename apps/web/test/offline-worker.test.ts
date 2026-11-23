@@ -13,11 +13,11 @@ async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 
 const SHELL_HEADERS = { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'", "Cache-Control": "private, no-store" };
 
-async function config(version = "v2") {
+async function config(version = "v2", library = "/preview/library") {
   return {
     version,
-    library: "/preview/library",
-    downloads: "/preview/library/downloads",
+    library,
+    downloads: `${library}/downloads`,
     assets: [
       { path: "/preview/assets/preview.0000000000000001.js", sha256: await sha256(SCRIPT) },
       { path: "/preview/assets/preview.0000000000000002.css", sha256: await sha256(STYLE) },
@@ -47,14 +47,14 @@ class FakeCaches {
 type Listener = (event: { request?: Request; respondWith?: (response: Promise<Response>) => void; waitUntil?: (work: Promise<unknown>) => void }) => void;
 type Network = (request: Request) => Promise<Response>;
 
-async function worker(network: Network, version = "v2") {
+async function worker(network: Network, version = "v2", library = "/preview/library") {
   const listeners = new Map<string, Listener>();
   const caches = new FakeCaches();
   const fetched: string[] = [];
   let claimed = false;
   let skipped = false;
   const self = {
-    SHELFARR_GO_OFFLINE: await config(version),
+    SHELFARR_GO_OFFLINE: await config(version, library),
     location: new URL(`${ORIGIN}/preview/offline-worker.js`),
     addEventListener: (type: string, listener: Listener) => listeners.set(type, listener),
     skipWaiting: async () => void (skipped = true),
@@ -120,6 +120,17 @@ describe("the offline worker", () => {
     await installed.lifecycle("activate");
     expect(await installed.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v2", "shelfarr-offline-shell.v1|http://shelf.test|abc", "shelfarr-offline-media.v1|http://shelf.test|5", "other-app"]);
     expect(installed.state()).toEqual({ skipped: false, claimed: false });
+  });
+
+  test("a worker for another deployment mount keeps its own caches and never removes the default mount's or another mount's", async () => {
+    const mounted = await worker(assetNetwork, "v2", "/shelf/preview/library");
+    const others = ["shelfarr-go-preview-offline.v1|v1", "shelfarr-go-preview-offline.v1@/other/preview/library|v1", "shelfarr-go-preview-offline.v1@/shelf/preview/library|v1"];
+    for (const name of others) await mounted.caches.open(name);
+    await mounted.lifecycle("install");
+    await mounted.lifecycle("activate");
+    expect(await mounted.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v1", "shelfarr-go-preview-offline.v1@/other/preview/library|v1", "shelfarr-go-preview-offline.v1@/shelf/preview/library|v2"]);
+    const fallback = await (await worker(async () => Promise.reject(new TypeError("offline")), "v2", "/shelf/preview/library")).dispatch(navigation("/shelf/preview/library/12/read"));
+    expect(await fallback?.text()).toBe("<p>reader shell</p>");
   });
 
   test("offers the static shell for Downloads and the reader only when the server cannot be reached", async () => {

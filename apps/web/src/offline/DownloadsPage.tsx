@@ -181,6 +181,15 @@ export function DownloadsPage() {
           </ul>
         </section>
       ) : null}
+      {boot.classic_downloads ? (
+        <section className="downloads-elsewhere" aria-labelledby="elsewhere-heading">
+          <h2 id="elsewhere-heading">Saved in the web reader</h2>
+          <p>Audiobooks, PDFs, comics and books you downloaded in the web reader stay in its own list on this device, with their places. Nothing here changes them.</p>
+          <a className="button" href={boot.classic_downloads}>
+            Open those downloads
+          </a>
+        </section>
+      ) : null}
       {listing ? (
         <section className="downloads-storage" aria-labelledby="storage-heading">
           <h2 id="storage-heading">Storage in this browser</h2>
