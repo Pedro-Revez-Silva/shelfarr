@@ -27,9 +27,14 @@ class WebPreview::KoboBooksController < WebPreview::APIController
   def prepare
     copy = shown_copy
     return render_error("invalid_request", :bad_request) if copy == :invalid
-    return render_copy_changed unless copy == WebPreview::KoboAccountJson.copy_version(@book.ready_file)
 
-    Kobo::BookCache.request!(@book, Current.user)
+    requested = @book.with_lock do
+      next false unless copy == WebPreview::KoboAccountJson.copy_version(@book.ready_file)
+
+      Kobo::BookCache.request!(@book, Current.user)
+    end
+    return render_copy_changed unless requested
+
     render_book(notice: "Preparing a private copy. This usually takes under a minute.")
   rescue Kobo::BookCache::Failure => error
     render_refusal("prepare_refused", KoboAccountBookFile::ERROR_MESSAGES.fetch(error.code, "This copy can't be prepared."))
@@ -49,10 +54,15 @@ class WebPreview::KoboBooksController < WebPreview::APIController
     return render_refusal("deliver_refused", "Prepare a private copy of this book first.") unless @book.deliverable? && file
     return render_copy_changed unless copy == WebPreview::KoboAccountJson.copy_version(file)
 
-    device.send_account_book!(file, share: @grant.share)
+    grant = Kobo::HouseholdAccess.grant(Current.user, @book.kobo_account)
+    return render_error("kobo_book_not_found", :not_found) unless grant && grant.share == @grant.share
+
+    device.send_account_book!(file, share: grant.share)
     render_book(notice: "Queued for #{device.name}. Sync that Kobo over Wi-Fi to download it.")
   rescue KoboPublication::Unavailable => error
     render_refusal("deliver_refused", error.message)
+  rescue ActiveRecord::InvalidForeignKey, ActiveRecord::RecordNotFound
+    render_error("kobo_book_not_found", :not_found)
   end
 
   private

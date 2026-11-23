@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { AccountSettings, Profile } from "../src/contract";
 import {
@@ -256,6 +256,7 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await user.click(within(sharing).getByRole("button", { name: "Stop sharing with Sam Sharer" }));
     await user.click(within(sharing).getByRole("button", { name: "Stop sharing" }));
     expect(await within(sharing).findByText("Sam Sharer can no longer see this catalogue or receive its books.")).toBeTruthy();
+    expect(document.activeElement).toBe(within(sharing).getByRole("heading", { name: "Household sharing" }));
     expect(within(sharing).getByText(/Only you can see this catalogue\./)).toBeTruthy();
 
     const remove = screen.getByRole("heading", { name: "Disconnect" }).closest("section") as HTMLElement;
@@ -267,6 +268,85 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await user.click(within(remove).getByRole("button", { name: "Disconnect" }));
     expect(await screen.findByRole("heading", { name: "Kobo account disconnected", level: 1 })).toBeTruthy();
     expect(api.called("POST", /\/disconnect$/).map((request) => request.body)).toEqual([{ version: "v1" }, { version: "v2" }]);
+  });
+
+  test("an approval check that finds the connection gone stops, even when the tab returns", async () => {
+    jest.useFakeTimers();
+    let polls = 0;
+    const api = server(pending()).on("POST", /\/kobo_accounts\/5\/poll$/, () => {
+      polls += 1;
+      return { status: 404, body: { error: "kobo_account_not_found" } };
+    });
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    await until(() => expect(screen.getByTestId("kobo-activation-code")).toBeTruthy());
+    await tick(5000);
+    await until(() => expect(screen.getByText("This connection could not be checked. Reload the page to continue.")).toBeTruthy());
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await tick(20000);
+    expect(polls).toBe(1);
+    await tick();
+    jest.useRealTimers();
+  });
+
+  test("a catalogue check that started before a share was granted does not undo it", async () => {
+    jest.useFakeTimers();
+    const held = deferred<{ body: unknown }>();
+    let reads = 0;
+    const refreshing = koboAccount({ refreshing: true, can_refresh: false });
+    const withTess = koboAccount({ refreshing: true, can_refresh: false, shared_with: 2, sharing: { people: [...refreshing.sharing!.people, { id: "10", name: "Tess Tester", username: "tess", shared_at: "2026-11-22T10:00:00.000Z", inactive: false }], candidates: [] } });
+    const api = server(refreshing)
+      .on("GET", /\/account\/kobo_accounts\/5$/, () => {
+        reads += 1;
+        return reads === 1 ? { body: { account: ACCOUNT, kobo_account: refreshing } } : held.promise;
+      })
+      .on("POST", /\/kobo_accounts\/5\/shares$/, () => ({ body: { account: ACCOUNT, notice: "Shared with Tess Tester.", kobo_account: withTess } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    await until(() => expect(screen.getByRole("heading", { name: "Household sharing" })).toBeTruthy());
+    await tick(5000);
+    await until(() => expect(reads).toBe(2));
+    const sharing = screen.getByRole("heading", { name: "Household sharing" }).closest("section") as HTMLElement;
+    fireEvent.change(within(sharing).getByLabelText("Share with"), { target: { value: "9" } });
+    await act(async () => {
+      within(sharing).getByRole("button", { name: "Share catalogue" }).click();
+    });
+    await until(() => expect(within(sharing).getByText("Shared with Tess Tester.")).toBeTruthy());
+    await act(async () => {
+      held.resolve({ body: { account: ACCOUNT, kobo_account: koboAccount() } });
+    });
+    await tick();
+    expect(within(sharing).getByRole("button", { name: "Stop sharing with Tess Tester" })).toBeTruthy();
+    expect(screen.getByText("Refreshing your catalogue… This page will update when it finishes.")).toBeTruthy();
+    await tick();
+    jest.useRealTimers();
+  });
+
+  test("a book that stops being shared while its copy is prepared stops checking and forgets its title", async () => {
+    jest.useFakeTimers();
+    let reads = 0;
+    const api = server().on("GET", /\/kobo_books\/21$/, () => {
+      reads += 1;
+      return reads === 1 ? { body: { account: ACCOUNT, book: book({ copy: { ...book().copy!, preparing: true } }) } } : { status: 404, body: { error: "kobo_book_not_found" } };
+    });
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-books/21" });
+    await until(() => expect(screen.getByRole("heading", { name: "A Shared Purchase", level: 1 })).toBeTruthy());
+    await tick(5000);
+    await until(() => expect(screen.getByRole("heading", { name: "This Kobo book is not available to you" })).toBeTruthy());
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Kobo book");
+    expect(screen.queryByRole("link", { name: /Family purchases/ })).toBeNull();
+    await tick(20000);
+    expect(reads).toBe(2);
+    await tick();
+    jest.useRealTimers();
+  });
+
+  test("the copy already prepared can be sent while a newer one is prepared", async () => {
+    const api = server().on("GET", /\/kobo_books\/21$/, () => ({ body: { account: ACCOUNT, book: book({ copy: { ...ready("c1"), preparing: true } }) } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-books/21" });
+    expect(await screen.findByText("Preparing a private copy from Kobo… This page updates when it finishes.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send to Clara" })).toBeTruthy();
+    expect(screen.queryByText("You can send it to these readers once the private copy is ready.")).toBeNull();
   });
 
   test("someone else's account and a stopped share say so without detail", async () => {

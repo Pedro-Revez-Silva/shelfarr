@@ -21,10 +21,10 @@ export function KoboSharedPage() {
 function SharedPage({ accountId, search }: { accountId: string; search: CatalogueSearch }) {
   const { mode } = useServices();
   const catalogue = useKoboCatalogue(accountId, search);
-  const shared = catalogue.data?.kobo_account;
+  const missing = catalogue.isError && isMissing(catalogue.error);
+  const shared = missing ? undefined : catalogue.data?.kobo_account;
   useDocumentTitle(shared ? `${shared.name} · Devices` : "Shared Kobo books · Devices");
   if (shared?.owner) return <Navigate to="/account/devices/kobo-accounts/$accountId" params={{ accountId }} search={search} replace />;
-  const missing = catalogue.isError && isMissing(catalogue.error);
   return (
     <section className="account kobo-account" aria-labelledby="kobo-shared-heading">
       <DevicesBackLink hash="kobo-shared" />

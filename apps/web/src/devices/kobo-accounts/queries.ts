@@ -56,7 +56,7 @@ export function useKoboAccount(id: string) {
     refetchOnWindowFocus: false,
     staleTime: 0,
     retry: keepTrying,
-    refetchInterval: (query) => (query.state.data?.refreshing ? POLL_INTERVAL_MS : false),
+    refetchInterval: (query) => (query.state.error === null && query.state.data?.refreshing ? POLL_INTERVAL_MS : false),
   });
 }
 
@@ -82,7 +82,7 @@ export function useKoboBook(id: string) {
     refetchOnWindowFocus: false,
     staleTime: 0,
     retry: keepTrying,
-    refetchInterval: (query) => (query.state.data?.copy?.preparing ? POLL_INTERVAL_MS : false),
+    refetchInterval: (query) => (query.state.error === null && query.state.data?.copy?.preparing ? POLL_INTERVAL_MS : false),
   });
 }
 
@@ -94,6 +94,7 @@ export function usePublishAccount() {
     active: () => guard.isActive(),
     account: (account: KoboAccount) => {
       if (!guard.isActive()) return;
+      void client.cancelQueries({ queryKey: keys.account(account.id), exact: true }, { revert: false, silent: true });
       client.setQueryData(keys.account(account.id), account);
       client.setQueryData<KoboAccounts>(keys.list, (current) =>
         current ? { ...current, kobo_accounts: current.kobo_accounts.map((row) => (row.id === account.id ? { ...row, name: account.name, state: account.state, status_label: account.status_label, shared_with: account.shared_with } : row)) } : current,
@@ -109,6 +110,7 @@ export function usePublishAccount() {
     },
     book: (book: KoboBook) => {
       if (!guard.isActive()) return;
+      void client.cancelQueries({ queryKey: keys.book(book.id), exact: true }, { revert: false, silent: true });
       client.setQueryData(keys.book(book.id), book);
     },
   };
@@ -162,12 +164,13 @@ export function useActivationPoll(account: KoboAccount): ActivationCheck {
   const inFlight = useRef<AbortController | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const live = useRef(true);
+  const stopped = useRef(false);
   const pending = account.state === "pending";
   const id = account.id;
 
   const schedule = useRef<() => void>(() => undefined);
   const run = useCallback(async () => {
-    if (inFlight.current || !live.current) return;
+    if (inFlight.current || !live.current || stopped.current) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
     const controller = new AbortController();
@@ -182,6 +185,7 @@ export function useActivationPoll(account: KoboAccount): ActivationCheck {
     } catch (error) {
       if (!live.current || (error instanceof DOMException && error.name === "AbortError")) return;
       if (isMissing(error) || failureKind(error) === "signed_out" || failureKind(error) === "account_changed") {
+        stopped.current = true;
         setProblem("This connection could not be checked. Reload the page to continue.");
         return;
       }

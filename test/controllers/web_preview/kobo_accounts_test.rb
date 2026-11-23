@@ -205,6 +205,79 @@ class WebPreview::KoboAccountsTest < ActionDispatch::IntegrationTest
     assert_response :not_found
   end
 
+  test "the disconnect version covers exactly the people the page listed, even when a share lands while it is built" do
+    share_with
+    sign_in_as(@owner)
+    original = WebPreview::KoboAccountJson.method(:version)
+    late = nil
+    shown = WebPreview::KoboAccountJson.stub(:version, lambda { |account, *ids|
+      late ||= share_with(@stranger)
+      original.call(account, *ids)
+    }) { detail }
+    assert_equal [ "Admin User" ], shown.dig("sharing", "people").map { |person| person.fetch("name") }
+    assert_equal 1, shown.fetch("shared_with")
+    body = send_json(:post, web_preview_api_kobo_account_disconnect_path(@account), version: shown.fetch("version"))
+    assert_response :conflict
+    assert_equal 2, body.dig("kobo_account", "shared_with")
+    assert_equal 2, @account.kobo_account_shares.count
+  end
+
+  test "a refusal that still shows an activation code is sent without a referrer" do
+    account = create_kobo_account
+    sign_in_as(@owner)
+    body = send_json(:post, web_preview_api_kobo_account_refresh_path(account))
+    assert_response :conflict
+    assert_equal "123456", body.dig("kobo_account", "activation", "code")
+    assert_equal [ "private, no-store", "no-referrer" ], response.headers.values_at("Cache-Control", "Referrer-Policy")
+  end
+
+  test "a share stopped while a copy is being sent refuses the send instead of failing" do
+    share = share_with
+    device, = recipient_device
+    prepare_copy
+    shown = WebPreview::KoboAccountJson.copy_version(@shared_book.ready_file)
+    sign_in_as(@recipient)
+    original = WebPreview::KoboAccountJson.method(:copy_version)
+    WebPreview::KoboAccountJson.stub(:copy_version, lambda { |file|
+      share.destroy! unless share.destroyed?
+      original.call(file)
+    }) do
+      send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: shown)
+    end
+    assert_response :not_found
+    assert_equal "kobo_book_not_found", response.parsed_body.fetch("error")
+
+    share = share_with
+    stale = Kobo::HouseholdAccess.grant(@recipient, @account)
+    revoke = lambda { |file|
+      share.destroy! unless share.destroyed?
+      original.call(file)
+    }
+    WebPreview::KoboAccountJson.stub(:copy_version, revoke) do
+      Kobo::HouseholdAccess.stub(:grant, stale) do
+        send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: shown)
+      end
+    end
+    assert_response :not_found
+    assert_equal "kobo_book_not_found", response.parsed_body.fetch("error")
+    assert_equal 0, KoboDelivery.count
+  end
+
+  test "an existing copy stays sendable while a newer one is being prepared" do
+    share_with
+    device, = recipient_device
+    file = prepare_copy
+    @shared_book.kobo_account_book_files.create!(status: "fetching", request_id: SecureRandom.uuid, requested_by: @owner, started_at: Time.current)
+    sign_in_as(@recipient)
+    preview_get web_preview_api_kobo_book_path(@shared_book), user: @recipient
+    copy = response.parsed_body.dig("book", "copy")
+    assert_equal [ true, WebPreview::KoboAccountJson.copy_version(file) ], copy.values_at("preparing", "version")
+    assert copy.fetch("ready")
+    send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: copy.fetch("version"))
+    assert_response :success
+    assert_equal file.id, device.kobo_deliveries.sole.kobo_account_book_file_id
+  end
+
   test "catalogues are visible to the owner and to people they shared with, filtered and paged" do
     share_with
     @account.kobo_account_books.create!(entitlement_id: "locked", title: "A Protected Purchase", ownership_type: "purchased", rights: "protected", rights_checked_at: Time.current)

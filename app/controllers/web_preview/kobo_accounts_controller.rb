@@ -115,13 +115,17 @@ class WebPreview::KoboAccountsController < WebPreview::APIController
   end
 
   def render_account(notice: nil, status: :ok)
-    detail = json.detail(@account)
-    headers["Referrer-Policy"] = "no-referrer" if detail[:activation]
-    render json: { account: web_preview_account_id, kobo_account: detail, notice: notice }.compact, status: status
+    render json: { account: web_preview_account_id, kobo_account: shown_detail, notice: notice }.compact, status: status
   end
 
   def render_refusal(code, message, status: :conflict)
-    render json: { account: web_preview_account_id, error: code, message: message, kobo_account: json.detail(@account) }, status: status
+    render json: { account: web_preview_account_id, error: code, message: message, kobo_account: shown_detail }, status: status
+  end
+
+  def shown_detail
+    detail = json.detail(@account)
+    headers["Referrer-Policy"] = "no-referrer" if detail[:activation]
+    detail
   end
 
   def render_missing

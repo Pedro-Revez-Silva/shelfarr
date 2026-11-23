@@ -4,8 +4,8 @@ module WebPreview
   class KoboAccountJson
     ACTIVATION_PAGE = "https://www.kobo.com/activate"
 
-    def self.version(account)
-      Digest::SHA256.hexdigest([ account.id, account.name, account.status, account.kobo_account_shares.ids.sort ].to_json)[0, 24]
+    def self.version(account, share_ids = account.kobo_account_shares.ids)
+      Digest::SHA256.hexdigest([ account.id, account.name, account.status, share_ids.sort ].to_json)[0, 24]
     end
 
     def self.copy_version(file)
@@ -30,7 +30,8 @@ module WebPreview
       shares = account.kobo_account_shares.includes(:recipient).order(:created_at).to_a
       linked = state(account).in?(%w[connected reauthorization_required])
       row(account).merge(
-        version: self.class.version(account),
+        shared_with: shares.size,
+        version: self.class.version(account, shares.map(&:id)),
         error: account.error_message,
         activation: activation(account),
         kobo_email: linked ? account.kobo_email : nil,
@@ -115,7 +116,7 @@ module WebPreview
         version: self.class.copy_version(file),
         preparing: fetch.present?,
         failure: failure&.error_message,
-        ready: file && !fetch ? ready(file) : nil,
+        ready: file ? ready(file) : nil,
         unavailable: unavailable(account, grant, file, fetch),
         explanation: explanation(account, grant, file, fetch)
       }

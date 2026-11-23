@@ -187,6 +187,7 @@ function Sharing({ account }: { account: KoboAccount }) {
   const { api: client } = useServices();
   const { said, say } = useSay();
   const select = useRef<HTMLSelectElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const [recipient, setRecipient] = useState("");
   const [missing, setMissing] = useState(false);
   const add = useAccountWrite((recipientId: string) => api.share(client, account.id, recipientId));
@@ -215,7 +216,9 @@ function Sharing({ account }: { account: KoboAccount }) {
   };
   return (
     <section id="sharing" className="account-card" aria-labelledby={headingId}>
-      <h2 id={headingId}>Household sharing</h2>
+      <h2 id={headingId} ref={heading} tabIndex={-1}>
+        Household sharing
+      </h2>
       <p className="muted">
         {sharing.people.length === 0 ? "Only you can see this catalogue." : "You and the people below can see this catalogue."} People you share with can send its DRM-free purchases to their own Kobo reader. They never see your Kobo sign-in or email, can't change this connection, and can't reach your readers. Protected, subscription and preview titles stay listed as unavailable.
       </p>
@@ -245,7 +248,12 @@ function Sharing({ account }: { account: KoboAccount }) {
                 busy={remove.isPending}
                 danger
                 subject={person.id}
-                onConfirm={(shareId) => remove.mutate(shareId, settle("Sharing stopped."))}
+                onConfirm={(shareId) =>
+                  remove.mutate(shareId, {
+                    ...settle("Sharing stopped."),
+                    onSettled: () => heading.current?.focus(),
+                  })
+                }
               />
             </li>
           ))}

@@ -24,12 +24,13 @@ export function KoboBookPage() {
 function BookPage({ bookId }: { bookId: string }) {
   const { mode } = useServices();
   const book = useKoboBook(bookId);
-  useDocumentTitle(book.data ? `${book.data.title} · Devices` : "Kobo book · Devices");
   const missing = book.isError && isMissing(book.error);
+  const shown = missing ? undefined : book.data;
+  useDocumentTitle(shown ? `${shown.title} · Devices` : "Kobo book · Devices");
   return (
     <section className="account kobo-account" aria-labelledby="kobo-book-heading">
-      {book.data ? <CatalogueBackLink book={book.data} /> : <DevicesBackLink hash="kobo-accounts" />}
-      <PageHeading id="kobo-book-heading">{book.data?.title ?? "Kobo book"}</PageHeading>
+      {shown ? <CatalogueBackLink book={shown} /> : <DevicesBackLink hash="kobo-accounts" />}
+      <PageHeading id="kobo-book-heading">{shown?.title ?? "Kobo book"}</PageHeading>
       <p className="lede">Only you see and change these.</p>
       <AccountRail current="devices" />
       {mode !== "rails" ? (
@@ -145,7 +146,8 @@ function PrivateCopy({ book, say }: { book: KoboBook; say: Say }) {
         <p role="status" className="kobo-progress">
           Preparing a private copy from Kobo… This page updates when it finishes.
         </p>
-      ) : copy.ready ? (
+      ) : null}
+      {copy.preparing ? null : copy.ready ? (
         <>
           <p data-testid="kobo-copy-status">
             Ready · {copy.ready.summary}, prepared <Time iso={copy.ready.prepared_at} relative />
@@ -175,7 +177,7 @@ function SendToReaders({ book, say }: { book: KoboBook; say: Say }) {
   const headingId = useId();
   const { api: client } = useServices();
   const deliver = useBookWrite(({ readerId, copy }: { readerId: string; copy: string | null }) => api.deliver(client, book.id, readerId, copy));
-  const ready = book.copy?.ready && !book.copy.preparing;
+  const ready = Boolean(book.copy?.ready);
   const owner = book.kobo_account.owner;
   return (
     <section className="account-card" aria-labelledby={headingId}>
