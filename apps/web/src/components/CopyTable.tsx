@@ -15,6 +15,7 @@ const SUBMIT_LABELS: Record<ChoosableKind, string> = {
 const REPLACEMENT_PROMPT = "Replace the existing library file? The current file stays until the new download imports successfully. A failed download leaves it unchanged.";
 
 function choosableKind(copy: ListedCopy): ChoosableKind | null {
+  if (copy.details === null) return copy.downloadable && copy.state !== "selected" ? "select" : null;
   if (!copy.details) return copy.downloadable ? "select" : null;
   const choice = copy.details.choice;
   return choice === "select" || choice === "select_instead" || choice === "retry_anyway" ? choice : null;
@@ -33,6 +34,7 @@ export function CopyTable({
   replaces = false,
   lookingFor = null,
   stateKey = null,
+  locked = false,
 }: {
   copies: ListedCopy[];
   choose: CopyChoice;
@@ -40,6 +42,7 @@ export function CopyTable({
   replaces?: boolean;
   lookingFor?: string | null;
   stateKey?: string | null;
+  locked?: boolean;
 }) {
   const [picked, setPicked] = useState(() => (preselect ? firstChoice(copies) : ""));
   const [missing, setMissing] = useState(false);
@@ -50,20 +53,25 @@ export function CopyTable({
   const tableRegion = useRef<HTMLDivElement>(null);
   const submitButton = useRef<HTMLButtonElement>(null);
   const keepButton = useRef<HTMLButtonElement>(null);
+  const kindOf = (copy: ListedCopy) => (locked ? null : choosableKind(copy));
   const detailed = copies.some((copy) => copy.details);
-  const firstChoosableId = copies.find((copy) => choosableKind(copy))?.id;
-  const chosenCopy = copies.find((copy) => copy.id === picked && choosableKind(copy));
+  const firstChoosableId = copies.find((copy) => kindOf(copy))?.id;
+  const chosenCopy = copies.find((copy) => copy.id === picked && kindOf(copy));
   const chosen = chosenCopy?.id ?? "";
-  const chosenKind = chosenCopy ? choosableKind(chosenCopy) : null;
+  const chosenKind = chosenCopy ? kindOf(chosenCopy) : null;
   const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
   const offeredChoice = useRef(Boolean(firstChoosableId));
+  const wasConfirming = useRef(confirming);
   useEffect(() => {
+    const withdrawn = wasConfirming.current && !confirming;
+    wasConfirming.current = confirming;
     if (confirming) keepButton.current?.focus();
+    else if (withdrawn && focusLeftThePage()) submitButton.current?.focus();
   }, [confirming]);
   useEffect(() => {
     const lostActions = offeredChoice.current && !firstChoosableId;
     offeredChoice.current = Boolean(firstChoosableId);
-    if (lostActions && (document.activeElement === null || document.activeElement === document.body)) tableRegion.current?.focus();
+    if (lostActions && focusLeftThePage()) tableRegion.current?.focus();
   }, [firstChoosableId]);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -121,7 +129,7 @@ export function CopyTable({
                     name="copy"
                     value={copy.id}
                     checked={chosen === copy.id}
-                    disabled={!choosableKind(copy)}
+                    disabled={!kindOf(copy)}
                     onChange={() => {
                       setPicked(copy.id);
                       setMissing(false);
@@ -144,8 +152,8 @@ export function CopyTable({
                   {copy.details && !copy.details.language_matches && lookingFor ? <span className="copy-flag copy-flag--warn"> · not {lookingFor}</span> : null}
                 </td>
                 <td data-label="Source">{copy.source}</td>
-                {copy.details ? <td data-label="Score">{scoreText(copy.details)}</td> : null}
-                {copy.details ? <td data-label="Peers">{peersText(copy.details)}</td> : null}
+                {detailed ? <td data-label="Score">{copy.details ? scoreText(copy.details) : "Unknown"}</td> : null}
+                {detailed ? <td data-label="Peers">{copy.details ? peersText(copy.details) : "Not listed"}</td> : null}
               </tr>
             ))}
           </tbody>
@@ -183,6 +191,10 @@ export function CopyTable({
       ) : null}
     </form>
   );
+}
+
+function focusLeftThePage(): boolean {
+  return document.activeElement === null || document.activeElement === document.body;
 }
 
 function scoreText(details: CopyDetails): string {

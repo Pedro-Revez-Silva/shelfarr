@@ -235,6 +235,39 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert first.reload.selected?
   end
 
+  test "a choice read before the request was cancelled is refused rather than restarting it" do
+    first = @theirs.search_results.create!(guid: "first", title: "Audio.m4b", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"))
+    second = @theirs.search_results.create!(guid: "second", title: "Audio.Other.m4b", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"))
+    sign_in_as(@admin)
+    choose(@theirs, first, expected_revision: revision(@theirs), replace_library_file: false)
+    read_before_cancelling = revision(@theirs)
+
+    post_action(web_preview_api_request_cancel_path(@theirs), user: @admin)
+    assert_response :success
+    assert_no_difference -> { Download.count } do
+      assert_equal "copies_changed", choose(@theirs, second, expected_revision: read_before_cancelling, replace_library_file: false).fetch("error")
+    end
+    assert_equal "failed", @theirs.reload.status
+    assert_not second.reload.selected?
+  end
+
+  test "the copies and their revision describe the same moment even when a choice lands while the request is read" do
+    seen = @mine.search_results.create!(guid: "seen", title: "Emile.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"))
+    landing = @mine.search_results.create!(guid: "landing", title: "Emile.Landing.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"))
+    @mine.select_result!(seen)
+    original = WebPreview::RequestJson.method(:copies_revision)
+    choice_lands = lambda do |request|
+      request.select_result!(landing.reload) unless landing.reload.selected?
+      original.call(request)
+    end
+    sign_in_as(@admin)
+    copies = WebPreview::RequestJson.stub(:copies_revision, choice_lands) { detail(@mine, user: @admin).dig("request", "copies") }
+
+    shown = copies.fetch("candidates").select { |copy| copy.dig("details", "choice") == "selected" }.map { |copy| copy.fetch("id") }
+    assert_equal [ landing.id.to_s ], shown
+    assert_equal shown.join(","), copies.fetch("revision").split("/")[1]
+  end
+
   test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
     @theirs.search_results.create!(guid: "odd", title: "Odd.m4b", source: SearchResult::SOURCE_PROWLARR, indexer: "Prowlarr", magnet_url: magnet("a"), seeders: 5, confidence_score: 60,
       score_breakdown: { "audiobook_structure" => 1, "preference_adjustment" => [ 1 ], "auto_select_allowed" => true })
@@ -243,7 +276,7 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal({ "structure" => nil, "bitrate_kbps" => nil, "preference_adjustment" => 0, "size_limit" => nil, "seeders" => 5, "score" => 60 },
       copies.fetch("candidates").sole.fetch("details").slice("structure", "bitrate_kbps", "preference_adjustment", "size_limit", "seeders", "score"))
-    assert_equal "/", copies.fetch("revision")
+    assert_equal "not_found//", copies.fetch("revision")
   end
 
   test "choosing a copy for a book already in the library replaces its file only when the administrator confirms it" do

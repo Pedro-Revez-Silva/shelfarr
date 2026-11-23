@@ -2479,6 +2479,9 @@ thead th {
 .copy-table label {
   cursor: pointer;
 }
+.copy-table tbody th {
+  overflow-wrap: anywhere;
+}
 .copy-flag {
   color: var(--muted);
   font-size: 13px;

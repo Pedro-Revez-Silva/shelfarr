@@ -346,6 +346,7 @@ describe("a request's copies for an administrator", () => {
     await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
     await waitFor(() => expect([...document.querySelectorAll("#copies tbody th")].map((cell) => cell.textContent)).toEqual(["Copy 50.epub", "Copy 51.epub", "Copy 52.epub · chosen"]));
     expect(screen.queryByRole("button", { name: "Yes, replace the file" })).toBeNull();
+    expect(document.activeElement?.textContent).toBe("Download this copy instead");
     expect(server.called("POST", /selection$/)).toHaveLength(0);
     await user.click(screen.getByRole("button", { name: "Download this copy instead" }));
     await user.click(screen.getByRole("button", { name: "Yes, replace the file" }));
@@ -367,6 +368,28 @@ describe("a request's copies for an administrator", () => {
     const user = userEvent.setup();
     await user.click(within(section).getByRole("button", { name: "Download this copy" }));
     await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "70" }]));
+  });
+
+  test("an older server's read-only copies and a copy whose choice can't be read are never offered for download", async () => {
+    const legacy = { selectable: false, candidates: [{ id: "90", title: "Running.epub", format: "EPUB", size_bytes: 10, language: "English", source: "Prowlarr", state: "selected", skipped: false, downloadable: true }] };
+    const server = railsServer(detail(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: { ...detail({ status: "downloading", requested_by: { name: "Rae", self: false }, actions: adminActions }), copies: legacy } } }));
+    renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    const section = (await screen.findByText("Copies (1)")).closest("details");
+    if (!section) throw new Error("Copies section missing");
+    expect((within(section).getByLabelText("Running.epub") as HTMLInputElement).disabled).toBe(true);
+    expect(within(section).queryByRole("button", { name: /Download this copy/ })).toBeNull();
+    expect(within(section).getByText("None of these copies can be downloaded now.")).toBeTruthy();
+    cleanup();
+
+    const unreadable = { ...copy("91", { title: "Chosen.epub", state: "selected" }), details: { ...copyDetails(), choice: "picked" } };
+    const copies = { selectable: false, revision: "downloading/91/4", looking_for: "English", search_blocked: null, candidates: [unreadable, copy("92", { state: "rejected" }, { choice: "select_instead", score: 70 })] };
+    const next = railsServer(detail(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: { ...detail({ status: "downloading", requested_by: { name: "Rae", self: false }, actions: adminActions }), copies } } }));
+    renderApp({ server: next, url: "/sub/preview/requests/7#copies" });
+    const table = (await screen.findByText("Copies (2)")).closest("details");
+    if (!table) throw new Error("Copies section missing");
+    expect((within(table).getByLabelText("Chosen.epub") as HTMLInputElement).disabled).toBe(true);
+    expect(within(table).getAllByRole("row").map((row) => row.children.length)).toEqual([8, 8, 8]);
+    expect([...within(table).getAllByRole("row")[1]!.querySelectorAll("td[data-label]")].map((cell) => cell.textContent)).toEqual(["EPUB", "1000 B", "English", "Prowlarr", "Unknown", "Not listed"]);
   });
 
   test("when the last copy that could be chosen becomes the chosen one, focus stays in the copies", async () => {

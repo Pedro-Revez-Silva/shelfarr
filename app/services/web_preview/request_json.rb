@@ -11,7 +11,7 @@ module WebPreview
     UNREADABLE_SCORING = { structure: nil, bitrate_kbps: nil, preference_adjustment: 0, size_limit: nil }.freeze
 
     def self.copies_revision(request)
-      [ request.search_results.selected.order(:id).ids.join(","), request.downloads.maximum(:id) ].join("/")
+      [ Request.where(id: request.id).pick(:status), request.search_results.selected.order(:id).ids.join(","), request.downloads.maximum(:id) ].join("/")
     end
 
     def initialize(request, viewer:, routes:, opens_in_browser:)
@@ -131,10 +131,11 @@ module WebPreview
     end
 
     def copies
+      revision = self.class.copies_revision(@request)
       candidates = @request.search_results.best_first.includes(:acquisition_provider).to_a
       {
         selectable: BookPage.choosing_allowed?(@request) && candidates.any?(&:downloadable?),
-        revision: self.class.copies_revision(@request),
+        revision: revision,
         looking_for: @request.language_display_name.to_s.first(TEXT_LIMIT),
         search_blocked: @request.search_refresh_allowed? ? nil : @request.search_refresh_blocked_message,
         candidates: candidates.map { |result| BookPage.candidate(result).merge(details: copy_details(result)) }
