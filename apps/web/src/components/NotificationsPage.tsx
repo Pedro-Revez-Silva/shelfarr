@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { isApiError } from "../api/errors";
 import type { NotificationChange, NotificationItem, NotificationList } from "../contract";
 import { useNotificationCommand, useNotifications, type NotificationCommand } from "../notifications";
@@ -113,25 +113,28 @@ function Inbox() {
   );
 }
 
-function newestId(list: NotificationList): string | null {
-  return list.items.reduce<string | null>((newest, item) => (newest === null || BigInt(item.id) > BigInt(newest) ? item.id : newest), null);
-}
-
 function useFocusKeptAcross(snapshot: string) {
   const zone = useRef<HTMLSpanElement>(null);
   const seen = useRef(snapshot);
+  const holding = useRef(false);
   useEffect(() => {
     if (seen.current === snapshot) return;
     seen.current = snapshot;
-    if (document.activeElement === document.body) zone.current?.querySelector("button")?.focus();
+    if (holding.current && document.activeElement === document.body) zone.current?.querySelector("button")?.focus();
   }, [snapshot]);
-  return zone;
+  const onFocus = () => {
+    holding.current = true;
+  };
+  const onBlur = (event: FocusEvent<HTMLSpanElement>) => {
+    holding.current = event.currentTarget.contains(event.relatedTarget as Node | null);
+  };
+  return { zone, onFocus, onBlur };
 }
 
 function Toolbar({ list, busy, onCommand }: { list: NotificationList; busy: boolean; onCommand: (command: NotificationCommand) => void }) {
-  const through = newestId(list);
+  const through = list.through;
   const snapshot = `${through}:${list.total}`;
-  const zone = useFocusKeptAcross(snapshot);
+  const { zone, onFocus, onBlur } = useFocusKeptAcross(snapshot);
   if (list.total === 0 || !through) return null;
   const shown = list.items.length < list.total ? `Showing the ${list.items.length} most recent of ${list.total}.` : null;
   return (
@@ -147,11 +150,11 @@ function Toolbar({ list, busy, onCommand }: { list: NotificationList; busy: bool
             Mark all as read
           </button>
         ) : null}
-        <span ref={zone} className="notifications-clear">
+        <span ref={zone} className="notifications-clear" onFocus={onFocus} onBlur={onBlur}>
           <RemoveZone
             key={snapshot}
             label="Clear all"
-          confirmLabel="Clear all"
+            confirmLabel="Clear all"
             question={`Delete ${list.total === 1 ? "this notification" : `all ${list.total} notifications`}? This can’t be undone.`}
             busy={busy}
             onRemove={() => onCommand({ kind: "clear", through })}

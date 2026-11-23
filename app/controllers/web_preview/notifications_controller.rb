@@ -5,7 +5,7 @@ class WebPreview::NotificationsController < WebPreview::APIController
 
   def index
     listing = Notification.transaction do
-      counts.merge(items: notifications.recent.includes(:notifiable).map { |notification| item(notification) })
+      counts.merge(through: notifications.maximum(:id)&.to_s, items: notifications.recent.includes(:notifiable).map { |notification| item(notification) })
     end
     render json: listing
   end

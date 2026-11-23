@@ -40,7 +40,7 @@ class WebPreview::NotificationsTest < ActionDispatch::IntegrationTest
       sign_in_as(@member)
       body = listing(@member)
       assert_equal "private, no-store", response.headers["Cache-Control"]
-      assert_equal({ "account" => @member.id.to_s, "unread" => 2, "total" => 3 }, body.except("items"))
+      assert_equal({ "account" => @member.id.to_s, "unread" => 2, "total" => 3, "through" => ready.id.to_s }, body.except("items"))
       assert_equal [
         { "id" => ready.id.to_s, "type" => "request_completed", "title" => "Book Ready", "message" => "Ready to read.", "created_at" => ready.created_at.iso8601(3), "read_at" => nil,
           "request" => { "state" => "available", "id" => @mine.id.to_s } },
@@ -64,6 +64,27 @@ class WebPreview::NotificationsTest < ActionDispatch::IntegrationTest
       assert_equal [ 22, 11 ], body.values_at("total", "unread")
       assert_equal "Alert 20", body.fetch("items").first.fetch("title")
       assert_not_includes body.fetch("items").map { |item| item.fetch("id") }, oldest.id.to_s
+    end
+  end
+
+  test "the boundary covers every counted notification even when a later one carries an older time" do
+    20.times { |index| notify(@member, at: (30 - index).minutes.ago, title: "Alert #{index}") }
+    backdated = notify(@member, at: 2.days.ago, title: "Backdated")
+    with_preview_users(@member) do
+      sign_in_as(@member)
+      body = listing(@member)
+      assert_equal [ 21, 21, backdated.id.to_s ], body.values_at("total", "unread", "through")
+      assert_not_includes body.fetch("items").map { |item| item.fetch("id") }, backdated.id.to_s
+      assert_equal 21, command(web_preview_api_notifications_read_path, user: @member, through: body.fetch("through")).fetch("changed")
+      assert backdated.reload.read?
+      assert_equal [ 0, 0, 21 ], command(web_preview_api_notifications_clear_path, user: @member, through: body.fetch("through")).values_at("unread", "total", "changed")
+    end
+  end
+
+  test "an empty inbox has no boundary" do
+    with_preview_users(@member) do
+      sign_in_as(@member)
+      assert_equal({ "account" => @member.id.to_s, "unread" => 0, "total" => 0, "through" => nil, "items" => [] }, listing(@member))
     end
   end
 

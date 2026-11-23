@@ -1,34 +1,42 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
 import type { NotificationChange, Session } from "./contract";
+import { useSession } from "./queries";
 import { useServices } from "./services";
 
 function useBellCount() {
   const { keys, guard, queryClient } = useServices();
   return useCallback(
-    (unread: number, answeredAt: number) => {
+    (unread: number) => {
       if (!guard.isActive()) return;
-      const state = queryClient.getQueryState<Session>(keys.session);
-      const bell = state?.data?.notifications;
-      if (!state?.data || !bell || bell.unread === unread || state.dataUpdatedAt > answeredAt) return;
-      queryClient.setQueryData<Session>(keys.session, { ...state.data, notifications: { ...bell, unread } });
+      const current = queryClient.getQueryData<Session>(keys.session);
+      const bell = current?.notifications;
+      if (!current || !bell || bell.unread === unread) return;
+      queryClient.setQueryData<Session>(keys.session, { ...current, notifications: { ...bell, unread } });
     },
     [guard, queryClient, keys.session],
   );
 }
 
 export function useNotifications() {
-  const { api, keys } = useServices();
+  const { api, keys, queryClient } = useServices();
   const setBell = useBellCount();
   const list = useQuery({
     queryKey: keys.notifications,
     queryFn: ({ signal }) => api.notifications(signal),
   });
+  const session = useSession();
+  const bell = session.data?.notifications?.unread;
+  const sessionAnsweredAt = session.dataUpdatedAt;
   const unread = list.data?.unread;
-  const fetchedAt = list.dataUpdatedAt;
+  const listAnsweredAt = list.dataUpdatedAt;
   useEffect(() => {
-    if (unread !== undefined) setBell(unread, fetchedAt);
-  }, [unread, fetchedAt, setBell]);
+    if (unread !== undefined) setBell(unread);
+  }, [unread, listAnsweredAt, setBell]);
+  useEffect(() => {
+    if (unread === undefined || bell === undefined || bell === unread || sessionAnsweredAt <= listAnsweredAt) return;
+    void queryClient.invalidateQueries({ queryKey: keys.notifications });
+  }, [bell, sessionAnsweredAt]);
   return list;
 }
 
@@ -43,7 +51,7 @@ export function useNotificationCommand() {
       if (command.kind === "read_all") return api.markNotificationsRead(command.through);
       return api.clearNotifications(command.through);
     },
-    onSuccess: (answer) => setBell(answer.unread, Date.now()),
+    onSuccess: (answer) => setBell(answer.unread),
     onSettled: () => {
       if (!guard.isActive()) return;
       void queryClient.invalidateQueries({ queryKey: keys.notifications });

@@ -697,7 +697,7 @@ export type NotificationItem = z.infer<typeof notificationSchema>;
 
 const notificationCounts = { account: identifier, unread: z.number().int().nonnegative(), total: z.number().int().nonnegative() };
 
-export const notificationListSchema = z.object({ ...notificationCounts, items: z.array(notificationSchema) });
+export const notificationListSchema = z.object({ ...notificationCounts, through: identifier.nullable(), items: z.array(notificationSchema) });
 export type NotificationList = z.infer<typeof notificationListSchema>;
 
 export const notificationChangeSchema = z.object({ ...notificationCounts, changed: z.number().int().nonnegative() });

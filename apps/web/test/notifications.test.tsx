@@ -21,7 +21,8 @@ function item(overrides: Partial<NotificationItem> = {}): NotificationItem {
 }
 
 function inbox(items: NotificationItem[], overrides: Partial<NotificationList> = {}): NotificationList {
-  return { account: ACCOUNT, unread: items.filter((entry) => entry.read_at === null).length, total: items.length, items, ...overrides };
+  const through = items.reduce<string | null>((highest, entry) => (highest === null || Number(entry.id) > Number(highest) ? entry.id : highest), null);
+  return { account: ACCOUNT, unread: items.filter((entry) => entry.read_at === null).length, total: items.length, through, items, ...overrides };
 }
 
 const SAMPLE = [
@@ -134,14 +135,49 @@ describe("notifications in the Rails preview", () => {
     expect(server.called("POST", /\/notifications\/read$/).map((request) => request.body)).toEqual([{ through: "5" }]);
   });
 
-  test("the boundary is the highest id on screen, not the first row", async () => {
-    const server = railsServer({ list: () => ({ body: inbox([item({ id: "9" }), item({ id: "12", title: "Later id" }), item({ id: "10" })]) }) });
-    server.on("POST", /\/notifications\/read$/, () => ({ body: { account: ACCOUNT, unread: 0, total: 3, changed: 3 } }));
+  test("bulk actions send the boundary the server counted, not a row on screen", async () => {
+    const server = railsServer({ list: () => ({ body: inbox([item({ id: "9" }), item({ id: "12", title: "Later id" }), item({ id: "10" })], { through: "15", total: 4 }) }) });
+    server.on("POST", /\/notifications\/read$/, () => ({ body: { account: ACCOUNT, unread: 0, total: 4, changed: 4 } }));
     renderApp({ server, url: "/sub/preview/notifications" });
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Mark all as read" }));
     expect(await screen.findByText("All notifications marked as read.")).toBeTruthy();
-    expect(server.called("POST", /\/notifications\/read$/).map((request) => request.body)).toEqual([{ through: "12" }]);
+    expect(server.called("POST", /\/notifications\/read$/).map((request) => request.body)).toEqual([{ through: "15" }]);
+  });
+
+  test("a refresh while nothing in the toolbar has focus leaves focus where it was", async () => {
+    let items = SAMPLE;
+    const server = railsServer({ list: () => ({ body: inbox(items) }) });
+    const { services } = renderApp({ server, url: "/sub/preview/notifications" });
+    await screen.findByRole("heading", { name: /^Book Ready/ });
+    (document.activeElement as HTMLElement | null)?.blur();
+    items = [item({ id: "6", title: "Newer" }), ...SAMPLE];
+    act(() => {
+      void services.queryClient.invalidateQueries({ queryKey: services.keys.notifications });
+    });
+    expect(await screen.findByRole("heading", { name: /^Newer/ })).toBeTruthy();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  test("an older session answer that lands after the inbox makes the inbox read again instead of keeping a stale bell", async () => {
+    const first = deferred<{ body: unknown }>();
+    let sessions = 0;
+    let lists = 0;
+    const server = railsServer({
+      list: () => {
+        lists += 1;
+        return { body: inbox(SAMPLE) };
+      },
+    });
+    server.on("GET", /\/api\/v1\/session$/, () => {
+      sessions += 1;
+      return sessions === 1 ? first.promise : { body: session({ notifications: { url: "/sub/notifications", unread: 2 } }) };
+    });
+    renderApp({ server, url: "/sub/preview/notifications" });
+    expect(await screen.findByText("2 unread · 3 notifications")).toBeTruthy();
+    await act(async () => first.resolve({ body: session({ notifications: { url: "/sub/notifications", unread: 1 } }) }));
+    await waitFor(() => expect(lists).toBeGreaterThanOrEqual(2));
+    expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
   });
 
   test("clear all asks first, can be kept, deletes only what was shown and moves focus to the heading", async () => {
