@@ -10,21 +10,38 @@ module WebPreview
       "search" => "What happens straight after someone asks for a book."
     }.freeze
 
-    ADDRESS_CREDENTIALS = %r{([a-z][a-z0-9+.\-]*://)[^/@\s?#]+@}i
-    HIDDEN_CREDENTIALS = "[hidden]"
+    SENSITIVE_ADDRESS = /[@?#]/
+    SAVED_ADDRESS = "the saved address"
 
     attr_reader :form
 
-    def self.mask_address(address)
-      address.to_s.gsub(ADDRESS_CREDENTIALS, "\\1#{HIDDEN_CREDENTIALS}@")
+    def self.sensitive_address?(address)
+      address.to_s.match?(SENSITIVE_ADDRESS)
+    end
+
+    def self.public_address(address)
+      return address.to_s unless sensitive_address?(address)
+
+      uri = URI.parse(address.to_s)
+      uri.host.present? ? "#{uri.scheme}://#{uri.host}#{":#{uri.port}" unless uri.port == uri.default_port}" : SAVED_ADDRESS
+    rescue URI::Error
+      SAVED_ADDRESS
+    end
+
+    def self.address_secrets(address)
+      address = address.to_s
+      return [] unless sensitive_address?(address)
+
+      [ address, address[%r{://(.*)@}m, 1] ].compact.flat_map { |value| [ value, value.inspect[1..-2] ] }
     end
 
     def self.redact(text, extra_secrets = [])
       return nil if text.nil?
 
       client = SetupWizard.qbittorrent_client
-      secrets = [ *extra_secrets, client&.password, client&.api_key ].map(&:to_s).select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
-      mask_address(secrets.reduce(SecretRedaction.call(text)) { |result, secret| result.gsub(secret, SecretRedaction::MASK) })
+      saved = %w[prowlarr qbittorrent audiobookshelf].flat_map { |step| address_secrets(SetupWizard.saved_url(step)) }
+      secrets = [ *extra_secrets, *saved, client&.password, client&.api_key ].map(&:to_s).select { |secret| secret.length >= SecretRedaction::MIN_SECRET_LENGTH }
+      secrets.sort_by { |secret| -secret.length }.reduce(SecretRedaction.call(text)) { |result, secret| result.gsub(secret, SecretRedaction::MASK) }
     end
 
     def initialize(form)
@@ -100,7 +117,7 @@ module WebPreview
       return [ connection ] unless form.connected_to_library_platform?
 
       libraries = card("audiobookshelf_libraries", phase: "libraries", title: "Libraries", submit: "Save and continue",
-        summary: "Connected to #{self.class.mask_address(SettingsService.get(:audiobookshelf_url))}. Choose the libraries Shelfarr should scan.",
+        summary: "Connected to #{self.class.public_address(SettingsService.get(:audiobookshelf_url))}. Choose the libraries Shelfarr should scan.",
         fields: [
           library_field(:audiobook_library_id, "Audiobook library", form.audiobook_library_id),
           library_field(:ebook_library_id, "Ebook library", form.ebook_library_id)
@@ -122,7 +139,11 @@ module WebPreview
     end
 
     def url_field(label, placeholder, description)
-      { key: "url", label: label, description: description, input: "url", value: self.class.mask_address(form.url), placeholder: placeholder }
+      if self.class.sensitive_address?(form.url)
+        return { key: "url", label: label, description: "#{description} The saved address includes sign-in details.", input: "secret", value: nil, configured: true }
+      end
+
+      { key: "url", label: label, description: description, input: "url", value: form.url.to_s, placeholder: placeholder }
     end
 
     def text_field(key, label, value, description, placeholder: nil)

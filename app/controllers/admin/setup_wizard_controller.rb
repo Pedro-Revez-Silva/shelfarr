@@ -3,7 +3,7 @@
 module Admin
   class SetupWizardController < BaseController
     def show
-      return redirect_to(web_preview_server_setup_path(step: params[:step].presence_in(SetupWizard::STEPS))) if warm_setup?
+      return redirect_to(web_preview_server_setup_path(step: params[:step].presence_in(SetupWizard::STEPS))) if warm_setup? && flash.empty?
 
       @step = SetupWizard.normalize_step(params[:step])
       prepare_step

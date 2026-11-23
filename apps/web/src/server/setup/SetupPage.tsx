@@ -11,12 +11,11 @@ import { CardActions, SettingControl, SettingsCard, useScope } from "../primitiv
 import { useIsAdministrator } from "../queries";
 import { AdministratorsOnly, LeaveDialog, NotInThisRuntime } from "../ServerCategoryPage";
 import { ServerShell } from "../ServerShell";
-import type { SetupSaveAnswer, SetupValues } from "./api";
-import type { SetupCard, SetupState, SetupStepId } from "./contract";
+import type { SetupValues } from "./api";
+import type { SetupCard, SetupState } from "./contract";
 import { useSaveSetupStep, useSetupMoves, useSetupState, useSetupWriting, useSkipSetup } from "./queries";
 
-type Said = { state: SetupState; notice: string; alert: string | null };
-type DirtyCards = { has: () => boolean; set: (id: string, dirty: boolean) => void; clear: () => void };
+type Said = { step: SetupState["step"]; revision: number; notice: string; alert: string | null };
 
 export function setupFailureText(error: unknown): string {
   if (unconfirmed(error)) return "Shelfarr could not confirm whether this step was saved. Reload the page to see what the server has, and try again if needed.";
@@ -63,7 +62,7 @@ function SetupView() {
         state={setup.data}
         revision={revision}
         moveFocus={shown.current}
-        said={said?.state === setup.data ? said : null}
+        said={said?.step === setup.data.step && said.revision === revision ? said : null}
         onSaid={setSaid}
         onReplaced={() => setRevision((current) => current + 1)}
       />
@@ -91,34 +90,44 @@ function stepOf(search: object): unknown {
   return "step" in search ? search.step : undefined;
 }
 
-function useDirtyCards(): DirtyCards {
-  const [cards] = useState(() => {
-    const dirty = new Set<string>();
-    return {
-      has: () => dirty.size > 0,
-      set: (id: string, isDirty: boolean) => void (isDirty ? dirty.add(id) : dirty.delete(id)),
-      clear: () => dirty.clear(),
-    };
-  });
-  return cards;
+function draftChanged(field: SettingField, draft: DraftValue | undefined): boolean {
+  if (draft === undefined) return false;
+  if (field.input === "secret") return typeof draft === "string" && draft !== "";
+  return !same(draft, initialDraft(field));
 }
 
+function cardChanged(card: SetupCard | undefined, edits: Drafts): boolean {
+  if (!card) return Object.keys(edits).length > 0;
+  return card.fields.some((field) => draftChanged(field, edits[field.key]));
+}
+
+function submittedValue(draft: DraftValue): string | boolean {
+  if (typeof draft === "boolean" || typeof draft === "string") return draft;
+  return Array.isArray(draft) ? draft.join(",") : "";
+}
+
+type CardError = { text: string; serial: number };
 type StepProps = { state: SetupState; revision: number; moveFocus: boolean; said: Said | null; onSaid: (said: Said | null) => void; onReplaced: () => void };
 
 function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: StepProps) {
   const navigate = useNavigate();
   const moved = useSetupMoves();
+  const save = useSaveSetupStep(state.step);
   const skip = useSkipSetup();
   const writing = useSetupWriting();
-  const dirty = useDirtyCards();
+  const [edits, setEdits] = useState<Record<string, Drafts>>({});
+  const [errors, setErrors] = useState<Record<string, CardError>>({});
   const [skipError, setSkipError] = useState<string | null>(null);
-  const [confirmingSkip, setConfirmingSkip] = useState<{ exit: boolean } | null>(null);
+  const [confirming, setConfirming] = useState<{ count: number; action: () => void } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const stepList = useRef<HTMLOListElement>(null);
   const position = state.steps.findIndex((entry) => entry.id === state.step) + 1;
+  const changedCards = Object.keys(edits).filter((id) => cardChanged(state.cards.find((card) => card.id === id), edits[id] ?? {}));
+  const dirty = useRef(false);
+  dirty.current = changedCards.length > 0;
   const blocker = useBlocker({
-    shouldBlockFn: ({ current, next }) => dirty.has() && (current.pathname !== next.pathname || stepOf(current.search) !== stepOf(next.search)),
-    enableBeforeUnload: () => dirty.has(),
+    shouldBlockFn: ({ current, next }) => dirty.current && (current.pathname !== next.pathname || stepOf(current.search) !== stepOf(next.search)),
+    enableBeforeUnload: () => dirty.current,
     withResolver: true,
   });
 
@@ -136,38 +145,58 @@ function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: Ste
   }, []);
 
   const go = (next: SetupState | null) => {
-    dirty.clear();
+    dirty.current = false;
+    setEdits({});
+    setErrors({});
     moved(next);
     onReplaced();
     if (next) void navigate({ to: "/server/setup", search: { step: next.step } });
     else void navigate({ to: "/library" });
   };
 
-  const saved = (answer: Extract<SetupSaveAnswer, { kind: "saved" }>) => {
-    const next = answer.saved.setup;
-    onSaid(next ? { state: next, notice: answer.saved.outcome.message, alert: answer.saved.alert } : null);
-    go(next);
+  const confirmFirst = (others: string[], action: () => void) => {
+    if (others.length > 0) setConfirming({ count: others.length, action });
+    else action();
   };
 
-  const askToSkip = (exit: boolean) => {
+  const fail = (cardId: string, text: string) => setErrors((current) => ({ ...current, [cardId]: { text, serial: (current[cardId]?.serial ?? 0) + 1 } }));
+
+  const submit = (card: SetupCard, drafts: Drafts) => {
     if (writing) return;
-    if (dirty.has()) setConfirmingSkip({ exit });
-    else skipStep(exit);
+    confirmFirst(
+      changedCards.filter((id) => id !== card.id),
+      () => {
+        setErrors(({ [card.id]: _cleared, ...rest }) => rest);
+        const values: SetupValues = Object.fromEntries(card.fields.map((field) => [field.key, submittedValue(drafts[field.key] ?? "")]));
+        if (card.phase) values.phase = card.phase;
+        save.mutate(values, {
+          onSuccess: (answer) => {
+            if (answer.kind === "rejected") return fail(card.id, answer.message);
+            const next = answer.saved.setup;
+            onSaid(next ? { step: next.step, revision: revision + 1, notice: answer.saved.outcome.message, alert: answer.saved.alert } : null);
+            go(next);
+          },
+          onError: (failure) => fail(card.id, setupFailureText(failure)),
+        });
+      },
+    );
   };
 
   const skipStep = (exit: boolean) => {
     if (writing) return;
-    setSkipError(null);
-    skip.mutate(
-      { step: state.step, exit },
-      {
-        onSuccess: (answer) => {
-          onSaid(null);
-          go(answer.setup);
+    confirmFirst(changedCards, () => {
+      setSkipError(null);
+      skip.mutate(
+        { step: state.step, exit },
+        {
+          onSuccess: (answer) => {
+            onSaid(null);
+            go(answer.setup);
+          },
+          onError: (error) => setSkipError(setupFailureText(error)),
         },
-        onError: (error) => setSkipError(setupFailureText(error)),
-      },
-    );
+      );
+    });
   };
 
   return (
@@ -209,7 +238,16 @@ function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: Ste
         </p>
       ) : null}
       {state.cards.map((card) => (
-        <SetupStepCard key={`${card.id}-${revision}`} step={state.step} card={card} dirty={dirty} writing={writing} onSaved={saved} />
+        <SetupStepCard
+          key={card.id}
+          card={card}
+          edits={edits[card.id] ?? {}}
+          error={errors[card.id] ?? null}
+          writing={writing}
+          saving={save.isPending && save.variables?.phase === (card.phase ?? undefined)}
+          onEdit={(key, value) => setEdits((current) => ({ ...current, [card.id]: { ...current[card.id], [key]: value } }))}
+          onSubmit={(drafts) => submit(card, drafts)}
+        />
       ))}
       <div className="setup-moves">
         {state.previous ? (
@@ -218,11 +256,11 @@ function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: Ste
           </Link>
         ) : null}
         {state.last ? null : (
-          <button type="button" className="button" disabled={writing} onClick={() => askToSkip(false)}>
+          <button type="button" className="button" disabled={writing} onClick={() => skipStep(false)}>
             Skip this step
           </button>
         )}
-        <button type="button" className="button button--subtle" disabled={writing} onClick={() => askToSkip(true)}>
+        <button type="button" className="button button--subtle" disabled={writing} onClick={() => skipStep(true)}>
           Skip setup
         </button>
       </div>
@@ -233,21 +271,21 @@ function SetupStep({ state, revision, moveFocus, said, onSaid, onReplaced }: Ste
       </p>
       {blocker.status === "blocked" ? (
         <LeaveDialog
-          count={1}
+          count={changedCards.length}
           onStay={blocker.reset}
           onLeave={() => {
-            dirty.clear();
+            dirty.current = false;
             blocker.proceed();
           }}
         />
       ) : null}
-      {confirmingSkip ? (
+      {confirming ? (
         <LeaveDialog
-          count={1}
-          onStay={() => setConfirmingSkip(null)}
+          count={confirming.count}
+          onStay={() => setConfirming(null)}
           onLeave={() => {
-            setConfirmingSkip(null);
-            skipStep(confirmingSkip.exit);
+            setConfirming(null);
+            confirming.action();
           }}
         />
       ) : null}
@@ -291,47 +329,30 @@ function Warnings({ state }: { state: SetupState }) {
   );
 }
 
-function draftChanged(field: SettingField, draft: DraftValue | undefined): boolean {
-  if (draft === undefined) return false;
-  if (field.input === "secret") return typeof draft === "string" && draft !== "";
-  return !same(draft, initialDraft(field));
-}
+type CardProps = {
+  card: SetupCard;
+  edits: Drafts;
+  error: CardError | null;
+  writing: boolean;
+  saving: boolean;
+  onEdit: (key: string, value: DraftValue) => void;
+  onSubmit: (drafts: Drafts) => void;
+};
 
-function submittedValue(draft: DraftValue): string | boolean {
-  if (typeof draft === "boolean" || typeof draft === "string") return draft;
-  return Array.isArray(draft) ? draft.join(",") : "";
-}
-
-type CardProps = { step: SetupStepId; card: SetupCard; dirty: DirtyCards; writing: boolean; onSaved: (answer: Extract<SetupSaveAnswer, { kind: "saved" }>) => void };
-
-function SetupStepCard({ step, card, dirty, writing, onSaved }: CardProps) {
+function SetupStepCard({ card, edits, error, writing, saving, onEdit, onSubmit }: CardProps) {
   const scope = useScope();
-  const [edits, setEdits] = useState<Drafts>({});
-  const [error, setError] = useState<{ text: string; serial: number } | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
-  const save = useSaveSetupStep(step);
   const drafts = Object.fromEntries(card.fields.map((field) => [field.key, edits[field.key] ?? initialDraft(field)])) as Drafts;
-  const changed = card.fields.some((field) => draftChanged(field, edits[field.key]));
+  const changed = cardChanged(card, edits);
   const headingId = `${scope}-heading`;
 
-  useEffect(() => dirty.set(card.id, changed), [card.id, changed, dirty]);
-  useEffect(() => () => dirty.set(card.id, false), [card.id, dirty]);
   useEffect(() => {
     if (error) errorRef.current?.focus();
   }, [error]);
 
-  const fail = (text: string) => setError((current) => ({ text, serial: (current?.serial ?? 0) + 1 }));
-
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (writing) return;
-    setError(null);
-    const values: SetupValues = Object.fromEntries(card.fields.map((field) => [field.key, submittedValue(drafts[field.key] ?? "")]));
-    if (card.phase) values.phase = card.phase;
-    save.mutate(values, {
-      onSuccess: (answer) => (answer.kind === "saved" ? onSaved(answer) : fail(answer.message)),
-      onError: (failure) => fail(setupFailureText(failure)),
-    });
+    onSubmit(drafts);
   };
 
   const form = (
@@ -342,23 +363,16 @@ function SetupStepCard({ step, card, dirty, writing, onSaved }: CardProps) {
           {error.text}
         </p>
       ) : null}
-      {card.fields.map((field) => (
-        <SettingControl
-          key={field.key}
-          scope={scope}
-          field={field}
-          value={drafts[field.key] ?? ""}
-          onChange={(value) => {
-            setEdits((current) => ({ ...current, [field.key]: value }));
-          }}
-          libraries={card.libraries}
-        />
-      ))}
-      <CardActions unsaved={changed}>
-        <button type="submit" className={card.collapsed ? "button" : "button button--primary"} disabled={writing} aria-busy={save.isPending}>
-          {save.isPending ? (card.submit.startsWith("Test") ? "Testing…" : "Saving…") : card.submit}
-        </button>
-      </CardActions>
+      <fieldset className="setup-fields" disabled={writing}>
+        {card.fields.map((field) => (
+          <SettingControl key={field.key} scope={scope} field={field} value={drafts[field.key] ?? ""} onChange={(value) => onEdit(field.key, value)} libraries={card.libraries} />
+        ))}
+        <CardActions unsaved={changed}>
+          <button type="submit" className={card.collapsed ? "button" : "button button--primary"} aria-busy={saving}>
+            {saving ? (card.submit.startsWith("Test") ? "Testing…" : "Saving…") : card.submit}
+          </button>
+        </CardActions>
+      </fieldset>
     </form>
   );
 

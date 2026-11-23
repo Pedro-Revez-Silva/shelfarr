@@ -41,8 +41,9 @@ class WebPreview::Admin::SetupController < WebPreview::Admin::BaseController
 
   def skip
     return render_error("not_found", :not_found) unless known_step?
+    return render_error("invalid_request", :bad_request, message: "Say whether to leave setup as true or false") unless [ true, false ].include?(params[:exit])
 
-    following = SetupWizard.skip(params[:step], exit_setup: ActiveModel::Type::Boolean.new.cast(params[:exit]) == true)
+    following = SetupWizard.skip(params[:step], exit_setup: params[:exit])
     render json: { account: web_preview_account_id, completed: following.nil?, setup: following && state(following) }
   end
 
@@ -78,12 +79,12 @@ class WebPreview::Admin::SetupController < WebPreview::Admin::BaseController
 
   def with_saved_address(step, values)
     saved = SetupWizard.saved_url(step)
-    return values unless values.key?("url") && saved.present? && values["url"] == WebPreview::AdminSetup.mask_address(saved)
+    return values unless values["url"] == "" && WebPreview::AdminSetup.sensitive_address?(saved)
 
     values.merge("url" => saved)
   end
 
   def redact(text, values)
-    WebPreview::AdminSetup.redact(text, values.values_at(*SUBMITTED_SECRETS))
+    WebPreview::AdminSetup.redact(text, [ *values.values_at(*SUBMITTED_SECRETS), *WebPreview::AdminSetup.address_secrets(values["url"]) ])
   end
 end

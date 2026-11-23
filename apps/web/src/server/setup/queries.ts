@@ -27,31 +27,52 @@ export function useSetupState(step: string | undefined) {
 export function useSetupMoves() {
   const { guard } = useServices();
   const keys = useSetupKeys();
-  const serverKeys = useServerKeys();
   const client = useQueryClient();
   return (next: SetupState | null) => {
-    if (!guard.isActive()) return;
-    client.removeQueries({ queryKey: keys.root });
-    if (next) client.setQueryData(keys.step(next.step), next);
-    void client.invalidateQueries({ queryKey: serverKeys.settings });
-    void client.invalidateQueries({ queryKey: serverKeys.library });
-    void client.invalidateQueries({ queryKey: serverKeys.overview });
+    if (guard.isActive() && next) client.setQueryData(keys.step(next.step), next);
   };
+}
+
+function useSetupWrite<Input, Answer>(write: (input: Input) => Promise<Answer>, writtenStep: (input: Input) => SetupStepId | null) {
+  const { guard } = useServices();
+  const keys = useSetupKeys();
+  const serverKeys = useServerKeys();
+  const client = useQueryClient();
+  return useMutation({
+    mutationKey: SETUP_WRITE,
+    mutationFn: write,
+    onSuccess: async (_answer, input) => {
+      if (!guard.isActive()) return;
+      const written = writtenStep(input);
+      await client.invalidateQueries({ queryKey: keys.root, refetchType: "none" });
+      void client.refetchQueries({ queryKey: keys.root, type: "active", predicate: (query) => (query.state.data as SetupState | undefined)?.step !== written });
+      for (const queryKey of [serverKeys.settings, serverKeys.library, serverKeys.overview]) void client.invalidateQueries({ queryKey });
+    },
+  });
 }
 
 export function useSaveSetupStep(step: SetupStepId) {
   const { api } = useServices();
-  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values) });
+  return useSetupWrite(
+    (values: setupApi.SetupValues) => setupApi.saveSetupStep(api, step, values),
+    () => step,
+  );
 }
 
 export function useSkipSetup() {
   const { api } = useServices();
-  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit) });
+  return useSetupWrite(
+    ({ step, exit }: { step: SetupStepId; exit: boolean }) => setupApi.skipSetup(api, step, exit),
+    ({ step }) => step,
+  );
 }
 
 export function useRestartSetup() {
   const { api } = useServices();
-  return useMutation({ mutationKey: SETUP_WRITE, mutationFn: () => setupApi.restartSetup(api) });
+  return useSetupWrite(
+    () => setupApi.restartSetup(api),
+    () => null,
+  );
 }
 
 export function useSetupWriting(): boolean {

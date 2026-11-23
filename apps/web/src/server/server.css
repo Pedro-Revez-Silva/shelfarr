@@ -796,6 +796,14 @@
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+.setup-fields {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
 .setup-reminder {
   border-color: var(--accent);
 }

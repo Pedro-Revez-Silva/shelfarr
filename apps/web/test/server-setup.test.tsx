@@ -400,4 +400,77 @@ describe("Setup in the Rails preview", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/server/setup"));
     expect(server.called("POST", /restart$/)).toEqual([]);
   });
+
+  test("a library choice survives a read where the libraries could not be listed, and still counts as unsaved", async () => {
+    const libraries = card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value: "", placeholder: "Not now" })], {
+      phase: "libraries",
+      title: "Libraries",
+      submit: "Save and continue",
+      libraries: [{ id: "lib-audio", name: "Audiobooks", media_type: "book" }],
+    });
+    const connection = card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true });
+    let reachable = true;
+    const server = setupServer().on("GET", /\/admin\/setup\?step=audiobookshelf/, () => ({
+      body: reachable ? state("audiobookshelf", [libraries, connection]) : state("audiobookshelf", [{ ...connection, collapsed: false, title: "Audiobookshelf" }], { library_error: "Connection refused" }),
+    }));
+    const { services, router } = renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+    await userEvent.selectOptions(await screen.findByLabelText("Audiobook library"), "lib-audio");
+
+    reachable = false;
+    await services.queryClient.invalidateQueries();
+    expect(await screen.findByText(/did not list libraries: Connection refused/)).toBeTruthy();
+    expect(screen.queryByLabelText("Audiobook library")).toBeNull();
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Setup steps" })).getByRole("link", { name: "Search" }));
+    await userEvent.click(within(await screen.findByRole("dialog", { name: "Leave without saving?" })).getByRole("button", { name: "Stay and keep editing" }));
+
+    reachable = true;
+    await services.queryClient.invalidateQueries();
+    await waitFor(() => expect((screen.getByLabelText("Audiobook library") as HTMLSelectElement).value).toBe("lib-audio"));
+    expect(within(cardSection("Libraries")).getByText("Unsaved changes")).toBeTruthy();
+    expect(router.state.location.search).toEqual({ step: "audiobookshelf" });
+  });
+
+  test("saving one card while another has changes asks first, and the fields are locked while it saves", async () => {
+    const held = deferred<{ status: number; body: unknown }>();
+    const libraries = card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value: "", placeholder: "Not now" })], {
+      phase: "libraries",
+      title: "Libraries",
+      submit: "Save and continue",
+      libraries: [{ id: "lib-audio", name: "Audiobooks", media_type: "book" }],
+    });
+    const connection = card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true, submit: "Test and save connection" });
+    const server = setupServer({ audiobookshelf: state("audiobookshelf", [libraries, connection]) }).on("PUT", /\/admin\/setup\/steps\/audiobookshelf$/, () => held.promise);
+    renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+
+    const change = await waitFor(() => cardSection("Change the Audiobookshelf connection") as HTMLDetailsElement);
+    change.open = true;
+    await userEvent.type(within(change).getByLabelText("Audiobookshelf address"), "/other");
+    await userEvent.click(within(cardSection("Libraries")).getByRole("button", { name: "Save and continue" }));
+    const dialog = await screen.findByRole("dialog", { name: "Leave without saving?" });
+    expect(within(dialog).getByText(/One card has changes/)).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Stay and keep editing" }));
+    expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
+
+    await userEvent.click(within(cardSection("Change the Audiobookshelf connection")).getByRole("button", { name: "Test and save connection" }));
+    await waitFor(() => expect(server.called("PUT", /audiobookshelf$/).length).toBe(1));
+    expect(within(cardSection("Change the Audiobookshelf connection")).getByLabelText("Audiobookshelf address").closest("fieldset")!.disabled).toBe(true);
+    expect(within(cardSection("Libraries")).getByLabelText("Audiobook library").closest("fieldset")!.disabled).toBe(true);
+    held.resolve({ status: 422, body: { account: ACCOUNT, error: "setup_rejected", message: "Could not connect to Audiobookshelf." } });
+    await waitFor(() => expect(within(cardSection("Change the Audiobookshelf connection")).getByLabelText("Audiobookshelf address").closest("fieldset")!.disabled).toBe(false));
+    expect(within(cardSection("Change the Audiobookshelf connection")).getByRole("alert").textContent).toBe("⚠ Could not connect to Audiobookshelf.");
+  });
+
+  test("a step left while its save was pending is read again when the save lands", async () => {
+    const held = deferred<{ body: unknown }>();
+    const server = setupServer({ qbittorrent: qbittorrent() }).on("PUT", /\/admin\/setup\/steps\/prowlarr$/, () => held.promise);
+    renderApp({ server, url: "/sub/preview/server/setup" });
+    const prowlarrCard = await waitFor(() => cardSection("prowlarr"));
+    await userEvent.click(within(prowlarrCard).getByRole("button", { name: "Test and continue" }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Setup steps" })).getByRole("link", { name: "qBittorrent" }));
+    await screen.findByRole("heading", { name: "qBittorrent", level: 2 });
+    expect(server.called("GET", /step=qbittorrent/).length).toBe(1);
+
+    held.resolve({ body: { account: ACCOUNT, outcome: { tone: "success", message: "Prowlarr connected." }, alert: null, completed: false, setup: qbittorrent() } });
+    await waitFor(() => expect(server.called("GET", /step=qbittorrent/).length).toBe(2));
+  });
 });

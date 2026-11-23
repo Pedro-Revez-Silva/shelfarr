@@ -386,35 +386,66 @@ class WebPreview::AdminSetupTest < ActionDispatch::IntegrationTest
       %i[audiobook_output_path ebook_output_path immediate_search_enabled auto_select_enabled setup_wizard_completed].map { |key| SettingsService.get(key) }
   end
 
-  test "a saved address keeps its sign-in part on the server, and errors never repeat a typed secret" do
+  test "a saved address with sign-in details stays on the server, blank keeps it, and errors never repeat a typed secret" do
     DownloadClient.create!(name: "qBittorrent", client_type: "qbittorrent", url: "http://qbuser:qb-pass-7781@qbittorrent:8080", username: "admin", password: "secret", category: "", enabled: true)
-    SettingsService.set(:audiobookshelf_url, "http://absuser:abs-pass-4410@audiobookshelf:13378")
+    SettingsService.set(:audiobookshelf_url, "http://audiobookshelf:13378/?access_token=abs-query-6620")
     SettingsService.set(:audiobookshelf_api_key, "abs-token")
     VCR.turned_off do
       stub_qbittorrent_connection("http://qbittorrent:8080")
-      stub_request(:get, "http://audiobookshelf:13378/api/libraries")
+      stub_request(:get, %r{\Ahttp://audiobookshelf:13378/api/libraries})
         .to_return(status: 200, headers: { "Content-Type" => "application/json" }, body: LIBRARIES.to_json)
       sign_in_as(@admin)
 
       state = setup_state("qbittorrent")
-      assert_equal "http://[hidden]@qbittorrent:8080", field(state, "qbittorrent", "url").fetch("value")
+      assert_equal({ "key" => "url", "label" => "qBittorrent address",
+        "description" => "The address of the qBittorrent web interface, as Shelfarr's container reaches it. The saved address includes sign-in details.",
+        "input" => "secret", "value" => nil, "configured" => true }, field(state, "qbittorrent", "url"))
       assert_not_includes response.body, "qb-pass-7781"
 
       state = setup_state("audiobookshelf")
-      assert_equal "Connected to http://[hidden]@audiobookshelf:13378. Choose the libraries Shelfarr should scan.", card(state, "audiobookshelf_libraries").fetch("summary")
-      assert_not_includes response.body, "abs-pass-4410"
+      assert_equal "Connected to http://audiobookshelf:13378. Choose the libraries Shelfarr should scan.", card(state, "audiobookshelf_libraries").fetch("summary")
+      assert_equal "secret", field(state, "audiobookshelf_connection", "url").fetch("input")
+      assert_not_includes response.body, "abs-query-6620"
 
-      save_step("qbittorrent", { url: "http://[hidden]@qbittorrent:8080", username: "admin", password: "", api_key: "", category: "" })
+      save_step("qbittorrent", { url: "", username: "admin", password: "", api_key: "", category: "" })
       assert_response :success
       assert_equal "http://qbuser:qb-pass-7781@qbittorrent:8080", DownloadClient.qbittorrent.sole.url
+      assert_not_includes response.body, "qb-pass-7781"
     end
 
-    save_step("audiobookshelf", { phase: "connection", url: "http://someone:typed-pass-5521@bad host", api_key: "typed-token-3390" })
-    assert_response :unprocessable_entity
-    message = response.parsed_body.fetch("message")
-    assert_not_includes message, "typed-pass-5521"
-    assert_not_includes message, "typed-token-3390"
-    assert_equal "http://absuser:abs-pass-4410@audiobookshelf:13378", SettingsService.get(:audiobookshelf_url)
+    [ "http://someone:typed-pass-5521@bad host", "http://someone:typed pass 5521@audiobookshelf:13378" ].each do |address|
+      save_step("audiobookshelf", { phase: "connection", url: address, api_key: "typed-token-3390" })
+      assert_response :unprocessable_entity
+      assert_no_match(/typed.pass.5521|typed-token-3390|abs-query-6620/, response.body)
+    end
+    assert_equal "http://audiobookshelf:13378/?access_token=abs-query-6620", SettingsService.get(:audiobookshelf_url)
+  end
+
+  test "skip needs a plain true or false for leaving setup" do
+    sign_in_as(@admin)
+    [ { "choice" => false }, "yes", nil ].each do |value|
+      post web_preview_api_admin_setup_skip_path, params: { step: "prowlarr", exit: value }, headers: account_headers(@admin), as: :json
+      assert_response :bad_request, value.inspect
+    end
+    assert_equal false, SettingsService.get(:setup_wizard_completed)
+  end
+
+  test "a classic setup form submitted by a preview administrator carries on in the classic pages with its notice and suggestions" do
+    SettingsService.set(:audiobook_output_path, "/audiobooks")
+    SettingsService.set(:ebook_output_path, "/ebooks")
+    VCR.turned_off do
+      stub_audiobookshelf
+      sign_in_as(@admin)
+
+      patch admin_setup_wizard_path(step: "audiobookshelf"), params: { wizard: { url: "http://audiobookshelf:13378", api_key: "abs-token" } }
+      assert_redirected_to admin_setup_wizard_path(step: "audiobookshelf")
+      follow_redirect!
+
+      assert_response :success
+      assert_select "select[name='wizard[audiobook_library_id]'] option[selected][value='lib-audio']"
+      assert_select "select[name='wizard[ebook_library_id]'] option[selected][value='lib-ebooks']"
+      assert_includes response.body, "Audiobookshelf connected. Choose the libraries Shelfarr should scan."
+    end
   end
 
   test "the old setup address takes a preview administrator to the same step here, and stays classic for everyone else" do
