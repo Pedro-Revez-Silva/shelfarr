@@ -13,6 +13,7 @@ class WebPreview::RequestsController < WebPreview::APIController
   }.freeze
   NOT_RETRYABLE = "This request can't be retried in its current state."
   ACTIVE_DOWNLOADS = %w[queued downloading paused].freeze
+  READ_ATTEMPTS = 3
   NOT_CHOOSABLE = "This copy can no longer be chosen. The page shows what can be chosen now."
   COPIES_CHANGED = "The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one."
   REPLACEMENT_UNCONFIRMED = "This book is already in the library. Confirm that this copy replaces the library file, then choose it again."
@@ -35,8 +36,14 @@ class WebPreview::RequestsController < WebPreview::APIController
   end
 
   def show
-    request = visible_requests.includes(:book, :downloads, :search_results).find(identifier(params[:id]))
-    render json: { account: web_preview_account_id, request: projection(request).detail(store_offers: StoreProviderRegistry.visible_offers_for(request).best_first.to_a) }
+    id = identifier(params[:id])
+    READ_ATTEMPTS.times do
+      seen = Current.user.admin? ? WebPreview::RequestJson.copies_revision(visible_requests.find(id)) : nil
+      request = visible_requests.includes(:book, :downloads, :search_results).find(id)
+      detail = projection(request).detail(store_offers: StoreProviderRegistry.visible_offers_for(request).best_first.to_a, copies_revision: seen)
+      return render(json: { account: web_preview_account_id, request: detail }) if seen.nil? || seen == WebPreview::RequestJson.copies_revision(request)
+    end
+    render_error("server_busy", :service_unavailable)
   end
 
   def selection

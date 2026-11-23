@@ -176,6 +176,7 @@ describe("one request in the Rails preview", () => {
     renderApp({ server, url: "/sub/preview/requests/7" });
     const tools = await screen.findByRole("region", { name: "Administrator tools" });
     const user = userEvent.setup();
+    await user.click(within(tools).getByLabelText("Dispossessed.epub"));
     await user.click(within(tools).getByRole("button", { name: "Download this copy" }));
     await waitFor(() => expect(server.called("POST", /selection$/)[0]?.body).toEqual({ result_id: "31", expected_revision: "/", replace_library_file: false }));
     await user.click(within(tools).getByText("Add a link or file"));
@@ -310,9 +311,10 @@ describe("a request's copies for an administrator", () => {
     const section = (await screen.findByText("Copies (2)")).closest("details");
     if (!section) throw new Error("Copies section missing");
     await waitFor(() => expect(section.open).toBe(true));
-    expect((within(section).getByLabelText("Copy 60.epub") as HTMLInputElement).checked).toBe(true);
+    expect((within(section).getByLabelText("Copy 60.epub") as HTMLInputElement).checked).toBe(false);
     const reads = server.called("GET", /\/requests\/7$/).length;
     const user = userEvent.setup();
+    await user.click(within(section).getByLabelText("Copy 60.epub"));
     await user.click(within(section).getByRole("button", { name: "Download this copy" }));
     expect(await within(section).findByText("The chosen copy changed since this page was read. The page now shows the current copies; choose again if you still want this one.")).toBeTruthy();
     await waitFor(() => expect(server.called("GET", /\/requests\/7$/).length).toBeGreaterThan(reads));
@@ -442,19 +444,21 @@ describe("a request's copies for an administrator", () => {
     await waitFor(() => expect(document.activeElement?.textContent).toBe("Download this copy"));
   });
 
-  test("the suggested copy is a pick made once, so reordered copies with the same revision keep it", async () => {
+  test("no copy is chosen for the administrator, and an explicit pick survives copies reordered under the same revision", async () => {
     let reversed = false;
     const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: true, revision: "r1", looking_for: "English", search_blocked: null, candidates: reversed ? [copy("62"), copy("61")] : [copy("61"), copy("62")] } });
     const server = railsServer(found(), true)
       .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }))
       .on("POST", /\/requests\/7\/selection$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } }));
     const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
-    expect(((await screen.findByLabelText("Copy 61.epub")) as HTMLInputElement).checked).toBe(true);
+    const user = userEvent.setup();
+    expect(((await screen.findByLabelText("Copy 61.epub")) as HTMLInputElement).checked).toBe(false);
+    await user.click(screen.getByLabelText("Copy 61.epub"));
     reversed = true;
     await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
     await waitFor(() => expect([...document.querySelectorAll("#copies tbody th")].map((cell) => cell.textContent)).toEqual(["Copy 62.epub", "Copy 61.epub"]));
     expect((screen.getByLabelText("Copy 61.epub") as HTMLInputElement).checked).toBe(true);
-    await userEvent.setup().click(screen.getByRole("button", { name: "Download this copy" }));
+    await user.click(screen.getByRole("button", { name: "Download this copy" }));
     await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "61", expected_revision: "r1", replace_library_file: false }]));
   });
 
@@ -491,6 +495,20 @@ describe("a request's copies for an administrator", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  test("a pick that lapsed when its copy changed does not come back when the copy changes back", async () => {
+    let high = true;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: false, revision: "r1", looking_for: "English", search_blocked: null, candidates: [copy("67", {}, { score: 90, high_confidence: high })] } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    await userEvent.setup().click(await screen.findByLabelText("Copy 67.epub"));
+    for (const next of [false, true]) {
+      high = next;
+      await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+      await waitFor(() => expect(document.querySelector("#copies td[data-label=Score]")?.textContent).toBe(next ? "90% (high)" : "90%"));
+    }
+    expect((screen.getByLabelText("Copy 67.epub") as HTMLInputElement).checked).toBe(false);
+  });
+
   test("when a new search clears the copies under an open choice, focus and the refusal stay on screen", async () => {
     let cleared = false;
     const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: !cleared, revision: cleared ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: cleared ? [] : [copy("85")] } });
@@ -501,7 +519,8 @@ describe("a request's copies for an administrator", () => {
         return { status: 404, body: { error: "not_found" } };
       });
     renderApp({ server, url: "/sub/preview/requests/7" });
-    const button = await screen.findByRole("button", { name: "Download this copy" });
+    await userEvent.setup().click(await screen.findByLabelText("Copy 85.epub"));
+    const button = screen.getByRole("button", { name: "Download this copy" });
     button.focus();
     await userEvent.setup().keyboard("{Enter}");
     const note = await screen.findByText("No copies found yet. The search may still be running.");
@@ -519,9 +538,10 @@ describe("a request's copies for an administrator", () => {
         return { body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } };
       });
     renderApp({ server, url: "/sub/preview/requests/7" });
-    const button = await screen.findByRole("button", { name: "Download this copy" });
-    button.focus();
     const user = userEvent.setup();
+    await user.click(await screen.findByLabelText("Copy 80.epub"));
+    const button = screen.getByRole("button", { name: "Download this copy" });
+    button.focus();
     await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Download this copy" })).toBeNull());
     await waitFor(() => expect(document.activeElement?.getAttribute("role")).toBe("region"));

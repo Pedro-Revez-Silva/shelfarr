@@ -295,6 +295,25 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a cancellation that lands while the request is read is shown together with the revision it produced" do
+    first = @theirs.search_results.create!(guid: "first", title: "Audio.m4b", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"))
+    @theirs.search_results.create!(guid: "second", title: "Audio.Other.m4b", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"))
+    @theirs.select_result!(first)
+    original = WebPreview::RequestJson.method(:copies_revision)
+    calls = 0
+    cancel_mid_read = lambda do |request|
+      calls += 1
+      Request.find(request.id).cancel! if calls == 2
+      original.call(request)
+    end
+    sign_in_as(@admin)
+    request = WebPreview::RequestJson.stub(:copies_revision, cancel_mid_read) { detail(@theirs, user: @admin).fetch("request") }
+
+    assert_equal "failed", request.fetch("status")
+    assert_equal [ "failed" ], request.fetch("downloads").map { |download| download.fetch("status") }
+    assert_equal revision(@theirs), request.dig("copies", "revision")
+  end
+
   test "an unreadable scoring detail on one copy leaves the request and the copy's other facts readable" do
     @theirs.search_results.create!(guid: "odd", title: "Odd.m4b", source: SearchResult::SOURCE_PROWLARR, indexer: "Prowlarr", magnet_url: magnet("a"), seeders: 5, confidence_score: 60,
       score_breakdown: { "audiobook_structure" => 1, "preference_adjustment" => [ 1 ], "auto_select_allowed" => true })

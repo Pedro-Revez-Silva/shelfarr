@@ -41,7 +41,7 @@ function pickOf(copy: ListedCopy, stateKey: string | null): string {
   return JSON.stringify([stateKey, copy]);
 }
 
-export function suggestedPick(copies: ListedCopy[], stateKey: string | null): string | null {
+function suggestedPick(copies: ListedCopy[], stateKey: string | null): string | null {
   const suggestion = firstChoice(copies);
   return suggestion ? pickOf(suggestion, stateKey) : null;
 }
@@ -56,8 +56,6 @@ export function CopyTable({
   lookingFor = null,
   stateKey = null,
   locked = false,
-  pick,
-  onPick,
 }: {
   copies: ListedCopy[];
   choose: CopyChoice;
@@ -66,12 +64,8 @@ export function CopyTable({
   lookingFor?: string | null;
   stateKey?: string | null;
   locked?: boolean;
-  pick?: string | null;
-  onPick?: (pick: string | null) => void;
 }) {
-  const [ownPick, setOwnPick] = useState<string | null>(() => (preselect && !locked ? suggestedPick(copies, stateKey) : null));
-  const picked = pick === undefined ? ownPick : pick;
-  const setPicked = onPick ?? setOwnPick;
+  const [picked, setPicked] = useState<string | null>(() => (preselect && !locked ? suggestedPick(copies, stateKey) : null));
   const [missing, setMissing] = useState(false);
   const [askedFor, setAskedFor] = useState<{ id: string; stateKey: string | null } | null>(null);
   const captionId = useId();
@@ -88,6 +82,12 @@ export function CopyTable({
   const chosenKind = chosenCopy ? kindOf(chosenCopy) : null;
   const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
   const holdsFocus = useRef(false);
+  const pickLapsed = picked !== null && chosenCopy === undefined;
+  const questionLapsed = askedFor !== null && !confirming;
+  useEffect(() => {
+    if (pickLapsed) setPicked(null);
+    if (questionLapsed) setAskedFor(null);
+  }, [pickLapsed, questionLapsed]);
   useEffect(() => {
     if (confirming) keepButton.current?.focus();
   }, [confirming]);

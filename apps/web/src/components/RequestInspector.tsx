@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
 import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
-import { CopyTable, focusLeftThePage, keepsFocus, suggestedPick } from "./CopyTable";
+import { CopyTable, focusLeftThePage, keepsFocus } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
 type Pending = { isPending: boolean; isError: boolean; error: unknown };
@@ -246,6 +246,8 @@ function Section({ id, title, open = false, target = false, children }: { id: st
   );
 }
 
+const FOCUS_FALLBACKS = ["button[type=submit]", ".copy-table-wrap", ".copies-empty"];
+
 function Copies({ request, copies, actions }: { request: RequestDetail; copies: RequestCopies; actions: RequestActions }) {
   const search = useSearchRequestAgain(request.id);
   const choose = useChooseRequestCopy(request.id);
@@ -259,14 +261,16 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
   };
   const count = copies.candidates.length;
   const locked = revision === null && !copies.selectable;
-  const [pick, setPick] = useState(() => (copies.selectable && !locked ? suggestedPick(copies.candidates, revision) : null));
-  const emptyNote = useRef<HTMLParagraphElement>(null);
+  const section = useRef<HTMLDivElement>(null);
   const holdsFocus = useRef(false);
   useEffect(() => {
-    if (count === 0 && holdsFocus.current && focusLeftThePage()) emptyNote.current?.focus();
+    if (!holdsFocus.current || !focusLeftThePage()) return;
+    const target = FOCUS_FALLBACKS.map((selector) => section.current?.querySelector<HTMLElement>(selector)).find(Boolean);
+    target?.focus();
   });
   return (
     <div
+      ref={section}
       className="copies"
       onFocus={() => {
         holdsFocus.current = true;
@@ -286,10 +290,10 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
       <div role="status">{search.isSuccess ? <p className="form-success">Searching again. Copies found by this search appear here.</p> : null}</div>
       {count > 0 ? (
-        <CopyTable copies={copies.candidates} choose={choice} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} pick={pick} onPick={setPick} />
+        <CopyTable copies={copies.candidates} choose={choice} preselect={revision === null && copies.selectable} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} />
       ) : (
         <>
-          <p ref={emptyNote} className="request-note" tabIndex={-1}>
+          <p className="request-note copies-empty" tabIndex={-1}>
             No copies found yet. The search may still be running.
           </p>
           {choose.isError ? <Failure error={choose.error} fallback="The choice could not be sent. Nothing was changed." /> : null}

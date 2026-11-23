@@ -50,7 +50,7 @@ module WebPreview
       value
     end
 
-    def detail(store_offers:)
+    def detail(store_offers:, copies_revision: nil)
       value = summary.merge(
         attention_reason: admin? && @request.attention_needed ? @request.issue_description.to_s.first(TEXT_LIMIT).presence : nil,
         downloads: @request.downloads.order(id: :desc).map { |download| download_fields(download) },
@@ -61,7 +61,7 @@ module WebPreview
         actions: actions,
         store_offers: @request.completed? ? [] : store_offers.filter_map { |offer| offer_fields(offer) }
       )
-      admin? ? value.merge(copies: copies, events: events) : value
+      admin? ? value.merge(copies: copies(copies_revision), events: events) : value
     end
 
     private
@@ -137,8 +137,7 @@ module WebPreview
       }
     end
 
-    def copies
-      revision = self.class.copies_revision(@request)
+    def copies(revision)
       candidates = @request.search_results.best_first.includes(:acquisition_provider).to_a
       {
         selectable: BookPage.choosing_allowed?(@request) && candidates.any?(&:downloadable?),
