@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FocusEvent, type FormEvent } from "react";
 import type { BookCopy, CopyChoiceKind, CopyDetails } from "../contract";
 import { formatBytes } from "./DetailsPage";
 import { actionFailure } from "./requestText";
@@ -26,9 +26,6 @@ function isChosen(copy: ListedCopy): boolean {
   return choice === null ? copy.details !== undefined && copy.state === "selected" : choice === "selected";
 }
 
-function shownAs(copy: ListedCopy): string {
-  return JSON.stringify(copy);
-}
 
 function fallbackKind(copy: BookCopy): ChoosableKind | null {
   if (!copy.downloadable || copy.state === "selected") return null;
@@ -36,9 +33,12 @@ function fallbackKind(copy: BookCopy): ChoosableKind | null {
   return copy.state === "rejected" ? "select_instead" : "select";
 }
 
-function firstChoice(copies: ListedCopy[]): string {
-  const first = copies.find((copy) => choosableKind(copy) && !copy.skipped) ?? copies.find((copy) => choosableKind(copy));
-  return first ? shownAs(first) : "";
+function firstChoice(copies: ListedCopy[]): ListedCopy | undefined {
+  return copies.find((copy) => choosableKind(copy) && !copy.skipped) ?? copies.find((copy) => choosableKind(copy));
+}
+
+function pickOf(copy: ListedCopy, stateKey: string | null): string {
+  return JSON.stringify([stateKey, copy]);
 }
 
 export type CopyChoice = { mutate: (resultId: string) => void; isPending: boolean; isError: boolean; error: unknown };
@@ -60,7 +60,7 @@ export function CopyTable({
   stateKey?: string | null;
   locked?: boolean;
 }) {
-  const [picked, setPicked] = useState(() => (preselect ? firstChoice(copies) : ""));
+  const [picked, setPicked] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
   const [askedFor, setAskedFor] = useState<{ id: string; stateKey: string | null } | null>(null);
   const captionId = useId();
@@ -72,23 +72,25 @@ export function CopyTable({
   const kindOf = (copy: ListedCopy) => (locked ? null : choosableKind(copy));
   const detailed = copies.some((copy) => copy.details);
   const firstChoosableId = copies.find((copy) => kindOf(copy))?.id;
-  const chosenCopy = copies.find((copy) => shownAs(copy) === picked && kindOf(copy));
+  const suggested = preselect && !locked ? firstChoice(copies) : undefined;
+  const chosenCopy = picked === null ? suggested : copies.find((copy) => pickOf(copy, stateKey) === picked && kindOf(copy));
   const chosen = chosenCopy?.id ?? "";
   const chosenKind = chosenCopy ? kindOf(chosenCopy) : null;
   const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
-  const offeredChoice = useRef(Boolean(firstChoosableId));
-  const wasConfirming = useRef(confirming);
+  const holdsFocus = useRef(false);
   useEffect(() => {
-    const withdrawn = wasConfirming.current && !confirming;
-    wasConfirming.current = confirming;
     if (confirming) keepButton.current?.focus();
-    else if (withdrawn && focusLeftThePage()) submitButton.current?.focus();
   }, [confirming]);
   useEffect(() => {
-    const lostActions = offeredChoice.current && !firstChoosableId;
-    offeredChoice.current = Boolean(firstChoosableId);
-    if (lostActions && focusLeftThePage()) tableRegion.current?.focus();
-  }, [firstChoosableId]);
+    if (holdsFocus.current && focusLeftThePage()) (submitButton.current ?? tableRegion.current)?.focus();
+  });
+  const noteFocus = () => {
+    holdsFocus.current = true;
+  };
+  const noteBlur = (event: FocusEvent<HTMLFormElement>) => {
+    const next = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+    if (!event.currentTarget.contains(next) && event.target.isConnected) holdsFocus.current = false;
+  };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (choose.isPending) return;
@@ -114,7 +116,7 @@ export function CopyTable({
     submitButton.current?.focus();
   };
   return (
-    <form className="copy-form" onSubmit={submit} noValidate>
+    <form className="copy-form" onSubmit={submit} onFocus={noteFocus} onBlur={noteBlur} noValidate>
       <div ref={tableRegion} className="copy-table-wrap" role="region" aria-labelledby={captionId} tabIndex={0}>
         <table className="copy-table" aria-describedby={missing ? errorId : undefined}>
           <caption id={captionId} className="sr-only">
@@ -147,7 +149,7 @@ export function CopyTable({
                     checked={chosen === copy.id}
                     disabled={!kindOf(copy)}
                     onChange={() => {
-                      setPicked(shownAs(copy));
+                      setPicked(pickOf(copy, stateKey));
                       setMissing(false);
                       setAskedFor(null);
                     }}

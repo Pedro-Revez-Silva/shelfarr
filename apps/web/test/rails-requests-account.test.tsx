@@ -319,7 +319,7 @@ describe("a request's copies for an administrator", () => {
     expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "60", expected_revision: "/", replace_library_file: false }]);
   });
 
-  test("a replacement question opened before the copies changed is withdrawn instead of replacing what is now chosen", async () => {
+  test("a pick and its replacement question made before the copies changed are withdrawn, so the administrator decides again", async () => {
     let selected = "50";
     const found = () =>
       detail({
@@ -346,8 +346,10 @@ describe("a request's copies for an administrator", () => {
     await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
     await waitFor(() => expect([...document.querySelectorAll("#copies tbody th")].map((cell) => cell.textContent)).toEqual(["Copy 50.epub", "Copy 51.epub", "Copy 52.epub · chosen"]));
     expect(screen.queryByRole("button", { name: "Yes, replace the file" })).toBeNull();
-    expect(document.activeElement?.textContent).toBe("Download this copy instead");
+    expect(document.activeElement?.textContent).toBe("Download this copy");
+    expect((screen.getByLabelText("Copy 51.epub") as HTMLInputElement).checked).toBe(false);
     expect(server.called("POST", /selection$/)).toHaveLength(0);
+    await user.click(screen.getByLabelText("Copy 51.epub"));
     await user.click(screen.getByRole("button", { name: "Download this copy instead" }));
     await user.click(screen.getByRole("button", { name: "Yes, replace the file" }));
     await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "51", expected_revision: "52/3", replace_library_file: true }]));
@@ -412,6 +414,32 @@ describe("a request's copies for an administrator", () => {
     await user.click(screen.getByRole("button", { name: "Download this copy" }));
     expect(screen.getByRole("alert").textContent).toContain("Choose one copy that can be downloaded first.");
     expect(server.called("POST", /selection$/)).toHaveLength(0);
+  });
+
+  test("a pick made before a change that leaves every row looking the same is withdrawn too", async () => {
+    let revision = "r1";
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: false, revision, looking_for: "English", search_blocked: null, candidates: [copy("96", { title: "Provider.epub", source: "Shelf Provider" })] } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText("Provider.epub"));
+    revision = "r2";
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect((screen.getByLabelText("Provider.epub") as HTMLInputElement).checked).toBe(false));
+    await user.click(screen.getByRole("button", { name: "Download this copy" }));
+    expect(server.called("POST", /selection$/)).toHaveLength(0);
+  });
+
+  test("when a refresh removes the focused copy while others remain, focus stays in the copies", async () => {
+    let refreshed = false;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: false, revision: refreshed ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: refreshed ? [copy("98")] : [copy("97"), copy("98")] } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7#copies" });
+    (await screen.findByLabelText("Copy 97.epub")).focus();
+    refreshed = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect([...document.querySelectorAll("#copies tbody th")].map((cell) => cell.textContent)).toEqual(["Copy 98.epub"]));
+    await waitFor(() => expect(document.activeElement?.textContent).toBe("Download this copy"));
   });
 
   test("when a new search clears the copies under an open choice, focus and the refusal stay on screen", async () => {

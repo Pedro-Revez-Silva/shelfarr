@@ -332,6 +332,21 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert_equal @ebook.file_path, @ebook.reload.file_path
   end
 
+  test "a replacement confirmed on a page read before another request replaced the same book's file is refused" do
+    @mine.update!(book: @ebook, status: :completed, completed_at: Time.current)
+    kept = @mine.search_results.create!(guid: "kept", title: "Kept.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"), status: :selected)
+    better = @mine.search_results.create!(guid: "better", title: "Better.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("b"), status: :rejected)
+    Request.create!(book: @ebook, user: @admin, status: :completed, completed_at: Time.current)
+    sign_in_as(@admin)
+    read_before_other_import = detail(@mine, user: @admin).dig("request", "copies", "revision")
+
+    @ebook.update!(file_path: "#{@ebook.file_path}.replaced")
+    assert_no_difference -> { Download.count } do
+      assert_equal "copies_changed", choose(@mine, better, expected_revision: read_before_other_import, replace_library_file: true).fetch("error")
+    end
+    assert kept.reload.selected?
+  end
+
   test "a skipped copy can be tried again anyway, which lifts its blocklist like the classic Retry Anyway" do
     blocked = @mine.search_results.create!(guid: "blocked", title: "Emile.epub", source: SearchResult::SOURCE_PROWLARR, magnet_url: magnet("a"), status: :rejected,
       blocklisted_at: Time.current, blocklist_reason: "Import failed")

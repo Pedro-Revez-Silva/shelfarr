@@ -13,6 +13,7 @@ module WebPreview
     def self.copies_revision(request)
       shown = [
         Request.where(id: request.id).pick(:status, :search_generation),
+        Book.where(id: request.book_id).pick(:file_path, :updated_at).then { |file_path, updated_at| [ file_path, updated_at&.iso8601(6) ] },
         request.search_results.order(:id).pluck(:id, :updated_at).map { |id, updated_at| [ id, updated_at.iso8601(6) ] },
         AcquisitionProvider.where(id: request.search_results.select(:acquisition_provider_id)).order(:id).pluck(:id, :updated_at).map { |id, updated_at| [ id, updated_at.iso8601(6) ] },
         request.downloads.order(:id).pluck(:id, :status)
