@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatBytes } from "../components/DetailsPage";
+import { readerPath } from "../reader/links";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
 import { announceChange, onChange, onContinuityChange, unchangedOr, useOffline, type Offline } from "./context";
@@ -31,7 +32,7 @@ function placeText(book: SavedBook): string {
 
 export function DownloadsPage() {
   const offline = useOffline();
-  const { guard, boot } = useServices();
+  const { guard, boot, mode } = useServices();
   useDocumentTitle("Downloads");
   const [listing, setListing] = useState<Listing | null>(null);
   const [failed, setFailed] = useState(false);
@@ -142,7 +143,7 @@ export function DownloadsPage() {
               <p className="downloads-meta">{`EPUB · ${formatBytes(book.asset.size_bytes)} · saved ${formatDay(book.savedAt)}`}</p>
               <p className="downloads-place">{placeText(book)}</p>
               <div className="downloads-actions">
-                <a className="button button--primary" href={`${boot.mount}/library/${book.id}/read`}>
+                <a className="button button--primary" href={readerPath(mode, boot.mount, book.id)}>
                   Read<span className="sr-only"> {book.title}</span>
                 </a>
                 {removing === book.key ? (

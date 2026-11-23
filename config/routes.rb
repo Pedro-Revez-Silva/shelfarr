@@ -204,9 +204,11 @@ Rails.application.routes.draw do
   get "preview", to: "web_preview/shell#index", as: :web_preview
   get "preview/library", to: "web_preview/shell#show", as: :web_preview_library
   get "preview/library/:id", to: "web_preview/shell#show", as: :web_preview_publication, constraints: { id: /[1-9]\d{0,18}/ }
-  get "preview/library/:id/read", to: "web_preview/shell#reader", as: :web_preview_reader, constraints: { id: /[1-9]\d{0,18}/ }
-  get "preview/library/downloads", to: "web_preview/shell#downloads", as: :web_preview_downloads
-  get "preview/offline-worker.js", to: "web_preview/offline_worker#show", as: :web_preview_offline_worker, format: false
+  get "preview/library/:id/read", to: "web_preview/shell#moved_reader", constraints: { id: /[1-9]\d{0,18}/ }
+  get "preview/library/downloads", to: "web_preview/shell#moved_downloads"
+  get "preview/read/downloads", to: "web_preview/shell#downloads", as: :web_preview_downloads
+  get "preview/read/offline-worker.js", to: "web_preview/offline_worker#show", as: :web_preview_offline_worker, format: false
+  get "preview/read/:id", to: "web_preview/shell#reader", as: :web_preview_reader, constraints: { id: /[1-9]\d{0,18}/ }
   get "preview/discover", to: "web_preview/shell#show", as: :web_preview_discover
   get "preview/books/:source/:source_id", to: "web_preview/shell#show", as: :web_preview_book,
     constraints: { source: /hardcover|google_books|openlibrary|comic_vine/, source_id: /[A-Za-z0-9_-]{1,64}/ }

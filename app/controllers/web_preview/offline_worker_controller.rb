@@ -23,7 +23,8 @@ class WebPreview::OfflineWorkerController < ApplicationController
   private
 
   def worker_config
-    config = { library: web_preview_library_path, downloads: web_preview_downloads_path, assets: precached_assets,
+    config = { cache: web_preview_offline_cache, reads: { prefix: web_preview_offline_scope.delete_suffix("/"), suffix: "" },
+      downloads: web_preview_downloads_path, assets: precached_assets,
       shells: TITLES.keys.index_with { |view| { body: reader_shell_document(view), headers: reader_shell_headers(view) } } }
     { version: Digest::SHA256.hexdigest(config.to_json + SOURCE.read).first(24), **config }
   end

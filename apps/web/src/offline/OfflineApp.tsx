@@ -32,7 +32,7 @@ export function OfflineApp({ boot, auth, store, record, fetcher, onConnected }: 
   const [built] = useState(() => {
     const guard = new AccountGuard(record.account);
     const services = createServices({
-      boot: { version: 1, account: record.account, mount: boot.mount, api: boot.api, classic_library: null, runtime: "go", ...(boot.classic_downloads ? { classic_downloads: boot.classic_downloads } : {}) },
+      boot: { version: 1, account: record.account, mount: boot.mount, api: boot.api, classic_library: null, ...(boot.runtime === "go" ? { runtime: "go" } : {}), ...(boot.classic_downloads ? { classic_downloads: boot.classic_downloads } : {}) },
       guard,
       csrfToken: () => null,
     });

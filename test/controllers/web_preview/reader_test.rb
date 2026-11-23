@@ -64,7 +64,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     assert_equal %w[api classic_downloads mount offline page_engine reader_engine reader_formats runtime version view], reader_boot.keys.sort
     assert_equal [ 1, "rails", "reader", "/preview", "/preview/api/v1", "/read/downloads", %w[cbz epub pdf] ],
       reader_boot.values_at("version", "runtime", "view", "mount", "api", "classic_downloads", "reader_formats")
-    assert_equal({ "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") }, reader_boot.fetch("offline"))
+    assert_equal({ "worker" => "/preview/read/offline-worker.js", "scope" => "/preview/read/", "downloads" => "/preview/read/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") }, reader_boot.fetch("offline"))
     assert_match(%r{\A/assets/consumer_reader_engine-\h+\.js\z}, reader_boot.fetch("reader_engine"))
     page_engine = reader_boot.fetch("page_engine")
     assert_match(%r{\A/assets/consumer_pdf_engine-\h+\.js\z}, page_engine.fetch("engine"))
@@ -100,6 +100,32 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     end
     with_env(WebPreview::Access::VARIABLE => nil) do
       get web_preview_reader_path(id: @ebook.id)
+      assert_response :not_found
+    end
+  end
+
+  test "the reader, Downloads and worker live in their own subtree outside the experimental runtime's offline scope" do
+    sign_in_as(users(:one))
+    [ web_preview_reader_path(id: @ebook.id), web_preview_downloads_path, web_preview_offline_worker_path ].each do |path|
+      assert path.start_with?("/preview/read/"), path
+      get path
+      assert_response :success, path
+    end
+    get "/preview/offline-worker.js"
+    assert_response :not_found
+  end
+
+  test "the interim reader and Downloads addresses redirect to the subtree after the preview's access rules" do
+    get "/preview/library/#{@ebook.id}/read"
+    assert_redirected_to new_session_path
+    sign_in_as(users(:one))
+    { "/preview/library/#{@ebook.id}/read" => "/preview/read/#{@ebook.id}", "/preview/library/downloads" => "/preview/read/downloads" }.each do |from, to|
+      get from
+      assert_response :found
+      assert_equal "http://www.example.com#{to}", response.location
+    end
+    with_preview_users(users(:two)) do
+      get "/preview/library/#{@ebook.id}/read"
       assert_response :not_found
     end
   end
@@ -340,8 +366,8 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
     prefix, source = response.body.split(";\n", 2)
     assert_equal File.read(WebPreview::OfflineWorkerController::SOURCE), source
     config = JSON.parse(prefix.delete_prefix("self.SHELFARR_GO_OFFLINE = "))
-    assert_equal %w[assets downloads library shells version], config.keys.sort
-    assert_equal [ "/preview/library", "/preview/library/downloads" ], config.values_at("library", "downloads")
+    assert_equal %w[assets cache downloads reads shells version], config.keys.sort
+    assert_equal [ "shelfarr-rails-preview-offline.v1|", { "prefix" => "/preview/read", "suffix" => "" }, "/preview/read/downloads" ], config.values_at("cache", "reads", "downloads")
     assert_match(/\A\h{24}\z/, config.fetch("version"))
     worker = response.body
 
@@ -428,7 +454,7 @@ class WebPreview::ReaderTest < ActionDispatch::IntegrationTest
   test "the Library shell tells the app which formats the reader opens and where offline copies live" do
     sign_in_as(users(:one))
     get web_preview_library_path
-    assert_equal [ %w[cbz epub pdf], { "worker" => "/preview/offline-worker.js", "scope" => "/preview/library/", "downloads" => "/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") } ],
+    assert_equal [ %w[cbz epub pdf], { "worker" => "/preview/read/offline-worker.js", "scope" => "/preview/read/", "downloads" => "/preview/read/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("/preview") } ],
       boot.values_at("reader_formats", "offline")
   end
 end

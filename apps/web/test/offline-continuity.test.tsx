@@ -15,7 +15,7 @@ import { DAY, EPUB_ID, epubBytes, savedBook } from "./offline-helpers";
 const NAME = "shelfarr_offline_0123456789abcdef";
 const MOUNT = "/preview";
 const API = `${MOUNT}/api/v1`;
-const OFFLINE = { worker: `${MOUNT}/offline-worker.js`, scope: `${MOUNT}/library/`, downloads: `${MOUNT}/library/downloads`, continuity_cookie: NAME };
+const OFFLINE = { worker: `${MOUNT}/read/offline-worker.js`, scope: `${MOUNT}/read/`, downloads: `${MOUNT}/read/downloads`, continuity_cookie: NAME };
 const PLACE = { href: "OEBPS/two.xhtml", type: "application/xhtml+xml", locations: { cfi: "epubcfi(/6/4!/4/2/1:0)", progression: 0.5, totalProgression: 0.75 } };
 const OFFLINE_AT = "2026-11-20T11:00:00.000Z";
 
@@ -79,7 +79,7 @@ function unreachable(): FakeServer {
   });
 }
 
-function renderApp(server: FakeServer, store: IndexedDbOfflineStore, view: GoBoot["view"] = "downloads", url = `${MOUNT}/library/downloads`) {
+function renderApp(server: FakeServer, store: IndexedDbOfflineStore, view: GoBoot["view"] = "downloads", url = `${MOUNT}/read/downloads`) {
   resetFirstPage();
   window.history.replaceState(null, "", url);
   return render(<GoApp boot={railsBoot(view)} fetcher={server.fetcher} store={store} />);
@@ -204,7 +204,7 @@ describe("the Rails session's offline marker", () => {
 
   test("the store a page opens reads the marker from document.cookie", async () => {
     const name = "shelfarr_offline_feedfacefeedface";
-    const store = offlineStoreFor("/continuity-cookie/preview", name);
+    const store = offlineStoreFor("rails", "/continuity-cookie/preview", name);
     document.cookie = `${name}=cookieA; path=/`;
     expect(await store.confirm(confirmed("5", "cookieA"))).toBe(true);
     expect((await store.accountState()).record?.account).toBe("5");
@@ -233,7 +233,7 @@ describe("going offline straight after the Rails session changed", () => {
     signedOutView.unmount();
 
     setMarker("mB");
-    const readerView = renderApp(unreachable(), store, "reader", `${MOUNT}/library/7/read`);
+    const readerView = renderApp(unreachable(), store, "reader", `${MOUNT}/read/7`);
     expect(await screen.findByRole("heading", { name: "Shelfarr can't be reached" })).toBeTruthy();
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
     readerView.unmount();
@@ -275,7 +275,7 @@ describe("going offline straight after the Rails session changed", () => {
       setMarker("mB");
       return saved;
     };
-    renderApp(unreachable(), store, "reader", `${MOUNT}/library/7/read`);
+    renderApp(unreachable(), store, "reader", `${MOUNT}/read/7`);
     expect(await screen.findByRole("heading", { name: "It can't be opened without a connection" })).toBeTruthy();
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
   });

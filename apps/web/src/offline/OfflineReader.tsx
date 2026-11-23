@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ReaderAsset } from "../contract";
 import { Loading } from "../components/States";
 import { EpubReader } from "../reader/EpubReader";
-import { readerPublicationId } from "../reader/ReaderApp";
+import { readerPublicationId } from "../reader/links";
 import { ReaderFrame } from "../reader/ReaderFrame";
 import { useServices } from "../services";
 import { useDocumentTitle } from "../title";
@@ -32,8 +32,8 @@ function placeMessage(state: DeviceSaveState, upload: Upload | undefined | null)
 
 export function OfflineReader({ engine }: { engine: string | undefined }) {
   const offline = useOffline();
-  const { boot, guard } = useServices();
-  const id = readerPublicationId(window.location.pathname, boot.mount);
+  const { boot, guard, mode } = useServices();
+  const id = readerPublicationId(window.location.pathname, boot.mount, mode);
   const [opened, setOpened] = useState<Opened>({ kind: "loading" });
   useDocumentTitle(opened.kind === "ready" ? opened.book.title : opened.kind === "missing" ? "Not saved on this device" : "Opening saved book");
 

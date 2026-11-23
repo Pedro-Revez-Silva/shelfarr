@@ -221,7 +221,7 @@ describe("the Book page", () => {
     const publication = summary({ id: "7", reading_status: "in_progress", progress: { asset_id: "a", position_seconds: null, fraction: 0.42, page: null, version: 3, observed_at: null, updated_at: "2026-11-22T10:00:00Z" }, reader_url: "/sub/read/7" });
     renderApp({ server: bookServer(book({ details: "library", formats: [format("ebook", { state: "in_library", publication }), format("audiobook")] })), url: BOOK_URL, boot: { ...appBoot, reader_formats: ["cbz", "epub", "pdf"] } });
     const card = await screen.findByRole("region", { name: "On this server" });
-    expect(within(card).getByRole("link", { name: "Continue reading · 42% The Quiet Library in the reader" }).getAttribute("href")).toBe("/sub/preview/library/7/read");
+    expect(within(card).getByRole("link", { name: "Continue reading · 42% The Quiet Library in the reader" }).getAttribute("href")).toBe("/sub/preview/read/7");
   });
 
   test("an owned ebook whose file is gone says so instead of offering to read it", async () => {

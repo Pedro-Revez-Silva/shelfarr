@@ -17,7 +17,7 @@ import {
 } from "../src/offline/model";
 import { offeredDevicePlace } from "../src/offline/remembered";
 import { completeZip, saveCopy, SaveFailure, type SaveInputs } from "../src/offline/save";
-import { DATABASE_NAME, IndexedDbOfflineStore, databaseNameFor } from "../src/offline/store";
+import { DATABASE_NAME, IndexedDbOfflineStore, RAILS_DATABASE_NAME, databaseNameFor } from "../src/offline/store";
 import { previewDatabaseName, releasePreviewAccount } from "../../../app/javascript/web_preview_offline_release.js";
 import { WorkerFailure } from "../src/offline/worker";
 import { DAY, EPUB_ID, NEWER_ID, SIZE, asset, epubBytes, readerPublication, savedBook, serverProgress } from "./offline-helpers";
@@ -546,19 +546,38 @@ describe("one origin, several deployments", () => {
     expect((await root.accountState()).record?.account).toBe("5");
   });
 
+  test("the Rails preview keeps its saved books, files and account apart from the experimental Go runtime on the same mount", async () => {
+    expect([databaseNameFor("/preview", "rails"), databaseNameFor("/shelf/preview", "rails")]).toEqual([RAILS_DATABASE_NAME, `${RAILS_DATABASE_NAME}|/shelf/preview`]);
+    expect(databaseNameFor("/preview", "go")).toBe(DATABASE_NAME);
+    const rails = new IndexedDbOfflineStore(databaseNameFor("/preview", "rails"));
+    const go = new IndexedDbOfflineStore(databaseNameFor("/preview", "go"));
+    await confirmed(rails);
+    await seed(rails, savedBook());
+    expect((await rails.open("5", "7"))?.book.title).toBe(savedBook().title);
+    await go.prepare();
+    expect(await go.confirm(confirmation())).toBe(true);
+    expect([await go.books("5"), await go.open("5", "7"), await go.book("5", "7"), await go.others("4")]).toEqual([[], null, null, { books: 0, bytes: 0 }]);
+    await go.removeOthers("4");
+    expect((await rails.books("5")).map((book) => book.key)).toEqual([savedBook().key]);
+  });
+
   test("the Rails sign-in page releases only this deployment's confirmed account, in the format the reader reads, and creates nothing", async () => {
-    expect([previewDatabaseName(""), previewDatabaseName("/shelf")]).toEqual([databaseNameFor("/preview"), databaseNameFor("/shelf/preview")]);
+    expect([previewDatabaseName(""), previewDatabaseName("/shelf")]).toEqual([RAILS_DATABASE_NAME, `${RAILS_DATABASE_NAME}|/shelf/preview`]);
     expect(await releasePreviewAccount("", NOW)).toBe(false);
     expect((await indexedDB.databases()).map((database) => database.name)).toEqual([]);
-    const root = new IndexedDbOfflineStore(databaseNameFor("/preview"));
-    const shelf = new IndexedDbOfflineStore(databaseNameFor("/shelf/preview"));
+    const root = new IndexedDbOfflineStore(databaseNameFor("/preview", "rails"));
+    const shelf = new IndexedDbOfflineStore(databaseNameFor("/shelf/preview", "rails"));
+    const go = new IndexedDbOfflineStore(databaseNameFor("/preview", "go"));
     await root.prepare();
     await shelf.prepare();
+    await go.prepare();
     await root.confirm(confirmation());
     await shelf.confirm(confirmation());
+    await go.confirm(confirmation());
     expect(await releasePreviewAccount("", NOW + 1)).toBe(true);
     expect(await root.accountState()).toEqual({ record: null, clearedAt: NOW + 1 });
     expect((await shelf.accountState()).record?.account).toBe("5");
+    expect(await go.accountState()).toEqual({ record: { ...confirmation(), seenAt: NOW }, clearedAt: 0 });
     expect(await root.confirm(confirmation())).toBe(false);
     expect(await root.confirm(confirmation({ confirmedAt: NOW + 2 }))).toBe(true);
     expect(await releasePreviewAccount("", NOW + 1)).toBe(false);
@@ -573,7 +592,7 @@ describe("one origin, several deployments", () => {
       expect(await releasePreviewAccount("", NOW)).toBe(false);
       Object.defineProperty(factory, "databases", { value: listing, configurable: true });
       expect((await indexedDB.databases()).map((database) => database.name)).toEqual([]);
-      const root = new IndexedDbOfflineStore(databaseNameFor("/preview"));
+      const root = new IndexedDbOfflineStore(databaseNameFor("/preview", "rails"));
       await root.prepare();
       await root.confirm(confirmation());
       Object.defineProperty(factory, "databases", { value: undefined, configurable: true });

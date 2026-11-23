@@ -60,7 +60,7 @@ function describeUnavailable(error: unknown): { message: string; retry: boolean 
   return { message: "The server answered with something these screens do not understand. Reload the page to try again.", retry: true };
 }
 
-export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount, boot.offline?.continuity_cookie) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
+export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.runtime, boot.mount, boot.offline?.continuity_cookie) }: { boot: GoBoot; fetcher?: typeof fetch; store?: OfflineStore }) {
   const auth = useMemo(() => new AuthClient(boot.api, fetcher), [boot.api, fetcher]);
   const [state, setState] = useState<AuthState>({ kind: "loading" });
   const [epoch, setEpoch] = useState(0);

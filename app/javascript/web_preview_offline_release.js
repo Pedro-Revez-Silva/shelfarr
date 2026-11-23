@@ -1,4 +1,4 @@
-const DATABASE = "shelfarr-go-preview-offline"
+const DATABASE = "shelfarr-rails-preview-offline"
 const DEFAULT_MOUNT = "/preview"
 const ACCOUNT_KEY = "current"
 

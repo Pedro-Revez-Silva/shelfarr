@@ -8,6 +8,7 @@ module WebPreviewReaderShells
   ].join("; ").freeze
   TITLES = { "reader" => "Reader · Shelfarr", "downloads" => "Downloads · Shelfarr" }.freeze
   COPIED_DEFAULT_HEADERS = %w[X-Content-Type-Options X-Frame-Options Referrer-Policy].freeze
+  OFFLINE_CACHE = "shelfarr-rails-preview-offline.v1"
 
   private
 
@@ -33,7 +34,15 @@ module WebPreviewReaderShells
   end
 
   def web_preview_offline_boot
-    { worker: web_preview_offline_worker_path, scope: "#{web_preview_library_path}/", downloads: web_preview_downloads_path,
+    { worker: web_preview_offline_worker_path, scope: web_preview_offline_scope, downloads: web_preview_downloads_path,
       continuity_cookie: offline_continuity_cookie }
+  end
+
+  def web_preview_offline_scope
+    "#{web_preview_path}/read/"
+  end
+
+  def web_preview_offline_cache
+    web_preview_path == "/preview" ? "#{OFFLINE_CACHE}|" : "#{OFFLINE_CACHE}@#{web_preview_path}|"
   end
 end

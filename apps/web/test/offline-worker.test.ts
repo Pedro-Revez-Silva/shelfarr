@@ -13,11 +13,14 @@ async function sha256(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 
 const SHELL_HEADERS = { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "default-src 'none'", "Cache-Control": "private, no-store" };
 
-async function config(version = "v2", library = "/preview/library") {
+type Placement = { library?: string; downloads?: string; cache?: string; reads?: { prefix: string; suffix: string } };
+
+async function config(version = "v2", library = "/preview/library", placement: Placement = {}) {
   return {
     version,
     library,
     downloads: `${library}/downloads`,
+    ...placement,
     assets: [
       { path: "/preview/assets/preview.0000000000000001.js", sha256: await sha256(SCRIPT) },
       { path: "/preview/assets/preview.0000000000000002.css", sha256: await sha256(STYLE) },
@@ -47,14 +50,14 @@ class FakeCaches {
 type Listener = (event: { request?: Request; respondWith?: (response: Promise<Response>) => void; waitUntil?: (work: Promise<unknown>) => void }) => void;
 type Network = (request: Request) => Promise<Response>;
 
-async function worker(network: Network, version = "v2", library = "/preview/library") {
+async function worker(network: Network, version = "v2", library = "/preview/library", placement: Placement = {}) {
   const listeners = new Map<string, Listener>();
   const caches = new FakeCaches();
   const fetched: string[] = [];
   let claimed = false;
   let skipped = false;
   const self = {
-    SHELFARR_GO_OFFLINE: await config(version, library),
+    SHELFARR_GO_OFFLINE: await config(version, library, placement),
     location: new URL(`${ORIGIN}/preview/offline-worker.js`),
     addEventListener: (type: string, listener: Listener) => listeners.set(type, listener),
     skipWaiting: async () => void (skipped = true),
@@ -120,6 +123,20 @@ describe("the offline worker", () => {
     await installed.lifecycle("activate");
     expect(await installed.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v2", "shelfarr-offline-shell.v1|http://shelf.test|abc", "shelfarr-offline-media.v1|http://shelf.test|5", "other-app"]);
     expect(installed.state()).toEqual({ skipped: false, claimed: false });
+  });
+
+  test("the Rails preview's worker answers only its own subtree and keeps its caches apart from the Go runtime's", async () => {
+    const rails = { cache: "shelfarr-rails-preview-offline.v1|", reads: { prefix: "/preview/read", suffix: "" }, downloads: "/preview/read/downloads" };
+    const go = ["shelfarr-go-preview-offline.v1|v1", "shelfarr-go-preview-offline.v1@/shelf/preview/library|v1", "shelfarr-rails-preview-offline.v1@/shelf/preview|v1", "shelfarr-rails-preview-offline.v1|v1"];
+    const installed = await worker(assetNetwork, "v2", "/preview/library", rails);
+    for (const name of go) await installed.caches.open(name);
+    await installed.lifecycle("install");
+    await installed.lifecycle("activate");
+    expect(await installed.caches.keys()).toEqual(["shelfarr-go-preview-offline.v1|v1", "shelfarr-go-preview-offline.v1@/shelf/preview/library|v1", "shelfarr-rails-preview-offline.v1@/shelf/preview|v1", "shelfarr-rails-preview-offline.v1|v2"]);
+    const offline = await worker(async () => Promise.reject(new TypeError("offline")), "v2", "/preview/library", rails);
+    expect(await (await offline.dispatch(navigation("/preview/read/12")))?.text()).toBe("<p>reader shell</p>");
+    expect(await (await offline.dispatch(navigation("/preview/read/downloads")))?.text()).toBe("<p>downloads shell</p>");
+    for (const path of ["/preview/library/12/read", "/preview/library/downloads", "/preview/read/12/read", "/preview/read/012", "/preview/read"]) expect(await offline.dispatch(navigation(path))).toBeNull();
   });
 
   test("a worker for another deployment mount keeps its own caches and never removes the default mount's or another mount's", async () => {

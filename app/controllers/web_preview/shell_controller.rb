@@ -36,6 +36,14 @@ class WebPreview::ShellController < ApplicationController
     render_reader_shell("downloads")
   end
 
+  def moved_reader
+    redirect_to web_preview_reader_path(params[:id]), status: :found
+  end
+
+  def moved_downloads
+    redirect_to web_preview_downloads_path, status: :found
+  end
+
   private
 
   def render_reader_shell(view)

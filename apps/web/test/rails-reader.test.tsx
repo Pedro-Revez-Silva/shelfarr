@@ -14,7 +14,7 @@ import { ACCOUNT, FakeServer, MOUNT, boot, detail, page, session, summary } from
 import { EPUB_ID, MemoryOfflineStore, savedBook } from "./offline-helpers";
 
 const API = `${MOUNT}/api/v1`;
-const OFFLINE = { worker: `${MOUNT}/offline-worker.js`, scope: `${MOUNT}/library/`, downloads: `${MOUNT}/library/downloads` };
+const OFFLINE = { worker: `${MOUNT}/read/offline-worker.js`, scope: `${MOUNT}/read/`, downloads: `${MOUNT}/read/downloads` };
 const FORMATS = ["cbz", "epub", "pdf"];
 const railsBoot: Boot = { ...boot, reader_formats: FORMATS, offline: OFFLINE };
 
@@ -31,7 +31,7 @@ function readerServer(bootstrap: () => unknown, publication: object) {
     .on("GET", /\/api\/v1\/library\/8\/reader$/, () => ({ body: { account: ACCOUNT, publication } }));
 }
 
-function renderReader(server: FakeServer, view: GoBoot["view"] = "reader", url = `${MOUNT}/library/8/read`, store = new MemoryOfflineStore()) {
+function renderReader(server: FakeServer, view: GoBoot["view"] = "reader", url = `${MOUNT}/read/8`, store = new MemoryOfflineStore()) {
   resetFirstPage();
   window.history.replaceState(null, "", url);
   return render(<GoApp boot={readerBoot(view)} fetcher={server.fetcher} store={store} />);
@@ -101,7 +101,7 @@ describe("the reader served by Rails", () => {
       });
     const store = new MemoryOfflineStore();
     store.record = { account: ACCOUNT, confirmedAt: Date.now() - 1000, validForMs: 3_600_000 };
-    renderReader(server, "reader", `${MOUNT}/library/8/read`, store);
+    renderReader(server, "reader", `${MOUNT}/read/8`, store);
     await screen.findByRole("heading", { name: "The signed-in account changed" });
     expect(server.called("GET", /\/api\/v1\/session$/).length).toBeGreaterThan(0);
     await waitFor(() => expect(store.record).toBeNull());
@@ -126,7 +126,7 @@ describe("the reader served by Rails", () => {
   test("Downloads points to the downloads kept by the web reader without touching them", async () => {
     const store = new MemoryOfflineStore();
     store.record = { account: ACCOUNT, confirmedAt: Date.now(), validForMs: 3_600_000 };
-    renderReader(readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), {}), "downloads", `${MOUNT}/library/downloads`, store);
+    renderReader(readerServer(() => ({ ...signedIn(), offline_expires_in: 3600 }), {}), "downloads", `${MOUNT}/read/downloads`, store);
     const section = (await screen.findByRole("heading", { name: "Saved in the web reader" })).closest("section") as HTMLElement;
     expect(within(section).getByRole("link", { name: "Open those downloads" }).getAttribute("href")).toBe("/sub/read/downloads");
   });
@@ -137,7 +137,7 @@ describe("the reader served by Rails", () => {
     const unreachable = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
       throw new TypeError("Failed to fetch");
     });
-    renderReader(unreachable, "downloads", `${MOUNT}/library/downloads`, store);
+    renderReader(unreachable, "downloads", `${MOUNT}/read/downloads`, store);
     await screen.findByText(/You're offline\./);
     const section = screen.getByRole("heading", { name: "Saved in the web reader" }).closest("section") as HTMLElement;
     expect(within(section).getByRole("link", { name: "Open those downloads" }).getAttribute("href")).toBe("/sub/read/downloads");
@@ -164,9 +164,9 @@ describe("reader links in the Rails library", () => {
     const epub = detail();
     const comic: PublicationDetail = detail({ format_label: "Comic", content_kind: "graphic", files: [{ ...detail().files[0]!, format: "cbz" }] });
     const audio = summary({ id: "8", action: "listen", book_type: "audiobook", format_label: "Audiobook", reader_url: "/sub/read/8" });
-    expect(publicationReaderHref(epub, services(FORMATS))).toBe(`${MOUNT}/library/7/read`);
-    expect(publicationReaderHref(comic, services(FORMATS))).toBe(`${MOUNT}/library/7/read`);
-    expect(summaryReaderHref(audio, services(FORMATS))).toBe(`${MOUNT}/library/8/read`);
+    expect(publicationReaderHref(epub, services(FORMATS))).toBe(`${MOUNT}/read/7`);
+    expect(publicationReaderHref(comic, services(FORMATS))).toBe(`${MOUNT}/read/7`);
+    expect(summaryReaderHref(audio, services(FORMATS))).toBe(`${MOUNT}/read/8`);
     expect(summaryReaderHref(summary({ format_label: "Mystery" }), services(FORMATS))).toBe("/sub/read/7");
     expect(publicationReaderHref(epub, services(undefined))).toBe("/sub/read/7");
     expect(summaryReaderHref(audio, services(undefined))).toBe("/sub/read/8");
@@ -192,14 +192,14 @@ describe("offline copies from the Rails library", () => {
     renderRails(libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 })), `${MOUNT}/library/7`);
     const section = (await screen.findByRole("heading", { name: "Offline reading" })).closest("section") as HTMLElement;
     expect(within(section).getByRole("button", { name: "Save for offline reading" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Start reading/ }).getAttribute("href")).toBe(`${MOUNT}/library/7/read`);
+    expect(screen.getByRole("link", { name: /Start reading/ }).getAttribute("href")).toBe(`${MOUNT}/read/7`);
   });
 
   test("a PDF's details say it can't be saved here and point to the reader that downloads it", async () => {
     renderRails(libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 })), `${MOUNT}/library/9`);
     expect(await screen.findByText("This book can't be saved here yet: this reader keeps EPUBs offline, not PDFs.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Download it in the web reader" }).getAttribute("href")).toBe("/sub/read/9");
-    expect(screen.getByRole("link", { name: /Start reading/ }).getAttribute("href")).toBe(`${MOUNT}/library/9/read`);
+    expect(screen.getByRole("link", { name: /Start reading/ }).getAttribute("href")).toBe(`${MOUNT}/read/9`);
   });
 
   test("nothing offline is offered when the bootstrap names another account or nobody", async () => {
@@ -241,7 +241,7 @@ describe("offline copies from the Rails library", () => {
     const server = libraryServer(() => ({ ...signedIn(), offline_expires_in: 3600 })).on("GET", /\/api\/v1\/continue/, () => ({ body: { account: ACCOUNT, items } }));
     renderRails(server, `${MOUNT}/library`);
     const shelf = await screen.findByRole("region", { name: "Keep going" });
-    await waitFor(() => expect([...shelf.querySelectorAll("a.resume-link")].map((link) => link.getAttribute("href"))).toEqual([`${MOUNT}/library/7/read`, `${MOUNT}/library/8/read`]));
+    await waitFor(() => expect([...shelf.querySelectorAll("a.resume-link")].map((link) => link.getAttribute("href"))).toEqual([`${MOUNT}/read/7`, `${MOUNT}/read/8`]));
   });
 
   test("a Rails library without the reader keeps the web reader links and asks nothing about offline", async () => {

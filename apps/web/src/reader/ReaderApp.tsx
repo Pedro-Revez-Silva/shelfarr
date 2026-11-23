@@ -13,25 +13,19 @@ import { isPageFormat } from "./pages";
 import { PagesReader } from "./PagesReader";
 import { ProgressSession } from "./progress";
 import { ReaderFrame } from "./ReaderFrame";
+import { readerPublicationId } from "./links";
 import { SaveStatus } from "./SaveStatus";
 import { useOffline } from "../offline/context";
 import { savedEpub } from "../offline/model";
 import { useRememberedPlace } from "../offline/remembered";
 import { OfflineNotSavable, SaveForOffline } from "../offline/SaveForOffline";
 
-const READER_PATH = /^\/library\/([1-9]\d{0,18})\/read$/;
-
-export function readerPublicationId(pathname: string, mount: string): string | null {
-  if (!pathname.startsWith(`${mount}/`)) return null;
-  return READER_PATH.exec(pathname.slice(mount.length))?.[1] ?? null;
-}
-
 type Engines = { engine: string; pageEngine: PageEngine | undefined };
 
 export function ReaderApp({ engine, pageEngine }: { engine: string | undefined; pageEngine?: PageEngine | undefined }) {
   const services = useServices();
   const guard = useGuardState();
-  const id = readerPublicationId(window.location.pathname, services.boot.mount);
+  const id = readerPublicationId(window.location.pathname, services.boot.mount, services.mode);
   if (guard.status !== "active") return <LockedScreen reason={guard.status} classicLibrary={null} />;
   return (
     <QueryClientProvider client={services.queryClient}>

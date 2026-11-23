@@ -9,7 +9,7 @@ import { offlineStoreFor } from "./store";
 
 type Props = { services: Services; store?: OfflineStore; fetcher?: typeof fetch; children: ReactNode };
 
-export function RailsOffline({ services, store = offlineStoreFor(services.boot.mount, services.boot.offline?.continuity_cookie), fetcher, children }: Props) {
+export function RailsOffline({ services, store = offlineStoreFor("rails", services.boot.mount, services.boot.offline?.continuity_cookie), fetcher, children }: Props) {
   const { boot, guard } = services;
   const [auth] = useState(() => new AuthClient(boot.api, fetcher));
   const [offline, setOffline] = useState<Offline | null>(null);

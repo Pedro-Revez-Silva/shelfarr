@@ -14,6 +14,9 @@ import {
 } from "./model";
 
 export const DATABASE_NAME = "shelfarr-go-preview-offline";
+export const RAILS_DATABASE_NAME = "shelfarr-rails-preview-offline";
+export type OfflineRuntime = "go" | "rails";
+const DATABASES: Record<OfflineRuntime, string> = { go: DATABASE_NAME, rails: RAILS_DATABASE_NAME };
 const DEFAULT_MOUNT = "/preview";
 const DATABASE_VERSION = 1;
 const ACCOUNT_KEY = "current";
@@ -64,8 +67,9 @@ export function releasedState(current: AccountState, askedAt: number): AccountSt
   return { record, clearedAt: Math.max(current.clearedAt, askedAt) };
 }
 
-export function databaseNameFor(mount: string): string {
-  return mount === DEFAULT_MOUNT ? DATABASE_NAME : `${DATABASE_NAME}|${mount}`;
+export function databaseNameFor(mount: string, runtime: OfflineRuntime = "go"): string {
+  const name = DATABASES[runtime];
+  return mount === DEFAULT_MOUNT ? name : `${name}|${mount}`;
 }
 
 export class IndexedDbOfflineStore implements OfflineStore {
@@ -296,8 +300,8 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
 const stores = new Map<string, OfflineStore>();
 
-export function offlineStoreFor(mount: string, continuityCookie?: string): OfflineStore {
-  const name = databaseNameFor(mount);
+export function offlineStoreFor(runtime: OfflineRuntime, mount: string, continuityCookie?: string): OfflineStore {
+  const name = databaseNameFor(mount, runtime);
   const known = stores.get(name);
   if (known) return known;
   const created = new IndexedDbOfflineStore(name, continuityCookie === undefined ? null : () => cookieValue(document.cookie, continuityCookie));

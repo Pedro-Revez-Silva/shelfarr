@@ -3,12 +3,14 @@
 ;(() => {
   const CONFIG = self.SHELFARR_GO_OFFLINE
   const DEFAULT_LIBRARY = "/preview/library"
-  const PREFIX = CONFIG.library === DEFAULT_LIBRARY ? "shelfarr-go-preview-offline.v1|" : `shelfarr-go-preview-offline.v1@${CONFIG.library}|`
+  const PREFIX = CONFIG.cache || (CONFIG.library === DEFAULT_LIBRARY ? "shelfarr-go-preview-offline.v1|" : `shelfarr-go-preview-offline.v1@${CONFIG.library}|`)
   const CACHE = PREFIX + CONFIG.version
   const ORIGIN = self.location.origin
   const ASSETS = new Map(CONFIG.assets.map(asset => [asset.path, asset.sha256]))
   const UNREACHABLE = new Set([502, 503, 504])
-  const READER = new RegExp(`^${CONFIG.library.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[1-9][0-9]{0,18}/read$`)
+  const READS = CONFIG.reads || { prefix: CONFIG.library, suffix: "/read" }
+  const literal = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const READER = new RegExp(`^${literal(READS.prefix)}/[1-9][0-9]{0,18}${literal(READS.suffix)}$`)
 
   function shellFor(pathname) {
     if (pathname === CONFIG.downloads) return CONFIG.shells.downloads

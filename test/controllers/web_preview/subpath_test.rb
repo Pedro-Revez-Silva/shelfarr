@@ -70,7 +70,7 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
   test "an account the allowlist refuses gets a release page that names this deployment's path" do
     sign_in_as(users(:one))
     with_env(WebPreview::Access::VARIABLE => users(:two).id.to_s) do
-      get "#{BASE}/preview/library/downloads"
+      get "#{BASE}/preview/read/downloads"
       assert_response :not_found
       assert_select "meta[name=shelfarr-base][content='#{BASE}']"
     end
@@ -90,13 +90,24 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_equal line.split(";").first.delete_prefix("#{name}="), response.parsed_body.fetch("offline_continuity")
   end
 
+  test "the interim reader and Downloads addresses redirect within the deployment path" do
+    sign_in_as(users(:one))
+    { "#{BASE}/preview/library/#{@ebook.id}/read" => "#{BASE}/preview/read/#{@ebook.id}", "#{BASE}/preview/library/downloads" => "#{BASE}/preview/read/downloads" }.each do |from, to|
+      get from
+      assert_response :found
+      assert_equal "http://www.example.com#{to}", response.location
+    end
+    get "#{BASE}/preview/offline-worker.js"
+    assert_response :not_found
+  end
+
   def offline_boot
-    { "worker" => "#{BASE}/preview/offline-worker.js", "scope" => "#{BASE}/preview/library/", "downloads" => "#{BASE}/preview/library/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("#{BASE}/preview") }
+    { "worker" => "#{BASE}/preview/read/offline-worker.js", "scope" => "#{BASE}/preview/read/", "downloads" => "#{BASE}/preview/read/downloads", "continuity_cookie" => OfflineContinuity.cookie_name("#{BASE}/preview") }
   end
 
   test "the reader, its media, its worker and Downloads live under the deployment path" do
     sign_in_as(users(:one))
-    get "#{BASE}/preview/library/#{@ebook.id}/read"
+    get "#{BASE}/preview/read/#{@ebook.id}"
     assert_response :success
     boot = JSON.parse(css_select("script#shelfarr-boot").sole.text)
     assert_equal [ "#{BASE}/preview", "#{BASE}/preview/api/v1", "#{BASE}/read/downloads", offline_boot ], boot.values_at("mount", "api", "classic_downloads", "offline")
@@ -108,11 +119,12 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     assert_equal "#{BASE}/read/#{@ebook.id}", publication.dig("classic_reader", "url")
     get asset.fetch("url")
     assert_response :success
-    get "#{BASE}/preview/library/downloads"
+    get "#{BASE}/preview/read/downloads"
     assert_response :success
-    get "#{BASE}/preview/offline-worker.js"
+    get "#{BASE}/preview/read/offline-worker.js"
     config = JSON.parse(response.body.split(";\n", 2).first.delete_prefix("self.SHELFARR_GO_OFFLINE = "))
-    assert_equal [ "#{BASE}/preview/library", "#{BASE}/preview/library/downloads" ], config.values_at("library", "downloads")
+    assert_equal [ "shelfarr-rails-preview-offline.v1@#{BASE}/preview|", { "prefix" => "#{BASE}/preview/read", "suffix" => "" }, "#{BASE}/preview/read/downloads" ],
+      config.values_at("cache", "reads", "downloads")
     assert config.fetch("assets").all? { |entry| entry.fetch("path").start_with?("#{BASE}/assets/") }
   end
 end
