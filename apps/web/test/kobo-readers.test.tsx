@@ -43,6 +43,7 @@ function row(overrides: Partial<KoboReaderRow> = {}): KoboReaderRow {
 function delivery(overrides: Partial<KoboDelivery> = {}): KoboDelivery {
   return {
     entitlement_id: "11111111-2222-3333-4444-555555555555",
+    choice: "c1",
     title: "The Quiet Library",
     source: "library",
     link: { kind: "library", publication_id: "7" },
@@ -142,6 +143,12 @@ describe("Kobo readers in Account ▸ Devices", () => {
     expect(screen.queryByTestId("kobo-endpoint")).toBeNull();
   });
 
+  test("the old Kobo readers address lands on this card with focus", async () => {
+    renderApp({ server: koboServer(), url: "/sub/preview/account/devices#kobo-readers" });
+    expect(await screen.findByRole("link", { name: "Clara" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.id).toBe("kobo-readers"));
+  });
+
   test("an empty name is refused before anything is sent", async () => {
     const server = koboServer([]);
     renderApp({ server, url: "/sub/preview/account/devices" });
@@ -172,7 +179,8 @@ describe("a Kobo reader's page", () => {
     expect(server.called("POST", /places/)).toEqual([]);
     await user.click(within(ask).getByRole("button", { name: "Use Kobo place" }));
     expect(await within(books).findByText("Another device saved a place just now. Review the places and choose again.")).toBeTruthy();
-    expect(server.called("POST", /\/places\/kobo$/)[0]?.body).toEqual({ entitlement_id: "11111111-2222-3333-4444-555555555555" });
+    expect(server.called("POST", /\/places\/kobo$/)[0]?.body).toEqual({ entitlement_id: "11111111-2222-3333-4444-555555555555", choice: "c1" });
+    expect(document.activeElement).toBe(within(books).getByRole("group", { name: "The Quiet Library" }));
     await waitFor(() => expect(within(books).getByTestId("kobo-place").textContent).toBe("Another device saved a place."));
     expect(within(books).queryByRole("button", { name: "Use Kobo place" })).toBeNull();
   });
@@ -252,7 +260,59 @@ describe("a Kobo reader's page", () => {
     await user.click(within(ask).getByRole("button", { name: "Revoke connection" }));
     expect(await screen.findByText("Kobo connection revoked. Books already on the reader are kept.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Kobo connection revoked", level: 1 })).toBeTruthy();
-    expect(server.called("POST", /\/revoke$/)).toHaveLength(1);
+    expect(server.called("POST", /\/revoke$/).map((request) => request.body)).toEqual([{ version: "v1" }]);
+  });
+
+  test("a reader changed elsewhere is not revoked from an old page", async () => {
+    const server = koboServer().on("POST", /\/revoke$/, () => ({ status: 409, body: { account: ACCOUNT, error: "reader_changed", reader: reader({ version: "v2", name: "Clara (renamed)" }) } }));
+    renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Revoke connection" }));
+    await user.click(within(screen.getByRole("group", { name: /Revoke this Kobo connection/ })).getByRole("button", { name: "Revoke connection" }));
+    expect(await screen.findByText(/changed somewhere else, so it was not revoked/)).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Clara (renamed)", level: 1 })).toBeTruthy();
+  });
+
+  test("a new address is never shown under another reader after moving through history", async () => {
+    const records: Record<string, KoboReader> = { "3": reader(), "4": reader({ id: "4", name: "Libra", version: "w1" }) };
+    const server = koboServer([row(), row({ id: "4", name: "Libra" })])
+      .on("GET", /\/account\/kobo_readers\/\d+$/, (request) => ({ body: { account: ACCOUNT, reader: records[request.path.split("/").pop()!] } }))
+      .on("POST", /\/kobo_readers\/3\/connection_address$/, () => ({ body: { account: ACCOUNT, reader: row({ version: "v2" }), setup: { endpoint: ENDPOINT, store_endpoint: STORE } } }));
+    const { router } = renderApp({ server, url: "/sub/preview/account/devices/kobo/4" });
+    expect(await screen.findByRole("heading", { name: "Libra", level: 1 })).toBeTruthy();
+    await act(() => router.navigate({ to: "/account/devices/kobo/$readerId", params: { readerId: "3" } }));
+    expect(await screen.findByRole("heading", { name: "Clara", level: 1 })).toBeTruthy();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Make a new connection address" }));
+    await user.click(screen.getByRole("button", { name: "Make a new address" }));
+    expect(await screen.findByTestId("kobo-endpoint")).toBeTruthy();
+    await act(() => router.history.back());
+    expect(await screen.findByRole("heading", { name: "Libra", level: 1 })).toBeTruthy();
+    expect(screen.queryByTestId("kobo-endpoint")).toBeNull();
+    expect(screen.queryByText("Connect Clara")).toBeNull();
+  });
+
+  test("a reader revoked elsewhere replaces its cached page once the server says so", async () => {
+    let gone = false;
+    const server = koboServer().on("GET", /\/account\/kobo_readers\/3$/, () => (gone ? { status: 404, body: { error: "reader_not_found" } } : { body: { account: ACCOUNT, reader: reader() } }));
+    const { router } = renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
+    expect(await screen.findByRole("heading", { name: "Clara", level: 1 })).toBeTruthy();
+    await act(() => router.navigate({ to: "/account/$section", params: { section: "devices" } }));
+    await screen.findByRole("heading", { name: "Devices", level: 1 });
+    gone = true;
+    await act(() => router.navigate({ to: "/account/devices/kobo/$readerId", params: { readerId: "3" } }));
+    expect(await screen.findByRole("heading", { name: "This Kobo reader is not connected to your account" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Make a new connection address" })).toBeNull();
+  });
+
+  test("hiding a new address keeps keyboard focus in the Connection card", async () => {
+    const server = koboServer().on("POST", /\/connection_address$/, () => ({ body: { account: ACCOUNT, reader: row({ version: "v2" }), setup: { endpoint: ENDPOINT, store_endpoint: STORE } } }));
+    renderApp({ server, url: "/sub/preview/account/devices/kobo/3" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Make a new connection address" }));
+    await user.click(screen.getByRole("button", { name: "Make a new address" }));
+    await user.click(await screen.findByRole("button", { name: "I updated the reader" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Connection" }));
   });
 
   test("another person's reader, or one already revoked, is not shown", async () => {

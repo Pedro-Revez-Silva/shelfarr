@@ -6,6 +6,10 @@ module WebPreview
       Digest::SHA256.hexdigest([ device.id, device.name, device.store_coexistence, device.share_progress, device.receive_progress, device.token_digest ].to_json)[0, 24]
     end
 
+    def self.choice(delivery, progress)
+      Digest::SHA256.hexdigest([ delivery.id, delivery.revision_id, delivery.progress_bridge, delivery.progress_outbound, progress&.version, progress&.client_mutation_id ].to_json)[0, 24]
+    end
+
     def initialize(device, view:)
       @device = device
       @view = view
@@ -20,7 +24,7 @@ module WebPreview
         store_coexistence: @device.store_coexistence?,
         share_progress: @device.share_progress?,
         receive_progress: @device.receive_progress?,
-        base_url: @device.base_url,
+        base_url: @device.base_url.to_s.sub(KoboDevice::CONNECTION_PATH, "/kobo/…"),
         last_sync_at: @device.last_sync_at&.iso8601(3),
         version: self.class.version(@device)
       }
@@ -60,6 +64,7 @@ module WebPreview
       acquired = !delivery.private_source? && delivery.book&.acquired?
       {
         entitlement_id: delivery.entitlement_id,
+        choice: self.class.choice(delivery, progress),
         title: delivery.publication&.fetch("title", nil).to_s,
         source: delivery.private_source? ? "kobo_account" : "library",
         link: link(delivery, acquired),

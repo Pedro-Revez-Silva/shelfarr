@@ -3,7 +3,7 @@ import { failureKind, isApiError } from "../../api/errors";
 import { describeWriteFailure } from "../../components/accountFields";
 import { useServices } from "../../services";
 import * as koboApi from "./api";
-import type { KoboReader, KoboReaders, KoboSettings } from "./contract";
+import type { KoboDelivery, KoboReader, KoboReaders, KoboSettings } from "./contract";
 
 export function useKoboKeys() {
   const { keys } = useServices();
@@ -94,7 +94,7 @@ export function useKoboWrite<Input, Answer>(write: (input: Input) => Promise<Ans
 
 export function useChoosePlace(id: string) {
   const { api } = useServices();
-  return useKoboWrite(({ entitlementId, place }: { entitlementId: string; place: "kobo" | "shelfarr" }) => koboApi.choosePlace(api, id, entitlementId, place), (answer, publish) => publish.reader(answer.reader));
+  return useKoboWrite(({ delivery, place }: { delivery: Pick<KoboDelivery, "entitlement_id" | "choice">; place: "kobo" | "shelfarr" }) => koboApi.choosePlace(api, id, delivery, place), (answer, publish) => publish.reader(answer.reader));
 }
 
 export function useSaveSettings(id: string) {
@@ -109,7 +109,13 @@ export function useSaveSettings(id: string) {
 
 export function useRevoke(id: string) {
   const { api } = useServices();
-  return useKoboWrite(() => koboApi.revoke(api, id), (answer, publish) => publish.forget(answer.revoked));
+  return useKoboWrite(
+    (version: string) => koboApi.revoke(api, id, version),
+    (answer, publish) => {
+      if (answer.kind === "revoked") publish.forget(id);
+      else publish.reader(answer.reader);
+    },
+  );
 }
 
 export function useSendBook(publicationId: string) {

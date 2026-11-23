@@ -11,6 +11,7 @@ import {
   koboSetupSchema,
   type BookKobo,
   type KoboChanged,
+  type KoboDelivery,
   type KoboPlaceRefused,
   type KoboReader,
   type KoboReaderEnvelope,
@@ -28,6 +29,7 @@ export type FieldErrors = Record<string, string[]>;
 export type CreateAnswer = { kind: "created"; setup: KoboSetup } | { kind: "rejected"; errors: FieldErrors; messages: string[] };
 export type SettingsAnswer = { kind: "saved"; reader: KoboReader; notice: string } | { kind: "rejected"; errors: FieldErrors; messages: string[] } | { kind: "changed"; reader: KoboReader };
 export type AddressAnswer = { kind: "created"; setup: KoboSetup } | { kind: "changed"; reader: KoboReader };
+export type RevokeAnswer = { kind: "revoked"; notice: string } | { kind: "changed"; reader: KoboReader };
 export type PlaceAnswer = { kind: "chosen"; reader: KoboReader; notice: string } | { kind: "refused"; reader: KoboReader; message: string };
 
 const account = (value: { account: string }) => value.account;
@@ -66,21 +68,22 @@ export async function newAddress(api: ApiClient, id: string, version: string): P
   return "error" in answer ? { kind: "changed", reader: answer.reader } : { kind: "created", setup: answer };
 }
 
-export function revoke(api: ApiClient, id: string): Promise<KoboRevoked> {
-  return api.request({ path: `${readerPath(id)}/revoke`, schema: koboRevokedSchema, method: "POST", body: {}, account });
+export async function revoke(api: ApiClient, id: string, version: string): Promise<RevokeAnswer> {
+  const answer = await api.request<KoboRevoked | KoboChanged>({ path: `${readerPath(id)}/revoke`, schema: koboRevokedSchema, conflict: koboChangedSchema, method: "POST", body: { version }, account });
+  return "error" in answer ? { kind: "changed", reader: answer.reader } : { kind: "revoked", notice: answer.notice };
 }
 
 export function sendBook(api: ApiClient, id: string, bookId: string): Promise<KoboSent> {
   return api.request({ path: `${readerPath(id)}/send`, schema: koboSentSchema, method: "POST", body: { book_id: bookId }, account });
 }
 
-export async function choosePlace(api: ApiClient, id: string, entitlementId: string, place: "kobo" | "shelfarr"): Promise<PlaceAnswer> {
+export async function choosePlace(api: ApiClient, id: string, delivery: Pick<KoboDelivery, "entitlement_id" | "choice">, place: "kobo" | "shelfarr"): Promise<PlaceAnswer> {
   const answer = await api.request<KoboReaderEnvelope | KoboPlaceRefused>({
     path: `${readerPath(id)}/places/${place}`,
     schema: koboReaderEnvelopeSchema,
     conflict: koboPlaceRefusedSchema,
     method: "POST",
-    body: { entitlement_id: entitlementId },
+    body: { entitlement_id: delivery.entitlement_id, choice: delivery.choice },
     account,
   });
   return "error" in answer ? { kind: "refused", reader: answer.reader, message: answer.message } : { kind: "chosen", reader: answer.reader, notice: answer.notice ?? "" };

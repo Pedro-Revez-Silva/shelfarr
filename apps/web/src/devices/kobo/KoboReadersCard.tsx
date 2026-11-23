@@ -1,4 +1,4 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useLocation } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { describeWriteFailure } from "../../components/accountFields";
 import { Time } from "../../components/requestText";
@@ -13,8 +13,16 @@ export function KoboReadersCard() {
   const headingId = useId();
   const readers = useKoboReaders();
   const [setup, setSetup] = useState<KoboSetup | null>(null);
+  const section = useRef<HTMLElement>(null);
+  const hash = useLocation({ select: (location) => location.hash });
+  const ready = readers.data !== undefined;
+  useEffect(() => {
+    if (hash !== "kobo-readers" || !ready) return;
+    section.current?.scrollIntoView({ block: "start" });
+    section.current?.focus({ preventScroll: true });
+  }, [hash, ready]);
   return (
-    <section id="kobo-readers" className="account-card" aria-labelledby={headingId} tabIndex={-1}>
+    <section ref={section} id="kobo-readers" className="account-card" aria-labelledby={headingId} tabIndex={-1}>
       <h2 id={headingId}>Kobo readers</h2>
       <p className="muted">Send library ebooks to each reader, then sync it over Wi-Fi. Works with stock Kobo software; no alternative reader app needed.</p>
       <div className="kobo-preview-note" role="note">

@@ -3,6 +3,7 @@
 class WebPreview::KoboReadersController < WebPreview::APIController
   SETTINGS = %w[store_coexistence share_progress receive_progress].freeze
   ENTITLEMENT = /\A[0-9A-Za-z-]{1,64}\z/
+  PLACES_CHANGED = "This book's reading places changed after the page was shown. Review them and choose again."
 
   before_action :set_device, except: %i[index create book]
   rescue_from ActionDispatch::Http::Parameters::ParseError, with: -> { render_error("invalid_request", :bad_request) }
@@ -56,7 +57,16 @@ class WebPreview::KoboReadersController < WebPreview::APIController
   end
 
   def revoke
-    @device.destroy!
+    values = body_values(%w[version], [])
+    return render_error("invalid_request", :bad_request) unless values
+
+    revoked = @device.with_lock do
+      next false unless values["version"] == WebPreview::KoboReaderJson.version(@device)
+
+      @device.destroy!
+    end
+    return render_changed unless revoked
+
     render json: { account: web_preview_account_id, revoked: @device.id.to_s, notice: KoboDevicesHelper::KOBO_REVOKED_NOTICE }
   end
 
@@ -74,11 +84,11 @@ class WebPreview::KoboReadersController < WebPreview::APIController
   end
 
   def use_kobo_place
-    delivery = find_delivery
-    return unless delivery
-
-    Kobo::ProgressBridge.new(delivery).choose!
-    render_reader(notice: helpers.kobo_place_chosen_notice(delivery))
+    notice = with_shown_delivery do |delivery|
+      Kobo::ProgressBridge.new(delivery).choose!
+      helpers.kobo_place_chosen_notice(delivery)
+    end
+    render_reader(notice: notice) if notice
   rescue Kobo::ProgressBridge::NothingToChoose
     render_place_refusal(KoboDevicesHelper::KOBO_PLACE_REFUSALS.fetch(:nothing_to_choose))
   rescue Consumer::ProgressWriter::Conflict
@@ -88,11 +98,11 @@ class WebPreview::KoboReadersController < WebPreview::APIController
   end
 
   def send_shelfarr_place
-    delivery = find_delivery
-    return unless delivery
-
-    Kobo::OutboundProgress.choose_for!(delivery)
-    render_reader(notice: helpers.kobo_shelfarr_place_notice(@device, delivery))
+    notice = with_shown_delivery do |delivery|
+      Kobo::OutboundProgress.choose_for!(delivery)
+      helpers.kobo_shelfarr_place_notice(@device, delivery)
+    end
+    render_reader(notice: notice) if notice
   rescue Kobo::OutboundProgress::NothingToSend
     render_place_refusal(KoboDevicesHelper::KOBO_SHELFARR_PLACE_REFUSAL)
   end
@@ -123,15 +133,25 @@ class WebPreview::KoboReadersController < WebPreview::APIController
     values
   end
 
-  def find_delivery
-    entitlement = request.request_parameters["entitlement_id"]
-    unless entitlement.is_a?(String) && entitlement.match?(ENTITLEMENT)
+  def with_shown_delivery
+    values = body_values(%w[entitlement_id choice], [])
+    unless values && values["entitlement_id"].match?(ENTITLEMENT)
       render_error("invalid_request", :bad_request)
       return
     end
-    delivery = @device.kobo_deliveries.find_by(entitlement_id: entitlement)
-    render_place_refusal("This book is no longer selected for #{@device.name}. Review the list again.") unless delivery
-    delivery
+    @device.with_lock do
+      delivery = @device.kobo_deliveries.find_by(entitlement_id: values["entitlement_id"])
+      unless delivery
+        render_place_refusal("This book is no longer selected for #{@device.name}. Review the list again.")
+        next
+      end
+      progress = delivery.book_id && @device.user.consumer_progresses.find_by(book_id: delivery.book_id)
+      unless values["choice"] == WebPreview::KoboReaderJson.choice(delivery, progress)
+        render_place_refusal(PLACES_CHANGED)
+        next
+      end
+      yield delivery
+    end
   end
 
   def new_reader
@@ -157,10 +177,12 @@ class WebPreview::KoboReadersController < WebPreview::APIController
   end
 
   def render_changed
-    render json: { account: web_preview_account_id, error: "reader_changed", reader: json(@device.reload).detail }, status: :conflict
+    Kobo::OutboundProgress.refresh(@device.reload)
+    render json: { account: web_preview_account_id, error: "reader_changed", reader: json(@device).detail }, status: :conflict
   end
 
   def render_place_refusal(message)
-    render json: { account: web_preview_account_id, error: "place_refused", message: message, reader: json(@device.reload).detail }, status: :conflict
+    Kobo::OutboundProgress.refresh(@device.reload)
+    render json: { account: web_preview_account_id, error: "place_refused", message: message, reader: json(@device).detail }, status: :conflict
   end
 end

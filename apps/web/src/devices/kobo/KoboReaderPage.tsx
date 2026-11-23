@@ -20,11 +20,16 @@ const routeApi = getRouteApi("/account/devices/kobo/$readerId");
 
 export function KoboReaderPage() {
   const { readerId } = routeApi.useParams();
+  return <ReaderPage key={readerId} readerId={readerId} />;
+}
+
+function ReaderPage({ readerId }: { readerId: string }) {
   const { mode } = useServices();
   const reader = useKoboReader(readerId);
   const [revoked, setRevoked] = useState<string | null>(null);
   useDocumentTitle(reader.data?.name ? `${reader.data.name} · Devices` : "Kobo reader · Devices");
-  const heading = revoked ? "Kobo connection revoked" : (reader.data?.name ?? (reader.isError ? "Kobo reader" : "Loading reader"));
+  const missing = reader.isError && isMissingReader(reader.error);
+  const heading = revoked ? "Kobo connection revoked" : missing ? "Kobo reader" : (reader.data?.name ?? (reader.isError ? "Kobo reader" : "Loading reader"));
   return (
     <section className="account kobo-reader" aria-labelledby="kobo-reader-heading">
       <p className="people-back">
@@ -48,15 +53,15 @@ export function KoboReaderPage() {
             </Link>
           </p>
         </div>
-      ) : reader.data ? (
-        <ReaderView reader={reader.data} onRevoked={setRevoked} />
-      ) : reader.isError && isMissingReader(reader.error) ? (
+      ) : missing ? (
         <EmptyState title="This Kobo reader is not connected to your account">
           <p>It may have been revoked, or it belongs to someone else. Each person sees only their own readers.</p>
           <Link to="/account/$section" params={{ section: "devices" }} hash="kobo-readers" className="button">
             Your devices
           </Link>
         </EmptyState>
+      ) : reader.data ? (
+        <ReaderView reader={reader.data} onRevoked={setRevoked} />
       ) : reader.isError ? (
         <ErrorPanel error={reader.error} onRetry={() => void reader.refetch()} />
       ) : (
@@ -131,12 +136,16 @@ function DeliveryRow({ reader, delivery, say }: { reader: KoboReader; delivery: 
       void client.invalidateQueries({ queryKey: keys.reader(reader.id) });
     },
   );
+  const row = useRef<HTMLDivElement>(null);
   const busy = choose.isPending || resend.isPending;
   const pick = (place: "kobo" | "shelfarr") =>
     choose.mutate(
-      { entitlementId: delivery.entitlement_id, place },
+      { delivery, place },
       {
-        onSuccess: (answer) => say(answer.kind === "chosen" ? "success" : "error", answer.kind === "chosen" ? answer.notice : answer.message),
+        onSuccess: (answer) => {
+          say(answer.kind === "chosen" ? "success" : "error", answer.kind === "chosen" ? answer.notice : answer.message);
+          row.current?.focus();
+        },
         onError: (error) => {
           void client.invalidateQueries({ queryKey: keys.reader(reader.id) });
           say("error", describeWriteFailure(error, "Shelfarr could not confirm whether the place was chosen. The list is being read again; check the book before choosing again."));
@@ -144,7 +153,7 @@ function DeliveryRow({ reader, delivery, say }: { reader: KoboReader; delivery: 
       },
     );
   return (
-    <div className="kobo-delivery">
+    <div ref={row} className="kobo-delivery" tabIndex={-1} role="group" aria-label={delivery.title}>
       <div className="kobo-delivery-text">
         <p className="token-name">
           <DeliveryTitle delivery={delivery} />
@@ -268,6 +277,7 @@ function SettingsForm({ reader }: { reader: KoboReader }) {
 
 function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (notice: string) => void }) {
   const headingId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
   const { api } = useServices();
   const publish = useKoboPublish();
   const keys = useKoboKeys();
@@ -310,14 +320,23 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
 
   return (
     <section className="account-card" aria-labelledby={headingId}>
-      <h2 id={headingId}>Connection</h2>
+      <h2 id={headingId} ref={heading} tabIndex={-1}>
+        Connection
+      </h2>
       {setup ? (
         <SetupInstructions
           setup={setup.setup}
           name={setup.reader.name}
           storeCoexistence={setup.reader.store_coexistence}
           done={
-            <button type="button" className="button button--primary" onClick={() => setSetup(null)}>
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => {
+                setSetup(null);
+                heading.current?.focus();
+              }}
+            >
               I updated the reader
             </button>
           }
@@ -344,8 +363,11 @@ function Connection({ reader, onRevoked }: { reader: KoboReader; onRevoked: (not
               question="Revoke this Kobo connection? The reader will stop syncing with Shelfarr."
               busy={revoke.isPending}
               onRemove={() =>
-                revoke.mutate(undefined, {
-                  onSuccess: (answer) => onRevoked(answer.notice),
+                revoke.mutate(reader.version, {
+                  onSuccess: (answer) => {
+                    if (answer.kind === "revoked") onRevoked(answer.notice);
+                    else say("error", "This reader was changed somewhere else, so it was not revoked. Review it, then revoke it again if you still want to.");
+                  },
                   onError: (error) => {
                     if (isMissingReader(error)) onRevoked("This Kobo connection was already revoked. Books already on the reader are kept.");
                     else say("error", describeWriteFailure(error, "Shelfarr could not confirm whether the connection was revoked. Reload the page to see whether it is still connected."));

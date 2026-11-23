@@ -59,7 +59,7 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     preview_get web_preview_api_kobo_reader_path(@device), user: @admin
     assert_response :not_found
     assert_equal "reader_not_found", response.parsed_body.fetch("error")
-    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), user: @admin)
+    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), user: @admin, version: WebPreview::KoboReaderJson.version(@device))
     assert_response :not_found
     assert KoboDevice.exists?(@device.id)
   end
@@ -105,6 +105,23 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
   end
 
+  test "a pasted connection address is refused as the Shelfarr address and never logged or shown" do
+    sign_in_as(@member)
+    pasted = "https://shelfarr.example/shelf/kobo/#{@token}"
+    assert_no_difference "KoboDevice.count" do
+      body = send_json(:post, web_preview_api_account_kobo_readers_path, name: "Copy", base_url: pasted, store_coexistence: true, share_progress: true, receive_progress: false)
+      assert_response :unprocessable_entity
+      assert_equal({ "base_url" => [ "must be Shelfarr's own address, not a Kobo connection address" ] }, body.fetch("errors"))
+      assert_not_includes response.body, @token
+    end
+    assert_not_includes Rails.root.join("log/test.log").read.lines.last(200).join, @token
+
+    @device.update_columns(base_url: pasted)
+    preview_get web_preview_api_kobo_readers_path
+    assert_equal "https://shelfarr.example/shelf/kobo/…", response.parsed_body.fetch("readers").sole.fetch("base_url")
+    assert_not_includes response.body, @token
+  end
+
   test "writes need the page's account and a valid CSRF token, and a signed-out request is refused" do
     preview_get web_preview_api_kobo_readers_path
     assert_response :unauthorized
@@ -132,7 +149,7 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     sign_in_as(@member)
     preview_get web_preview_api_kobo_readers_path
     assert_response :not_found
-    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device))
+    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), version: "x")
     assert_response :not_found
     assert KoboDevice.exists?(@device.id)
   end
@@ -178,15 +195,24 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_not_includes response.body, token
   end
 
-  test "revoking removes the reader and its access, keeping the library book" do
+  test "revoking removes the reader and its access, keeping the library book, only from the version on screen" do
     @device.send_book!(@book)
     sign_in_as(@member)
-    body = send_json(:post, web_preview_api_kobo_reader_revoke_path(@device))
+    shown = reader.fetch("version")
+    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device))
+    assert_response :bad_request
+    rotated = send_json(:post, web_preview_api_kobo_reader_connection_address_path(@device), version: shown)
+    fresh = endpoint_token(rotated)
+    stale = send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), version: shown)
+    assert_response :conflict
+    assert_equal "reader_changed", stale.fetch("error")
+    assert_equal @device, KoboDevice.authenticate(fresh)
+    body = send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), version: rotated.dig("reader", "version"))
     assert_response :success
     assert_equal({ "account" => @member.id.to_s, "revoked" => @device.id.to_s, "notice" => "Kobo connection revoked. Books already on the reader are kept." }, body)
-    assert_nil KoboDevice.authenticate(@token)
+    assert_nil KoboDevice.authenticate(fresh)
     assert Book.exists?(@book.id)
-    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device))
+    send_json(:post, web_preview_api_kobo_reader_revoke_path(@device), version: rotated.dig("reader", "version"))
     assert_response :not_found
     assert_equal "reader_not_found", response.parsed_body.fetch("error")
   end
@@ -210,6 +236,11 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     audiobook = Book.create!(title: "Heard", author: "Someone", book_type: :audiobook, file_path: @root)
     preview_get web_preview_api_library_kobo_path(audiobook)
     assert_equal "Choose an acquired ebook", response.parsed_body.dig("kobo", "refusal")
+    locked = File.join(@root, "Locked.epub")
+    write_epub(locked, extra: { "META-INF/encryption.xml" => "<encryption/>" })
+    protected_book = Book.create!(title: "Locked", author: "Someone", book_type: :ebook, file_path: locked)
+    preview_get web_preview_api_library_kobo_path(protected_book)
+    assert_equal "Encrypted EPUBs are not supported", response.parsed_body.dig("kobo", "refusal")
     wanted = Book.create!(title: "Wanted", author: "Someone", book_type: :ebook)
     preview_get web_preview_api_library_kobo_path(wanted)
     assert_response :not_found
@@ -265,22 +296,34 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_equal [ "choice", true ], place.values_at("tone", "choosable")
     assert_match(/Kept a newer place from another device \(80%, read 1 minute ago\). Kobo place: 35%, read about 2 hours ago/, place.fetch("text"))
 
-    body = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id)
+    shown = detail.fetch("deliveries").sole.fetch("choice")
+    newer = delivery.progress_bridge.merge("percent" => 55.0, "locator" => delivery.progress_bridge["locator"].merge("locations" => { "totalProgression" => 0.55 }))
+    original = delivery.progress_bridge
+    delivery.update_columns(progress_bridge: newer)
+    moved = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id, choice: shown)
+    assert_response :conflict
+    assert_equal [ "place_refused", "This book's reading places changed after the page was shown. Review them and choose again." ], moved.values_at("error", "message")
+    assert_equal "a.xhtml", @member.consumer_progresses.find_by!(book: @book).locator["href"]
+    delivery.update_columns(progress_bridge: original)
+    send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id)
+    assert_response :bad_request
+
+    body = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id, choice: shown)
     assert_response :success
     assert_equal "Shelfarr now resumes A Library Book at the Kobo place.", body.fetch("notice")
     assert_equal "b.xhtml", @member.consumer_progresses.find_by!(book: @book).locator["href"]
     assert_not body.fetch("reader").fetch("deliveries").sole.dig("place", "choosable")
 
-    again = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id)
+    again = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id, choice: body.fetch("reader").fetch("deliveries").sole.fetch("choice"))
     assert_response :conflict
     assert_equal [ "place_refused", "There is no unapplied Kobo place for this book." ], again.values_at("error", "message")
-    unknown = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: SecureRandom.uuid)
+    unknown = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: SecureRandom.uuid, choice: "x")
     assert_equal "This book is no longer selected for My Kobo. Review the list again.", unknown.fetch("message")
 
     delivery.update_columns(progress_bridge: delivery.progress_bridge.merge("status" => "superseded"))
     File.rename(@path, "#{@path}.old")
     write_epub(@path)
-    changed = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id)
+    changed = send_json(:post, web_preview_api_kobo_reader_kobo_place_path(@device), entitlement_id: delivery.entitlement_id, choice: reader.fetch("deliveries").sole.fetch("choice"))
     assert_equal "That Kobo place belongs to an edition that is no longer in the library.", changed.fetch("message")
   end
 
@@ -293,14 +336,25 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     Consumer::ProgressWriter.new(user: @member, book: @book).call("asset_id" => asset, "expected_version" => 0,
       "client_mutation_id" => SecureRandom.uuid, "locator" => { "href" => "OEBPS/Text/ch2.xhtml", "locations" => { "progression" => 0.5, "totalProgression" => 0.4 } })
     sign_in_as(@member)
-    outbound = reader.fetch("deliveries").sole.fetch("outbound")
+    shown = reader.fetch("deliveries").sole
+    outbound = shown.fetch("outbound")
     assert_equal [ "choice", true ], outbound.values_at("tone", "choosable")
     assert_match(/Shelfarr's place \(chapter 2 of 3, 40% of the book\) has no reading time/, outbound.fetch("text"))
 
-    body = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id)
+    progress = @member.consumer_progresses.sole
+    Consumer::ProgressWriter.new(user: @member, book: @book).call("asset_id" => asset, "expected_version" => progress.version,
+      "client_mutation_id" => SecureRandom.uuid, "locator" => { "href" => "OEBPS/Text/ch3.xhtml", "locations" => { "progression" => 0.5, "totalProgression" => 0.6 } })
+    moved = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id, choice: shown.fetch("choice"))
+    assert_response :conflict
+    assert_equal "This book's reading places changed after the page was shown. Review them and choose again.", moved.fetch("message")
+    assert_not_equal "queued", delivery.reload.progress_outbound["status"]
+    current = moved.fetch("reader").fetch("deliveries").sole
+    assert_match(/chapter 3 of 3, 60% of the book/, current.dig("outbound", "text"))
+
+    body = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id, choice: current.fetch("choice"))
     assert_equal "My Kobo moves A Library Book to the Shelfarr place at its next Wi-Fi sync.", body.fetch("notice")
-    assert_match(/Your chosen Shelfarr place \(chapter 2 of 3, 40% of the book\) waits/, body.fetch("reader").fetch("deliveries").sole.dig("outbound", "text"))
-    again = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id)
+    assert_match(/Your chosen Shelfarr place \(chapter 3 of 3, 60% of the book\) waits/, body.fetch("reader").fetch("deliveries").sole.dig("outbound", "text"))
+    again = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id, choice: body.fetch("reader").fetch("deliveries").sole.fetch("choice"))
     assert_equal "There is no Shelfarr place waiting for a choice for this book. Its place may have changed; review it again.", again.fetch("message")
   end
 

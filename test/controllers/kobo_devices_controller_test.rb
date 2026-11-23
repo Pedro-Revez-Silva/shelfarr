@@ -45,7 +45,7 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "invalid and unsafe connection addresses stay on form without creating a device" do
-    [ "file:///etc/passwd", "https://user:pass@example.com", "https://example.com?private=yes", "https://example.com#fragment", "broken" ].each do |base_url|
+    [ "file:///etc/passwd", "https://user:pass@example.com", "https://example.com?private=yes", "https://example.com#fragment", "broken", "https://example.com/shelf/kobo/#{"a" * 64}" ].each do |base_url|
       assert_no_difference "KoboDevice.count" do
         post kobo_devices_path, params: { kobo_device: { name: "Reader", base_url: base_url } }
       end

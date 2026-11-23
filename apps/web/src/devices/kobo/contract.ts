@@ -26,6 +26,7 @@ export type KoboReaderRow = z.infer<typeof koboReaderRowSchema>;
 
 export const koboDeliverySchema = z.object({
   entitlement_id: z.string().min(1),
+  choice: z.string().min(1),
   title: z.string(),
   source: z.enum(["library", "kobo_account"]),
   link: z.discriminatedUnion("kind", [z.object({ kind: z.literal("library"), publication_id: identifier }), z.object({ kind: z.literal("kobo_book"), href: sitePath })]).nullable(),
