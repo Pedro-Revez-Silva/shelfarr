@@ -13,7 +13,7 @@ import { ServerShell } from "../ServerShell";
 import type { FieldErrors, PersonAnswer, ProfileValues } from "./api";
 import { personRoles, type PersonEnvelope, type PersonRecord, type PersonRole } from "./contract";
 import { AddedOn, PEOPLE_ARRIVAL, ROLE_LABELS } from "./PeopleCard";
-import { announceArrival, isRemovedPerson, whenPublished, useAddPerson, useArrival, usePeopleWriting, usePerson, useRemovePerson, useSaveProfile, useSetPassword } from "./queries";
+import { announceArrival, isRemovedPerson, publishedRead, useAddPerson, useArrival, usePeopleWriting, usePerson, usePersonReads, useRemovePerson, useSaveProfile, useSetPassword } from "./queries";
 import "./people.css";
 
 type Said = { tone: "success" | "error"; text: string; serial: number };
@@ -359,6 +359,7 @@ function PersonView({ id }: { id: string }) {
   const gate = useGate();
   const admin = useIsAdministrator();
   const person = usePerson(id);
+  const reads = usePersonReads(id);
   const gone = isRemovedPerson(person.error) || (person.isError && failureKind(person.error) === "not_found");
   const record = gone ? undefined : person.data?.user;
   useDocumentTitle(`${record?.name ?? "Person"} · Server`);
@@ -372,7 +373,7 @@ function PersonView({ id }: { id: string }) {
     ) : person.isError && failureKind(person.error) === "not_found" ? (
       <AdministratorsOnly />
     ) : person.data ? (
-      <PersonCards envelope={person.data} readAt={person.dataUpdatedAt} />
+      <PersonCards envelope={person.data} reads={reads} />
     ) : person.isError ? (
       <ErrorPanel error={person.error} onRetry={() => void person.refetch()} />
     ) : (
@@ -386,7 +387,7 @@ function PersonView({ id }: { id: string }) {
   );
 }
 
-function PersonCards({ envelope, readAt }: { envelope: PersonEnvelope; readAt: number }) {
+function PersonCards({ envelope, reads }: { envelope: PersonEnvelope; reads: number }) {
   const person = envelope.user;
   const arrival = useArrival(person.id);
   const { mark, dialog, unsaved } = useLeaveGuard();
@@ -400,7 +401,7 @@ function PersonCards({ envelope, readAt }: { envelope: PersonEnvelope; readAt: n
         </p>
       ) : null}
       <DetailsCard person={person} />
-      <ProfileCard envelope={envelope} readAt={readAt} onDirtyChange={markProfile} />
+      <ProfileCard envelope={envelope} reads={reads} onDirtyChange={markProfile} />
       {person.self ? <OwnPasswordCard /> : <PasswordCard person={person} onDirtyChange={markPassword} />}
       <RemoveCard person={person} unsaved={unsaved} />
       {dialog}
@@ -441,7 +442,7 @@ function sameValues(left: ProfileValues, right: ProfileValues): boolean {
   return PROFILE_FIELDS.every((field) => left[field] === right[field]);
 }
 
-function ProfileCard({ envelope, readAt, onDirtyChange }: { envelope: PersonEnvelope; readAt: number; onDirtyChange: (dirty: boolean) => void }) {
+function ProfileCard({ envelope, reads, onDirtyChange }: { envelope: PersonEnvelope; reads: number; onDirtyChange: (dirty: boolean) => void }) {
   const base = envelope.user;
   const scope = useId();
   const save = useSaveProfile(base.id, base.self);
@@ -452,7 +453,7 @@ function ProfileCard({ envelope, readAt, onDirtyChange }: { envelope: PersonEnve
   const [startedOn, setStartedOn] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [saving, setSaving] = useState<{ saved: string; publishedAt: number | null } | { saved: null } | null>(null);
+  const [saving, setSaving] = useState<{ saved: string; publishedAs: number | null } | { saved: null } | null>(null);
   const sending = saving !== null;
   const { said, say, clear } = useSay();
   const values: ProfileValues = { name: edits.name ?? base.name, username: edits.username ?? base.username, role: edits.role ?? base.role };
@@ -469,11 +470,11 @@ function ProfileCard({ envelope, readAt, onDirtyChange }: { envelope: PersonEnve
   }, [startedOn, edits]);
   useEffect(() => {
     if (!saving || saving.saved === null) return;
-    const caughtUp = base.version === saving.saved || (saving.publishedAt !== null && readAt >= saving.publishedAt);
+    const caughtUp = base.version === saving.saved || (saving.publishedAs !== null && reads >= saving.publishedAs);
     if (!caughtUp) return;
     setEdits({});
     setSaving(null);
-  }, [saving, base.version, readAt]);
+  }, [saving, base.version, reads]);
   useEffect(() => {
     if (confirmation !== null && !confirming) setConfirmation(null);
   }, [confirmation, confirming]);
@@ -497,7 +498,7 @@ function ProfileCard({ envelope, readAt, onDirtyChange }: { envelope: PersonEnve
           say("error", peopleFailureText(error));
         },
         onSuccess: (answer) => {
-          setSaving(answer.kind === "saved" ? { saved: answer.person.user.version, publishedAt: whenPublished(answer.person) } : null);
+          setSaving(answer.kind === "saved" ? { saved: answer.person.user.version, publishedAs: publishedRead(answer.person) } : null);
           if (answer.kind === "saved") {
             setErrors({});
             say("success", "Changes saved.");

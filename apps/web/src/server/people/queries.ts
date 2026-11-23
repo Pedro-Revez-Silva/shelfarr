@@ -7,10 +7,15 @@ import * as peopleApi from "./api";
 import type { People, PersonEnvelope } from "./contract";
 
 const PEOPLE_WRITE = ["people-write"] as const;
-const publishedAt = new WeakMap<PersonEnvelope, number>();
+const publishedAs = new WeakMap<PersonEnvelope, number>();
 
-export function whenPublished(envelope: PersonEnvelope): number | null {
-  return publishedAt.get(envelope) ?? null;
+export function publishedRead(envelope: PersonEnvelope): number | null {
+  return publishedAs.get(envelope) ?? null;
+}
+
+export function usePersonReads(id: string): number {
+  const client = useQueryClient();
+  return client.getQueryState(usePeopleKeys().person(id))?.dataUpdateCount ?? 0;
 }
 
 export function usePeopleKeys() {
@@ -51,7 +56,8 @@ function usePeopleWrite<Input, Answer extends { kind: string }>(write: (input: I
       const key = keys.person(envelope.user.id);
       if (isRemovedPerson(client.getQueryState(key)?.error)) return;
       client.setQueryData(key, envelope);
-      publishedAt.set(envelope, client.getQueryState(key)?.dataUpdatedAt ?? Date.now());
+      const reads = client.getQueryState(key)?.dataUpdateCount;
+      if (reads !== undefined) publishedAs.set(envelope, reads);
     },
     forget: (id) => {
       client.removeQueries({ queryKey: keys.person(id), exact: true });
