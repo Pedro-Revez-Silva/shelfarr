@@ -358,31 +358,35 @@ describe("People in the Rails preview", () => {
     expect((within(profile).getByLabelText("Name") as HTMLInputElement).value).toBe("Rowan Oak");
   });
 
-  test("an edit made while a save is on its way is kept and saved against the new version", async () => {
+  test("the profile is read-only while a save is on its way and shows what was saved afterwards", async () => {
     const held = deferred<{ status: number; body: unknown }>();
-    const saved = { ...ROWAN, name: "Rowan Oak", version: "v-5-2" };
-    let writes = 0;
-    const server = peopleServer().on("PUT", /\/admin\/users\/5$/, () => {
-      writes += 1;
-      return writes === 1 ? held.promise : { body: envelope({ ...ROWAN, version: "v-5-3" }) };
-    });
-    renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    const server = peopleServer().on("PUT", /\/admin\/users\/5$/, () => held.promise);
+    const { router } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
     await screen.findByRole("heading", { name: "Details", level: 3 });
     const profile = card("Name, username and role");
-    await typeInto(profile, "Name", "Rowan Oak");
+    const name = within(profile).getByLabelText("Name") as HTMLInputElement;
+    await typeInto(profile, "Name", "ROWAN Oak");
     await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
-    await typeInto(profile, "Name", "Rowan Ash");
-    held.resolve({ status: 200, body: envelope(saved) });
+    expect(name.readOnly).toBe(true);
+    await userEvent.type(name, "x");
+    await userEvent.click(within(profile).getByRole("radio", { name: "Administrator" }));
+    expect(name.value).toBe("ROWAN Oak");
+    expect((within(profile).getByRole("radio", { name: "Member" }) as HTMLInputElement).checked).toBe(true);
 
+    const seen: string[] = [];
+    const watcher = new MutationObserver(() => seen.push(name.value));
+    watcher.observe(profile, { subtree: true, attributes: true, childList: true, characterData: true });
+    held.resolve({ status: 200, body: envelope({ ...ROWAN, name: "Rowan Oak", version: "v-5-2" }) });
     expect(await within(profile).findByText("Changes saved.")).toBeTruthy();
-    expect((within(profile).getByLabelText("Name") as HTMLInputElement).value).toBe("Rowan Ash");
-    expect(within(profile).getByText("Unsaved changes")).toBeTruthy();
-    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
-    await eventually(() => writes === 2);
-    expect(server.called("PUT", /\/admin\/users\/5$/).map((request) => request.body)).toEqual([
-      { name: "Rowan Oak", username: "rowan", role: "member", version: "v-5-1" },
-      { name: "Rowan Ash", username: "rowan", role: "member", version: "v-5-2" },
-    ]);
+    await eventually(() => name.value === "Rowan Oak");
+    watcher.disconnect();
+
+    expect(name.readOnly).toBe(false);
+    expect(seen).not.toContain("Rowan Ash");
+    expect(within(profile).queryByText("Unsaved changes")).toBeNull();
+    await userEvent.click(document.querySelector<HTMLAnchorElement>(".people-back a")!);
+    await eventually(() => router.state.location.pathname === "/server/people");
+    expect(server.called("PUT", /\/admin\/users\/5$/).map((request) => request.body)).toEqual([{ name: "ROWAN Oak", username: "rowan", role: "member", version: "v-5-1" }]);
   });
 
   test("leaving with an unsaved edit asks first", async () => {
@@ -479,6 +483,9 @@ describe("People in the Rails preview", () => {
     await act(async () => services.queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes("person") }));
     expect(await screen.findByRole("heading", { name: "This person is not on this server" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Set password" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Person");
+    expect(document.title).not.toContain("Rowan");
+    expect(document.body.textContent).not.toContain("Member · rowan");
   });
 
   test("the removal question says when unsaved changes on the page will be lost", async () => {

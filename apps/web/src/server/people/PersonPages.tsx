@@ -92,7 +92,7 @@ function FieldError({ id, field, errors }: { id: string; field: string; errors: 
   );
 }
 
-function TextInput({ scope, field, label, hint, errors, ...input }: { scope: string; field: "name" | "username"; label: string; hint?: string; errors: FieldErrors; value: string; onChange: (value: string) => void }) {
+function TextInput({ scope, field, label, hint, errors, locked = false, ...input }: { scope: string; field: "name" | "username"; label: string; hint?: string; errors: FieldErrors; locked?: boolean; value: string; onChange: (value: string) => void }) {
   const id = `${scope}-${field}`;
   const invalid = Boolean(errors[field]?.length);
   const identifier = field === "username";
@@ -110,6 +110,7 @@ function TextInput({ scope, field, label, hint, errors, ...input }: { scope: str
         type="text"
         required
         value={input.value}
+        readOnly={locked}
         autoComplete="off"
         spellCheck={identifier ? false : undefined}
         autoCapitalize={identifier ? "none" : undefined}
@@ -123,7 +124,7 @@ function TextInput({ scope, field, label, hint, errors, ...input }: { scope: str
   );
 }
 
-function RoleChoice({ scope, value, errors, onChange }: { scope: string; value: PersonRole; errors: FieldErrors; onChange: (role: PersonRole) => void }) {
+function RoleChoice({ scope, value, errors, locked = false, onChange }: { scope: string; value: PersonRole; errors: FieldErrors; locked?: boolean; onChange: (role: PersonRole) => void }) {
   const id = `${scope}-role`;
   const invalid = Boolean(errors["role"]?.length);
   return (
@@ -132,7 +133,7 @@ function RoleChoice({ scope, value, errors, onChange }: { scope: string; value: 
       <div className="choice-options">
         {personRoles.map((role) => (
           <div key={role} className="choice-option">
-            <input id={`${id}-${role}`} type="radio" name={`${scope}-role`} value={role} checked={value === role} onChange={() => onChange(role)} aria-describedby={`${id}-${role}-hint`} />
+            <input id={`${id}-${role}`} type="radio" name={`${scope}-role`} value={role} checked={value === role} aria-disabled={locked || undefined} onChange={() => (locked ? undefined : onChange(role))} aria-describedby={`${id}-${role}-hint`} />
             <label htmlFor={`${id}-${role}`}>{ROLE_LABELS[role]}</label>
             <p id={`${id}-${role}-hint`} className="field-hint">
               {ROLE_HINTS[role]}
@@ -358,7 +359,8 @@ function PersonView({ id }: { id: string }) {
   const gate = useGate();
   const admin = useIsAdministrator();
   const person = usePerson(id);
-  const record = person.data?.user;
+  const gone = isRemovedPerson(person.error) || (person.isError && failureKind(person.error) === "not_found");
+  const record = gone ? undefined : person.data?.user;
   useDocumentTitle(`${record?.name ?? "Person"} · Server`);
   const summary = record ? `${ROLE_LABELS[record.role]} · ${record.username}${record.self ? " · This is you" : ""}` : "";
   const body =
@@ -450,7 +452,8 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   const [startedOn, setStartedOn] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [sending, setSending] = useState(false);
+  const [saving, setSaving] = useState<{ from: string; saved: string | null } | null>(null);
+  const sending = saving !== null;
   const { said, say, clear } = useSay();
   const values: ProfileValues = { name: edits.name ?? base.name, username: edits.username ?? base.username, role: edits.role ?? base.role };
   const dirty = PROFILE_FIELDS.some((field) => values[field] !== base[field]);
@@ -462,31 +465,40 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   useEffect(() => {
-    if (Object.keys(edits).length === 0 && startedOn !== null && !sending) setStartedOn(null);
-  }, [startedOn, edits, sending]);
+    if (Object.keys(edits).length === 0 && startedOn !== null) setStartedOn(null);
+  }, [startedOn, edits]);
+  useEffect(() => {
+    if (saving?.saved == null || (base.version === saving.from && saving.saved !== saving.from)) return;
+    setEdits({});
+    setSaving(null);
+  }, [saving, base.version]);
   useEffect(() => {
     if (confirmation !== null && !confirming) setConfirmation(null);
   }, [confirmation, confirming]);
 
   const edit = (field: keyof ProfileValues, value: string) => {
+    if (sending) return;
     setStartedOn((current) => current ?? base.version);
-    setEdits(({ [field]: _replaced, ...rest }) => (value === base[field] && !sending ? rest : { ...rest, [field]: value }));
+    setEdits(({ [field]: _replaced, ...rest }) => (value === base[field] ? rest : { ...rest, [field]: value }));
     clear();
     if (errors[field]) setErrors(({ [field]: _cleared, ...rest }) => rest);
   };
 
   const send = (sent: ProfileValues, sentVersion: string, administrators: number | null) => {
     setConfirmation(null);
-    setSending(true);
+    const from = base.version;
+    setSaving({ from, saved: null });
     save.mutate(
       { values: sent, version: sentVersion, administrators },
       {
-        onSettled: () => setSending(false),
+        onError: (error) => {
+          setSaving(null);
+          say("error", peopleFailureText(error));
+        },
         onSuccess: (answer) => {
+          setSaving(answer.kind === "saved" ? { from, saved: answer.person.user.version } : null);
           if (answer.kind === "saved") {
             setErrors({});
-            setStartedOn(answer.person.user.version);
-            setEdits((current) => Object.fromEntries(Object.entries(current).filter(([field, value]) => sent[field as keyof ProfileValues] !== value)));
             say("success", "Changes saved.");
             return;
           }
@@ -503,7 +515,6 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
           say("error", "Nothing was saved. Check the marked fields.");
           focusFirst(form.current, scope, PROFILE_FIELDS, answer.errors);
         },
-        onError: (error) => say("error", peopleFailureText(error)),
       },
     );
   };
@@ -540,9 +551,9 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   return (
     <SettingsCard id="profile" headingId={`${scope}-heading`} title="Name, username and role" summary={base.self ? "Your own name is also yours to change in Account." : undefined}>
       <form ref={form} className="settings-form" method="post" noValidate aria-labelledby={`${scope}-heading`} onSubmit={submit}>
-        <TextInput scope={scope} field="name" label="Name" errors={errors} value={values.name} onChange={(value) => edit("name", value)} />
-        <TextInput scope={scope} field="username" label="Username" hint="Lowercase letters, numbers and underscores. They sign in with it." errors={errors} value={values.username} onChange={(value) => edit("username", value)} />
-        <RoleChoice scope={scope} value={values.role} errors={errors} onChange={(role) => edit("role", role)} />
+        <TextInput scope={scope} field="name" label="Name" errors={errors} locked={sending} value={values.name} onChange={(value) => edit("name", value)} />
+        <TextInput scope={scope} field="username" label="Username" hint="Lowercase letters, numbers and underscores. They sign in with it." errors={errors} locked={sending} value={values.username} onChange={(value) => edit("username", value)} />
+        <RoleChoice scope={scope} value={values.role} errors={errors} locked={sending} onChange={(role) => edit("role", role)} />
         <CardActions unsaved={dirty}>
           <button ref={saveButton} type="submit" className="button button--primary" disabled={writing} aria-busy={save.isPending}>
             {save.isPending ? "Saving…" : "Save changes"}
