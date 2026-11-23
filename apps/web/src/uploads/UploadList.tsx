@@ -214,7 +214,6 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
   const command = useUploadCommand();
   const ids = { heading: useId(), search: useId(), title: useId(), author: useId(), error: useId() };
   const data = matches.data;
-  const kind = upload.book_type ? BOOK_TYPE_LABELS[upload.book_type].toLowerCase() : "book";
 
   const choose = (next: UploadCommand) => {
     setError(null);
@@ -236,7 +235,7 @@ function MatchPanel({ upload, say }: { upload: Upload; say: Say }) {
   return (
     <section className="upload-match" aria-labelledby={ids.heading}>
       <h4 id={ids.heading}>Correct the match and retry</h4>
-      <p className="request-note">Choose a local {kind} or create one with corrected details. Shelfarr keeps your choice on retries and skips automatic matching. Existing library files are kept.</p>
+      <p className="request-note">Choose a local {data ? BOOK_TYPE_LABELS[data.book_type].toLowerCase() : "book"} or create one with corrected details. Shelfarr keeps your choice on retries and skips automatic matching. Existing library files are kept.</p>
       {error ? (
         <p id={ids.error} className="form-error" role="alert">
           {error}

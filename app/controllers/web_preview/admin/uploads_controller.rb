@@ -20,6 +20,7 @@ class WebPreview::Admin::UploadsController < WebPreview::Admin::BaseController
 
     render json: {
       account: web_preview_account_id,
+      book_type: @upload.infer_book_type.to_s,
       query: choices.query,
       page: choices.page,
       more: choices.books.size > UploadAdministration::MATCHES_PER_PAGE,

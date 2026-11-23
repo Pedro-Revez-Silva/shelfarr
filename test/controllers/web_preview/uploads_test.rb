@@ -333,7 +333,7 @@ class WebPreview::UploadsTest < ActionDispatch::IntegrationTest
 
     admin_write(:get, web_preview_api_admin_upload_matches_path(upload))
     assert_response :success
-    assert_equal({ "account" => @admin.id.to_s, "query" => "Unrecognized", "page" => 1, "more" => false,
+    assert_equal({ "account" => @admin.id.to_s, "book_type" => "audiobook", "query" => "Unrecognized", "page" => 1, "more" => false,
       "books" => [ { "id" => free.id.to_s, "title" => "Unrecognized Saga", "author" => "A. Writer" } ],
       "manual_book" => { "title" => "Unrecognized", "author" => "" } }, response.parsed_body)
 

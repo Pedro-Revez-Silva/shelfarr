@@ -184,9 +184,13 @@ describe("uploading for a request", () => {
   const context = { id: "7", title: "The Dispossessed", author: "Ursula K. Le Guin", book_type: "ebook" as const, open: true, message: null };
 
   test("offers one file for an open request and links back to it", async () => {
+    let fulfilled = false;
     const server = memberServer(() => listing([]))
-      .on("GET", /\/api\/v1\/uploads\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: context } }))
-      .on("POST", /\/api\/v1\/uploads$/, () => ({ status: 201, body: { account: ACCOUNT, notice: "File uploaded successfully. Processing started.", uploads: ["5"], request_id: "7" } }));
+      .on("GET", /\/api\/v1\/uploads\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: fulfilled ? { ...context, open: false, message: "This request is already completed." } : context } }))
+      .on("POST", /\/api\/v1\/uploads$/, () => {
+        fulfilled = true;
+        return { status: 201, body: { account: ACCOUNT, notice: "File uploaded successfully. Processing started.", uploads: ["5"], request_id: "7" } };
+      });
     renderApp({ server, url: "/sub/preview/library/uploads?request=7" });
     const user = userEvent.setup({ applyAccept: false });
 
@@ -206,6 +210,9 @@ describe("uploading for a request", () => {
     expect((form.get("file") as File).name).toBe("The Dispossessed.epub");
     expect(form.has("files[]")).toBe(false);
     expect(form.has("upload_mode")).toBe(false);
+    await waitFor(() => expect(server.called("GET", /\/api\/v1\/uploads$/).length).toBeGreaterThan(1));
+    expect(screen.getByText(/File uploaded successfully/)).toBeTruthy();
+    expect(server.called("GET", /uploads\/requests\/7$/)).toHaveLength(1);
   });
 
   test("explains a request that no longer takes files and offers no form", async () => {
@@ -268,7 +275,7 @@ describe("upload administration", () => {
 
   test("corrects a match with a local book or a new one", async () => {
     let items = [failedUpload()];
-    const matches = { account: ACCOUNT, query: "Unrecognized", page: 1, more: true, books: [{ id: "21", title: "Unrecognized Saga", author: "A. Writer" }], manual_book: { title: "Unrecognized", author: "" } };
+    const matches = { account: ACCOUNT, book_type: "audiobook" as const, query: "Unrecognized", page: 1, more: true, books: [{ id: "21", title: "Unrecognized Saga", author: "A. Writer" }], manual_book: { title: "Unrecognized", author: "" } };
     const server = adminServer(() => listing(items))
       .on("GET", /\/admin\/uploads\/9\/matches/, (request) => ({ body: request.path.includes("q=zzz") ? { ...matches, query: "zzz", more: false, books: [] } : request.path.includes("page=2") ? { ...matches, page: 2, more: false, books: [{ id: "22", title: "Unrecognized Two", author: null }] } : matches }))
       .on("POST", /\/admin\/uploads\/9\/match$/, (request) => {
@@ -286,6 +293,7 @@ describe("upload administration", () => {
     const panel = (await within(row).findByRole("region", { name: "Correct the match and retry" })) as HTMLElement;
     expect(await within(panel).findByText("Unrecognized Saga by A. Writer")).toBeTruthy();
     expect((within(panel).getByLabelText("Search local books by title or author") as HTMLInputElement).value).toBe("Unrecognized");
+    expect(within(panel).getByText(/Choose a local audiobook or create one/)).toBeTruthy();
 
     await user.click(within(panel).getByRole("button", { name: "Next matches" }));
     expect(await within(panel).findByText("Unrecognized Two")).toBeTruthy();

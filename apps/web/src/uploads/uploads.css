@@ -197,3 +197,13 @@
 .upload-disabled {
   margin: 0;
 }
+.upload-context a,
+.form-outcome a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.upload-context .request-meta a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}

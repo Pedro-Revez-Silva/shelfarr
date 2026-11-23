@@ -68,8 +68,10 @@ export function useUploadKeys() {
   const root = [...keys.root, "uploads"] as const;
   return {
     root,
+    lists: [...root, "list"] as const,
     list: (page: number) => [...root, "list", page] as const,
     request: (id: string) => [...root, "request", id] as const,
+    allMatches: [...root, "matches"] as const,
     matches: (id: string, query: string | null, page: number) => [...root, "matches", id, query, page] as const,
   };
 }
@@ -120,7 +122,8 @@ function useAfterUploadChange() {
   const client = useQueryClient();
   return (error: unknown | null, requestId: string | null) => {
     if (!guard.isActive()) return;
-    void client.invalidateQueries({ queryKey: uploadKeys.root });
+    void client.invalidateQueries({ queryKey: uploadKeys.lists });
+    void client.invalidateQueries({ queryKey: uploadKeys.allMatches });
     void client.invalidateQueries({ queryKey: keys.libraryAll });
     if (requestId) {
       void client.invalidateQueries({ queryKey: keys.request(requestId) });

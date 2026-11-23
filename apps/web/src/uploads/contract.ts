@@ -62,6 +62,7 @@ export type UploadOutcome = z.infer<typeof uploadOutcomeSchema>["outcome"];
 
 export const uploadMatchesSchema = z.object({
   account: identifier,
+  book_type: z.enum(uploadBookTypes),
   query: z.string(),
   page: z.number().int().positive(),
   more: z.boolean(),
