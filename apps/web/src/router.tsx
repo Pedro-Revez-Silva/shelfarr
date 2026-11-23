@@ -5,6 +5,10 @@ import { AdminPage, ServerHomePage } from "./components/AdminPage";
 import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
 import { KoboReaderPage } from "./devices/kobo/KoboReaderPage";
+import { catalogueSearchSchema } from "./devices/kobo-accounts/contract";
+import { KoboAccountPage } from "./devices/kobo-accounts/KoboAccountPage";
+import { KoboBookPage } from "./devices/kobo-accounts/KoboBookPage";
+import { KoboSharedPage } from "./devices/kobo-accounts/KoboSharedPage";
 import { DiscoverPage, FindPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { NotificationsPage } from "./components/NotificationsPage";
@@ -86,6 +90,26 @@ const koboReaderRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/account/devices/kobo/$readerId",
   component: KoboReaderPage,
+});
+
+const koboAccountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account/devices/kobo-accounts/$accountId",
+  validateSearch: (search: Record<string, unknown>) => catalogueSearchSchema.parse(search),
+  component: KoboAccountPage,
+});
+
+const koboSharedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account/devices/kobo-shared/$accountId",
+  validateSearch: (search: Record<string, unknown>) => catalogueSearchSchema.parse(search),
+  component: KoboSharedPage,
+});
+
+const koboBookRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account/devices/kobo-books/$bookId",
+  component: KoboBookPage,
 });
 
 const discoverRoute = createRoute({
@@ -178,7 +202,7 @@ const personRoute = createRoute({
   component: PersonPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, koboReaderRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, koboReaderRoute, koboAccountRoute, koboSharedRoute, koboBookRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

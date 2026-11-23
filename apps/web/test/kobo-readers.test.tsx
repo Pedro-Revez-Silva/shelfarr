@@ -83,15 +83,14 @@ describe("Kobo readers in Account ▸ Devices", () => {
     expect(koboReaderEnvelopeSchema.safeParse({ account: ACCOUNT, reader: reader({ deliveries: [delivery({ link: { kind: "kobo_book", href: "//evil.example" } })] }) }).success).toBe(false);
   });
 
-  test("Devices lists your readers, keeps Kobo accounts on their pages and connects a new reader with its address shown once", async () => {
+  test("Devices lists your readers and connects a new reader with its address shown once", async () => {
     const server = koboServer().on("POST", /\/account\/kobo_readers$/, () => ({ status: 201, body: { account: ACCOUNT, reader: row({ id: "4", name: "Libra", store_coexistence: true, mode: "store_and_shelfarr", mode_label: "Kobo Store + Shelfarr" }), setup: { endpoint: ENDPOINT, store_endpoint: STORE } } }));
     const { services } = renderApp({ server, url: "/sub/preview/account/devices" });
     const card = (await screen.findByRole("heading", { name: "Kobo readers", level: 2 })).closest("section") as HTMLElement;
     expect(await within(card).findByRole("link", { name: "Clara" })).toBeTruthy();
     expect(within(card).getByRole("link", { name: "Clara" }).getAttribute("href")).toBe("/sub/preview/account/devices/kobo/3");
     expect(within(card).getByText("Waiting for first sync")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Kobo accounts" }).getAttribute("href")).toBe("/sub/kobo_accounts");
-    expect(screen.getByRole("link", { name: "Kobo books shared with you" }).getAttribute("href")).toBe("/sub/kobo_shared");
+    expect(document.querySelector('a[href="/sub/kobo_accounts"], a[href="/sub/kobo_shared"]')).toBeNull();
     expect(screen.queryByRole("link", { name: "Kobo readers" })).toBeNull();
 
     expect((within(card).getByRole("radio", { name: /Keep my Kobo Store library/ }) as HTMLInputElement).checked).toBe(true);

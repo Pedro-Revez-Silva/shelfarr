@@ -1,0 +1,84 @@
+.kobo-activation-code {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(1.6rem, 6vw, 2.2rem);
+  letter-spacing: 0.2em;
+  overflow-wrap: anywhere;
+}
+.kobo-break {
+  overflow-wrap: anywhere;
+}
+.kobo-progress {
+  margin: 0;
+  padding-inline-start: 10px;
+  border-inline-start: 3px solid var(--accent);
+}
+.kobo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.kobo-row > .kobo-delivery-text {
+  flex: 1 1 14rem;
+}
+.kobo-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kobo-filter-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.kobo-filter-chip[aria-current="page"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.kobo-catalogue {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.kobo-catalogue > li {
+  display: grid;
+  gap: 4px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.kobo-catalogue p {
+  margin: 0;
+}
+.kobo-share-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.kobo-share-form .field {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.kobo-share-form select {
+  max-width: 100%;
+}
+.kobo-book-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+}
+.kobo-book-cover {
+  width: 80px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--sunken);
+}

@@ -5,6 +5,7 @@ class KoboAccountsController < ApplicationController
 
   before_action :prevent_caching
   before_action :set_account, only: [ :show, :poll, :sync, :destroy ]
+  before_action :open_warm_page, only: %i[index show]
 
   def index
     @accounts = Current.user.kobo_accounts.includes(:kobo_account_shares).order(created_at: :desc)
@@ -59,5 +60,15 @@ class KoboAccountsController < ApplicationController
 
   def set_account
     @account = Current.user.kobo_accounts.find(params[:id])
+  end
+
+  def open_warm_page
+    return unless flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+
+    if action_name == "index"
+      redirect_to web_preview_account_section_path(section: "devices", anchor: "kobo-accounts")
+    else
+      redirect_to web_preview_kobo_account_path(@account, **warm_catalogue_query)
+    end
   end
 end

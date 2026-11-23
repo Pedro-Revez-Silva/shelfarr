@@ -6,6 +6,7 @@ import { readCsrfToken } from "../boot";
 import type { AccountSettings, ApiToken, CreatedToken, Profile, TwoFactorSetup } from "../contract";
 import { useServices } from "../services";
 import { KoboReadersCard } from "../devices/kobo/KoboReadersCard";
+import { KoboAccountsCard } from "../devices/kobo-accounts/KoboAccountsCard";
 import { describeWriteFailure } from "./accountFields";
 import { absoluteTime, Time } from "./requestText";
 
@@ -517,18 +518,7 @@ export function DevicesSection({ settings }: { settings: AccountSettings }) {
         </p>
       </Card>
       <KoboReadersCard />
-      <Card title="Kobo accounts" description="Connect a Kobo account, refresh its catalogue and share books with your household. These still open on their current pages while they move here.">
-        <ul className="link-list">
-          <li>
-            <a href={settings.links.kobo_accounts}>Kobo accounts</a>
-          </li>
-          {settings.links.kobo_shared ? (
-            <li>
-              <a href={settings.links.kobo_shared}>Kobo books shared with you</a>
-            </li>
-          ) : null}
-        </ul>
-      </Card>
+      <KoboAccountsCard />
     </>
   );
 }
