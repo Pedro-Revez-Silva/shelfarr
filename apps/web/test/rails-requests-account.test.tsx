@@ -526,7 +526,7 @@ describe("a request's copies for an administrator", () => {
     button.focus();
     await userEvent.setup().keyboard("{Enter}");
     const note = await screen.findByText("No copies found yet. The search may still be running.");
-    await waitFor(() => expect(document.activeElement?.textContent).toBe(note.textContent));
+    await waitFor(() => expect(document.activeElement === note).toBe(true));
     expect(screen.getByRole("alert").textContent).toBe("The choice could not be sent. Nothing was changed.");
   });
 
