@@ -7,9 +7,11 @@ import { bootstrapSchema, goBootSchema, type GoBoot } from "../src/contract";
 import { GoApp } from "../src/go/GoApp";
 import { confirmationFrom } from "../src/offline/context";
 import type { ConfirmedAccount, SavedBook } from "../src/offline/model";
+import { reconfirmOnMarkerChange } from "../src/offline/online";
 import { cookieValue, IndexedDbOfflineStore, offlineStoreFor } from "../src/offline/store";
+import { AuthClient } from "../src/go/auth";
 import { FakeServer } from "./helpers";
-import { signedIn } from "./go-helpers";
+import { signedIn, signedOut } from "./go-helpers";
 import { DAY, EPUB_ID, epubBytes, savedBook } from "./offline-helpers";
 
 const NAME = "shelfarr_offline_0123456789abcdef";
@@ -211,6 +213,54 @@ describe("the Rails session's offline marker", () => {
     document.cookie = `${name}=cookieB; path=/`;
     expect((await store.accountState()).record).toBeNull();
     document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+  });
+});
+
+describe("online pages when the marker changes", () => {
+  function withCookieStore(): EventTarget {
+    const cookies = new EventTarget();
+    Object.defineProperty(globalThis, "cookieStore", { value: cookies, configurable: true });
+    restores.push(() => Reflect.deleteProperty(globalThis, "cookieStore"));
+    return cookies;
+  }
+
+  function announce(cookies: EventTarget, value: string) {
+    setMarker(value);
+    cookies.dispatchEvent(Object.assign(new Event("change"), { changed: [{ name: NAME, value }], deleted: [] }));
+  }
+
+  test("a page still signed in confirms its account again under the new marker", async () => {
+    const cookies = withCookieStore();
+    withRegisteredWorker();
+    setMarker("mA");
+    const store = new IndexedDbOfflineStore("continuity-reconfirm", continuity);
+    await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", "mA"));
+    const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => ({ body: { ...signedIn("5"), offline_expires_in: 3600, offline_continuity: "fromALateRefusal" } }));
+    const stop = reconfirmOnMarkerChange(OFFLINE, new AuthClient(API, server.fetcher), store);
+    restores.push(stop);
+    announce(cookies, "fromALateRefusal");
+    await waitFor(async () => expect((await store.accountState()).record).toMatchObject({ account: "5", continuity: "fromALateRefusal" }));
+    expect((await store.books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
+    expect(server.called("GET", /\/auth\/bootstrap$/)).toHaveLength(1);
+  });
+
+  test("a signed-out answer, which replaces the marker itself, ends the listening instead of asking again", async () => {
+    const cookies = withCookieStore();
+    setMarker("mA");
+    const store = new IndexedDbOfflineStore("continuity-no-loop", continuity);
+    await seed(store, savedBook(), confirmed("5", "mA"));
+    let rotations = 0;
+    const server = new FakeServer().on("GET", /\/auth\/bootstrap$/, () => {
+      rotations += 1;
+      const value = `rotated${rotations}`;
+      setTimeout(() => announce(cookies, value), 10);
+      return { body: signedOut() };
+    });
+    restores.push(reconfirmOnMarkerChange(OFFLINE, new AuthClient(API, server.fetcher), store));
+    announce(cookies, "mAfterSignOut");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(server.called("GET", /\/auth\/bootstrap$/)).toHaveLength(1);
+    expect((await new IndexedDbOfflineStore("continuity-no-loop").accountState()).record).toBeNull();
   });
 });
 

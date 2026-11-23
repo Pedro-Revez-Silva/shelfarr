@@ -1,7 +1,7 @@
 import type { AccountGuard } from "../api/account-guard";
 import type { Bootstrap, OfflineBoot } from "../contract";
 import type { AuthClient } from "../go/auth";
-import { confirmationFrom, type Offline } from "./context";
+import { confirmationFrom, continuityOf, onContinuityChange, type Offline } from "./context";
 import type { ConfirmedAccount, OfflineStore } from "./model";
 import { createPlaceSync } from "./placeSync";
 import { definitiveRefusal } from "./reachability";
@@ -19,17 +19,39 @@ export async function keepOfflineAccount(offline: OfflineBoot | undefined, store
   if ((await hasWorker(offline)) || (await store.accountState()).record) await store.confirm(confirmation);
 }
 
-export async function refreshOfflineAccount(offline: OfflineBoot | undefined, auth: AuthClient, store: OfflineStore): Promise<void> {
-  if (!offline) return;
+export async function refreshOfflineAccount(offline: OfflineBoot | undefined, auth: AuthClient, store: OfflineStore): Promise<boolean> {
+  if (!offline) return false;
   const askedAt = Date.now();
   let answer: Bootstrap;
   try {
     answer = await auth.bootstrap();
   } catch (error) {
-    if (definitiveRefusal(error)) await store.release(askedAt);
-    return;
+    if (!definitiveRefusal(error)) return true;
+    await store.release(askedAt);
+    return false;
   }
   await keepOfflineAccount(offline, store, answer.authenticated ? confirmationFrom(answer, askedAt) : null, askedAt);
+  return answer.authenticated;
+}
+
+export function reconfirmOnMarkerChange(offline: OfflineBoot | undefined, auth: AuthClient, store: OfflineStore): () => void {
+  let running = false;
+  let stopped = false;
+  const reconfirm = async (): Promise<void> => {
+    if (running || stopped || !offline) return;
+    running = true;
+    const before = continuityOf(offline);
+    const signedIn = await refreshOfflineAccount(offline, auth, store).catch(() => true);
+    running = false;
+    if (!signedIn) stop();
+    else if (continuityOf(offline) !== before) await reconfirm();
+  };
+  const unsubscribe = onContinuityChange(offline, () => void reconfirm());
+  const stop = () => {
+    stopped = true;
+    unsubscribe();
+  };
+  return stop;
 }
 
 type OnlineInputs = { server: Server; auth: AuthClient; store: OfflineStore; guard: AccountGuard; confirmation: ConfirmedAccount | null; fetcher?: typeof fetch | undefined };

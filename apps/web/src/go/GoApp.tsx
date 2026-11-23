@@ -14,12 +14,12 @@ import { ConnectPage } from "./ConnectPage";
 import { GoSessionProvider, type GoSession } from "./session";
 import { SignInPage, type LoginToken } from "./SignInPage";
 import { LockedScreen } from "../components/LockedScreen";
-import { confirmationFrom, OfflineProvider, onContinuityChange, type Offline } from "../offline/context";
+import { confirmationFrom, OfflineProvider, type Offline } from "../offline/context";
 import { DownloadsPage } from "../offline/DownloadsPage";
 import type { ConfirmedAccount, OfflineStore } from "../offline/model";
 import { OfflineApp, OfflineUnavailable } from "../offline/OfflineApp";
 import { definitiveRefusal, serverUnreachable } from "../offline/reachability";
-import { createOnlineOffline, keepOfflineAccount, refreshOfflineAccount, runOfflineSync } from "../offline/online";
+import { createOnlineOffline, keepOfflineAccount, reconfirmOnMarkerChange, refreshOfflineAccount, runOfflineSync } from "../offline/online";
 import { offlineStoreFor } from "../offline/store";
 import { retireWorker } from "../offline/worker";
 import { useAccountRevalidation } from "../revalidation";
@@ -265,9 +265,8 @@ function SignedIn({ boot, auth, account, token, expiresIn, confirmation, store, 
   const { csrf, services, router } = built;
 
   useEffect(() => {
-    const refresh = () => void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined);
-    const stopLocks = services.guard.subscribe(refresh);
-    const stopContinuity = onContinuityChange(boot.offline, refresh);
+    const stopLocks = services.guard.subscribe(() => void refreshOfflineAccount(boot.offline, auth, store).catch(() => undefined));
+    const stopContinuity = reconfirmOnMarkerChange(boot.offline, auth, store);
     return () => {
       stopLocks();
       stopContinuity();
