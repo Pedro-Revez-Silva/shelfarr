@@ -58,7 +58,12 @@ function SetupView() {
       <AdministratorsOnly />
     ) : setup.data ? (
       <>
-        {setup.isStale && setup.isRefetchError && !setup.isFetching ? <StaleStep onRetry={() => void setup.refetch()} /> : null}
+        {setup.isStale && setup.isRefetchError && !setup.isFetching ? <StaleStep
+            onRetry={() => {
+              document.querySelector<HTMLElement>(".setup-step-title")?.focus();
+              void setup.refetch();
+            }}
+          /> : null}
         <SetupStep
           key={setup.data.step}
           state={setup.data}
@@ -157,6 +162,10 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
     const current = list?.querySelector<HTMLElement>('[aria-current="step"]');
     if (list && current && list.scrollWidth > list.clientWidth) list.scrollLeft = current.offsetLeft - list.offsetLeft - 16;
   }, []);
+
+  useEffect(() => {
+    if (writing) setConfirming(null);
+  }, [writing]);
 
   const go = (next: SetupState | null) => {
     dirty.current = false;
@@ -292,7 +301,7 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
           }}
         />
       ) : null}
-      {confirming ? (
+      {confirming && !writing ? (
         <LeaveDialog
           count={confirming.count}
           onStay={() => setConfirming(null)}

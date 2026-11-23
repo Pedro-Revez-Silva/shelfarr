@@ -622,4 +622,38 @@ describe("Setup in the Rails preview", () => {
     expect(screen.getByLabelText("Prowlarr address").closest("fieldset")!.disabled).toBe(false);
     expect(screen.queryByText(/latest state of this step could not be loaded/)).toBeNull();
   }, 15_000);
+
+  test("a confirmation left open is withdrawn when the step locks for a fresh read, and nothing is sent", async () => {
+    const libraries = card("audiobookshelf_libraries", [field("audiobook_library_id", { label: "Audiobook library", input: "library", value: "old", placeholder: "Not now" })], {
+      phase: "libraries",
+      title: "Libraries",
+      submit: "Save and continue",
+      libraries: [
+        { id: "old", name: "Old", media_type: "book" },
+        { id: "new", name: "New", media_type: "book" },
+      ],
+    });
+    const connection = card("audiobookshelf_connection", [field("url", { label: "Audiobookshelf address", input: "url", value: "http://abs:13378" })], { phase: "connection", title: "Change the Audiobookshelf connection", collapsed: true });
+    let failing = false;
+    const server = setupServer().on("GET", /\/admin\/setup\?step=audiobookshelf/, () => (failing ? { status: 503, body: {} } : { body: state("audiobookshelf", [libraries, connection]) }));
+    const { services } = renderApp({ server, url: "/sub/preview/server/setup?step=audiobookshelf" });
+    const change = await waitFor(() => cardSection("Change the Audiobookshelf connection") as HTMLDetailsElement);
+    change.open = true;
+    await userEvent.type(within(change).getByLabelText("Audiobookshelf address"), "/other");
+    await userEvent.click(within(cardSection("Libraries")).getByRole("button", { name: "Save and continue" }));
+    expect(await screen.findByRole("dialog", { name: "Leave without saving?" })).toBeTruthy();
+
+    failing = true;
+    void services.queryClient.invalidateQueries();
+    const problem = await screen.findByText(/latest state of this step could not be loaded/, {}, { timeout: 8000 });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
+
+    failing = false;
+    await userEvent.click(within(problem.closest("p")!).getByRole("button", { name: "Try again" }));
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Audiobookshelf", level: 2 }));
+    await waitFor(() => expect(within(cardSection("Libraries")).getByLabelText("Audiobook library").closest("fieldset")!.disabled).toBe(false));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
+  }, 15_000);
 });
