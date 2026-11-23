@@ -301,4 +301,27 @@ describe("Setup in the Rails preview", () => {
     expect(await screen.findByRole("heading", { name: "Prowlarr", level: 2 })).toBeTruthy();
     expect(server.called("GET", /\/admin\/setup/)).toEqual([]);
   });
+
+  test("the overview offers setup only while the server says nothing is set up", async () => {
+    const overview = (pending: boolean) => ({
+      account: ACCOUNT,
+      counts: { users: 1, books: 0, active_requests: 0, attention_requests: 0 },
+      services: ["indexer", "download_client", "download_paths", "output_paths", "audiobookshelf", "hardcover"].map((service) => ({ service, status: null, checked_at: null })),
+      setup: { pending },
+    });
+    let pending = true;
+    const server = setupServer().on("GET", /\/api\/v1\/admin\/overview$/, () => ({ body: overview(pending) }));
+    const { router } = renderApp({ server, url: "/sub/preview/server" });
+
+    const reminder = (await screen.findByRole("heading", { name: "Shelfarr is not set up yet", level: 2 })).closest("section")!;
+    expect(within(reminder).getByRole("link", { name: "Start setup" }).getAttribute("href")).toBe("/sub/preview/server/setup");
+    await userEvent.click(within(reminder).getByRole("link", { name: "Start setup" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/server/setup"));
+
+    cleanup();
+    pending = false;
+    renderApp({ server, url: "/sub/preview/server" });
+    expect(await screen.findByRole("heading", { name: "System health", level: 2 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Shelfarr is not set up yet" })).toBeNull();
+  });
 });
