@@ -715,6 +715,41 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_equal [ nil, nil, nil ], connection.auth_state_snapshot.values
   end
 
+  test "while a completion is with Libation, and after a lost reply and a retry, no title of the previous account can be backed up" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    previous = connection.owned_library_items.create!(external_id: "B0OLD00001", title: "Previous account purchase", ownership_type: "purchased")
+    proof = pending_sign_in(connection)
+    test_case = self
+    during = nil
+    slow = Object.new
+    slow.define_singleton_method(:complete_auth) do |**|
+      test_case.travel 4.minutes
+      fresh = OwnedLibraryConnection.find(connection.id)
+      OwnedLibraryConnectionWorkflow.new(fresh, user: nil).clear_stale_auth_state
+      during = begin
+        OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: test_case.users(:two)).back_up_item(item_id: previous.id, separate_edition: false)
+      rescue ActiveRecord::RecordNotFound => e
+        e
+      end
+      raise LibationCompanionClient::ConnectionError, "Failed to connect to Libation companion: Net::ReadTimeout"
+    end
+    assert_equal :failed, completing_with(slow, connection, proof).status
+    travel_back
+    assert_kind_of ActiveRecord::RecordNotFound, during
+    assert_not previous.reload.active?
+    assert_empty previous.owned_media_imports
+
+    connection.reload.update!(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
+    gone = Object.new
+    gone.define_singleton_method(:complete_auth) { |**| raise LibationCompanionClient::ResponseError, "Libation companion returned HTTP 404" }
+    assert_equal :failed, completing_with(gone, connection, proof).status
+    assert_equal [ nil, nil, nil ], connection.reload.auth_state_snapshot.values
+    assert_not previous.reload.active?
+    assert_raises(ActiveRecord::RecordNotFound) do
+      OwnedLibraryConnectionWorkflow.new(connection, user: @admin).back_up_item(item_id: previous.id, separate_edition: false)
+    end
+  end
+
   test "an address that is not an https Amazon or Audible page is refused before anything is claimed or sent" do
     connection = create_connection(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
     sign_in_as(@admin)
@@ -728,14 +763,17 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     assert_not_requested :any, /libation\.test/
   end
 
-  test "a token read from the mounted token file, even one rotated mid-request, and addresses in versions are never stored or shown" do
+  test "a token read from the mounted token file, even one rotated during Test, and addresses in versions are never stored or shown" do
     file = File.join(@audiobook_output_path, "bridge.token")
-    File.write(file, "file-token-6631aa\n")
+    File.write(file, "initial-token-1209cc\n")
     with_env("SHELFARR_LIBATION_TOKEN_FILE" => file, "SHELFARR_LIBATION_URL" => "http://127.0.0.1:3999") do
       connection = OwnedLibraryConnection.create!(url: OwnedLibraryConnection.default_libation_url, allow_private_network: true, enabled: true)
       sign_in_as(@admin)
       VCR.turned_off do
-        stub_request(:get, "#{connection.url}/health").to_return(status: 200, body: { status: "ok" }.to_json)
+        stub_request(:get, "#{connection.url}/health").to_return do
+          File.write(file, "file-token-6631aa\n")
+          { status: 200, body: { status: "ok" }.to_json }
+        end
         stub_request(:get, "#{connection.url}/version").with(headers: { "Authorization" => "Bearer file-token-6631aa" })
           .to_return do
             File.write(file, "rotated-token-7742bb\n")
@@ -748,7 +786,7 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
         assert_equal [ nil, nil ], [ connection.reload.companion_version, connection.provider_version ]
         state
       end
-      [ "file-token-6631aa", "rotated-token-7742bb", "code=1" ].each { |secret| assert_not_includes response.body, secret }
+      [ "initial-token-1209cc", "file-token-6631aa", "rotated-token-7742bb", "code=1" ].each { |secret| assert_not_includes response.body, secret }
     end
   end
 

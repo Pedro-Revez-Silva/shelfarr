@@ -190,9 +190,11 @@ class OwnedLibraryConnectionWorkflow
   def test_connection
     return ConnectionTest.new(status: :busy, companion_version: nil, libation_version: nil, health_status: nil, error: nil) if active_operation?
 
-    secrets = connection.client.secret_values
-    health = connection.client.health
-    version = connection.client.version
+    client = connection.client
+    health = client.health
+    secrets = client.secret_values
+    version = client.version
+    secrets |= client.secret_values
     companion_version = reportable(version.companion_version, secrets)
     libation_version = reportable(version.libation_version, secrets)
     connection.update!(companion_version: companion_version, provider_version: libation_version)
@@ -524,6 +526,7 @@ class OwnedLibraryConnectionWorkflow
       next :wrong_marketplace unless self.class.same_marketplace?(connection.auth_login_url, response_url)
 
       pending_state = connection.auth_state_snapshot
+      reset_account_bound_catalog!(clear_auth_state: false)
       connection.update!(
         auth_session_id: "#{OwnedLibraryConnection::AUTH_START_PREFIX}#{SecureRandom.hex(16)}",
         auth_login_url: nil,
@@ -536,10 +539,8 @@ class OwnedLibraryConnectionWorkflow
   def finish_completion(claim)
     connection.with_lock do
       connection.reload
-      next SignInCompletion.new(status: :expired, error: nil) unless endpoint_identity == claim.endpoint
-
-      reset_account_bound_catalog!(clear_auth_state: connection.auth_state_snapshot == claim.auth_state)
-      SignInCompletion.new(status: :connected, error: nil)
+      connection.clear_auth_state! if connection.auth_state_snapshot == claim.auth_state
+      SignInCompletion.new(status: endpoint_identity == claim.endpoint ? :connected : :expired, error: nil)
     end
   end
 
