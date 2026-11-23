@@ -82,8 +82,8 @@ class WebPreview::RequestsTest < ActionDispatch::IntegrationTest
     assert request.fetch("choice_needed")
     assert_not_includes response.body, "Émile.epub"
     assert_equal "Second edition please", request.fetch("notes")
-    assert_equal({ "cancel" => true, "remove" => nil, "retry" => false, "search_again" => false, "manual_download" => false,
-      "replaces_library_file" => false, "upload_url" => nil, "download_url" => nil }, request.fetch("actions"))
+    assert_equal({ "cancel" => true, "remove" => nil, "withdraw" => { "revision" => WebPreview::RequestJson.withdrawal_revision(@mine), "torrents" => 0 },
+      "retry" => false, "search_again" => false, "manual_download" => false, "replaces_library_file" => false, "upload_url" => nil, "download_url" => nil }, request.fetch("actions"))
     assert_not request.key?("copies")
     assert_not request.key?("events")
     detail(@theirs, user: @member)
