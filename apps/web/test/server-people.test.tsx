@@ -419,6 +419,36 @@ describe("People in the Rails preview", () => {
     expect(unlocked.every((value) => value === "Rowan Oak")).toBe(true);
   });
 
+  test("a newer read that lands right after the save still unlocks the profile on the newest record", async () => {
+    const held = deferred<{ status: number; body: unknown }>();
+    let current = ROWAN;
+    const server = peopleServer()
+      .on("GET", /\/admin\/users\/5$/, () => ({ body: envelope(current) }))
+      .on("PUT", /\/admin\/users\/5$/, () => held.promise);
+    const { services } = renderApp({ server, url: "/sub/preview/server/people/users/5" });
+    await screen.findByRole("heading", { name: "Details", level: 3 });
+    const profile = card("Name, username and role");
+    const name = within(profile).getByLabelText("Name") as HTMLInputElement;
+    await typeInto(profile, "Name", "Rowan Oak");
+    await userEvent.click(within(profile).getByRole("button", { name: "Save changes" }));
+
+    current = { ...ROWAN, name: "Rowan Pine", version: "v-5-3" };
+    const unsubscribe = services.queryClient.getQueryCache().subscribe((event) => {
+      const data = event.query.state.data as PersonEnvelope | undefined;
+      if (event.type === "updated" && data?.user?.version === "v-5-2") {
+        unsubscribe();
+        void services.queryClient.invalidateQueries({ queryKey: event.query.queryKey });
+      }
+    });
+    held.resolve({ status: 200, body: envelope({ ...ROWAN, name: "Rowan Oak", version: "v-5-2" }) });
+    expect(await within(profile).findByText("Changes saved.")).toBeTruthy();
+    await eventually(() => screen.getByRole("heading", { level: 1 }).textContent === "Rowan Pine");
+    await eventually(() => !name.readOnly);
+
+    expect(name.value).toBe("Rowan Pine");
+    expect(within(profile).queryByText("Unsaved changes")).toBeNull();
+  });
+
   test("a save answer that arrives after the person was found removed does not bring their page back", async () => {
     const held = deferred<{ status: number; body: unknown }>();
     let gone = false;

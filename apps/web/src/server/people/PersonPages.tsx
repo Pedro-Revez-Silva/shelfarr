@@ -13,7 +13,7 @@ import { ServerShell } from "../ServerShell";
 import type { FieldErrors, PersonAnswer, ProfileValues } from "./api";
 import { personRoles, type PersonEnvelope, type PersonRecord, type PersonRole } from "./contract";
 import { AddedOn, PEOPLE_ARRIVAL, ROLE_LABELS } from "./PeopleCard";
-import { announceArrival, isRemovedPerson, useAddPerson, useArrival, usePeopleWriting, usePerson, useRemovePerson, useSaveProfile, useSetPassword } from "./queries";
+import { announceArrival, isRemovedPerson, whenPublished, useAddPerson, useArrival, usePeopleWriting, usePerson, useRemovePerson, useSaveProfile, useSetPassword } from "./queries";
 import "./people.css";
 
 type Said = { tone: "success" | "error"; text: string; serial: number };
@@ -372,7 +372,7 @@ function PersonView({ id }: { id: string }) {
     ) : person.isError && failureKind(person.error) === "not_found" ? (
       <AdministratorsOnly />
     ) : person.data ? (
-      <PersonCards envelope={person.data} />
+      <PersonCards envelope={person.data} readAt={person.dataUpdatedAt} />
     ) : person.isError ? (
       <ErrorPanel error={person.error} onRetry={() => void person.refetch()} />
     ) : (
@@ -386,7 +386,7 @@ function PersonView({ id }: { id: string }) {
   );
 }
 
-function PersonCards({ envelope }: { envelope: PersonEnvelope }) {
+function PersonCards({ envelope, readAt }: { envelope: PersonEnvelope; readAt: number }) {
   const person = envelope.user;
   const arrival = useArrival(person.id);
   const { mark, dialog, unsaved } = useLeaveGuard();
@@ -400,7 +400,7 @@ function PersonCards({ envelope }: { envelope: PersonEnvelope }) {
         </p>
       ) : null}
       <DetailsCard person={person} />
-      <ProfileCard envelope={envelope} onDirtyChange={markProfile} />
+      <ProfileCard envelope={envelope} readAt={readAt} onDirtyChange={markProfile} />
       {person.self ? <OwnPasswordCard /> : <PasswordCard person={person} onDirtyChange={markPassword} />}
       <RemoveCard person={person} unsaved={unsaved} />
       {dialog}
@@ -441,7 +441,7 @@ function sameValues(left: ProfileValues, right: ProfileValues): boolean {
   return PROFILE_FIELDS.every((field) => left[field] === right[field]);
 }
 
-function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; onDirtyChange: (dirty: boolean) => void }) {
+function ProfileCard({ envelope, readAt, onDirtyChange }: { envelope: PersonEnvelope; readAt: number; onDirtyChange: (dirty: boolean) => void }) {
   const base = envelope.user;
   const scope = useId();
   const save = useSaveProfile(base.id, base.self);
@@ -452,7 +452,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
   const [startedOn, setStartedOn] = useState<string | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const [saving, setSaving] = useState<{ saved: string | null } | null>(null);
+  const [saving, setSaving] = useState<{ saved: string; publishedAt: number | null } | { saved: null } | null>(null);
   const sending = saving !== null;
   const { said, say, clear } = useSay();
   const values: ProfileValues = { name: edits.name ?? base.name, username: edits.username ?? base.username, role: edits.role ?? base.role };
@@ -468,10 +468,12 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
     if (Object.keys(edits).length === 0 && startedOn !== null) setStartedOn(null);
   }, [startedOn, edits]);
   useEffect(() => {
-    if (saving?.saved == null || base.version !== saving.saved) return;
+    if (!saving || saving.saved === null) return;
+    const caughtUp = base.version === saving.saved || (saving.publishedAt !== null && readAt >= saving.publishedAt);
+    if (!caughtUp) return;
     setEdits({});
     setSaving(null);
-  }, [saving, base.version]);
+  }, [saving, base.version, readAt]);
   useEffect(() => {
     if (confirmation !== null && !confirming) setConfirmation(null);
   }, [confirmation, confirming]);
@@ -495,7 +497,7 @@ function ProfileCard({ envelope, onDirtyChange }: { envelope: PersonEnvelope; on
           say("error", peopleFailureText(error));
         },
         onSuccess: (answer) => {
-          setSaving(answer.kind === "saved" ? { saved: answer.person.user.version } : null);
+          setSaving(answer.kind === "saved" ? { saved: answer.person.user.version, publishedAt: whenPublished(answer.person) } : null);
           if (answer.kind === "saved") {
             setErrors({});
             say("success", "Changes saved.");
