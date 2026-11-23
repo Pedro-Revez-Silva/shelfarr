@@ -15,7 +15,7 @@ module OfflineContinuity
   end
 
   def offline_continuity
-    cookies[offline_continuity_cookie].presence || rotate_offline_continuity
+    cookies[offline_continuity_cookie].presence
   end
 
   def offline_continuity_cookie

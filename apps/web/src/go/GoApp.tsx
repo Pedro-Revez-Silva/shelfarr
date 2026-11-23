@@ -74,7 +74,7 @@ export function GoApp({ boot, fetcher, store = offlineStoreFor(boot.mount, boot.
         const result = await auth.bootstrap();
         setEpoch((value) => value + 1);
         const next = fromBootstrap(result, options, sentAt);
-        void keepOfflineAccount(boot.offline, store, next.kind === "signed_in" ? next.confirmation : null, sentAt).catch(() => undefined);
+        await keepOfflineAccount(boot.offline, store, next.kind === "signed_in" ? next.confirmation : null, sentAt).catch(() => undefined);
         setState(next);
       } catch (error) {
         if (definitiveRefusal(error)) await store.release(sentAt).catch(() => undefined);

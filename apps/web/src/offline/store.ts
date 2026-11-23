@@ -136,18 +136,18 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async books(account: string): Promise<SavedBook[]> {
     if (!(await this.exists())) return [];
-    const books = await this.run(["books"], "readonly", (stores) => completed<SavedBook[]>(stores.books.index("account").getAll(account)));
+    const books = await this.owned(account, ["books"], [], (stores) => completed<SavedBook[]>(stores.books.index("account").getAll(account)));
     return books.sort((left, right) => right.savedAt - left.savedAt);
   }
 
   async book(account: string, id: string): Promise<SavedBook | null> {
     if (!(await this.exists())) return null;
-    return (await this.run(["books"], "readonly", (stores) => completed<SavedBook | undefined>(stores.books.get(bookKey(account, id))))) ?? null;
+    return (await this.owned(account, ["books"], undefined, (stores) => completed<SavedBook | undefined>(stores.books.get(bookKey(account, id))))) ?? null;
   }
 
   async open(account: string, id: string): Promise<{ book: SavedBook; blob: Blob } | null> {
     if (!(await this.exists())) return null;
-    return this.run(["books", "files"], "readonly", async (stores) => {
+    return this.owned(account, ["books", "files"], null, async (stores) => {
       const key = bookKey(account, id);
       const book = await completed<SavedBook | undefined>(stores.books.get(key));
       const file = await completed<StoredFile | undefined>(stores.files.get(key));
@@ -158,7 +158,7 @@ export class IndexedDbOfflineStore implements OfflineStore {
 
   async attempts(account: string): Promise<Attempt[]> {
     if (!(await this.exists())) return [];
-    return this.run(["attempts"], "readonly", (stores) => completed<Attempt[]>(stores.attempts.index("account").getAll(account)));
+    return this.owned(account, ["attempts"], [], (stores) => completed<Attempt[]>(stores.attempts.index("account").getAll(account)));
   }
 
   begin(attempt: Attempt): Promise<void> {
@@ -224,6 +224,17 @@ export class IndexedDbOfflineStore implements OfflineStore {
         for (const key of keys) if (typeof key === "string" && !key.startsWith(`${account}|`)) await completed(stores[name].delete(key));
       }
     });
+  }
+
+  private async owned<T>(account: string, names: StoreName[], hidden: T, read: (stores: Stores) => Promise<T>): Promise<T> {
+    const continuity = this.continuity;
+    if (continuity === null) return this.run(names, "readonly", read);
+    const { value, record } = await this.run([...names, "account"], "readonly", async (stores) => {
+      const found = await read(stores);
+      const stored = await completed<StoredAccount | undefined>(stores.account.get(ACCOUNT_KEY));
+      return { value: found, record: stored?.record ?? null };
+    });
+    return record?.account === account && continuous(record, continuity) ? value : hidden;
   }
 
   private database(): Promise<IDBDatabase> {

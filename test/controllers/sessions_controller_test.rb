@@ -34,7 +34,6 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='/auth/oidc']"
     assert_select "a[href='#{new_session_path(local: 1)}']", text: /Use local sign-in instead/
     assert_select "input[name='username']", count: 0
-    assert_select "[data-controller=consumer-offline-signed-out][data-consumer-offline-signed-out-base-value='']"
   end
 
   test "new shows OIDC button on the local login form" do

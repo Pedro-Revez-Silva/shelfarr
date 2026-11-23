@@ -122,7 +122,8 @@ describe("the Rails session's offline marker", () => {
     expect(await store.updateBook("5", "7", (book) => ({ ...book, title: "Changed" }), Date.now())).toBe("refused");
     await store.begin({ key: "5|7", account: "5", id: "7", title: "Again", assetId: EPUB_ID, token: "again", startedAt: 2, failure: null });
     expect(await store.commit(savedBook(), new Blob([epubBytes()]), "again", Date.now())).toBe("account");
-    expect((await store.books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
+    expect(await store.books("5")).toEqual([]);
+    expect((await new IndexedDbOfflineStore("continuity-a").books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
 
     marker = "mA2";
     expect(await store.confirm(confirmed("5", "mA2", Date.now()))).toBe(true);
@@ -146,6 +147,31 @@ describe("the Rails session's offline marker", () => {
     const reading = store.accountState();
     marker = "signedOut";
     expect((await reading).record).toBeNull();
+  });
+
+  test("an answer that carries no marker is refused once the browser has one, so a slow first answer for A cannot outlast B's sign-in", async () => {
+    const store = new IndexedDbOfflineStore("continuity-markerless", continuity);
+    await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", undefined));
+    marker = "mB";
+    expect(await store.confirm(confirmed("5", undefined, Date.now()))).toBe(false);
+    expect((await store.accountState()).record).toBeNull();
+    expect(await store.books("5")).toEqual([]);
+  });
+
+  test("saved books, files and unfinished saves already being read when the marker changes are never handed back", async () => {
+    marker = "mA";
+    const store = new IndexedDbOfflineStore("continuity-reads", continuity);
+    await seed(store, savedBook({ title: "Account A's Book" }), confirmed("5", "mA"));
+    await store.begin({ key: "5|8", account: "5", id: "8", title: "Unfinished", assetId: EPUB_ID, token: "t", startedAt: 1, failure: null });
+    expect((await store.books("5")).map((book) => book.title)).toEqual(["Account A's Book"]);
+
+    const reads = [store.books("5"), store.book("5", "7"), store.open("5", "7"), store.attempts("5")] as const;
+    marker = "signedOut";
+    expect(await Promise.all(reads)).toEqual([[], null, null, []]);
+
+    marker = "mA";
+    expect((await store.open("5", "7"))?.book.title).toBe("Account A's Book");
+    expect(await store.books("4")).toEqual([]);
   });
 
   test("a copy confirmed before the marker existed stays readable until the server first issues one, then never again", async () => {
@@ -199,7 +225,7 @@ describe("going offline straight after the Rails session changed", () => {
     expect(screen.queryByText(/Account A's Private Book/)).toBeNull();
     readerView.unmount();
     expect(counter.opens).toBe(0);
-    expect((await store.books("5")).map((book) => book.title)).toEqual(["Account A's Private Book"]);
+    expect((await new IndexedDbOfflineStore("continuity-flow").books("5")).map((book) => book.title)).toEqual(["Account A's Private Book"]);
   });
 
   test("while the marker is unchanged, the same account still reads its saved books offline", async () => {

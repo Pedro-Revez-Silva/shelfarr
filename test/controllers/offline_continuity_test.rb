@@ -82,17 +82,40 @@ class OfflineContinuityTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "the bootstrap reports the marker the request carried, and issues one to a session that predates it" do
+  test "the bootstrap reports the marker the request carried and never issues one, so a late answer cannot replace a newer marker" do
     with_preview_users(users(:one)) do
       sign_in_as(users(:one))
-      issued = bootstrap_marker
-      assert_equal issued, issued_marker
-      assert_equal issued, bootstrap_marker
+      get web_preview_api_auth_bootstrap_path
+      assert_response :success
+      assert_not response.parsed_body.key?("offline_continuity")
       assert_empty continuity_cookies
 
       cookies[NAME] = "carriedFromTheRequest"
       assert_equal "carriedFromTheRequest", bootstrap_marker
       assert_empty continuity_cookies
+    end
+  end
+
+  test "a browser without a session gets a new marker from every preview answer, page or API" do
+    with_preview_users(users(:one)) do
+      get web_preview_api_auth_bootstrap_path
+      assert_equal false, response.parsed_body.fetch("authenticated")
+      first = issued_marker
+      get web_preview_downloads_path
+      assert_redirected_to new_session_path
+      assert_not_equal first, issued_marker
+    end
+  end
+
+  test "with the preview switched off, every preview answer is a refusal that rotates the marker" do
+    with_env(WebPreview::Access::VARIABLE => nil) do
+      sign_in_as(users(:one))
+      get web_preview_downloads_path
+      assert_response :not_found
+      first = issued_marker
+      get web_preview_api_auth_bootstrap_path
+      assert_response :not_found
+      assert_not_equal first, issued_marker
     end
   end
 
@@ -176,6 +199,23 @@ class OfflineContinuityTest < ActionDispatch::IntegrationTest
       get web_preview_api_auth_bootstrap_path
       assert_response :not_found
       assert_not_equal first, issued_marker
+    end
+  end
+
+  test "an account taken off the allowlist while its request is being created is refused with a new marker" do
+    with_preview_users(users(:one)) do
+      sign_in_as(users(:one))
+      removed_meanwhile = lambda do |*|
+        ENV[WebPreview::Access::VARIABLE] = users(:two).id.to_s
+        { title: "Middlemarch", author: "George Eliot" }
+      end
+      BookMetadataLookupService.stub(:call, removed_meanwhile) do
+        post web_preview_api_book_requests_path(source: "openlibrary", source_id: "OL900W"), params: { book_type: "ebook", language: "en" },
+          headers: account_headers(users(:one)), as: :json
+      end
+      assert_response :not_found
+      assert_equal({ "error" => "not_found" }, response.parsed_body)
+      issued_marker
     end
   end
 

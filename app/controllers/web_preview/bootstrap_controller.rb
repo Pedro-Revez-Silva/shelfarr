@@ -7,7 +7,7 @@ class WebPreview::BootstrapController < WebPreview::APIController
 
   def show
     render json: { authenticated: true, account: web_preview_account_id, csrf_token: form_authenticity_token,
-      expires_in: CSRF_LIFETIME.to_i, offline_expires_in: offline_window, offline_continuity: offline_continuity }
+      expires_in: CSRF_LIFETIME.to_i, offline_expires_in: offline_window, offline_continuity: offline_continuity }.compact
   end
 
   private
