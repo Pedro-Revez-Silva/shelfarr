@@ -56,7 +56,7 @@ export function useKoboAccount(id: string) {
     refetchOnWindowFocus: false,
     staleTime: 0,
     retry: keepTrying,
-    refetchInterval: (query) => (query.state.error === null && query.state.data?.refreshing ? POLL_INTERVAL_MS : false),
+    refetchInterval: (query) => (!isMissing(query.state.error) && query.state.data?.refreshing ? POLL_INTERVAL_MS : false),
   });
 }
 
@@ -82,7 +82,7 @@ export function useKoboBook(id: string) {
     refetchOnWindowFocus: false,
     staleTime: 0,
     retry: keepTrying,
-    refetchInterval: (query) => (query.state.error === null && query.state.data?.copy?.preparing ? POLL_INTERVAL_MS : false),
+    refetchInterval: (query) => (!isMissing(query.state.error) && query.state.data?.copy?.preparing ? POLL_INTERVAL_MS : false),
   });
 }
 
@@ -152,7 +152,7 @@ export function useBookWrite<Input>(write: (input: Input) => Promise<api.BookAns
   });
 }
 
-export type ActivationCheck = { checking: boolean; problem: string | null; check: () => void };
+export type ActivationCheck = { checking: boolean; problem: string | null; ended: boolean; check: () => void };
 
 export function useActivationPoll(account: KoboAccount): ActivationCheck {
   const { api: client } = useServices();
@@ -161,6 +161,7 @@ export function useActivationPoll(account: KoboAccount): ActivationCheck {
   publishRef.current = publish;
   const [checking, setChecking] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [ended, setEnded] = useState(false);
   const inFlight = useRef<AbortController | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const live = useRef(true);
@@ -186,6 +187,7 @@ export function useActivationPoll(account: KoboAccount): ActivationCheck {
       if (!live.current || (error instanceof DOMException && error.name === "AbortError")) return;
       if (isMissing(error) || failureKind(error) === "signed_out" || failureKind(error) === "account_changed") {
         stopped.current = true;
+        setEnded(true);
         setProblem("This connection could not be checked. Reload the page to continue.");
         return;
       }
@@ -225,5 +227,5 @@ export function useActivationPoll(account: KoboAccount): ActivationCheck {
     };
   }, [pending, run]);
 
-  return { checking, problem, check: () => void run() };
+  return { checking, problem, ended, check: () => void run() };
 }

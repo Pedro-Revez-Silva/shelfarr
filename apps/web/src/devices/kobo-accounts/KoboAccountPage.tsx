@@ -1,5 +1,5 @@
 import { getRouteApi, Link } from "@tanstack/react-router";
-import { useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { PageHeading } from "../../components/PageHeading";
 import { AccountRail } from "../../components/PersonalSettings";
 import { Time } from "../../components/requestText";
@@ -132,11 +132,13 @@ function Activation({ account }: { account: KoboAccount }) {
         Return here after approving. This code expires <Time iso={activation.expires_at} relative />. Keep it private.
       </p>
       <p role="status">{poller.problem ?? "Waiting for approval…"}</p>
-      <div className="form-actions">
-        <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
-          {poller.checking ? "Checking…" : "Check connection"}
-        </button>
-      </div>
+      {poller.ended ? null : (
+        <div className="form-actions">
+          <button type="button" className="button" aria-disabled={poller.checking ? true : undefined} aria-busy={poller.checking} onClick={() => (poller.checking ? undefined : poller.check())}>
+            {poller.checking ? "Checking…" : "Check connection"}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -188,11 +190,19 @@ function Sharing({ account }: { account: KoboAccount }) {
   const { said, say } = useSay();
   const select = useRef<HTMLSelectElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const people = account.sharing?.people.length ?? 0;
+  const shownPeople = useRef(people);
+  useEffect(() => {
+    const fewer = people < shownPeople.current;
+    shownPeople.current = people;
+    if (fewer && (document.activeElement === null || document.activeElement === document.body)) heading.current?.focus();
+  }, [people]);
   const [recipient, setRecipient] = useState("");
   const [missing, setMissing] = useState(false);
   const add = useAccountWrite((recipientId: string) => api.share(client, account.id, recipientId));
   const remove = useAccountWrite((shareId: string) => api.stopSharing(client, account.id, shareId));
   const sharing = account.sharing;
+  const busy = add.isPending || remove.isPending;
   if (!sharing) return null;
   const settle = (fallback: string) => ({
     onSuccess: (answer: api.AccountAnswer) => say(answer.kind === "done" ? "success" : "error", answer.kind === "done" ? (answer.notice ?? fallback) : answer.message),
@@ -200,7 +210,7 @@ function Sharing({ account }: { account: KoboAccount }) {
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (add.isPending) return;
+    if (busy) return;
     if (!sharing.candidates.some((candidate) => candidate.id === recipient)) {
       setMissing(true);
       select.current?.focus();
@@ -245,14 +255,11 @@ function Sharing({ account }: { account: KoboAccount }) {
                 }
                 question={`Stop sharing with ${person.name}? Shelfarr stops offering these books to their readers. Copies already downloaded stay on their Kobo.`}
                 confirmLabel="Stop sharing"
-                busy={remove.isPending}
+                busy={busy}
                 danger
                 subject={person.id}
                 onConfirm={(shareId) =>
-                  remove.mutate(shareId, {
-                    ...settle("Sharing stopped."),
-                    onSettled: () => heading.current?.focus(),
-                  })
+                  remove.mutate(shareId, settle("Sharing stopped."))
                 }
               />
             </li>
@@ -291,7 +298,7 @@ function Sharing({ account }: { account: KoboAccount }) {
             ) : null}
           </div>
           <div className="form-actions">
-            <button type="submit" className="button button--primary" aria-disabled={add.isPending ? true : undefined} aria-busy={add.isPending}>
+            <button type="submit" className="button button--primary" aria-disabled={busy ? true : undefined} aria-busy={add.isPending}>
               {add.isPending ? "Sharing…" : "Share catalogue"}
             </button>
           </div>

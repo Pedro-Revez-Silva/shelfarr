@@ -249,17 +249,43 @@ class WebPreview::KoboAccountsTest < ActionDispatch::IntegrationTest
 
     share = share_with
     stale = Kobo::HouseholdAccess.grant(@recipient, @account)
+    lookup = Kobo::HouseholdAccess.method(:grant)
+    lookups = 0
+    first_stale = lambda { |viewer, account|
+      lookups += 1
+      lookups == 1 ? stale : lookup.call(viewer, account)
+    }
     revoke = lambda { |file|
       share.destroy! unless share.destroyed?
       original.call(file)
     }
     WebPreview::KoboAccountJson.stub(:copy_version, revoke) do
-      Kobo::HouseholdAccess.stub(:grant, stale) do
+      Kobo::HouseholdAccess.stub(:grant, first_stale) do
         send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: shown)
       end
     end
     assert_response :not_found
     assert_equal "kobo_book_not_found", response.parsed_body.fetch("error")
+    assert_equal 0, KoboDelivery.count
+  end
+
+  test "a copy replaced while it is being sent asks again instead of saying the share ended" do
+    share_with
+    device, = recipient_device
+    file = prepare_copy
+    shown = WebPreview::KoboAccountJson.copy_version(file)
+    sign_in_as(@recipient)
+    original = WebPreview::KoboAccountJson.method(:copy_version)
+    replaced = lambda { |copy|
+      version = original.call(copy)
+      KoboAccountBookFile.where(id: file.id).delete_all if copy&.id == file.id
+      version
+    }
+    body = WebPreview::KoboAccountJson.stub(:copy_version, replaced) do
+      send_json(:post, web_preview_api_kobo_book_deliver_path(@shared_book), user: @recipient, reader_id: device.id.to_s, copy: shown)
+    end
+    assert_response :conflict
+    assert_equal "copy_changed", body.fetch("error")
     assert_equal 0, KoboDelivery.count
   end
 

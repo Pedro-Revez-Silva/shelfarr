@@ -281,6 +281,7 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     await until(() => expect(screen.getByTestId("kobo-activation-code")).toBeTruthy());
     await tick(5000);
     await until(() => expect(screen.getByText("This connection could not be checked. Reload the page to continue.")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /Check connection/ })).toBeNull();
     await act(async () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
@@ -339,6 +340,44 @@ describe("Kobo accounts in Account ▸ Devices", () => {
     expect(reads).toBe(2);
     await tick();
     jest.useRealTimers();
+  });
+
+  test("a copy being prepared keeps being checked through a short outage", async () => {
+    jest.useFakeTimers();
+    let reads = 0;
+    const api = server().on("GET", /\/kobo_books\/21$/, () => {
+      reads += 1;
+      if (reads === 1) return { body: { account: ACCOUNT, book: book({ copy: { ...book().copy!, preparing: true } }) } };
+      if (reads <= 4) return { status: 503, body: { error: "server_busy" } };
+      return { body: { account: ACCOUNT, book: book({ copy: ready("c1") }) } };
+    });
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-books/21" });
+    await until(() => expect(screen.getByText("Preparing a private copy from Kobo… This page updates when it finishes.")).toBeTruthy());
+    for (let second = 0; second < 30 && reads < 5; second += 1) await tick(1000);
+    await until(() => expect(screen.getByTestId("kobo-copy-status")).toBeTruthy());
+    expect(reads).toBe(5);
+    await tick();
+    jest.useRealTimers();
+  });
+
+  test("sharing changes run one at a time and leave focus where the person moved it", async () => {
+    const held = deferred<{ body: unknown }>();
+    const api = server().on("POST", /\/kobo_accounts\/5\/shares\/8\/remove$/, () => held.promise).on("POST", /\/kobo_accounts\/5\/shares$/, () => ({ body: { account: ACCOUNT, kobo_account: koboAccount() } }));
+    renderApp({ server: api, url: "/sub/preview/account/devices/kobo-accounts/5" });
+    const sharing = (await screen.findByRole("heading", { name: "Household sharing" })).closest("section") as HTMLElement;
+    const user = userEvent.setup();
+    await user.click(within(sharing).getByRole("button", { name: "Stop sharing with Sam Sharer" }));
+    await user.click(within(sharing).getByRole("button", { name: "Stop sharing" }));
+    const select = within(sharing).getByLabelText("Share with");
+    await user.selectOptions(select, "9");
+    await user.click(within(sharing).getByRole("button", { name: "Share catalogue" }));
+    expect(api.called("POST", /\/shares$/)).toHaveLength(0);
+    select.focus();
+    await act(async () => {
+      held.resolve({ body: { account: ACCOUNT, notice: "Sam Sharer can no longer see this catalogue or receive its books.", kobo_account: koboAccount({ shared_with: 0, sharing: { people: [], candidates: [{ id: "9", label: "Tess Tester (tess)" }] } }) } });
+    });
+    expect(await within(sharing).findByText("Sam Sharer can no longer see this catalogue or receive its books.")).toBeTruthy();
+    expect(document.activeElement).toBe(select);
   });
 
   test("the copy already prepared can be sent while a newer one is prepared", async () => {
