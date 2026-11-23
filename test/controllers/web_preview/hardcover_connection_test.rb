@@ -104,7 +104,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     version = connection.version
     SettingsService.set(:hardcover_enabled, false)
     [ [ web_preview_api_hardcover_api_key_path, { api_key: "hc_pat_value", version: version } ], [ web_preview_api_hardcover_authorize_path, { version: version } ],
-      [ web_preview_api_hardcover_device_path, { version: version } ], [ web_preview_api_hardcover_device_poll_path, {} ],
+      [ web_preview_api_hardcover_device_path, { version: version } ], [ web_preview_api_hardcover_device_poll_path, { user_code: "ABCD-1234" } ],
       [ web_preview_api_hardcover_device_cancel_path, { user_code: "ABCD-1234" } ], [ web_preview_api_hardcover_disconnect_path, { version: version } ] ].each do |path, body|
       answer = send_json(path, **body)
       assert_response :conflict
@@ -280,7 +280,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_nil hardcover(user: @admin).fetch("device")
     get callback_hardcover_connection_path, params: { code: "c", state: state, iss: ISSUER }
     assert_returned_to_warm_page("error", "That Hardcover sign-in expired or was started elsewhere. Please try again.", user: @admin)
-    answer = send_json(web_preview_api_hardcover_device_poll_path, user: @admin)
+    answer = send_json(web_preview_api_hardcover_device_poll_path, user: @admin, user_code: "ABCD-1234")
     assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
     assert_not_requested token
     assert_nil @admin.reload.hardcover_connection
@@ -328,7 +328,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_select "p", text: "ABCD-1234"
     assert_nil hardcover.fetch("device")
-    answer = send_json(web_preview_api_hardcover_device_poll_path)
+    answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
     assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
   end
 
@@ -357,7 +357,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     newer = @member.reload.hardcover_connection
     stub_token(access: "hc_at_late", refresh: "hc_rt_late")
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
     assert_requested revoke, times: 1
@@ -381,7 +381,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stub_me(id: 4242, username: "old_approval")
 
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
     end
     get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
@@ -408,7 +408,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
     assert_returned_to_warm_page("error", "Your Hardcover connection changed after this page was shown. Review it and try again.")
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
     assert_nil @member.reload.hardcover_connection
@@ -431,7 +431,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stub_me(id: 4242, username: "slow_start")
     send_json(web_preview_api_hardcover_device_path, version: nil)
     travel 6.seconds do
-      assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
+      assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path, user_code: "SLOW-0001").fetch("status")
     end
     assert_nil @member.reload.hardcover_connection
 
@@ -443,7 +443,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
       cancelled_elsewhere
     end
     travel 6.seconds do
-      assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
+      assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234").fetch("status")
     end
     assert_nil @member.reload.hardcover_connection
     assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_cancelled")
@@ -471,10 +471,76 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
 
     assert_nil hardcover.fetch("device")
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
     assert_not_requested token
+  end
+
+  test "starting another sign-in, here or on the classic page, supersedes one still finishing" do
+    stub_request(:post, REVOKE_URL).to_return(status: 200, body: "{}")
+    stub_me(id: 4242, username: "superseded")
+    generation = -> { @member.reload.hardcover_sign_in_generation }
+    stub_device
+    before = generation.call
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    assert_equal before + 1, generation.call
+    post device_hardcover_connection_path
+    assert_equal before + 2, generation.call
+    state_of(start_oauth(version: nil))
+    assert_equal before + 3, generation.call
+
+    other_tab = Hardcover::PersonalSignIn.new(session: {}, user: @member)
+    [ -> { other_tab.start_device }, -> { other_tab.start_oauth("https://shelf.example") } ].each do |start_replacement|
+      send_json(web_preview_api_hardcover_device_path, version: nil)
+      stub_request(:post, TOKEN_URL).to_return do
+        start_replacement.call
+        { status: 200, body: { access_token: "hc_at_superseded", refresh_token: "hc_rt_superseded", expires_in: 604_800 }.to_json }
+      end
+      travel 6.seconds do
+        answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
+        assert_equal "failed", answer.fetch("status")
+      end
+      assert_nil @member.reload.hardcover_connection
+    end
+
+    oauth_state = state_of(start_oauth(version: nil))
+    stub_request(:post, TOKEN_URL).to_return do
+      other_tab.start_device
+      { status: 200, body: { access_token: "hc_at_superseded", refresh_token: "hc_rt_superseded", expires_in: 604_800 }.to_json }
+    end
+    get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
+    assert_nil @member.reload.hardcover_connection
+    assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_superseded"), times: 3
+  end
+
+  test "a card checks only the code it showed and a stale warm code is not offered or polled by the classic page" do
+    stub_device
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+    token = stub_request(:post, TOKEN_URL).to_return(status: 400, body: { error: "authorization_pending" }.to_json)
+    travel 6.seconds do
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "OTHR-0000")
+      assert_equal [ "pending", "ABCD-1234" ], [ answer.fetch("status"), answer.dig("hardcover", "device", "user_code") ]
+      send_json(web_preview_api_hardcover_device_poll_path)
+      assert_response :bad_request
+    end
+    assert_not_requested token
+
+    Hardcover::ConnectionManager.end_sign_ins!(@member)
+    get device_hardcover_connection_path
+    assert_redirected_to profile_path
+    travel 6.seconds do
+      post device_poll_hardcover_connection_path(format: :json)
+    end
+    assert_equal "failed", response.parsed_body.fetch("status")
+    assert_not_requested token
+  end
+
+  test "a start from a page that no longer matches the account is refused before anything is started" do
+    stub_device
+    stale = Hardcover::ConnectionManager.sign_in_generation(@member)
+    assert_equal stale + 1, Hardcover::ConnectionManager.begin_sign_in!(@member, stale)
+    assert_nil Hardcover::ConnectionManager.begin_sign_in!(@member, stale)
   end
 
   test "cancelling a code ends sign-ins still waiting in other tabs" do
@@ -525,11 +591,11 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     token = stub_request(:post, TOKEN_URL).to_return(status: 400, body: { error: "slow_down" }.to_json)
     send_json(web_preview_api_hardcover_device_path, version: nil)
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "pending", 10 ], [ answer.fetch("status"), answer.dig("hardcover", "device", "interval") ]
     end
     travel 12.seconds do
-      send_json(web_preview_api_hardcover_device_poll_path)
+      send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
     end
     assert_requested token, times: 1
   end
@@ -551,19 +617,19 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     assert_in_delta 15.minutes.from_now, Time.zone.parse(device.fetch("expires_at")), 2.seconds
     assert_not_includes response.body, "synthetic-device-code"
 
-    answer = send_json(web_preview_api_hardcover_device_poll_path)
+    answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
     assert_equal "pending", answer.fetch("status")
     assert_not_requested token
     travel 6.seconds do
-      assert_equal "pending", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
+      assert_equal "pending", send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234").fetch("status")
       assert_requested token, times: 1
     end
     travel 9.seconds do
-      assert_equal "pending", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
+      assert_equal "pending", send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234").fetch("status")
       assert_requested token, times: 1
     end
     travel 12.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
     end
     assert_equal [ "approved", "Connected Hardcover account @reader." ], answer.values_at("status", "message")
     assert_nil answer.dig("hardcover", "device")
@@ -574,7 +640,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stub_device(expires_in: 60)
     send_json(web_preview_api_hardcover_device_path, version: nil)
     travel 61.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Hardcover sign-in expired. Start again." ], answer.values_at("status", "message")
       assert_nil answer.dig("hardcover", "device")
     end
@@ -582,7 +648,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     send_json(web_preview_api_hardcover_device_path, version: nil)
     answer = send_json(web_preview_api_hardcover_device_cancel_path, user_code: "ABCD-1234")
     assert_nil answer.dig("hardcover", "device")
-    assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path).fetch("status")
+    assert_equal "failed", send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234").fetch("status")
     assert_requested token, times: 2
     assert_nil @member.reload.hardcover_connection
   end
@@ -592,7 +658,7 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stub_request(:post, TOKEN_URL).to_return(status: 400, body: { error: "access_denied" }.to_json)
     send_json(web_preview_api_hardcover_device_path, version: nil)
     travel 6.seconds do
-      answer = send_json(web_preview_api_hardcover_device_poll_path)
+      answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Hardcover sign-in was declined." ], answer.values_at("status", "message")
     end
     assert_nil hardcover.fetch("device")

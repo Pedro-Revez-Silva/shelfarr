@@ -117,6 +117,12 @@ module Hardcover
       User.uncached { User.where(id: user.id).pick(:hardcover_sign_in_generation).to_i }
     end
 
+    def begin_sign_in!(user, expected_generation)
+      advanced = User.where(id: user.id, hardcover_sign_in_generation: expected_generation)
+        .update_all("hardcover_sign_in_generation = hardcover_sign_in_generation + 1")
+      expected_generation + 1 if advanced == 1
+    end
+
     def end_sign_ins!(user)
       User.where(id: user.id).update_all("hardcover_sign_in_generation = hardcover_sign_in_generation + 1")
     end

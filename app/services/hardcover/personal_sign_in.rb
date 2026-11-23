@@ -52,6 +52,7 @@ module Hardcover
       redirect_uri = HardcoverIntegration.redirect_uri(base_url)
       return unless HardcoverIntegration.redirect_uri_acceptable?(redirect_uri)
 
+      ConnectionManager.end_sign_ins!(@user) if generation.nil?
       state = "#{WARM_STATE_PREFIX if warm}#{SecureRandom.urlsafe_base64(32)}"
       verifier, challenge = Oauth.generate_pkce
       @session[OAUTH_KEY] = {
@@ -79,6 +80,7 @@ module Hardcover
     end
 
     def start_device(generation: nil)
+      ConnectionManager.end_sign_ins!(@user) if generation.nil?
       authorization = Oauth.start_device_authorization
       @session[DEVICE_KEY] = {
         "device_code" => authorization.device_code,
@@ -94,10 +96,10 @@ module Hardcover
     end
 
     def pending_device(warm: false)
-      pending = @session[DEVICE_KEY]
-      return unless pending.is_a?(Hash) && pending["user_id"] == @user.id
-      return if pending["expires_at"].to_i < Time.current.to_i
-      return if warm && !current?(pending)
+      pending = stored_device
+      return unless pending
+      return if warm && !pending.key?("generation")
+      return if pending.key?("generation") && !current?(pending)
 
       pending
     end
@@ -111,10 +113,11 @@ module Hardcover
       forget_device
     end
 
-    def poll_device(warm: false)
-      pending = pending_device
+    def poll_device(warm: false, user_code: nil)
+      pending = stored_device
       return expired_device unless pending && (!warm || pending.key?("generation"))
-      return replaced_device if warm && !current?(pending)
+      return replaced_device if pending.key?("generation") && !current?(pending)
+      return DevicePoll.new(status: :pending, message: nil, connection: nil) if warm && !ActiveSupport::SecurityUtils.secure_compare(pending["user_code"].to_s, user_code.to_s)
       return DevicePoll.new(status: :pending, message: nil, connection: nil) if Time.current.to_i < pending["next_poll_at"].to_i
 
       poll = Oauth.poll_device_authorization(pending["device_code"])
@@ -148,6 +151,14 @@ module Hardcover
     end
 
     private
+
+    def stored_device
+      pending = @session[DEVICE_KEY]
+      return unless pending.is_a?(Hash) && pending["user_id"] == @user.id
+      return if pending["expires_at"].to_i < Time.current.to_i
+
+      pending
+    end
 
     def current?(pending)
       pending.key?("generation") && pending["generation"] == ConnectionManager.sign_in_generation(@user)

@@ -99,7 +99,8 @@ export function useCodePoll(device: HardcoverDevice, onEnd: (outcome: CodeOutcom
   const publish = usePublishHardcover();
   const queryClient = useQueryClient();
   const writes = useHardcoverKeys().writes;
-  const { mutateAsync: checkCode } = useMutation({ mutationKey: writes, mutationFn: (signal: AbortSignal) => api.pollCode(client, signal), gcTime: 0 });
+  const code = device.user_code;
+  const { mutateAsync: checkCode } = useMutation({ mutationKey: writes, mutationFn: (signal: AbortSignal) => api.pollCode(client, code, signal), gcTime: 0 });
   const onEndRef = useRef(onEnd);
   onEndRef.current = onEnd;
   const [checking, setChecking] = useState(false);
@@ -108,7 +109,6 @@ export function useCodePoll(device: HardcoverDevice, onEnd: (outcome: CodeOutcom
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const live = useRef(true);
   const delay = Math.max(device.interval, MIN_POLL_SECONDS) * 1000;
-  const code = device.user_code;
   const schedule = useRef<() => void>(() => undefined);
 
   const run = useCallback(async () => {

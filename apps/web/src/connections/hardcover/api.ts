@@ -59,7 +59,7 @@ export async function authorize(api: ApiClient, version: Version): Promise<Autho
   return "error" in answer ? refused(answer) : { kind: "redirect", url: answer.authorization_url };
 }
 
-export async function pollCode(api: ApiClient, signal?: AbortSignal): Promise<HardcoverDevicePoll | Extract<HardcoverAnswer, { kind: "refused" }>> {
-  const answer = await api.request<HardcoverDevicePoll | HardcoverRefusal>({ path: `${ROOT}/device/poll`, schema: hardcoverDevicePollSchema, conflict: hardcoverRefusalSchema, method: "POST", body: {}, signal, account });
+export async function pollCode(api: ApiClient, userCode: string, signal?: AbortSignal): Promise<HardcoverDevicePoll | Extract<HardcoverAnswer, { kind: "refused" }>> {
+  const answer = await api.request<HardcoverDevicePoll | HardcoverRefusal>({ path: `${ROOT}/device/poll`, schema: hardcoverDevicePollSchema, conflict: hardcoverRefusalSchema, method: "POST", body: { user_code: userCode }, signal, account });
   return "error" in answer ? refused(answer) : answer;
 }

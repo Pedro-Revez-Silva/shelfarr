@@ -40,8 +40,8 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
   def authorize
     return unavailable(SIGN_IN_OFF) unless HardcoverIntegration.oauth_configured?
 
-    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
-    return unless expected_connection?
+    generation = begin_sign_in
+    return unless generation
 
     url = sign_in.start_oauth(request.base_url, warm: true, generation: generation)
     return unavailable(INSECURE_REDIRECT) unless url
@@ -52,8 +52,8 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
   def device
     return unavailable(CODE_OFF) unless HardcoverIntegration.device_flow_enabled?
 
-    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
-    return unless expected_connection?
+    generation = begin_sign_in
+    return unless generation
 
     sign_in.start_device(generation: generation)
     render_state
@@ -64,7 +64,10 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
   def device_poll
     return unavailable(CODE_OFF) unless HardcoverIntegration.device_flow_enabled?
 
-    poll = sign_in.poll_device(warm: true)
+    user_code = request.request_parameters["user_code"]
+    return render_error("invalid_request", :bad_request) unless user_code.is_a?(String)
+
+    poll = sign_in.poll_device(warm: true, user_code: user_code)
     notice = "Connected Hardcover account @#{poll.connection.hardcover_username}." if poll.status == :approved
     render json: { account: web_preview_account_id, status: poll.status, message: poll.message || notice, hardcover: state }.compact
   end
@@ -101,6 +104,15 @@ class WebPreview::HardcoverConnectionsController < WebPreview::APIController
 
   def current_connection
     HardcoverConnection.find_by(user_id: Current.user.id)
+  end
+
+  def begin_sign_in
+    generation = Hardcover::ConnectionManager.sign_in_generation(Current.user)
+    return unless expected_connection?
+
+    started = Hardcover::ConnectionManager.begin_sign_in!(Current.user, generation)
+    refuse("hardcover_changed", CHANGED, :conflict) unless started
+    started
   end
 
   def hide_referrer

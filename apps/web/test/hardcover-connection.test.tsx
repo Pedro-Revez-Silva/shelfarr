@@ -285,6 +285,7 @@ describe("Hardcover in Account ▸ Connections", () => {
     expect(polls).toBe(0);
     await tick(200);
     expect(polls).toBe(1);
+    expect(api.called("POST", /device\/poll$/)[0]!.body).toEqual({ user_code: "ABCD-1234" });
     await tick(5_100);
     expect(polls).toBe(2);
     await tick(20_000);
