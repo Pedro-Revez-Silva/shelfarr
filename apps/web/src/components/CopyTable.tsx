@@ -41,6 +41,11 @@ function pickOf(copy: ListedCopy, stateKey: string | null): string {
   return JSON.stringify([stateKey, copy]);
 }
 
+export function suggestedPick(copies: ListedCopy[], stateKey: string | null): string | null {
+  const suggestion = firstChoice(copies);
+  return suggestion ? pickOf(suggestion, stateKey) : null;
+}
+
 export type CopyChoice = { mutate: (resultId: string) => void; isPending: boolean; isError: boolean; error: unknown };
 
 export function CopyTable({
@@ -51,6 +56,8 @@ export function CopyTable({
   lookingFor = null,
   stateKey = null,
   locked = false,
+  pick,
+  onPick,
 }: {
   copies: ListedCopy[];
   choose: CopyChoice;
@@ -59,8 +66,12 @@ export function CopyTable({
   lookingFor?: string | null;
   stateKey?: string | null;
   locked?: boolean;
+  pick?: string | null;
+  onPick?: (pick: string | null) => void;
 }) {
-  const [picked, setPicked] = useState<string | null>(null);
+  const [ownPick, setOwnPick] = useState<string | null>(() => (preselect && !locked ? suggestedPick(copies, stateKey) : null));
+  const picked = pick === undefined ? ownPick : pick;
+  const setPicked = onPick ?? setOwnPick;
   const [missing, setMissing] = useState(false);
   const [askedFor, setAskedFor] = useState<{ id: string; stateKey: string | null } | null>(null);
   const captionId = useId();
@@ -72,8 +83,7 @@ export function CopyTable({
   const kindOf = (copy: ListedCopy) => (locked ? null : choosableKind(copy));
   const detailed = copies.some((copy) => copy.details);
   const firstChoosableId = copies.find((copy) => kindOf(copy))?.id;
-  const suggested = preselect && !locked ? firstChoice(copies) : undefined;
-  const chosenCopy = picked === null ? suggested : copies.find((copy) => pickOf(copy, stateKey) === picked && kindOf(copy));
+  const chosenCopy = copies.find((copy) => pickOf(copy, stateKey) === picked && kindOf(copy));
   const chosen = chosenCopy?.id ?? "";
   const chosenKind = chosenCopy ? kindOf(chosenCopy) : null;
   const confirming = askedFor !== null && askedFor.id === chosen && askedFor.stateKey === stateKey;
@@ -87,9 +97,8 @@ export function CopyTable({
   const noteFocus = () => {
     holdsFocus.current = true;
   };
-  const noteBlur = (event: FocusEvent<HTMLFormElement>) => {
-    const next = event.relatedTarget instanceof Node ? event.relatedTarget : null;
-    if (!event.currentTarget.contains(next) && event.target.isConnected) holdsFocus.current = false;
+  const noteBlur = (event: FocusEvent<HTMLElement>) => {
+    holdsFocus.current = keepsFocus(event);
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -209,6 +218,11 @@ export function CopyTable({
       ) : null}
     </form>
   );
+}
+
+export function keepsFocus(event: FocusEvent<HTMLElement>): boolean {
+  const next = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+  return event.currentTarget.contains(next) || !event.target.isConnected;
 }
 
 export function focusLeftThePage(): boolean {

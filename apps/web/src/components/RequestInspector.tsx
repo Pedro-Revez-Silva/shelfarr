@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { RequestActions, RequestCopies, RequestDetail, StoreOffer } from "../contract";
 import { useCancelTrackedRequest, useChooseRequestCopy, useManualLink, useRemoveRequest, useRetryRequest, useSearchRequestAgain } from "../requestActions";
-import { CopyTable, focusLeftThePage } from "./CopyTable";
+import { CopyTable, focusLeftThePage, keepsFocus, suggestedPick } from "./CopyTable";
 import { actionFailure, Time } from "./requestText";
 
 type Pending = { isPending: boolean; isError: boolean; error: unknown };
@@ -258,15 +258,23 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
     error: choose.error,
   };
   const count = copies.candidates.length;
+  const locked = revision === null && !copies.selectable;
+  const [pick, setPick] = useState(() => (copies.selectable && !locked ? suggestedPick(copies.candidates, revision) : null));
   const emptyNote = useRef<HTMLParagraphElement>(null);
-  const listed = useRef(count > 0);
+  const holdsFocus = useRef(false);
   useEffect(() => {
-    const emptied = listed.current && count === 0;
-    listed.current = count > 0;
-    if (emptied && focusLeftThePage()) emptyNote.current?.focus();
-  }, [count]);
+    if (count === 0 && holdsFocus.current && focusLeftThePage()) emptyNote.current?.focus();
+  });
   return (
-    <>
+    <div
+      className="copies"
+      onFocus={() => {
+        holdsFocus.current = true;
+      }}
+      onBlur={(event) => {
+        holdsFocus.current = keepsFocus(event);
+      }}
+    >
       <div className="copies-heading">
         <p className="request-meta">
           {copies.looking_for ? `Looking for ${copies.looking_for} · ` : ""}
@@ -278,7 +286,7 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
       {search.isError ? <Failure error={search.error} fallback="The search could not be started. Nothing was changed." /> : null}
       <div role="status">{search.isSuccess ? <p className="form-success">Searching again. Copies found by this search appear here.</p> : null}</div>
       {count > 0 ? (
-        <CopyTable copies={copies.candidates} choose={choice} preselect={copies.selectable} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={revision === null && !copies.selectable} />
+        <CopyTable copies={copies.candidates} choose={choice} replaces={replaces} lookingFor={copies.looking_for} stateKey={revision} locked={locked} pick={pick} onPick={setPick} />
       ) : (
         <>
           <p ref={emptyNote} className="request-note" tabIndex={-1}>
@@ -288,7 +296,7 @@ function Copies({ request, copies, actions }: { request: RequestDetail; copies: 
         </>
       )}
       <div role="status">{choose.isSuccess ? <p className="form-success">Download queued. This page updates as it goes.</p> : null}</div>
-    </>
+    </div>
   );
 }
 

@@ -2505,6 +2505,11 @@ thead th {
   font-weight: 400;
   overflow-wrap: anywhere;
 }
+.copies {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
 .copies-heading {
   display: flex;
   flex-wrap: wrap;

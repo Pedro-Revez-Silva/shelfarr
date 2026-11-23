@@ -442,6 +442,55 @@ describe("a request's copies for an administrator", () => {
     await waitFor(() => expect(document.activeElement?.textContent).toBe("Download this copy"));
   });
 
+  test("the suggested copy is a pick made once, so reordered copies with the same revision keep it", async () => {
+    let reversed = false;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: true, revision: "r1", looking_for: "English", search_blocked: null, candidates: reversed ? [copy("62"), copy("61")] : [copy("61"), copy("62")] } });
+    const server = railsServer(found(), true)
+      .on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }))
+      .on("POST", /\/requests\/7\/selection$/, () => ({ body: { account: ACCOUNT, request: { id: "7", status: "downloading" } } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    expect(((await screen.findByLabelText("Copy 61.epub")) as HTMLInputElement).checked).toBe(true);
+    reversed = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect([...document.querySelectorAll("#copies tbody th")].map((cell) => cell.textContent)).toEqual(["Copy 62.epub", "Copy 61.epub"]));
+    expect((screen.getByLabelText("Copy 61.epub") as HTMLInputElement).checked).toBe(true);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Download this copy" }));
+    await waitFor(() => expect(server.called("POST", /selection$/).map((call) => call.body)).toEqual([{ result_id: "61", expected_revision: "r1", replace_library_file: false }]));
+  });
+
+  test("an explicit pick lost to a search that briefly emptied the copies is not replaced by a new suggestion", async () => {
+    let phase = 0;
+    const lists = [[copy("63"), copy("64")], [], [copy("65")]];
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: phase !== 1, revision: `r${phase}`, looking_for: "English", search_blocked: null, candidates: lists[phase]! } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText("Copy 64.epub"));
+    for (const next of [1, 2]) {
+      phase = next;
+      await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+      await waitFor(() => expect(document.querySelectorAll("#copies tbody th").length).toBe(lists[next]!.length));
+    }
+    expect((screen.getByLabelText("Copy 65.epub") as HTMLInputElement).checked).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Download this copy" }));
+    expect(server.called("POST", /selection$/)).toHaveLength(0);
+  });
+
+  test("a background refresh that empties the copies leaves focus alone after the administrator clicked elsewhere", async () => {
+    let cleared = false;
+    const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: !cleared, revision: cleared ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: cleared ? [] : [copy("66")] } });
+    const server = railsServer(found(), true).on("GET", /\/api\/v1\/requests\/7$/, () => ({ body: { account: ACCOUNT, request: found() } }));
+    const { services } = renderApp({ server, url: "/sub/preview/requests/7" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText("Copy 66.epub"));
+    await user.click(document.querySelector("#copies .copies-heading .request-meta") as HTMLElement);
+    expect(document.activeElement).toBe(document.body);
+    cleared = true;
+    await act(async () => void services.queryClient.invalidateQueries({ queryKey: services.keys.request("7") }));
+    await waitFor(() => expect(document.querySelector("#copies .copies .request-note[tabindex]")).not.toBeNull());
+    expect(document.activeElement).toBe(document.body);
+  });
+
   test("when a new search clears the copies under an open choice, focus and the refusal stay on screen", async () => {
     let cleared = false;
     const found = () => detail({ requested_by: { name: "Rae", self: false }, actions: adminActions, copies: { selectable: !cleared, revision: cleared ? "r2" : "r1", looking_for: "English", search_blocked: null, candidates: cleared ? [] : [copy("85")] } });
