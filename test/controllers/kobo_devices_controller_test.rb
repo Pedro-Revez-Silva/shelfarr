@@ -58,6 +58,9 @@ class KoboDevicesControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
     assert_not_includes response.body, @token
     assert_select "input[name='kobo_device[base_url]'][value=?]", "https://reader.example/shelfarr"
+    post kobo_devices_path, params: { kobo_device: { name: "Copy", base_url: "https://reader.example/shelfarr/kobo/#{@token}#saved" } }
+    assert_response :unprocessable_entity
+    assert_not_includes response.body, @token
   end
 
   test "send and resend keep the canonical library copy and do not acquire again" do

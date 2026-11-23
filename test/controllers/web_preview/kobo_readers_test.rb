@@ -120,6 +120,14 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     preview_get web_preview_api_kobo_readers_path
     assert_equal "https://shelfarr.example/shelf/kobo/…", response.parsed_body.fetch("readers").sole.fetch("base_url")
     assert_not_includes response.body, @token
+
+    other, other_token = KoboDevice.issue(user: @member, name: "Copied", base_url: "https://shelfarr.example/shelf")
+    other.save!
+    other.update_columns(base_url: "https://shelfarr.example/shelf/kobo/#{other_token}")
+    rotated = send_json(:post, web_preview_api_kobo_reader_connection_address_path(other), version: WebPreview::KoboReaderJson.version(other))
+    fresh = endpoint_token(rotated)
+    assert_equal "https://shelfarr.example/shelf/kobo/#{fresh}", rotated.dig("setup", "endpoint")
+    assert_not_includes response.body, other_token
   end
 
   test "writes need the page's account and a valid CSRF token, and a signed-out request is refused" do
@@ -341,6 +349,8 @@ class WebPreview::KoboReadersTest < ActionDispatch::IntegrationTest
     assert_equal [ "choice", true ], outbound.values_at("tone", "choosable")
     assert_match(/Shelfarr's place \(chapter 2 of 3, 40% of the book\) has no reading time/, outbound.fetch("text"))
 
+    delivery.update_columns(reading_state: (delivery.reading_state || {}).merge("Statistics" => { "SpentReadingMinutes" => 12 }, "LastModified" => Time.current.utc.iso8601))
+    assert_equal shown.fetch("choice"), reader.fetch("deliveries").sole.fetch("choice"), "reading statistics alone do not change the choice"
     delivery.update_columns(reading_state: { "CurrentBookmark" => { "ProgressPercent" => 90, "Location" => { "Value" => "kobo.9.1" } } })
     read_on = send_json(:post, web_preview_api_kobo_reader_shelfarr_place_path(@device), entitlement_id: delivery.entitlement_id, choice: shown.fetch("choice"))
     assert_response :conflict

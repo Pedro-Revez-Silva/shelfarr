@@ -159,6 +159,9 @@ export function ConfirmAction({ label, question, confirmLabel, busy, danger = fa
   const wasAsking = useRef(false);
   const asking = opened !== null && opened === subject;
   useEffect(() => {
+    if (opened !== null && opened !== subject) setOpened(null);
+  }, [opened, subject]);
+  useEffect(() => {
     if (asking) confirm.current?.focus();
     else if (wasAsking.current) start.current?.focus();
     wasAsking.current = asking;

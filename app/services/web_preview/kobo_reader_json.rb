@@ -7,7 +7,7 @@ module WebPreview
     end
 
     def self.choice(delivery, progress)
-      Digest::SHA256.hexdigest([ delivery.id, delivery.revision_id, delivery.reading_state, delivery.progress_bridge, delivery.progress_outbound, progress&.version, progress&.client_mutation_id ].to_json)[0, 24]
+      Digest::SHA256.hexdigest([ delivery.id, delivery.revision_id, delivery.reading_state&.dig("CurrentBookmark"), delivery.progress_bridge, delivery.progress_outbound, progress&.version, progress&.client_mutation_id ].to_json)[0, 24]
     end
 
     def initialize(device, view:)

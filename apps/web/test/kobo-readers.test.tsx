@@ -282,6 +282,16 @@ describe("a Kobo reader's page", () => {
     expect(screen.queryByRole("group", { name: /Resume The Quiet Library/ })).toBeNull();
     expect(screen.queryByRole("group", { name: /Revoke this Kobo connection/ })).toBeNull();
     expect(server.called("POST", /places|revoke/)).toEqual([]);
+    await act(async () => {
+      services.queryClient.setQueryData(["account", ACCOUNT, "kobo", "reader", "3"], reader({ name: "Clara", version: "v1" }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByRole("group", { name: /Revoke this Kobo connection/ })).toBeNull();
+    expect(screen.queryByRole("group", { name: /Resume The Quiet Library/ })).toBeNull();
+    await act(async () => {
+      services.queryClient.setQueryData(["account", ACCOUNT, "kobo", "reader", "3"], reader({ name: "Clara two", version: "v2", deliveries: [delivery({ choice: "c2" })] }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
 
     await user.click(screen.getByRole("button", { name: "Use Kobo place" }));
     await user.click(within(screen.getByRole("group", { name: /Resume The Quiet Library/ })).getByRole("button", { name: "Use Kobo place" }));
