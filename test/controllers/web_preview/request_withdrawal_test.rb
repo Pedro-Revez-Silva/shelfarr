@@ -361,14 +361,14 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     sign_in_as(@member)
     offer = withdrawal
     assert_equal 1, offer.fetch("client_jobs")
-    removed = @removed
-    adapter = Object.new
-    adapter.define_singleton_method(:remove_torrent) do |external_id, delete_files:|
-      owner.update!(status: :failed)
-      removed << [ external_id, delete_files ]
-      true
+    original = Download.method(:current_external_id_owner)
+    released_after_claim = lambda do |*arguments, **options|
+      owner.update_columns(status: Download.statuses[:failed]) if Download.connection.open_transactions == 1
+      original.call(*arguments, **options)
     end
-    withdraw(revision: offer.fetch("revision"), remove_torrent: true, adapter: adapter)
+    Download.stub(:current_external_id_owner, released_after_claim) do
+      withdraw(revision: offer.fetch("revision"), remove_torrent: true)
+    end
     assert_response :success
     assert_equal [ [ "offered-hash", false ] ], @removed
   end
