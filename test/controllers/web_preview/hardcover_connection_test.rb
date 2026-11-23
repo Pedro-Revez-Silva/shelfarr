@@ -397,8 +397,6 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
       assert Hardcover::ConnectionManager.disconnect!(between, expected_version: between.version)
     end
     oauth_state = state_of(start_oauth(version: nil))
-    stub_device
-    send_json(web_preview_api_hardcover_device_path, version: nil)
     stub_request(:post, TOKEN_URL).to_return do
       connect_and_disconnect_elsewhere.call
       { status: 200, body: { access_token: "hc_at_late", refresh_token: "hc_rt_late", expires_in: 604_800 }.to_json }
@@ -407,12 +405,14 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
 
     get callback_hardcover_connection_path, params: { code: "c", state: oauth_state, iss: ISSUER }
     assert_returned_to_warm_page("error", "Your Hardcover connection changed after this page was shown. Review it and try again.")
+    stub_device
+    send_json(web_preview_api_hardcover_device_path, version: nil)
     travel 6.seconds do
       answer = send_json(web_preview_api_hardcover_device_poll_path, user_code: "ABCD-1234")
       assert_equal [ "failed", "Your Hardcover connection changed after this page was shown. Review it and try again." ], answer.values_at("status", "message")
     end
     assert_nil @member.reload.hardcover_connection
-    assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_late"), times: 1
+    assert_requested :post, REVOKE_URL, body: hash_including("token" => "hc_rt_late"), times: 2
 
     stub_hardcover_graphql("ShelfarrMe" => lambda { |_|
       connect_and_disconnect_elsewhere.call
@@ -541,6 +541,30 @@ class WebPreview::HardcoverConnectionTest < ActionDispatch::IntegrationTest
     stale = Hardcover::ConnectionManager.sign_in_generation(@member)
     assert_equal stale + 1, Hardcover::ConnectionManager.begin_sign_in!(@member, stale)
     assert_nil Hardcover::ConnectionManager.begin_sign_in!(@member, stale)
+  end
+
+  test "a warm start ends classic sign-ins in this browser, and the classic page never shows or checks a warm code" do
+    token = stub_request(:post, TOKEN_URL).to_return(status: 200, body: { access_token: "hc_at_classic", refresh_token: "hc_rt_classic", expires_in: 604_800 }.to_json)
+    stub_me(id: 4242, username: "classic_late")
+    post authorize_hardcover_connection_path
+    classic_state = Rack::Utils.parse_query(URI.parse(response.location).query).fetch("state")
+    stub_request(:post, DEVICE_URL).to_return(status: 200, body: { device_code: "classic-device", user_code: "CLAS-1234", verification_uri: "https://hardcover.app/link", expires_in: 900, interval: 5 }.to_json)
+    post device_hardcover_connection_path
+    stub_device
+    send_json(web_preview_api_hardcover_device_path, version: nil)
+
+    get callback_hardcover_connection_path, params: { code: "c", state: classic_state, iss: ISSUER }
+    assert_redirected_to profile_path
+    assert_match(/expired or was started elsewhere/, flash[:alert])
+    get device_hardcover_connection_path
+    assert_redirected_to profile_path
+    travel 6.seconds do
+      post device_poll_hardcover_connection_path(format: :json)
+      assert_equal "failed", response.parsed_body.fetch("status")
+    end
+    assert_not_requested token
+    assert_nil @member.reload.hardcover_connection
+    assert_equal "ABCD-1234", hardcover.dig("device", "user_code")
   end
 
   test "cancelling a code ends sign-ins still waiting in other tabs" do
