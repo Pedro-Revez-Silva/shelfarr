@@ -72,7 +72,10 @@ class RequestWithdrawal
       return
     end
 
-    DownloadClient.find(job.download_client_id).adapter.remove_torrent(job.external_id, delete_files: false)
+    client = DownloadClient.find_by(id: job.download_client_id)
+    return unless client
+
+    client.adapter.remove_torrent(job.external_id, delete_files: false)
     Rails.logger.info "[RequestWithdrawal] Removed torrent for download ##{job.download_id}"
   rescue DownloadClients::Base::Error => e
     Rails.logger.warn("[RequestWithdrawal] Failed to remove torrent for download ##{job.download_id}: #{e.class}")

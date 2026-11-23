@@ -308,6 +308,19 @@ class WebPreview::RequestWithdrawalTest < ActionDispatch::IntegrationTest
     assert_not Request.exists?(@mine.id)
   end
 
+  test "a download client deleted while its job is being removed is skipped, as the classic page skipped a missing client" do
+    torrent(external_id: "gone-client-hash")
+    sign_in_as(@member)
+    revision = withdrawal.fetch("revision")
+    vanishing = Object.new
+    vanishing.define_singleton_method(:remove_torrent) { |*| raise "the deleted client was contacted" }
+    DownloadClient.stub(:find_by, nil) do
+      withdraw(revision: revision, remove_torrent: true, adapter: vanishing)
+    end
+    assert_response :success
+    assert_not Request.exists?(@mine.id)
+  end
+
   test "a client job that another account's download now owns is neither offered nor removed" do
     torrent(status: :failed, external_id: "shared-hash")
     theirs = Request.create!(book: Book.create!(title: "Theirs", book_type: :ebook), user: @other, status: :downloading)
