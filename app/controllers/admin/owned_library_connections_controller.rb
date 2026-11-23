@@ -7,6 +7,7 @@ module Admin
 
     before_action :prevent_sensitive_response_caching
     before_action :set_connection, except: [ :index, :create ]
+    before_action :open_warm_page, only: :index
 
     def index
       @connection = OwnedLibraryConnectionWorkflow.default_connection
@@ -196,6 +197,13 @@ module Admin
 
     def workflow
       @workflow ||= OwnedLibraryConnectionWorkflow.new(@connection, user: Current.user)
+    end
+
+    def open_warm_page
+      return unless request.format.html? && flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+
+      address = WebPreview::AudibleBackupAddress.warm(params)
+      redirect_to [ web_preview_server_category_path(category: "library"), address[:query].presence ].compact.join("?") + "##{address[:card]}" if address
     end
 
     def connection_params

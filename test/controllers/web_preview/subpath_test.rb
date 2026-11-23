@@ -156,4 +156,17 @@ class WebPreview::SubpathTest < ActionDispatch::IntegrationTest
     get "#{BASE}/preview/api/v1/admin/activity?action_filter=user.login", headers: account_headers(admin)
     assert_equal [ entry.id.to_s ], response.parsed_body.fetch("entries").map { |item| item.fetch("id") }
   end
+
+  test "the classic Audible bookmark, the warm Library and files page and the Audible API live under the deployment path" do
+    admin = users(:two)
+    ENV[WebPreview::Access::VARIABLE] = admin.id.to_s
+    sign_in_as(admin)
+    get "#{BASE}/admin/owned_library_connections?tab=catalog&q=Dune"
+    assert_redirected_to "http://www.example.com#{BASE}/preview/server/library?audible_q=Dune#audible-catalogue"
+    get "#{BASE}/preview/server/library?audible_q=Dune"
+    assert_response :success
+    get "#{BASE}/preview/api/v1/admin/audible", headers: account_headers(admin)
+    assert_response :success
+    assert_equal "needs_setup", response.parsed_body.dig("connection", "status")
+  end
 end

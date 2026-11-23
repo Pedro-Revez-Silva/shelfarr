@@ -15,6 +15,7 @@ import { ServerCategoryPage } from "./server/ServerCategoryPage";
 import { NewPersonPage, PersonPage } from "./server/people/PersonPages";
 import { ActivityLogPage } from "./server/activity/ActivityLogPage";
 import { activitySearchSchema } from "./server/activity/contract";
+import { audibleSearchSchema } from "./server/audible/contract";
 import { LegacySetupRedirect } from "./server/setup/RunSetupAgain";
 import { ServerSetupPage } from "./server/setup/SetupPage";
 import { Shell } from "./components/Shell";
@@ -165,6 +166,7 @@ const legacySetupRoute = createRoute({
 const serverCategoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/server/$category",
+  validateSearch: (search: Record<string, unknown>) => audibleSearchSchema.parse(search),
   component: ServerCategoryPage,
 });
 

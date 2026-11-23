@@ -15,6 +15,7 @@ import { ServerUploads, UPLOAD_CARDS } from "../uploads/ServerUploads";
 import { PeopleCard } from "./people/PeopleCard";
 import { AcquisitionProviders, PROVIDER_CARDS } from "./providers/AcquisitionProviders";
 import { ACTIVITY_CARDS, ActivityLogCard } from "./activity/ActivityLogPage";
+import { AUDIBLE_CARDS, AudibleBackup } from "./audible/AudibleBackup";
 
 export function AdministratorsOnly() {
   return (
@@ -122,7 +123,7 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
     <>
       <nav className="card-index" aria-label={`${category.title} cards`}>
         <ul>
-          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...(category.id === "system" ? ACTIVITY_CARDS : []), ...category.groups, ...(category.id === "sources" ? PROVIDER_CARDS : []), ...(category.id === "library" ? UPLOAD_CARDS : [])].map((group) => (
+          {[...(category.id === "downloads" ? DOWNLOAD_CARDS : []), ...(category.id === "system" ? ACTIVITY_CARDS : []), ...category.groups, ...(category.id === "sources" ? PROVIDER_CARDS : []), ...(category.id === "library" ? [...AUDIBLE_CARDS, ...UPLOAD_CARDS] : [])].map((group) => (
             <li key={group.id}>
               <a href={`#${group.id}`}>{group.title}</a>
             </li>
@@ -140,6 +141,7 @@ function CategoryCards({ category, settings }: { category: SettingCategory; sett
           {category.id === "sources" && index === runs.length - 1 ? <AcquisitionProviders onDirtyChange={onDirtyChange} /> : null}
         </div>
       ))}
+      {category.id === "library" ? <AudibleBackup onDirtyChange={onDirtyChange} /> : null}
       {category.id === "library" ? <ServerUploads /> : null}
       {blocker.status === "blocked" ? <LeaveDialog count={dirtyCount} onStay={blocker.reset} onLeave={blocker.proceed} /> : null}
     </>

@@ -448,8 +448,7 @@ class WebPreview::AdminDownloadsTest < ActionDispatch::IntegrationTest
     service = response.parsed_body.fetch("services").find { |entry| entry.fetch("service") == "download_client" }
     assert_equal({ "category" => "downloads", "group" => "download_clients", "label" => "Download clients" }, service.fetch("fix"))
     labels = response.parsed_body.fetch("pending").map { |entry| entry.fetch("label") }
-    assert_empty labels & [ "Download clients", "Download routing" ]
-    assert_equal [ "Audible backup" ], labels
+    assert_empty labels
   end
 
   test "the classic download screens and their writes keep working" do

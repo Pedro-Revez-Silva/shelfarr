@@ -43,15 +43,9 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
       },
       services: SystemHealth::SERVICES.map { |service| service_json(service, health[service]) },
       release: release_json(update_check),
-      pending: pending_screens,
+      pending: [],
       setup: { pending: SetupWizard.pending?, completed: SetupWizard.completed? }
     }
-  end
-
-  def pending_screens
-    [
-      [ "Audible backup", admin_owned_library_connections_path ]
-    ].map { |label, url| { label: label, url: url } }
   end
 
   def service_json(service, health)
