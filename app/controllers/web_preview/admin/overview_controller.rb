@@ -52,7 +52,6 @@ class WebPreview::Admin::OverviewController < WebPreview::Admin::BaseController
       [ "Download clients", admin_download_clients_path ],
       [ "Download routing", admin_download_routing_rules_path ],
       [ "Custom acquisition providers", admin_acquisition_providers_path ],
-      [ "Users", admin_users_path ],
       [ "Uploads", admin_uploads_path ],
       [ "Audible backup", admin_owned_library_connections_path ],
       [ "Activity log", admin_activity_logs_path ]

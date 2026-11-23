@@ -1,0 +1,79 @@
+.people-actions {
+  margin: 0;
+}
+.people-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.people-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.people-name {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.people-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.people-username {
+  font-family: var(--mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+}
+.people-back {
+  margin: 0 0 12px;
+}
+.people-back a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.people-arrival {
+  margin: 0 0 16px;
+}
+.people-details {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+.people-details > div {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) 2fr;
+  gap: 4px 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+.people-details dt {
+  color: var(--muted);
+}
+.people-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.people-confirm {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+}
+.people-confirm-question {
+  margin: 0;
+}
+.overview-tally .overview-tally-action {
+  font-family: inherit;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}

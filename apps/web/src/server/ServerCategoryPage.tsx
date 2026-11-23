@@ -10,6 +10,7 @@ import { SettingsGroupCard } from "./SettingsGroupCard";
 import { CATEGORY_LABELS, isCategory, ServerShell } from "./ServerShell";
 import { useIsAdministrator, useServerSettings } from "./queries";
 import { RunSetupAgainCard } from "./setup/RunSetupAgain";
+import { PeopleCard } from "./people/PeopleCard";
 
 export function AdministratorsOnly() {
   return (
@@ -63,6 +64,7 @@ function CategoryView({ category }: { category: keyof typeof CATEGORY_LABELS }) 
               }
             />
           ) : null}
+          {category === "people" ? <PeopleCard /> : null}
           <CategoryCards category={found} settings={settings.data} />
           {category === "system" ? <RunSetupAgainCard /> : null}
         </>
