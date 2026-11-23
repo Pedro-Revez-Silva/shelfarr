@@ -316,6 +316,7 @@ Rails.application.routes.draw do
     delete "downloads/rules/:id", to: "downloads#destroy_rule"
     get "audible", to: "audible_backup#show", as: :audible
     get "audible/catalogue", to: "audible_backup#catalogue", as: :audible_catalogue
+    get "audible/revision", to: "audible_backup#revision", as: :audible_revision
     put "audible/companion", to: "audible_backup#update_connection", as: :audible_companion
     post "audible/test", to: "audible_backup#test", as: :audible_test
     post "audible/sign_in", to: "audible_backup#start_sign_in", as: :audible_sign_in

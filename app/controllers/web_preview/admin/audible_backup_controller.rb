@@ -14,11 +14,15 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
   rescue_from Forbidden, with: -> { render_error("not_found", :not_found) }
   rescue_from ActionDispatch::Http::Parameters::ParseError, with: -> { render_error("invalid_request", :bad_request) }
 
-  before_action :require_acting_administrator, except: %i[show catalogue]
-  before_action :require_saved_connection, except: %i[show catalogue update_connection]
+  before_action :require_acting_administrator, except: %i[show catalogue revision]
+  before_action :require_saved_connection, except: %i[show catalogue revision update_connection]
 
   def show
     render json: answer
+  end
+
+  def revision
+    render json: { account: web_preview_account_id, revision: WebPreview::AudibleBackupJson.revision(connection) }
   end
 
   def catalogue

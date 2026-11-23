@@ -17,6 +17,17 @@ module WebPreview
         ActiveSupport::SecurityUtils.secure_compare(sign_in_token(connection, user, session_id), submitted)
     end
 
+    def self.revision(connection)
+      return "unsaved" unless connection.persisted?
+
+      imports = connection.owned_media_imports
+      items = connection.owned_library_items
+      marks = [
+        connection.updated_at, imports.maximum(:updated_at), imports.count, items.maximum(:updated_at), items.count
+      ].map { |mark| mark.respond_to?(:utc) ? mark.utc.iso8601(6) : mark.to_s }
+      Digest::SHA256.hexdigest(marks.join("|")).first(16)
+    end
+
     def self.sign_in_host?(host)
       host = host.to_s.downcase
       LibationCompanionClient::AUTH_HOST_SUFFIXES.any? { |suffix| host == suffix || host.end_with?(".#{suffix}") }
@@ -47,7 +58,8 @@ module WebPreview
         existing_backup: existing_backup_json(summary),
         automation: automation_json,
         marketplaces: LibationCompanionClient::AUDIBLE_MARKETPLACES.map { |value| { value: value, label: LibationCompanionClient::AUDIBLE_MARKETPLACE_NAMES.fetch(value) } },
-        working: working?(summary)
+        working: working?(summary),
+        revision: self.class.revision(@connection)
       }
     end
 
@@ -74,7 +86,7 @@ module WebPreview
     private
 
     def shown_version(value)
-      OwnedLibraryConnectionWorkflow.reportable_version(value, companion_secrets)
+      OwnedLibraryConnectionWorkflow.reportable_version(value, @connection.client.secret_values)
     end
 
     def companion_secrets

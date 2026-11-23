@@ -1,9 +1,10 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import type { ApiClient } from "../../api/client";
 import { failureKind } from "../../api/errors";
 import { useServices } from "../../services";
 import { useIsAdministrator, useServerKeys } from "../queries";
-import { audibleActionSchema, audibleRejectedSchema, audibleSchema, catalogueSchema, type Audible, type AudibleAction, type AudibleRejection, type Catalogue } from "./contract";
+import { audibleActionSchema, audibleRejectedSchema, audibleSchema, catalogueSchema, revisionSchema, type Audible, type AudibleAction, type AudibleRejection, type Catalogue } from "./contract";
 
 export type CompanionValues = { url: string; bridge_token: string; enabled: boolean; allow_private_network: boolean; timeout_seconds: string };
 export type AutomationValues = { scheduled_sync_enabled: boolean; scheduled_sync_interval_minutes: number; automatic_backup_enabled: boolean };
@@ -23,10 +24,15 @@ export type AudibleAnswer = { kind: "done"; action: AudibleAction } | { kind: "r
 
 const BASE = "/admin/audible";
 const POLL_MS = 5_000;
+const IDLE_POLL_MS = 20_000;
 const account = (value: { account: string }) => value.account;
 
 export function audible(api: ApiClient, signal?: AbortSignal): Promise<Audible> {
   return api.request({ path: BASE, schema: audibleSchema, signal, account });
+}
+
+export function revision(api: ApiClient, signal?: AbortSignal): Promise<string> {
+  return api.request({ path: `${BASE}/revision`, schema: revisionSchema, signal, account }).then((answer) => answer.revision);
 }
 
 export function catalogue(api: ApiClient, query: string, page: number, signal?: AbortSignal): Promise<Catalogue> {
@@ -77,7 +83,7 @@ export async function runAudibleCommand(api: ApiClient, command: AudibleCommand,
 
 export function useAudibleKeys() {
   const root = [...useServerKeys().root, "audible"] as const;
-  return { state: [...root, "state"] as const, catalogue: [...root, "catalogue"] as const };
+  return { state: [...root, "state"] as const, catalogue: [...root, "catalogue"] as const, revision: [...root, "revision"] as const };
 }
 
 export function useAudible() {
@@ -91,6 +97,27 @@ export function useAudible() {
     refetchInterval: (query) => (query.state.data?.working ? POLL_MS : false),
     staleTime: 0,
   });
+}
+
+export function useIdleRevision(current: Audible | undefined) {
+  const { api } = useServices();
+  const keys = useAudibleKeys();
+  const client = useQueryClient();
+  const idle = current !== undefined && !current.working;
+  const latest = useQuery({
+    queryKey: keys.revision,
+    queryFn: ({ signal }) => revision(api, signal),
+    enabled: useIsAdministrator() && idle,
+    refetchOnWindowFocus: false,
+    refetchInterval: IDLE_POLL_MS,
+    staleTime: 0,
+  });
+  const changed = idle && latest.data !== undefined && latest.data !== current.revision;
+  useEffect(() => {
+    if (!changed) return;
+    void client.invalidateQueries({ queryKey: keys.state });
+    void client.invalidateQueries({ queryKey: keys.catalogue });
+  }, [changed, client, keys.state, keys.catalogue]);
 }
 
 export function useCatalogue(query: string, page: number, working: boolean) {

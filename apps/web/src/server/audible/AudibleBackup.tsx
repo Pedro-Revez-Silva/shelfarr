@@ -8,7 +8,7 @@ import type { DraftValue } from "../draft";
 import { Said, type Said as SaidMessage } from "../extras";
 import { CardActions, SettingControl, SettingsCard, TestResult, useScope, type TestOutcome } from "../primitives";
 import { CardBody, commandFailureText, FormProblem, focusSoon, useRevalidateAccessWhenDenied, type DirtyReporter } from "../downloads/DownloadManagement";
-import { useAudible, useAudibleCommand, useCatalogue, type AudibleCommand, type CompanionValues } from "./api";
+import { useAudible, useAudibleCommand, useCatalogue, useIdleRevision, type AudibleCommand, type CompanionValues } from "./api";
 import { audibleSearchSchema, type Audible, type AudibleAction, type AudibleRejection, type Catalogue, type CatalogueItem } from "./contract";
 import "./audible.css";
 
@@ -47,7 +47,7 @@ type Run = (command: AudibleCommand, then?: (action: AudibleAction) => void, rej
 const COMPANION_STATUS: Record<Audible["connection"]["status"], string> = { needs_setup: "Needs setup", ready: "Ready", busy: "Ready · Busy", unavailable: "Unavailable" };
 const SIGN_IN_STATUS: Record<Audible["sign_in"]["state"], string> = { not_ready: "Set up the companion first", starting: "Starting sign-in", pending: "Finish sign-in", connected: "Connected", needs_sign_in: "Needs sign-in" };
 const BACKUP_STATES: Record<CatalogueItem["state"], string> = {
-  not_eligible: "Not eligible: subscription title",
+  not_eligible: "Not backup-eligible",
   in_shelfarr: "In Shelfarr",
   on_server: "Already on this server",
   possible_match: "Possible match on this server",
@@ -93,6 +93,7 @@ function plural(count: number, word: string): string {
 
 export function AudibleBackup({ onDirtyChange }: { onDirtyChange: DirtyReporter }) {
   const query = useAudible();
+  useIdleRevision(query.data);
   const scope = useScope();
   const command = useAudibleCommand();
   const denied = query.isError && failureKind(query.error) === "not_found";

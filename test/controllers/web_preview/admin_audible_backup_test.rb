@@ -753,4 +753,41 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     row = response.parsed_body.dig("items", 0)
     assert_equal [ "failed", "Libation could not download it", { "label" => "Back up separately", "separate_edition" => true, "available" => true } ], row.values_at("state", "detail", "action")
   end
+
+  test "the revision changes when a sync or backup moves, is admin-only and never asks the companion" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    item = connection.owned_library_items.create!(external_id: "B0PLAIN001", title: "Dune", ownership_type: "purchased")
+    sign_in_as(@member)
+    preview_get web_preview_api_admin_audible_revision_path, user: @member
+    assert_response :not_found
+
+    sign_in_as(@admin)
+    read = lambda do
+      preview_get web_preview_api_admin_audible_revision_path, user: @admin
+      assert_response :success
+      assert_equal "private, no-store", response.headers["Cache-Control"]
+      response.parsed_body.fetch("revision")
+    end
+    idle = read.call
+    assert_match(/\A\h{16}\z/, idle)
+    assert_equal idle, read.call
+    travel 1.second
+    connection.update!(sync_status: "syncing", sync_started_at: Time.current)
+    syncing = read.call
+    assert_not_equal idle, syncing
+    travel 1.second
+    item.owned_media_imports.create!(status: "queued", requested_by: @admin)
+    assert_not_equal syncing, read.call
+    assert_not_requested :any, /libation\.test/
+  end
+
+  test "a custom bridge token however short is never shown as a version" do
+    connection = create_connection(bridge_token: "1.2", last_synced_at: 1.hour.ago)
+    connection.update_columns(companion_version: "1.2", provider_version: "14.2.0")
+    VCR.turned_off do
+      stub_accounts
+      body = state
+      assert_equal [ nil, "14.2.0" ], body.fetch("connection").values_at("companion_version", "provider_version")
+    end
+  end
 end

@@ -53,6 +53,7 @@ function state(overrides: Partial<Audible> = {}): Audible {
       { value: "uk", label: "United Kingdom" },
     ],
     working: false,
+    revision: "0000000000000000",
     ...overrides,
   };
 }
@@ -103,6 +104,7 @@ function adminServer(initial: Audible = state(), list: (path: string) => Catalog
     .on("GET", /\/api\/v1\/session$/, () => ({ body: session(ADMIN) }))
     .on("GET", /\/api\/v1\/admin\/settings$/, () => ({ body: settingsFixture() }))
     .on("GET", /\/api\/v1\/admin\/audible$/, () => ({ body: current }))
+    .on("GET", /\/api\/v1\/admin\/audible\/revision$/, () => ({ body: { account: ACCOUNT, revision: current.revision } }))
     .on("GET", /\/api\/v1\/admin\/audible\/catalogue/, (request) => ({ body: list(request.path) }));
 }
 
@@ -468,5 +470,16 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     expect(section("audible-sync").textContent).not.toContain("Connected to the Libation companion");
     reply.resolve(answer(current, "Audible library sync queued."));
     expect(await within(section("audible-sync")).findByText("Audible library sync queued.")).toBeTruthy();
+  });
+  test("an idle card notices work started elsewhere, such as a scheduled sync, and reads its state again", async () => {
+    const syncing = state({ sync: { ...state().sync, state: "syncing", started_at: "2026-11-23T09:30:00Z", action: "Syncing…", available: false }, working: true, revision: "1111111111111111" });
+    const server = adminServer().on("GET", /\/api\/v1\/admin\/audible\/revision$/, () => {
+      current = syncing;
+      return { body: { account: ACCOUNT, revision: syncing.revision } };
+    });
+    await openLibrary(server);
+    const sync = section("audible-sync");
+    expect(await within(sync).findByRole("progressbar", { name: "Library sync in progress" })).toBeTruthy();
+    expect(server.called("GET", /admin\/audible\/revision$/).length).toBeGreaterThan(0);
   });
 });
