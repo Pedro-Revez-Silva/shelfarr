@@ -86,6 +86,11 @@ describe("upload selection", () => {
 });
 
 describe("Library ▸ Uploads for a member", () => {
+  test("the Library links to its Uploads view", async () => {
+    renderApp({ server: memberServer(() => listing([])), url: "/sub/preview/library" });
+    expect((await screen.findByRole("link", { name: "Uploads" })).getAttribute("href")).toBe("/sub/preview/library/uploads");
+  });
+
   test("lists the shared uploads with safe details and no administration", async () => {
     const server = memberServer(() => listing([upload(), upload({ id: "4", filename: "other.epub", uploaded_by_you: false, status: "failed", book: null, failure: "This file could not be added to the library. An administrator can retry it.", request_id: "7" })]));
     renderApp({ server, url: "/sub/preview/library/uploads" });
