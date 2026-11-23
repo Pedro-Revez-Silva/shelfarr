@@ -4,6 +4,7 @@ import { AccountPage, AccountSectionPage } from "./components/AccountPage";
 import { AdminPage, ServerHomePage } from "./components/AdminPage";
 import { BookPage } from "./components/BookPage";
 import { DetailsPage } from "./components/DetailsPage";
+import { KoboReaderPage } from "./devices/kobo/KoboReaderPage";
 import { DiscoverPage, FindPage } from "./components/DiscoverPage";
 import { LibraryPage } from "./components/LibraryPage";
 import { NotificationsPage } from "./components/NotificationsPage";
@@ -79,6 +80,12 @@ const accountSectionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/account/$section",
   component: AccountSectionPage,
+});
+
+const koboReaderRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/account/devices/kobo/$readerId",
+  component: KoboReaderPage,
 });
 
 const discoverRoute = createRoute({
@@ -171,7 +178,7 @@ const personRoute = createRoute({
   component: PersonPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
+const routeTree = rootRoute.addChildren([indexRoute, libraryRoute, uploadsRoute, publicationRoute, accountRoute, accountSectionRoute, koboReaderRoute, discoverRoute, findRoute, bookRoute, requestsRoute, requestRoute, notificationsRoute, adminRoute, serverSettingsRoute, serverRoute, serverSetupRoute, legacySetupRoute, serverCategoryRoute, newPersonRoute, personRoute]);
 
 export function createAppRouter(options: { basepath: string; history?: RouterHistory }) {
   return createRouter({

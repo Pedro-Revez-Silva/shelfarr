@@ -37,6 +37,12 @@ class KoboDevice < ApplicationRecord
     joins(:user).merge(User.active).find_by(token_digest: Digest::SHA256.hexdigest(token))
   end
 
+  def self.carries_active_connection?(url)
+    URI.parse(url.to_s).path.to_s.split("/").any? { |segment| authenticate(CGI.unescape(segment).scrub("")) }
+  rescue URI::InvalidURIError
+    false
+  end
+
   def rotate_token!
     token = SecureRandom.hex(32)
     update!(token_digest: Digest::SHA256.hexdigest(token))

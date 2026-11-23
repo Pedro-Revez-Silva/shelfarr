@@ -2,6 +2,13 @@
 
 module KoboDevicesHelper
   Notice = Data.define(:tone, :text, :choosable)
+  KOBO_PLACE_REFUSALS = {
+    nothing_to_choose: "There is no unapplied Kobo place for this book.",
+    conflict: "Another device saved a place just now. Review the places and choose again.",
+    invalid: "That Kobo place belongs to an edition that is no longer in the library."
+  }.freeze
+  KOBO_SHELFARR_PLACE_REFUSAL = "There is no Shelfarr place waiting for a choice for this book. Its place may have changed; review it again."
+  KOBO_REVOKED_NOTICE = "Kobo connection revoked. Books already on the reader are kept."
   KOBO_EDITION_REASONS = {
     "not_well_formed" => "a chapter isn't well-formed XHTML",
     "not_xhtml" => "a chapter isn't XHTML",
@@ -15,6 +22,33 @@ module KoboDevicesHelper
     "no_text" => "it has no XHTML chapters",
     "verification_failed" => "the prepared copy didn't match the original"
   }.freeze
+
+  def kobo_queued_notice(device, delivery)
+    edition = " as a Kobo edition (KEPUB) prepared from this EPUB; the library file is unchanged" if delivery.kepub_copy?
+    "Queued for #{device.name}#{edition}. Sync your Kobo over Wi-Fi to download it."
+  end
+
+  def kobo_place_chosen_notice(delivery)
+    "Shelfarr now resumes #{delivery.publication['title']} at the Kobo place."
+  end
+
+  def kobo_shelfarr_place_notice(device, delivery)
+    "#{device.name} moves #{delivery.publication['title']} to the Shelfarr place at its next Wi-Fi sync."
+  end
+
+  def kobo_settings_notice(device, was_coexisting:, was_receiving:)
+    if device.receive_progress? && !was_receiving
+      "#{device.name} receives Shelfarr reading places for books sent from your library at its next Wi-Fi sync."
+    elsif !device.receive_progress? && was_receiving
+      "#{device.name} no longer receives Shelfarr reading places. Places it already has stay on the reader."
+    elsif device.store_coexistence? && !was_coexisting
+      "Kobo Store kept on #{device.name}. Sync the reader over Wi-Fi: your Store library and Shelfarr books both arrive."
+    elsif !device.store_coexistence? && was_coexisting
+      "#{device.name} now syncs Shelfarr books only. Books already on the reader are kept; new Store purchases wait until you restore the original endpoint."
+    else
+      "Reader settings saved."
+    end
+  end
 
   # Which file this reader is offered for a library book.
   def kobo_edition_text(delivery)

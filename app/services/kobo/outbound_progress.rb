@@ -44,6 +44,11 @@ module Kobo
         pending.first(limit).each { |delivery| new(delivery, progresses[delivery.book_id]).evaluate! }
       end
 
+      def choose_for!(delivery)
+        progress = progresses_for(delivery.kobo_device, [ delivery ])[delivery.book_id]
+        raise NothingToSend unless new(delivery, progress).choose!
+      end
+
       def progresses_for(device, deliveries)
         ids = deliveries.filter_map(&:book_id)
         return {} if ids.empty?

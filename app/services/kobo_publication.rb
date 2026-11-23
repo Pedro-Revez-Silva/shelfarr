@@ -68,6 +68,18 @@ class KoboPublication
     raise Unavailable, "This file is not a valid EPUB"
   end
 
+  def send_refusal
+    file = open_file
+    validate_epub(file)
+    nil
+  rescue Zip::Error, Nokogiri::XML::SyntaxError, IOError
+    "This file is not a valid EPUB"
+  rescue Unavailable => error
+    error.message
+  ensure
+    file&.close unless file&.closed?
+  end
+
   def open_file(expected_fingerprint: nil)
     raise Unavailable, "Choose an acquired ebook" unless @book.ebook? && @book.acquired?
 

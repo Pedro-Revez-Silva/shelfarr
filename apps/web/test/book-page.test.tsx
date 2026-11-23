@@ -217,6 +217,18 @@ describe("the Book page", () => {
     expect(screen.queryByText("Offline")).toBeNull();
   });
 
+  test("an ebook in the library can be sent to one of your Kobo readers from Open it", async () => {
+    const publication = summary({ id: "7" });
+    const server = bookServer(book({ details: "library", formats: [format("ebook", { state: "in_library", publication }), format("audiobook")] }))
+      .on("GET", /\/api\/v1\/library\/7\/kobo$/, () => ({ body: { account: ACCOUNT, kobo: { readers: [{ id: "3", name: "Clara" }], refusal: null } } }))
+      .on("POST", /\/kobo_readers\/3\/send$/, () => ({ body: { account: ACCOUNT, reader: { id: "3", name: "Clara" }, notice: "Queued for Clara. Sync your Kobo over Wi-Fi to download it." } }));
+    renderApp({ server, url: BOOK_URL });
+    const open = await screen.findByRole("region", { name: "Open it" });
+    await userEvent.setup().click(await within(open).findByRole("button", { name: "Send to Clara" }));
+    expect(await within(open).findByText("Queued for Clara. Sync your Kobo over Wi-Fi to download it.")).toBeTruthy();
+    expect(server.called("POST", /\/send$/)[0]?.body).toEqual({ book_id: "7" });
+  });
+
   test("when the server serves the shared reader, the ebook row and Open it open it there", async () => {
     const publication = summary({ id: "7", reading_status: "in_progress", progress: { asset_id: "a", position_seconds: null, fraction: 0.42, page: null, version: 3, observed_at: null, updated_at: "2026-11-22T10:00:00Z" }, reader_url: "/sub/read/7" });
     renderApp({ server: bookServer(book({ details: "library", formats: [format("ebook", { state: "in_library", publication }), format("audiobook")] })), url: BOOK_URL, boot: { ...appBoot, reader_formats: ["cbz", "epub", "pdf"] } });

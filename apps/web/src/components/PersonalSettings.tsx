@@ -5,6 +5,7 @@ import { isApiError } from "../api/errors";
 import { readCsrfToken } from "../boot";
 import type { AccountSettings, ApiToken, CreatedToken, Profile, TwoFactorSetup } from "../contract";
 import { useServices } from "../services";
+import { KoboReadersCard } from "../devices/kobo/KoboReadersCard";
 import { describeWriteFailure } from "./accountFields";
 import { absoluteTime, Time } from "./requestText";
 
@@ -298,7 +299,7 @@ function BackupCodes({ codes, onDone }: { codes: string[]; onDone: () => void })
   );
 }
 
-function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label }: { text: string; label: string }) {
   const [result, setResult] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
@@ -515,11 +516,9 @@ export function DevicesSection({ settings }: { settings: AccountSettings }) {
           <a href={settings.links.reading_library}>Open your reading library to install it</a>
         </p>
       </Card>
-      <Card title="Kobo" description="Kobo readers and Kobo accounts still open on their current pages while they move here.">
+      <KoboReadersCard />
+      <Card title="Kobo accounts" description="Connect a Kobo account, refresh its catalogue and share books with your household. These still open on their current pages while they move here.">
         <ul className="link-list">
-          <li>
-            <a href={settings.links.kobo_readers}>Kobo readers</a>
-          </li>
           <li>
             <a href={settings.links.kobo_accounts}>Kobo accounts</a>
           </li>

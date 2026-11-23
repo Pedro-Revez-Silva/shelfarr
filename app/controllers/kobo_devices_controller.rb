@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class KoboDevicesController < ApplicationController
+  before_action :open_warm_page, only: %i[index show]
+
   def index
     @devices = Current.user.kobo_devices.order(:name)
     base_url = request.base_url + request.script_name
@@ -33,7 +35,7 @@ class KoboDevicesController < ApplicationController
     was_coexisting = @device.store_coexistence?
     was_receiving = @device.receive_progress?
     if @device.update(params.require(:kobo_device).permit(:store_coexistence, :share_progress, :receive_progress))
-      redirect_to kobo_device_path(@device), notice: update_notice(was_coexisting, was_receiving)
+      redirect_to kobo_device_path(@device), notice: helpers.kobo_settings_notice(@device, was_coexisting: was_coexisting, was_receiving: was_receiving)
     else
       load_deliveries
       render :show, status: :unprocessable_entity
@@ -45,13 +47,13 @@ class KoboDevicesController < ApplicationController
     device = Current.user.kobo_devices.find(params[:id])
     delivery = device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id].to_s)
     Kobo::ProgressBridge.new(delivery).choose!
-    redirect_to kobo_device_path(device), notice: "Shelfarr now resumes #{delivery.publication['title']} at the Kobo place."
+    redirect_to kobo_device_path(device), notice: helpers.kobo_place_chosen_notice(delivery)
   rescue Kobo::ProgressBridge::NothingToChoose
-    redirect_to kobo_device_path(device), alert: "There is no unapplied Kobo place for this book."
+    redirect_to kobo_device_path(device), alert: KoboDevicesHelper::KOBO_PLACE_REFUSALS.fetch(:nothing_to_choose)
   rescue Consumer::ProgressWriter::Conflict
-    redirect_to kobo_device_path(device), alert: "Another device saved a place just now. Review the places and choose again."
+    redirect_to kobo_device_path(device), alert: KoboDevicesHelper::KOBO_PLACE_REFUSALS.fetch(:conflict)
   rescue Consumer::ProgressWriter::Invalid
-    redirect_to kobo_device_path(device), alert: "That Kobo place belongs to an edition that is no longer in the library."
+    redirect_to kobo_device_path(device), alert: KoboDevicesHelper::KOBO_PLACE_REFUSALS.fetch(:invalid)
   end
 
   # An explicit choice to send Shelfarr's place although it could not be
@@ -59,12 +61,10 @@ class KoboDevicesController < ApplicationController
   def send_shelfarr_place
     device = Current.user.kobo_devices.find(params[:id])
     delivery = device.kobo_deliveries.find_by!(entitlement_id: params[:entitlement_id].to_s)
-    progress = Kobo::OutboundProgress.progresses_for(device, [ delivery ])[delivery.book_id]
-    raise Kobo::OutboundProgress::NothingToSend unless Kobo::OutboundProgress.new(delivery, progress).choose!
-
-    redirect_to kobo_device_path(device), notice: "#{device.name} moves #{delivery.publication['title']} to the Shelfarr place at its next Wi-Fi sync."
+    Kobo::OutboundProgress.choose_for!(delivery)
+    redirect_to kobo_device_path(device), notice: helpers.kobo_shelfarr_place_notice(device, delivery)
   rescue Kobo::OutboundProgress::NothingToSend
-    redirect_to kobo_device_path(device), alert: "There is no Shelfarr place waiting for a choice for this book. Its place may have changed; review it again."
+    redirect_to kobo_device_path(device), alert: KoboDevicesHelper::KOBO_SHELFARR_PLACE_REFUSAL
   end
 
   def rotate
@@ -74,15 +74,14 @@ class KoboDevicesController < ApplicationController
 
   def destroy
     Current.user.kobo_devices.find(params[:id]).destroy!
-    redirect_to kobo_devices_path, notice: "Kobo connection revoked. Books already on the reader are kept."
+    redirect_to kobo_devices_path, notice: KoboDevicesHelper::KOBO_REVOKED_NOTICE
   end
 
   def send_book
     device = Current.user.kobo_devices.find(params[:id])
     book = Book.acquired.find(params[:book_id])
     delivery = device.send_book!(book)
-    edition = " as a Kobo edition (KEPUB) prepared from this EPUB; the library file is unchanged" if delivery.kepub_copy?
-    redirect_to library_path(book), notice: "Queued for #{device.name}#{edition}. Sync your Kobo over Wi-Fi to download it."
+    redirect_to library_path(book), notice: helpers.kobo_queued_notice(device, delivery)
   rescue KoboPublication::Unavailable => error
     redirect_to library_path(book), alert: error.message
   end
@@ -99,17 +98,13 @@ class KoboDevicesController < ApplicationController
     @progresses = Current.user.consumer_progresses.where(book_id: @deliveries.map(&:book_id).compact).index_by(&:book_id)
   end
 
-  def update_notice(was_coexisting, was_receiving)
-    if @device.receive_progress? && !was_receiving
-      "#{@device.name} receives Shelfarr reading places for books sent from your library at its next Wi-Fi sync."
-    elsif !@device.receive_progress? && was_receiving
-      "#{@device.name} no longer receives Shelfarr reading places. Places it already has stay on the reader."
-    elsif @device.store_coexistence? && !was_coexisting
-      "Kobo Store kept on #{@device.name}. Sync the reader over Wi-Fi: your Store library and Shelfarr books both arrive."
-    elsif !@device.store_coexistence? && was_coexisting
-      "#{@device.name} now syncs Shelfarr books only. Books already on the reader are kept; new Store purchases wait until you restore the original endpoint."
+  def open_warm_page
+    return unless flash.empty? && WebPreview::Access.current.allows?(Current.user) && WarmEntry.stylesheet_built?
+
+    if action_name == "index"
+      redirect_to web_preview_account_section_path(section: "devices", anchor: "kobo-readers")
     else
-      "Reader settings saved."
+      redirect_to web_preview_kobo_reader_path(Current.user.kobo_devices.find(params[:id]))
     end
   end
 
