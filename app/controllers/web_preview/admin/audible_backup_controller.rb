@@ -48,7 +48,7 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     when :failed then failure("Could not connect to the Libation companion: #{presenter.redact(result.error.message)}")
     else
       detail = [ result.companion_version, result.libation_version ].compact_blank.join(" / Libation ")
-      success([ "Connected to the Libation companion", (" (#{detail})" if detail.present?), ("; status: #{result.health_status}" if result.health_status.present?), "." ].join)
+      success(presenter.redact([ "Connected to the Libation companion", (" (#{detail})" if detail.present?), ("; status: #{result.health_status}" if result.health_status.present?), "." ].join))
     end
     render json: answer(outcome: outcome, tested: true)
   end
@@ -74,7 +74,7 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
     token, response_url = body.values_at("sign_in_token", "response_url")
     raise Malformed, "Send the sign-in token and the final address as text" unless token.is_a?(String) && response_url.is_a?(String)
 
-    result = workflow.complete_sign_in(response_url: response_url) do |session_id|
+    result = workflow.complete_sign_in(response_url: response_url, single_use: true) do |session_id|
       WebPreview::AudibleBackupJson.sign_in_token_matches?(connection, Current.user, session_id, token)
     end
     outcome = case result.status
@@ -163,7 +163,7 @@ class WebPreview::Admin::AudibleBackupController < WebPreview::Admin::BaseContro
   end
 
   def answer(auth_pending: false, **extra)
-    { account: web_preview_account_id, **presenter.state(workflow.summary(auth_pending: auth_pending)), **extra }
+    { account: web_preview_account_id, **presenter.state(workflow.summary(auth_pending: auth_pending, quiet_during_backlog: true)), **extra }
   end
 
   def body

@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { audibleSchema, catalogueSchema, type Audible, type Catalogue, type CatalogueItem } from "../src/server/audible/contract";
 import type { ServerSettings } from "../src/server/contract";
-import { ACCOUNT, FakeServer, renderApp, session, standardServer } from "./helpers";
+import { ACCOUNT, deferred, FakeServer, renderApp, session, standardServer } from "./helpers";
 
 afterEach(cleanup);
 
@@ -332,5 +332,51 @@ describe("Server ▸ Library and files ▸ Audible backup in the Rails preview",
     const { services } = renderApp({ server: adminServer(state({ account: "99" })), url: "/sub/preview/server/library" });
     expect(await screen.findByRole("heading", { name: "The signed-in account changed" })).toBeTruthy();
     expect(services.guard.getState().status).toBe("account_changed");
+  });
+
+  test("a read that was already on its way cannot undo the state an action just returned", async () => {
+    const user = userEvent.setup();
+    const late = deferred<{ body: Audible }>();
+    const syncing = state({ sync: { ...state().sync, state: "syncing", started_at: "2026-11-23T09:30:00Z", action: "Syncing…", available: false }, working: true });
+    let reads = 0;
+    let posts = 0;
+    const server = adminServer()
+      .on("GET", /\/api\/v1\/admin\/audible$/, () => {
+        reads += 1;
+        return reads === 1 ? { body: state() } : late.promise;
+      })
+      .on("POST", /\/admin\/audible\/sync$/, () => {
+        posts += 1;
+        return posts === 1 ? { status: 500, body: { error: "server_error" } } : answer(syncing, "Audible library sync queued.");
+      });
+    await openLibrary(server);
+    const sync = section("audible-sync");
+    await user.click(within(sync).getByRole("button", { name: "Sync library" }));
+    await waitFor(() => expect(reads).toBe(2));
+    await user.click(within(sync).getByRole("button", { name: "Sync library" }));
+    expect(await within(sync).findByText("Audible library sync queued.")).toBeTruthy();
+    late.resolve({ body: state() });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((within(sync).getByRole("button", { name: "Syncing…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(sync).getByRole("progressbar", { name: "Library sync in progress" })).toBeTruthy();
+  });
+
+  test("edits typed while a save is on its way are kept and still marked unsaved", async () => {
+    const user = userEvent.setup();
+    const reply = deferred<{ body: unknown }>();
+    const server = adminServer().on("PUT", /\/admin\/audible\/companion$/, () => reply.promise);
+    await openLibrary(server);
+    const connection = section("audible-connection");
+    const timeout = within(connection).getByLabelText("Request timeout") as HTMLInputElement;
+    await user.clear(timeout);
+    await user.type(timeout, "45");
+    await user.click(within(connection).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(server.called("PUT", /companion$/)).toHaveLength(1));
+    await user.clear(timeout);
+    await user.type(timeout, "90");
+    reply.resolve(answer(state({ connection: { ...state().connection, timeout_seconds: 45 } }), "Audible backup connection saved."));
+    expect(await within(connection).findByText("Audible backup connection saved.")).toBeTruthy();
+    expect(timeout.value).toBe("90");
+    expect(within(connection).getByText("Unsaved changes")).toBeTruthy();
   });
 });

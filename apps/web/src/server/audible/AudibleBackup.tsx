@@ -246,13 +246,17 @@ function useDraft<T>(saved: T, same: (left: T, right: T) => boolean, key: string
     setBase(next);
     setDraft(next);
   };
-  return { draft, setDraft, dirty, reset };
+  const adopt = (next: T, submitted: T) => {
+    setBase(next);
+    setDraft((current) => (same(current, submitted) ? next : current));
+  };
+  return { draft, setDraft, dirty, reset, adopt };
 }
 
 function ConnectionSection({ data, run, busy, onDirtyChange }: { data: Audible; run: Run; busy: boolean; onDirtyChange: DirtyReporter }) {
   const scope = useScope();
   const saved = companionDraft(data);
-  const { draft, setDraft, dirty, reset } = useDraft(saved, sameCompanion, "audible-connection", onDirtyChange);
+  const { draft, setDraft, dirty, reset, adopt } = useDraft(saved, sameCompanion, "audible-connection", onDirtyChange);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [problem, setProblem] = useState<string | null>(null);
   const [test, setTest] = useState<TestOutcome | null>(null);
@@ -263,10 +267,11 @@ function ConnectionSection({ data, run, busy, onDirtyChange }: { data: Audible; 
     if (busy || locked) return;
     setErrors({});
     setProblem(null);
+    const submitted = draft;
     run(
-      { kind: "save", values: draft },
+      { kind: "save", values: submitted },
       (action) => {
-        if (action.outcome.tone === "success") reset(companionDraft(action));
+        if (action.outcome.tone === "success") adopt(companionDraft(action), submitted);
       },
       (rejection) => {
         const byField: Record<string, string> = {};
@@ -346,7 +351,7 @@ function AccountSection({ data, run, busy }: { data: Audible; run: Run; busy: bo
           ) : null}
           {sign.state === "starting" ? (
             <p className="field-hint" role="status">
-              Libation is preparing the secure Audible sign-in. This updates by itself when it is ready.
+              Libation is working on the Audible sign-in. This updates by itself when it is done.
             </p>
           ) : sign.state === "pending" ? (
             <PendingSignIn data={data} run={run} busy={busy} />
@@ -592,7 +597,7 @@ function sameAutomation(left: AutomationDraft, right: AutomationDraft): boolean 
 function AutomationSection({ data, run, busy, onDirtyChange }: { data: Audible; run: Run; busy: boolean; onDirtyChange: DirtyReporter }) {
   const scope = useScope();
   const saved = automationDraft(data);
-  const { draft, setDraft, dirty, reset } = useDraft(saved, sameAutomation, "audible-automation", onDirtyChange);
+  const { draft, setDraft, dirty, reset, adopt } = useDraft(saved, sameAutomation, "audible-automation", onDirtyChange);
   if (!data.connection.saved || !data.connection.enabled) {
     return (
       <Section id="audible-automation" title="Automation">
@@ -614,8 +619,9 @@ function AutomationSection({ data, run, busy, onDirtyChange }: { data: Audible; 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busy) return;
-    run({ kind: "automation", values: { scheduled_sync_enabled: draft.scheduled_sync_enabled, scheduled_sync_interval_minutes: Number(draft.interval), automatic_backup_enabled: draft.automatic_backup_enabled } }, (action) => {
-      if (action.outcome.tone === "success") reset(automationDraft(action));
+    const submitted = draft;
+    run({ kind: "automation", values: { scheduled_sync_enabled: submitted.scheduled_sync_enabled, scheduled_sync_interval_minutes: Number(submitted.interval), automatic_backup_enabled: submitted.automatic_backup_enabled } }, (action) => {
+      if (action.outcome.tone === "success") adopt(automationDraft(action), submitted);
     });
   };
   return (

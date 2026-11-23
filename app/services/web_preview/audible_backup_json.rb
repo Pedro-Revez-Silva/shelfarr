@@ -3,6 +3,7 @@
 module WebPreview
   class AudibleBackupJson
     SIGN_IN_PURPOSE = "web_preview/audible_sign_in"
+    ADDRESS = %r{[a-z][a-z0-9+.-]*://[^\s"'<>]+}i
     ACTIVE_LABELS = { "queued" => "Queued", "starting" => "Starting", "downloading" => "Backing up", "processing" => "Importing" }.freeze
 
     def self.sign_in_token(connection, user, session_id)
@@ -63,10 +64,21 @@ module WebPreview
       token = @connection.bridge_token.to_s
       text = text.to_s
       text = text.gsub(token, SecretRedaction::MASK) if token.length >= SecretRedaction::MIN_SECRET_LENGTH
-      SecretRedaction.call(text)
+      SecretRedaction.call(text.gsub(ADDRESS) { |address| without_query(address) })
     end
 
     private
+
+    def without_query(address)
+      uri = URI.parse(address)
+      return SecretRedaction::MASK if uri.userinfo.present? || uri.host.blank?
+
+      hidden = uri.query.present? || uri.fragment.present?
+      shown = uri.class.new(uri.scheme, nil, uri.host, uri.port, nil, uri.path, nil, nil, nil).to_s
+      hidden ? "#{shown}?#{SecretRedaction::MASK}" : shown
+    rescue URI::Error
+      SecretRedaction::MASK
+    end
 
     def persisted_and_enabled?
       @connection.persisted? && @connection.enabled?
@@ -77,7 +89,7 @@ module WebPreview
     end
 
     def working?(summary)
-      summary.auth_starting? || @connection.sync_active? || summary.active_backup_total.positive? || summary.backlog_backup_remaining.positive?
+      summary.auth_active? || @connection.sync_active? || summary.active_backup_total.positive? || summary.backlog_backup_remaining.positive?
     end
 
     def connection_json(summary)
@@ -91,8 +103,8 @@ module WebPreview
         enabled: @connection.enabled?,
         allow_private_network: @connection.allow_private_network?,
         timeout_seconds: @connection.timeout_seconds,
-        companion_version: @connection.companion_version.presence,
-        provider_version: @connection.provider_version.presence,
+        companion_version: redact(@connection.companion_version.presence),
+        provider_version: redact(@connection.provider_version.presence),
         status: problem ? "unavailable" : (@connection.enabled? ? (summary.companion_busy? ? "busy" : "ready") : "needs_setup"),
         problem: problem,
         locked: @connection.persisted? && operation_locked?(summary)
@@ -215,10 +227,10 @@ module WebPreview
 
     def item_state(item, latest, resolution)
       if resolution&.matched? then [ "on_server", nil ]
-      elsif resolution&.conflict? then [ "possible_match", nil ]
       elsif latest&.pending? then [ "waiting", nil ]
       elsif latest&.active? then [ latest.recoverable? ? "stalled" : latest.status, nil ]
       elsif latest&.failed? then [ "failed", redact(latest.error_message.presence) ]
+      elsif resolution&.conflict? then [ "possible_match", nil ]
       elsif item.downloaded? then [ "in_libation", nil ]
       else [ "not_backed_up", nil ]
       end
@@ -230,10 +242,10 @@ module WebPreview
       recoverable = active && latest.recoverable?
       label = if @connection.sync_active? then "Library syncing…"
       elsif resolution&.matched? then "Already in Shelfarr"
-      elsif resolution&.conflict? then "Back up separately"
       elsif pending then "Waiting in batch…"
       elsif recoverable then "Check status"
       elsif active then "#{ACTIVE_LABELS.fetch(latest.status, 'Queued')}…"
+      elsif resolution&.conflict? then "Back up separately"
       elsif latest&.failed? then "Retry backup"
       elsif item.downloaded? then "Import into Shelfarr"
       else "Back up"

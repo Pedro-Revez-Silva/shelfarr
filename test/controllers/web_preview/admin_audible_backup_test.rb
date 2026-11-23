@@ -589,4 +589,96 @@ class WebPreview::AdminAudibleBackupTest < ActionDispatch::IntegrationTest
     preview_get web_preview_api_admin_overview_path, user: @admin
     assert_equal [], response.parsed_body.fetch("pending")
   end
+
+  test "companion text never carries the bridge token or a sign-in callback's query into an answer" do
+    connection = create_connection(last_synced_at: 1.hour.ago, sync_status: "failed", last_sync_error: "Libation rejected #{LANDING}")
+    item = connection.owned_library_items.create!(external_id: "B0FAIL0001", title: "Dune", ownership_type: "purchased")
+    item.owned_media_imports.create!(status: "failed", requested_by: @admin, error_message: "Callback #{LANDING} with #{TOKEN}")
+    sign_in_as(@admin)
+    VCR.turned_off do
+      stub_request(:get, "#{COMPANION}/health").to_return(status: 200, body: { status: "ok #{TOKEN}" }.to_json)
+      stub_request(:get, "#{COMPANION}/version").to_return(status: 200, body: { companionVersion: "1.4 #{TOKEN}", libationVersion: "14.2" }.to_json)
+      stub_accounts
+      write :post, web_preview_api_admin_audible_test_path
+      assert_equal "Connected to the Libation companion (1.4 [hidden] / Libation 14.2); status: ok [hidden].", response.parsed_body.dig("outcome", "message")
+      assert_equal "1.4 [hidden]", response.parsed_body.dig("connection", "companion_version")
+      assert_equal "Libation rejected https://www.amazon.com/ap/maplanding?[hidden]", response.parsed_body.dig("sync", "error")
+      state
+      preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+      assert_equal "Callback https://www.amazon.com/ap/maplanding?[hidden] with [hidden]", response.parsed_body.dig("items", 0, "detail")
+    end
+    [ TOKEN, "private-code-8842" ].each { |secret| assert_not_includes response.body, secret }
+  end
+
+  test "two overlapping completions of one sign-in reach the companion once, and a failed completion can be tried again" do
+    connection = create_connection(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
+    workflow = OwnedLibraryConnectionWorkflow.new(connection, user: @admin)
+    token = WebPreview::AudibleBackupJson.sign_in_token(connection, @admin, "companion-session-7")
+    proof = ->(session_id) { WebPreview::AudibleBackupJson.sign_in_token_matches?(connection, @admin, session_id, token) }
+    calls = []
+    second = nil
+    fail_first = true
+    client = Object.new
+    client.define_singleton_method(:complete_auth) do |session_id:, response_url:|
+      calls << session_id
+      second ||= OwnedLibraryConnectionWorkflow.new(OwnedLibraryConnection.find(connection.id), user: @admin).complete_sign_in(response_url: response_url, single_use: true, &proof)
+      raise LibationCompanionClient::ConnectionError, "offline" if calls.one? && fail_first
+    end
+    LibationCompanionClient.stub(:new, client) do
+      first = workflow.complete_sign_in(response_url: LANDING, single_use: true, &proof)
+      assert_equal [ :failed, :expired ], [ first.status, second.status ]
+      assert_equal [ "companion-session-7" ], calls
+      assert connection.reload.auth_pending?
+      assert_equal "companion-session-7", connection.auth_session_id
+
+      fail_first = false
+      second = nil
+      calls.clear
+      retried = OwnedLibraryConnectionWorkflow.new(connection.reload, user: @admin).complete_sign_in(response_url: LANDING, single_use: true, &proof)
+      assert_equal [ :connected, :expired ], [ retried.status, second.status ]
+      assert_equal [ "companion-session-7" ], calls
+    end
+    assert_nil connection.reload.auth_session_id
+  end
+
+  test "polling while an existing-library batch waits between titles never asks the companion, and the card keeps polling" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    item = connection.owned_library_items.create!(external_id: "B0PENDING1", title: "Waiting", ownership_type: "purchased")
+    item.owned_media_imports.create!(status: "pending", requested_by: @admin)
+    VCR.turned_off do
+      3.times do
+        body = state
+        assert_equal [ true, 1, "busy" ], [ body.fetch("working"), body.dig("existing_backup", "remaining"), body.dig("connection", "status") ]
+      end
+    end
+    assert_not_requested :any, /libation\.test/
+  end
+
+  test "a pending sign-in keeps the card polling so an expired one is noticed" do
+    connection = create_connection(auth_session_id: "companion-session-7", auth_login_url: LOGIN, auth_expires_at: 10.minutes.from_now)
+    assert_equal [ "pending", true ], state.values_at("sign_in", "working").then { |sign_in, working| [ sign_in.fetch("state"), working ] }
+    travel 11.minutes do
+      VCR.turned_off do
+        stub_accounts(authenticated: false)
+        body = state
+        assert_equal [ "needs_sign_in", false ], [ body.dig("sign_in", "state"), body.fetch("working") ]
+      end
+    end
+    assert_nil connection.reload.auth_session_id
+  end
+
+  test "a title backed up separately shows its own progress and failure instead of the possible match" do
+    connection = create_connection(last_synced_at: 1.hour.ago)
+    Book.create!(title: "Dune Local", author: "Frank Herbert", book_type: :audiobook, file_path: "/audiobooks/dune-local")
+    item = connection.owned_library_items.create!(external_id: "B0CONF0001", title: "Dune Local", authors: [ "Frank Herbert" ], ownership_type: "purchased")
+    media_import = item.owned_media_imports.create!(status: "queued", requested_by: @admin, separate_edition: true)
+    sign_in_as(@admin)
+    preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+    row = response.parsed_body.dig("items", 0)
+    assert_equal [ "queued", { "label" => "Queued…", "separate_edition" => true, "available" => false } ], row.values_at("state", "action")
+    media_import.update_columns(status: "failed", error_message: "Libation could not download it")
+    preview_get web_preview_api_admin_audible_catalogue_path, user: @admin
+    row = response.parsed_body.dig("items", 0)
+    assert_equal [ "failed", "Libation could not download it", { "label" => "Back up separately", "separate_edition" => true, "available" => true } ], row.values_at("state", "detail", "action")
+  end
 end
