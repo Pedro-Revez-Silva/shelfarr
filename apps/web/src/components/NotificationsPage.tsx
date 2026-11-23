@@ -120,7 +120,9 @@ function useFocusKeptAcross(snapshot: string) {
   useEffect(() => {
     if (seen.current === snapshot) return;
     seen.current = snapshot;
-    if (holding.current && document.activeElement === document.body) zone.current?.querySelector("button")?.focus();
+    if (!holding.current || document.activeElement !== document.body) return;
+    holding.current = false;
+    (zone.current?.querySelector("button") ?? document.getElementById(HEADING_ID))?.focus();
   }, [snapshot]);
   const onFocus = () => {
     holding.current = true;

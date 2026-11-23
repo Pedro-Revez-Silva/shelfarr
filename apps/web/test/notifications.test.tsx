@@ -159,25 +159,91 @@ describe("notifications in the Rails preview", () => {
     expect(document.activeElement).toBe(document.body);
   });
 
-  test("an older session answer that lands after the inbox makes the inbox read again instead of keeping a stale bell", async () => {
-    const first = deferred<{ body: unknown }>();
+  test("a first session answer still in flight when the inbox answers is dropped too", async () => {
+    const held = deferred<{ body: unknown }>();
     let sessions = 0;
-    let lists = 0;
-    const server = railsServer({
-      list: () => {
-        lists += 1;
-        return { body: inbox(SAMPLE) };
-      },
-    });
+    const server = railsServer({ list: () => ({ body: inbox([SAMPLE[0]!]) }) });
     server.on("GET", /\/api\/v1\/session$/, () => {
       sessions += 1;
-      return sessions === 1 ? first.promise : { body: session({ notifications: { url: "/sub/notifications", unread: 2 } }) };
+      return sessions === 1 ? held.promise : { body: session({ notifications: { url: "/sub/notifications", unread: 1 } }) };
     });
     renderApp({ server, url: "/sub/preview/notifications" });
-    expect(await screen.findByText("2 unread · 3 notifications")).toBeTruthy();
-    await act(async () => first.resolve({ body: session({ notifications: { url: "/sub/notifications", unread: 1 } }) }));
-    await waitFor(() => expect(lists).toBeGreaterThanOrEqual(2));
-    expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
+    expect(await screen.findByText("1 unread · 1 notification")).toBeTruthy();
+    await waitFor(() => expect(sessions).toBe(2));
+    await act(async () => held.resolve({ body: session({ notifications: { url: "/sub/notifications", unread: 0 } }) }));
+    expect(await screen.findByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+  });
+
+  test("a session answer still in flight when the inbox answers is dropped, even after leaving the inbox", async () => {
+    const held = deferred<{ body: unknown }>();
+    let sessions = 0;
+    const server = railsServer({ list: () => ({ body: inbox([SAMPLE[0]!]) }) });
+    server.on("GET", /\/api\/v1\/session$/, () => {
+      sessions += 1;
+      if (sessions === 2) return held.promise;
+      return { body: session({ notifications: { url: "/sub/notifications", unread: sessions === 1 ? 0 : 1 } }) };
+    });
+    const { router, services } = renderApp({ server, url: "/sub/preview/library" });
+    expect(await screen.findByRole("link", { name: "Notifications" })).toBeTruthy();
+    act(() => {
+      void services.queryClient.invalidateQueries({ queryKey: services.keys.session, exact: true });
+    });
+    await waitFor(() => expect(sessions).toBe(2));
+    await act(async () => router.navigate({ to: "/notifications" }));
+    expect(await screen.findByText("1 unread · 1 notification")).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+    await act(async () => router.navigate({ to: "/library" }));
+    await act(async () => held.resolve({ body: session({ notifications: { url: "/sub/notifications", unread: 0 } }) }));
+    await waitFor(() => expect(sessions).toBe(3));
+    expect(screen.getByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+  });
+
+  test("the inbox's count stays on the bell when the session cannot be read again", async () => {
+    let sessions = 0;
+    const list = deferred<{ body: unknown }>();
+    const server = railsServer({ list: () => list.promise });
+    server.on("GET", /\/api\/v1\/session$/, () => {
+      sessions += 1;
+      return sessions === 1 ? { body: session({ notifications: { url: "/sub/notifications", unread: 0 } }) } : { status: 503, body: { error: "server_busy" } };
+    });
+    renderApp({ server, url: "/sub/preview/notifications" });
+    expect(await screen.findByRole("link", { name: "Notifications" })).toBeTruthy();
+    await act(async () => list.resolve({ body: inbox([SAMPLE[0]!]) }));
+    expect(await screen.findByText("1 unread · 1 notification")).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+    await waitFor(() => expect(sessions).toBeGreaterThanOrEqual(2));
+    expect(screen.getByRole("link", { name: "Notifications, 1 unread" })).toBeTruthy();
+    expect(screen.getByText("1 unread · 1 notification")).toBeTruthy();
+  }, 15000);
+
+  test("a write reads the inbox once afterwards", async () => {
+    const server = railsServer();
+    server.on("POST", /\/notifications\/read$/, () => ({ body: { account: ACCOUNT, unread: 0, total: 3, changed: 2 } }));
+    renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Mark all as read" }));
+    expect(await screen.findByText("All notifications marked as read.")).toBeTruthy();
+    await waitFor(() => expect(server.called("GET", /\/notifications$/)).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(server.called("GET", /\/notifications$/)).toHaveLength(2);
+  });
+
+  test("a confirmation emptied by another tab's clear hands focus to the heading", async () => {
+    let items = [SAMPLE[0]!];
+    const server = railsServer({ list: () => ({ body: inbox(items) }) });
+    const { services } = renderApp({ server, url: "/sub/preview/notifications" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Clear all" }));
+    expect(document.activeElement?.textContent).toBe("Clear all");
+    items = [];
+    act(() => {
+      void services.queryClient.invalidateQueries({ queryKey: services.keys.notifications });
+    });
+    expect(await screen.findByRole("heading", { name: "No notifications" })).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.id).toBe("notifications-heading"));
+    expect(server.called("POST", /clear$/)).toHaveLength(0);
   });
 
   test("clear all asks first, can be kept, deletes only what was shown and moves focus to the heading", async () => {
@@ -280,25 +346,32 @@ describe("notifications in the Rails preview", () => {
     expect(await screen.findByRole("heading", { name: /^Book Ready/ })).toBeTruthy();
   }, 15000);
 
-  test("the bell takes the inbox's newer unread count without waiting for another session read", async () => {
+  test("an inbox answer sets the bell at once and has the session read again", async () => {
     const list = deferred<{ body: unknown }>();
     const server = railsServer({ list: () => list.promise });
     let sessions = 0;
     server.on("GET", /\/api\/v1\/session$/, () => {
       sessions += 1;
-      return { body: session({ notifications: { url: "/sub/notifications", unread: 7 } }) };
+      return { body: session({ notifications: { url: "/sub/notifications", unread: sessions === 1 ? 7 : 2 } }) };
     });
     renderApp({ server, url: "/sub/preview/notifications" });
     expect(await screen.findByRole("link", { name: "Notifications, 7 unread" })).toBeTruthy();
     await act(async () => list.resolve({ body: inbox(SAMPLE) }));
     expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
-    expect(sessions).toBe(1);
+    await waitFor(() => expect(sessions).toBe(2));
+    expect(server.called("GET", /\/notifications$/)).toHaveLength(1);
   });
 
   test("a confirmed write sets the bell even when the session cannot be read again", async () => {
     let read = false;
     let sessions = 0;
-    const server = railsServer({ list: () => ({ body: inbox(read ? SAMPLE.map((entry) => ({ ...entry, read_at: entry.read_at ?? "2026-11-21T08:00:00.000Z" })) : SAMPLE) }) });
+    const first = deferred<void>();
+    const server = railsServer({
+      list: async () => {
+        await first.promise;
+        return { body: inbox(read ? SAMPLE.map((entry) => ({ ...entry, read_at: entry.read_at ?? "2026-11-21T08:00:00.000Z" })) : SAMPLE) };
+      },
+    });
     server.on("GET", /\/api\/v1\/session$/, () => {
       sessions += 1;
       return sessions === 1 ? { body: session({ notifications: { url: "/sub/notifications", unread: 2 } }) } : { status: 503, body: { error: "server_busy" } };
@@ -310,6 +383,7 @@ describe("notifications in the Rails preview", () => {
     renderApp({ server, url: "/sub/preview/notifications" });
     const user = userEvent.setup();
     expect(await screen.findByRole("link", { name: "Notifications, 2 unread" })).toBeTruthy();
+    first.resolve();
     await user.click(await screen.findByRole("button", { name: "Mark all as read" }));
     expect(await screen.findByText("All notifications marked as read.")).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Notifications" })).toBeTruthy();
