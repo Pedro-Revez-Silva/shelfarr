@@ -127,6 +127,8 @@ function submittedValue(draft: DraftValue): string | boolean {
 }
 
 type CardError = { text: string; serial: number };
+type StepAction = { kind: "save"; cardId: string } | { kind: "skip"; exit: boolean };
+type Confirmation = { opened: SetupState; count: number; action: StepAction };
 type StepProps = { state: SetupState; revision: number; moveFocus: boolean; rereading: boolean; said: Said | null; onSaid: (said: Said | null) => void; onReplaced: () => void };
 
 function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onReplaced }: StepProps) {
@@ -137,7 +139,7 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
   const [edits, setEdits] = useState<Record<string, Drafts>>({});
   const [errors, setErrors] = useState<Record<string, CardError>>({});
   const [skipError, setSkipError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<{ count: number; action: () => void } | null>(null);
+  const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const stepList = useRef<HTMLOListElement>(null);
   const position = state.steps.findIndex((entry) => entry.id === state.step) + 1;
@@ -163,7 +165,12 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
     if (list && current && list.scrollWidth > list.clientWidth) list.scrollLeft = current.offsetLeft - list.offsetLeft - 16;
   }, []);
 
-  useEffect(() => setConfirming(null), [writing, state]);
+  const confirmation = confirming && confirming.opened === state && !writing ? confirming : null;
+  useEffect(() => {
+    if (!confirming || confirmation) return;
+    setConfirming(null);
+    heading.current?.focus();
+  }, [confirming, confirmation]);
 
   const go = (next: SetupState | null) => {
     dirty.current = false;
@@ -174,50 +181,52 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
     else void navigate({ to: "/library" });
   };
 
-  const confirmFirst = (others: string[], action: () => void) => {
-    if (others.length > 0) setConfirming({ count: others.length, action });
-    else action();
-  };
-
   const fail = (cardId: string, text: string) => setErrors((current) => ({ ...current, [cardId]: { text, serial: (current[cardId]?.serial ?? 0) + 1 } }));
 
-  const submit = (card: SetupCard, drafts: Drafts) => {
-    if (writing) return;
-    confirmFirst(
-      changedCards.filter((id) => id !== card.id),
-      () => {
-        setErrors(({ [card.id]: _cleared, ...rest }) => rest);
-        const values: SetupValues = Object.fromEntries(card.fields.map((field) => [field.key, submittedValue(drafts[field.key] ?? "")]));
-        if (card.phase) values.phase = card.phase;
-        save.mutate(values, {
-          onSuccess: (answer) => {
-            if (answer.kind === "rejected") return fail(card.id, answer.message);
-            const next = answer.saved.setup;
-            onSaid(next ? { step: next.step, revision: revision + 1, notice: answer.saved.outcome.message, alert: answer.saved.alert } : null);
-            go(next);
-          },
-          onError: (failure) => fail(card.id, setupFailureText(failure)),
-        });
+  const sendSave = (card: SetupCard) => {
+    setErrors(({ [card.id]: _cleared, ...rest }) => rest);
+    const values: SetupValues = Object.fromEntries(card.fields.map((field) => [field.key, submittedValue(edits[card.id]?.[field.key] ?? initialDraft(field))]));
+    if (card.phase) values.phase = card.phase;
+    save.mutate(values, {
+      onSuccess: (answer) => {
+        if (answer.kind === "rejected") return fail(card.id, answer.message);
+        const next = answer.saved.setup;
+        onSaid(next ? { step: next.step, revision: revision + 1, notice: answer.saved.outcome.message, alert: answer.saved.alert } : null);
+        go(next);
+      },
+      onError: (failure) => fail(card.id, setupFailureText(failure)),
+    });
+  };
+
+  const sendSkip = (exit: boolean) => {
+    setSkipError(null);
+    skip.mutate(
+      { step: state.step, exit },
+      {
+        onSuccess: (answer) => {
+          onSaid(null);
+          go(answer.setup);
+        },
+        onError: (error) => setSkipError(setupFailureText(error)),
       },
     );
   };
 
-  const skipStep = (exit: boolean) => {
+  const run = (action: StepAction) => {
     if (writing) return;
-    confirmFirst(changedCards, () => {
-      setSkipError(null);
-      skip.mutate(
-        { step: state.step, exit },
-        {
-          onSuccess: (answer) => {
-            onSaid(null);
-            go(answer.setup);
-          },
-          onError: (error) => setSkipError(setupFailureText(error)),
-        },
-      );
-    });
+    if (action.kind === "skip") return sendSkip(action.exit);
+    const card = state.cards.find((entry) => entry.id === action.cardId);
+    if (card) sendSave(card);
   };
+
+  const ask = (others: number, action: StepAction) => {
+    if (writing) return;
+    if (others > 0) setConfirming({ opened: state, count: others, action });
+    else run(action);
+  };
+
+  const submit = (card: SetupCard) => ask(changedCards.filter((id) => id !== card.id).length, { kind: "save", cardId: card.id });
+  const skipStep = (exit: boolean) => ask(changedCards.length, { kind: "skip", exit });
 
   return (
     <div className="setup">
@@ -266,7 +275,7 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
           writing={writing}
           saving={save.isPending && save.variables?.phase === (card.phase ?? undefined)}
           onEdit={(key, value) => setEdits((current) => ({ ...current, [card.id]: { ...current[card.id], [key]: value } }))}
-          onSubmit={(drafts) => submit(card, drafts)}
+          onSubmit={() => submit(card)}
         />
       ))}
       <div className="setup-moves">
@@ -299,13 +308,13 @@ function SetupStep({ state, revision, moveFocus, rereading, said, onSaid, onRepl
           }}
         />
       ) : null}
-      {confirming && !writing ? (
+      {confirmation ? (
         <LeaveDialog
-          count={confirming.count}
+          count={confirmation.count}
           onStay={() => setConfirming(null)}
           onLeave={() => {
             setConfirming(null);
-            confirming.action();
+            run(confirmation.action);
           }}
         />
       ) : null}
@@ -356,7 +365,7 @@ type CardProps = {
   writing: boolean;
   saving: boolean;
   onEdit: (key: string, value: DraftValue) => void;
-  onSubmit: (drafts: Drafts) => void;
+  onSubmit: () => void;
 };
 
 function SetupStepCard({ card, edits, error, writing, saving, onEdit, onSubmit }: CardProps) {
@@ -372,7 +381,7 @@ function SetupStepCard({ card, edits, error, writing, saving, onEdit, onSubmit }
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    onSubmit(drafts);
+    onSubmit();
   };
 
   const form = (

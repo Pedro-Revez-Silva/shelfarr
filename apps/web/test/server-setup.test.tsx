@@ -678,10 +678,24 @@ describe("Setup in the Rails preview", () => {
     await userEvent.click(within(cardSection("Libraries")).getByRole("button", { name: "Save and continue" }));
     expect(await screen.findByRole("dialog", { name: "Leave without saving?" })).toBeTruthy();
 
+    let together = false;
+    const watcher = new MutationObserver(() => {
+      const select = document.querySelector<HTMLSelectElement>("select[name='audiobook_library_id']");
+      const leave = Array.from(document.querySelectorAll<HTMLButtonElement>("dialog button")).find((button) => button.textContent === "Leave and discard");
+      if (select?.value === "new" && leave) {
+        together = true;
+        leave.click();
+      }
+    });
+    watcher.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
     stored = "new";
     await services.queryClient.invalidateQueries();
     await waitFor(() => expect((within(cardSection("Libraries")).getByLabelText("Audiobook library") as HTMLSelectElement).value).toBe("new"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    watcher.disconnect();
+    expect(together).toBe(false);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(server.called("PUT", /audiobookshelf$/)).toEqual([]);
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Audiobookshelf", level: 2 }));
   });
 });
