@@ -8,6 +8,7 @@ require:
   - ./lib/rubocop/cop/shelfarr/unkeyed_faraday_memo.rb
   - ./lib/rubocop/cop/shelfarr/self_enqueue.rb
   - ./lib/rubocop/cop/shelfarr/force_encoding.rb
+  - ./lib/rubocop/cop/shelfarr/restated_comment.rb
 
 Shelfarr/SkippedTest:
   Enabled: true
@@ -54,6 +55,10 @@ Shelfarr/ForceEncoding:
   Include:
     - "app/**/*.rb"
     - "lib/**/*.rb"
+
+Shelfarr/RestatedComment:
+  Enabled: true
+  Severity: warning
 
 AllCops:
   inherit_mode:
