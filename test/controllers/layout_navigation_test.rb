@@ -87,9 +87,9 @@ class LayoutNavigationTest < ActionDispatch::IntegrationTest
     assert_select "noscript style", count: 0
     assert_select "#main-menu" do |menus|
       assert_includes menus.first["class"].split, "lg:hidden"
-      assert_not_includes menus.first["class"].split, "hidden"
+      assert_includes menus.first["class"].split, "hidden"
     end
-    assert_select "button[data-mobile-menu-target='button'].hidden"
+    assert_select "button[data-mobile-menu-target='button']:not(.hidden)"
   end
 
   test "both shells show that this server runs the beta" do

@@ -3,13 +3,6 @@ import { Controller } from "@hotwired/stimulus"
 export default class extends Controller {
   static targets = ["menu", "button", "openIcon", "closeIcon"]
 
-  connect() {
-    if (!this.hasMenuTarget) return
-
-    this.render(false)
-    if (this.hasButtonTarget) this.buttonTarget.classList.remove("hidden")
-  }
-
   toggle() {
     this.render(this.menuTarget.classList.contains("hidden"))
   }

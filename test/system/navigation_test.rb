@@ -56,6 +56,7 @@ class NavigationTest < ApplicationSystemTestCase
       sign_in_as(users(:two))
       visit requests_path
       assert_nil page.evaluate_script("window.Turbo")
+      assert page.evaluate_script("matchMedia('(scripting: none)').matches")
       assert_selector "#main-menu", visible: true
       assert_no_selector "button[aria-controls='main-menu']", visible: true
 

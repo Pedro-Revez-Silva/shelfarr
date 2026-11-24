@@ -16,3 +16,8 @@ select:-webkit-autofill:active {
   caret-color: #ffffff !important;
   transition: background-color 5000s ease-in-out 0s;
 }
+@media (scripting: none) and (width < 64rem) {
+  #main-menu { display: block; }
+  button[data-mobile-menu-target="button"] { display: none; }
+}
+

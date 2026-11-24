@@ -99,7 +99,7 @@
                   </span>
                 <% end %>
               <% end %>
-              <button type="button" class="hidden text-gray-400 hover:text-white transition p-1" data-mobile-menu-target="button" data-action="mobile-menu#toggle" aria-label="Menu" aria-controls="main-menu" aria-expanded="false">
+              <button type="button" class="text-gray-400 hover:text-white transition p-1" data-mobile-menu-target="button" data-action="mobile-menu#toggle" aria-label="Menu" aria-controls="main-menu" aria-expanded="false">
                 <svg data-mobile-menu-target="openIcon" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
@@ -118,7 +118,7 @@
       </div>
 
       <% if authenticated? %>
-        <div id="main-menu" data-mobile-menu-target="menu" class="lg:hidden border-t border-gray-800">
+        <div id="main-menu" data-mobile-menu-target="menu" class="hidden lg:hidden border-t border-gray-800">
           <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex flex-col">
             <%= navigation_link "Library", consumer_library_path, :library, class: "py-2 font-medium transition", data: { action: "mobile-menu#close" } %>
             <%= navigation_link "Discover", discover_entry_path, :discover, class: "py-2 font-medium transition", data: { action: "mobile-menu#close" } %>
