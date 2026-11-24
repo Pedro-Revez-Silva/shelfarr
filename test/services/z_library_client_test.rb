@@ -1813,6 +1813,187 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search uses another domain's HTML when the selected domain's HTML search is bot-walled" do
+    configure_saved_zlibrary_session("https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_request(:post, "https://z-library.ec/eapi/book/search")
+        .to_return(status: 400, body: { success: 0, error: "Some errors occured." }.to_json, headers: json_headers)
+      stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => saved_zlibrary_cookie })
+        .to_return(status: 400, body: { success: 0, error: "Some errors occured." }.to_json, headers: json_headers)
+      walled_html = stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      recovered = stub_request(:get, "https://z-lib.gd/s/Middlemarch?extensions%5B%5D=EPUB&extensions%5B%5D=PDF")
+        .with(headers: { "Cookie" => saved_zlibrary_cookie })
+        .to_return(status: 200, body: zlibrary_search_html, headers: { "Content-Type" => "text/html" })
+      login_post = stub_request(:post, %r{/eapi/user/login\z})
+
+      results = ZLibraryClient.search("Middlemarch")
+
+      assert_equal "999", results.first.id
+      assert_equal "Test Book", results.first.title
+      assert_requested recovered
+      assert_requested walled_html
+      assert_not_requested login_post
+    end
+  end
+
+  test "search reports a bot wall only after every configured domain is exhausted" do
+    configure_saved_zlibrary_session("https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_request(:post, %r{\Ahttps://(?:z-library\.ec|z-lib\.gd)/eapi/book/search\z})
+        .to_return(status: 400, body: { success: 0, error: "Some errors occured." }.to_json, headers: json_headers)
+      stub_request(:get, %r{\Ahttps://(?:z-library\.ec|z-lib\.gd)/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      login_post = stub_request(:post, %r{/eapi/user/login\z})
+
+      error = assert_raises(ZLibraryClient::SearchBotWallError) { ZLibraryClient.search("Middlemarch") }
+
+      assert_match(/search is bot-walled/i, error.message)
+      assert_match(/z-library\.ec/, error.message)
+      assert_match(/z-lib\.gd/, error.message)
+      assert_requested :get, %r{\Ahttps://z-library\.ec/s/}
+      assert_requested :get, %r{\Ahttps://z-lib\.gd/s/}
+      assert_not_requested login_post
+    end
+  end
+
+  test "search tries a saved session on a domain whose eAPI probe returns HTTP 400" do
+    configure_saved_zlibrary_session("https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.gd/eapi/info/domains")
+        .to_return(status: 400, body: { success: 0, error: "Some errors occured." }.to_json, headers: json_headers)
+      stub_request(:post, "https://z-library.ec/eapi/book/search")
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      walled_html = stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      recovered = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => saved_zlibrary_cookie })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 5, hash: "abc", name: "Middlemarch", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+      login_post = stub_request(:post, %r{/eapi/user/login\z})
+
+      results = ZLibraryClient.search("Middlemarch")
+
+      assert_equal "5", results.first.id
+      assert_requested :get, "https://z-lib.gd/eapi/info/domains"
+      assert_requested recovered
+      assert_not_requested walled_html
+      assert_not_requested login_post
+    end
+  end
+
+  test "search reuses a password session when an alternate domain probe is bot-walled" do
+    SettingsService.set(:zlibrary_url, "https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_zlibrary_login_success("z-library.ec")
+      alternate_login = stub_zlibrary_login_success("z-lib.gd")
+      stub_request(:get, "https://z-lib.gd/eapi/info/domains")
+        .to_return(status: 200, body: diamwall_html, headers: { "Content-Type" => "text/html" })
+      stub_request(:post, "https://z-library.ec/eapi/book/search")
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      walled_html = stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      recovered = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+        .with(headers: { "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 200,
+          body: {
+            success: 1,
+            books: [ { id: 5, hash: "abc", name: "Middlemarch", extension: "epub" } ]
+          }.to_json,
+          headers: json_headers
+        )
+
+      assert_equal "5", ZLibraryClient.search("Middlemarch").first.id
+      assert_equal "5", ZLibraryClient.search("Another").first.id
+
+      assert_requested recovered, times: 2
+      assert_requested :post, "https://z-library.ec/eapi/user/login", times: 1
+      assert_not_requested alternate_login
+      assert_not_requested walled_html
+    end
+  end
+
+  test "search uses HTML on a domain whose eAPI probe returns HTTP 400" do
+    configure_saved_zlibrary_session("https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.gd/eapi/info/domains")
+        .to_return(status: 400, body: { success: 0, error: "Some errors occured." }.to_json, headers: json_headers)
+      stub_request(:post, %r{\Ahttps://(?:z-library\.ec|z-lib\.gd)/eapi/book/search\z})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+      recovered = stub_request(:get, "https://z-lib.gd/s/Middlemarch?extensions%5B%5D=EPUB&extensions%5B%5D=PDF")
+        .with(headers: { "Cookie" => saved_zlibrary_cookie })
+        .to_return(status: 200, body: zlibrary_search_html, headers: { "Content-Type" => "text/html" })
+      login_post = stub_request(:post, %r{/eapi/user/login\z})
+
+      assert_equal "999", ZLibraryClient.search("Middlemarch").first.id
+      assert_requested recovered
+      assert_not_requested login_post
+    end
+  end
+
+  test "search does not call a mirror whose domain probe times out" do
+    configure_saved_zlibrary_session("https://z-library.ec\nhttps://z-lib.gd")
+
+    VCR.turned_off do
+      stub_request(:get, "https://z-lib.gd/eapi/info/domains")
+        .to_raise(Faraday::TimeoutError.new("probe timed out"))
+      stub_request(:post, "https://z-library.ec/eapi/book/search")
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return { |request| { status: 307, headers: { "Location" => request.uri.to_s } } }
+      alternate_search = stub_request(:post, "https://z-lib.gd/eapi/book/search")
+
+      error = assert_raises(ZLibraryClient::SearchBotWallError) { ZLibraryClient.search("Middlemarch") }
+
+      assert_match(/z-library\.ec/, error.message)
+      assert_no_match(/z-lib\.gd/, error.message)
+      assert_not_requested alternate_search
+    end
+  end
+
+  test "search logs a bot wall status, content type, and redacted excerpt" do
+    configure_saved_zlibrary_session("https://z-library.ec")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key-secret")
+
+    VCR.turned_off do
+      body = "<html><title>DiamWall</title><body>Checking your browser remix_userkey=saved-key-secret</body></html>"
+      headers = { "Content-Type" => "text/html; charset=utf-8" }
+      stub_request(:post, "https://z-library.ec/eapi/book/search")
+        .to_return(status: 517, body: body, headers: headers)
+      stub_request(:get, %r{\Ahttps://z-library\.ec/s/})
+        .to_return(status: 517, body: body, headers: headers)
+
+      error = nil
+      log = capture_zlibrary_logs do
+        error = assert_raises(ZLibraryClient::SearchBotWallError) { ZLibraryClient.search("Middlemarch") }
+      end
+
+      assert_match(/z-library\.ec/, error.message)
+      assert_no_match(/saved-key-secret/, error.message)
+      assert_match(/status=517/, log)
+      assert_match(%r{text/html}, log)
+      assert_match(/Checking your browser/, log)
+      assert_match(%r{/eapi/book/search}, log)
+      assert_match(/remix_userkey=\[redacted\]/, log)
+      assert_no_match(/saved-key-secret/, log)
+    end
+  end
+
   test "search uses HTML on an alternate when its eAPI needs fallback and the first mirror is bot-walled" do
     SettingsService.set(:zlibrary_url, "https://z-library.sk\nhttps://z-lib.gd")
     SettingsService.set(:zlibrary_email, "")
@@ -2081,6 +2262,29 @@ class ZLibraryClientTest < ActiveSupport::TestCase
   end
 
   private
+
+  def configure_saved_zlibrary_session(url)
+    SettingsService.set(:zlibrary_url, url)
+    SettingsService.set(:zlibrary_email, "")
+    SettingsService.set(:zlibrary_password, "")
+    SettingsService.set(:zlibrary_remix_userid, "12345")
+    SettingsService.set(:zlibrary_remix_userkey, "saved-key")
+  end
+
+  def saved_zlibrary_cookie
+    "remix_userid=12345; remix_userkey=saved-key"
+  end
+
+  def capture_zlibrary_logs
+    output = StringIO.new
+    capture_logger = ActiveSupport::Logger.new(output)
+    Rails.logger.broadcast_to(capture_logger)
+    yield
+    output.string
+  ensure
+    Rails.logger.stop_broadcasting_to(capture_logger) if capture_logger
+    capture_logger&.close
+  end
 
   def diamwall_html
     "<!DOCTYPE html><html><title>DiamWall</title><body>Checking your browser before the challenge</body></html>"
