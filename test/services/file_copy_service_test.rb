@@ -748,6 +748,62 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     assert_equal [ "copied.txt", "hardlinked.txt" ], Dir.children(@dest_dir).sort
   end
 
+  test "first publication accepts a cleanup quarantine owned like other new directories" do
+    destination = File.join(@dest_dir, "copied.txt")
+    hardlinked = File.join(@dest_dir, "hardlinked.txt")
+    # Share and download-client trees often stamp new directories with the
+    # parent owner instead of Process.euid. The first import publishes the
+    # file, then removes its private lock through one of these directories.
+    share_owner = Process.uid + 25
+
+    with_inherited_directory_owner(share_owner) do
+      FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+      FileCopyService.hardlink_noreplace(
+        @src_file,
+        hardlinked,
+        root: @dest_dir,
+        source_root: nil
+      )
+      assert_equal [ File.stat(@src_file).dev, File.stat(@src_file).ino ],
+        [ File.stat(hardlinked).dev, File.stat(hardlinked).ino ]
+      assert FileCopyService.remove_source_file(FileCopyService.snapshot_source_file(@src_file))
+    end
+
+    assert_equal "test content", File.binread(destination)
+    assert_equal "test content", File.binread(hardlinked)
+    assert_not File.exist?(@src_file)
+    assert_equal [ "copied.txt", "hardlinked.txt" ], Dir.children(@dest_dir).sort
+  end
+
+  test "cleanup quarantine still rejects a directory owned differently from new directories" do
+    destination = File.join(@dest_dir, "copied.txt")
+    foreign_uid = Process.uid + 70
+    quarantine_inodes = []
+    real_mkdir = FileCopyService.method(:native_mkdirat)
+
+    with_directory_uids_for_inodes(quarantine_inodes, foreign_uid) do
+      FileCopyService.stub(:native_mkdirat, lambda { |directory_fd, basename, mode|
+        result = real_mkdir.call(directory_fd, basename, mode)
+        if basename.start_with?(".shelfarr-copy-quarantine-", ".shelfarr-source-quarantine-")
+          quarantine_inodes << File.stat(File.join(@dest_dir, basename)).ino
+        end
+        result
+      }) do
+        error = assert_raises(FileCopyService::UnsafePathError) do
+          FileCopyService.cp_noreplace(@src_file, destination, root: @dest_dir)
+        end
+
+        assert_equal "cleanup quarantine is owned by another user", error.message
+      end
+    end
+
+    assert_equal "test content", File.binread(@src_file)
+    assert_not File.symlink?(destination)
+    leftovers = Dir.children(@dest_dir)
+    assert_empty leftovers.grep(/\A\.shelfarr-(?:copy|source)-quarantine-/)
+    assert_empty leftovers.grep(/\A\.shelfarr-owner-probe-/)
+  end
+
   test "hardlink_noreplace never overwrites an occupied destination" do
     destination = File.join(@dest_dir, "hardlinked.txt")
     File.binwrite(destination, "existing library bytes")
@@ -5687,6 +5743,28 @@ class FileCopyServiceTest < ActiveSupport::TestCase
     end
 
     FileCopyService.stub(:with_pinned_regular_child, settling_open, &operation)
+  end
+
+  def with_inherited_directory_owner(owner_uid, &operation)
+    with_directory_uids_for_inodes(nil, owner_uid, &operation)
+  end
+
+  def with_directory_uids_for_inodes(inodes, owner_uid)
+    File::Stat.class_eval do
+      alias_method :uid_before_owner_stub, :uid unless method_defined?(:uid_before_owner_stub)
+      define_method(:uid) do
+        if directory? && (inodes.nil? || inodes.include?(ino))
+          owner_uid
+        else
+          uid_before_owner_stub
+        end
+      end
+    end
+    yield
+  ensure
+    File::Stat.class_eval do
+      alias_method :uid, :uid_before_owner_stub if method_defined?(:uid_before_owner_stub)
+    end
   end
 
   def with_root_squashed_creation(directory, effective_uid: 0, &operation)

@@ -5550,12 +5550,12 @@ class FileCopyService
         quarantine = open_pinned_directory_child(parent, basename)
         begin
           stat = quarantine.stat
-          owner_trusted = if expected_owner_uid
-            stat.uid == expected_owner_uid
-          else
-            private_entry_owned_by_process?(stat, parent)
-          end
-          unless owner_trusted
+          unless cleanup_quarantine_owned_by_creator?(
+            quarantine,
+            parent,
+            expected_owner_uid: expected_owner_uid,
+            require_empty: expected_owner_uid.nil?
+          )
             raise UnsafePathError, "cleanup quarantine is owned by another user"
           end
 
@@ -5578,6 +5578,44 @@ class FileCopyService
           raise
         end
       end
+    end
+
+    # mkdirat does not return a file descriptor, so a writer who can replace
+    # the new name can hand us their directory before we open it. Process.euid
+    # catches that when the filesystem records the creator. Share folders and
+    # download-client trees often record the parent owner (or one mapped uid)
+    # on every new directory instead. A second directory created the same way
+    # has that same uid; a directory with any other uid is still foreign.
+    # Symlinks and non-directories are rejected before this check.
+    def cleanup_quarantine_owned_by_creator?(quarantine, parent, expected_owner_uid: nil, require_empty: false)
+      stat = quarantine.stat
+      return stat.uid == expected_owner_uid if expected_owner_uid
+      return true if private_entry_owned_by_process?(stat, parent)
+      return false if stat.uid == Process.euid || Process.euid.zero? || trust_nfs_uid_squash?
+      return false if require_empty && pinned_directory_children(quarantine).any?
+
+      created_directory_owner_uid(parent, stat.dev) == stat.uid
+    end
+
+    def created_directory_owner_uid(parent, device)
+      basename = ".shelfarr-owner-probe-#{SecureRandom.hex(16)}.tmp"
+      created = false
+      probe = nil
+      native_mkdirat(parent.fileno, basename, 0o700)
+      created = true
+      probe = open_pinned_directory_child(parent, basename)
+      stat = probe.stat
+      uid = stat.uid if stat.dev == device && pinned_directory_children(probe).empty?
+      removed = remove_empty_cleanup_quarantine!(parent, basename, probe, file_identity(stat))
+      removed == true ? uid : nil
+    rescue SystemCallError, UnsafePathError => error
+      if created
+        native_unlinkat(parent.fileno, basename, AT_REMOVEDIR) rescue RemoteResult::Failed.new($!)
+        native_unlinkat(parent.fileno, basename) rescue RemoteResult::Failed.new($!)
+      end
+      RemoteResult::Failed.new(error)
+    ensure
+      probe&.close unless probe&.closed?
     end
 
     def restore_quarantined_child!(quarantine, parent, basename)
