@@ -46,4 +46,5 @@ Each feature file starts with an H1 and one paragraph of user-visible behavior. 
 - [Requests](./requests.md) covers the empty requests list.
 - [Library](./library.md) covers the empty library.
 - [Settings](./settings.md) covers changing one field and the stored row.
+- [Telegram groups](./telegram-groups.md) covers pause, resume, and delete for one approved group.
 - [Uploads](./uploads.md) covers supported formats, folder selection and request fulfillment.

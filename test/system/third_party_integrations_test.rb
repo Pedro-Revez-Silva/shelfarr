@@ -739,27 +739,29 @@ class ThirdPartyIntegrationsTest < ApplicationSystemTestCase
     )
     sign_in_as(@admin)
 
-    visit admin_settings_path
-    click_button "Integrations"
-
+    visit "#{admin_settings_path}#integrations"
+    assert_text "Telegram Group Authorization"
     assert_text "Book Club"
     assert_text "Authorized"
-
-    click_button "Pause Book Club"
+    find_button("Pause Book Club").click
     assert_text "Telegram group paused: Book Club"
-    click_button "Integrations"
-    assert_text "Paused"
     assert authorization.reload.paused?
 
-    click_button "Resume Book Club"
+    visit "#{admin_settings_path}#integrations"
+    assert_text "Telegram Group Authorization"
+    assert_text "Paused"
+    find_button("Resume Book Club").click
     assert_text "Telegram group resumed: Book Club"
-    click_button "Integrations"
-    assert_text "Authorized"
     assert_not authorization.reload.paused?
 
-    click_button "Delete Book Club"
+    visit "#{admin_settings_path}#integrations"
+    assert_text "Telegram Group Authorization"
+    assert_text "Authorized"
+    find_button("Delete Book Club").click
     assert_text "Telegram group removed: Book Club"
-    click_button "Integrations"
+
+    visit "#{admin_settings_path}#integrations"
+    assert_text "Telegram Group Authorization"
     assert_no_text "-100999"
     assert_not TelegramChatAuthorization.exists?(authorization.id)
   end
