@@ -38,6 +38,7 @@ class ZLibraryClient
   DOMAIN_HEALTH_TTL_SECONDS = 5.minutes
   # DiamWall answers some VPN and datacenter addresses with 517, not a 3xx.
   BOT_WALL_HTTP_STATUS = 517
+  MAX_BOT_WALL_EXCERPT = 160
   # Mirrors that are not in the preferred default list, but are still Z-Library
   # hosts a login redirect may land on.
   ADDITIONAL_KNOWN_ZLIBRARY_HOSTS = %w[
@@ -959,8 +960,9 @@ class ZLibraryClient
       walled = search_exchange_walled?(exchange)
       walled_domains = []
       walled_domains << auth[:domain] if walled
-      # Alternates that reject eAPI can still serve HTML. Try those before the walled mirror.
-      html_fallback_auths = walled ? [] : nil
+      # Rejected and walled mirrors can still serve HTML. A wall is final only
+      # after every configured domain has been tried.
+      html_fallback_auths = []
 
       if response.nil? || search_html_fallback_response?(response)
         alternate_results = search_eapi_alternate_domains(
@@ -1003,14 +1005,29 @@ class ZLibraryClient
 
       if search_html_fallback_response?(response)
         Rails.logger.warn "[ZLibraryClient] eAPI search unavailable; falling back to HTML search"
-        return search_html(
+        result = read_html_search(
           auth,
-          query,
+          query: query,
           file_types: file_types,
           limit: limit,
           language: language,
           after_attempt: after_attempt
         )
+        return result unless result == :bot_wall
+
+        walled_domains << auth[:domain]
+        recovered = search_html_fallbacks(
+          html_fallback_auths,
+          walled_domains,
+          query: query,
+          file_types: file_types,
+          limit: limit,
+          language: language,
+          after_attempt: after_attempt
+        )
+        return recovered unless recovered.nil?
+
+        raise_search_bot_wall!(walled_domains)
       end
 
       remember_search_origin!(auth, exchange)
@@ -1073,7 +1090,11 @@ class ZLibraryClient
       walled_domains: nil,
       html_fallback_auths: nil
     )
-      each_alternate_auth(current_auth, after_attempt: after_attempt) do |auth|
+      each_alternate_auth(
+        current_auth,
+        after_attempt: after_attempt,
+        reuse_session_when_probe_answers: true
+      ) do |auth|
         exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
         if search_exchange_walled?(exchange)
           walled_domains << auth[:domain] if walled_domains
@@ -1133,17 +1154,21 @@ class ZLibraryClient
       nil
     end
 
-    def each_alternate_auth(current_auth, after_attempt: nil)
+    def each_alternate_auth(current_auth, after_attempt: nil, reuse_session_when_probe_answers: false)
       signature = credential_signature
 
       configured_uris.each do |uri|
         base_url = uri.to_s.delete_suffix("/")
         next if base_url == current_auth[:base_url]
-        healthy_uri = probe_domain(uri, after_attempt: after_attempt)
-        next unless healthy_uri.is_a?(URI::HTTP)
-        next if healthy_uri.to_s.delete_suffix("/") == current_auth[:base_url]
 
-        auth = auth_for_domain(healthy_uri, after_attempt: after_attempt)
+        healthy_uri = probe_domain(uri, after_attempt: after_attempt)
+        auth = auth_for_alternate(
+          current_auth,
+          uri,
+          healthy_uri,
+          after_attempt: after_attempt,
+          reuse_session_when_probe_answers: reuse_session_when_probe_answers
+        )
         next if auth.nil? || (auth.is_a?(Hash) && auth[:error].present?)
 
         Rails.logger.info "[ZLibraryClient] Retrying eAPI via #{auth[:domain]}"
@@ -1153,6 +1178,26 @@ class ZLibraryClient
       rescue JSON::ParserError, Faraday::Error, Error => e
         Rails.logger.debug "[ZLibraryClient] eAPI retry failed on #{uri.host}: #{e.message}"
       end
+    end
+
+    def auth_for_alternate(current_auth, uri, healthy_uri, after_attempt:, reuse_session_when_probe_answers:)
+      if healthy_uri.is_a?(URI::HTTP)
+        return if healthy_uri.to_s.delete_suffix("/") == current_auth[:base_url]
+
+        return auth_for_domain(healthy_uri, after_attempt: after_attempt)
+      end
+
+      # /eapi/info/domains can reject a mirror whose search still accepts this session.
+      # Reuse it; posting login again is what Z-Library counts as too many logins.
+      return unless reuse_session_when_probe_answers && probe_answered?(healthy_uri)
+      return if current_auth[:remix_userid].blank? || current_auth[:remix_userkey].blank?
+
+      current_auth.merge(domain: uri.host, base_url: uri.to_s.delete_suffix("/"))
+    end
+
+    def probe_answered?(probed)
+      probed == :bot_wall || probed.to_s.match?(/\AHTTP \d{3}\z/) ||
+        [ "invalid response", "invalid session" ].include?(probed)
     end
 
     def search_html_fallbacks(auths, walled_domains, query:, file_types:, limit:, language:, after_attempt:)
@@ -1173,20 +1218,6 @@ class ZLibraryClient
       end
 
       nil
-    end
-
-    def search_html(auth, query, file_types:, limit:, language:, after_attempt: nil)
-      result = read_html_search(
-        auth,
-        query: query,
-        file_types: file_types,
-        limit: limit,
-        language: language,
-        after_attempt: after_attempt
-      )
-      return result unless result == :bot_wall
-
-      raise_search_bot_wall!([ auth[:domain] ])
     end
 
     def html_search_or_bot_wall(auth, walled_domains, query:, file_types:, limit:, language:, after_attempt:)
@@ -1226,14 +1257,59 @@ class ZLibraryClient
     # A rotating clearance cookie never repeats a visit key, so that wall hits
     # the redirect cap instead. Exhausting those same-URL hops is still a wall.
     def search_exchange_walled?(exchange)
-      return true if exchange[:bot_wall]
-      return true if exchange[:error] == "redirect loop"
-      return true if same_url_redirects_exhausted?(exchange)
-
+      walled = exchange[:bot_wall] || exchange[:error] == "redirect loop" || same_url_redirects_exhausted?(exchange)
       response = exchange[:response]
-      return false unless response
+      walled ||= response && (response.status == BOT_WALL_HTTP_STATUS || bot_wall_response?(response))
+      return false unless walled
 
-      response.status == BOT_WALL_HTTP_STATUS || bot_wall_response?(response)
+      note_bot_wall(exchange)
+      true
+    end
+
+    def note_bot_wall(exchange)
+      return if exchange[:bot_wall_logged]
+
+      exchange[:bot_wall_logged] = true
+      response = exchange[:response]
+      status = response&.status || exchange[:error] || "none"
+      content_type = response_content_type(response)
+      Rails.logger.warn(
+        "[ZLibraryClient] Bot wall response from #{bot_wall_target(exchange[:url])}: " \
+        "status=#{status} content_type=#{content_type.inspect} excerpt=#{bot_wall_excerpt(response).inspect}"
+      )
+    end
+
+    def bot_wall_target(url)
+      uri = URI.parse(url.to_s)
+      "#{uri.host.presence || "unknown"}#{uri.path.presence || "/"}"
+    rescue URI::InvalidURIError
+      "unknown"
+    end
+
+    def response_content_type(response)
+      return "" unless response
+
+      value = response.headers["content-type"]
+      value = value.first if value.is_a?(Array)
+      value.to_s.gsub(/[[:cntrl:]]+/, " ").squish.truncate(80)
+    end
+
+    def bot_wall_excerpt(response)
+      return "" unless response
+
+      text = response_body_string(response).scrub("?").gsub(/[[:cntrl:]]+/, " ").squish
+      redact_bot_wall_secrets(text).truncate(MAX_BOT_WALL_EXCERPT, omission: "...")
+    end
+
+    def redact_bot_wall_secrets(text)
+      redacted = text.gsub(/(remix_user(?:id|key)|password|cookie)\s*[=:]\s*[^;\s"'&,]+/i, "\\1=[redacted]")
+      [ SettingsService.get(:zlibrary_password), SettingsService.get(:zlibrary_remix_userkey) ].each do |secret|
+        value = secret.to_s
+        next if value.length < 4
+
+        redacted = redacted.gsub(value, "[redacted]")
+      end
+      redacted
     end
 
     def same_url_redirects_exhausted?(exchange)
