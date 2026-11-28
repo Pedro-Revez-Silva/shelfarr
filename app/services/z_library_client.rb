@@ -355,9 +355,15 @@ class ZLibraryClient
       header = combined_cookie_header(cookies, url, seed_cookies)
       connection.public_send(method, url) do |req|
         req.headers["Accept"] = accept if accept.present?
+        # Book search returns 400 Access denied unless this mobile source is set. Login does not.
+        req.headers["source"] = "android" if eapi_url?(url)
         req.headers["Cookie"] = header if header.present?
         req.body = body if body.present? && method != :get
       end
+    end
+
+    def eapi_url?(url)
+      URI.parse(url).path.to_s.start_with?("/eapi/")
     end
 
     def combined_cookie_header(cookies, url, seed_cookies)

@@ -952,6 +952,41 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search returns eAPI books after login when the mirror denies a request without the android source" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      stub_request(:post, "https://z-library.sk/eapi/book/search").to_return do |request|
+        cookie = request.headers["Cookie"].to_s
+        accepted = request.headers["Source"] == "android" &&
+          cookie == "remix_userid=12345; remix_userkey=abc123"
+        if accepted
+          {
+            status: 200,
+            body: {
+              success: 1,
+              books: [ { id: 999, hash: "deadbeef", name: "Test Book", extension: "epub" } ]
+            }.to_json,
+            headers: json_headers
+          }
+        else
+          {
+            status: 400,
+            body: { success: 0, error: "Access denied" }.to_json,
+            headers: json_headers
+          }
+        end
+      end
+      html_search = stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+
+      results = ZLibraryClient.search("test")
+
+      assert_equal "999", results.first.id
+      assert_equal "Test Book", results.first.title
+      assert_not_requested html_search
+    end
+  end
+
   test "search falls back to HTML results when eAPI returns HTML" do
     VCR.turned_off do
       stub_zlibrary_login_success
