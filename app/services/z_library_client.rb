@@ -11,6 +11,7 @@ class ZLibraryClient
   class Error < StandardError; end
   class ConnectionError < Error; end
   class SearchBotWallError < ConnectionError; end
+  class SearchRejectedError < Error; end
   class AuthenticationError < Error; end
   class NotConfiguredError < Error; end
   class RateLimitError < Error; end
@@ -355,9 +356,15 @@ class ZLibraryClient
       header = combined_cookie_header(cookies, url, seed_cookies)
       connection.public_send(method, url) do |req|
         req.headers["Accept"] = accept if accept.present?
+        # Book search returns 400 Access denied unless this mobile source is set. Login does not.
+        req.headers["source"] = "android" if eapi_url?(url)
         req.headers["Cookie"] = header if header.present?
         req.body = body if body.present? && method != :get
       end
+    end
+
+    def eapi_url?(url)
+      URI.parse(url).path.to_s.start_with?("/eapi/")
     end
 
     def combined_cookie_header(cookies, url, seed_cookies)
@@ -910,8 +917,8 @@ class ZLibraryClient
         yield auth
       rescue Faraday::ConnectionFailed, Faraday::TimeoutError, Faraday::SSLError,
              JSON::ParserError, Error => e
-        # Refreshing the session repeats a rotation that already found every mirror walled.
-        raise if e.is_a?(SearchBotWallError)
+        # Login again cannot clear an eAPI rejection or a finished bot-wall rotation.
+        raise if e.is_a?(SearchBotWallError) || e.is_a?(SearchRejectedError)
 
         raise ConnectionError, "Failed to connect to Z-Library: #{e.message}" if transport_error?(e) && attempted_retry
 
@@ -957,6 +964,7 @@ class ZLibraryClient
 
       exchange = post_search_exchange(auth, payload, after_attempt: after_attempt)
       response = usable_search_response(exchange)
+      raise_search_rejected!(auth[:domain]) if eapi_access_denied?(response) == true
       walled = search_exchange_walled?(exchange)
       walled_domains = []
       walled_domains << auth[:domain] if walled
@@ -1103,6 +1111,7 @@ class ZLibraryClient
         end
 
         response = usable_search_response(exchange)
+        raise_search_rejected!(auth[:domain]) if eapi_access_denied?(response) == true
         if response && search_html_fallback_response?(response)
           html_fallback_auths << auth if html_fallback_auths
           next
@@ -1176,6 +1185,8 @@ class ZLibraryClient
         cache_auth(signature, auth)
         yield auth
       rescue JSON::ParserError, Faraday::Error, Error => e
+        raise if e.is_a?(SearchRejectedError)
+
         Rails.logger.debug "[ZLibraryClient] eAPI retry failed on #{uri.host}: #{e.message}"
       end
     end
@@ -1441,7 +1452,22 @@ class ZLibraryClient
     end
 
     def search_html_fallback_response?(response)
+      return false if eapi_access_denied?(response) == true
+
       response.status == 400 || eapi_html_response?(response) || generic_zlibrary_error?(response)
+    end
+
+    def eapi_access_denied?(response)
+      return false unless response&.status == 400
+
+      data = parse_json_body(response)
+      data.is_a?(Hash) && data["success"] == 0 && data["error"].to_s.strip.casecmp?("Access denied")
+    rescue JSON::ParserError => error
+      RemoteResult::Failed.new(error)
+    end
+
+    def raise_search_rejected!(domain)
+      raise SearchRejectedError, "Z-Library eAPI rejected the search (#{domain})"
     end
 
     def download_html_fallback_response?(response)
