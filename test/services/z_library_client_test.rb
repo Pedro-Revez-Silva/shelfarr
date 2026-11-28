@@ -987,6 +987,28 @@ class ZLibraryClientTest < ActiveSupport::TestCase
     end
   end
 
+  test "search reports an eAPI rejection when book search returns Access denied" do
+    VCR.turned_off do
+      stub_zlibrary_login_success
+      search = stub_request(:post, "https://z-library.sk/eapi/book/search")
+        .with(headers: { "Source" => "android", "Cookie" => "remix_userid=12345; remix_userkey=abc123" })
+        .to_return(
+          status: 400,
+          body: { success: 0, error: "Access denied" }.to_json,
+          headers: json_headers
+        )
+      html_search = stub_request(:get, %r{\Ahttps://z-library\.sk/s/})
+        .to_return(status: 517, body: access_denied_html, headers: { "Content-Type" => "text/html" })
+
+      error = assert_raises(ZLibraryClient::Error) { ZLibraryClient.search("test") }
+
+      refute_kind_of ZLibraryClient::SearchBotWallError, error
+      assert_match(/eAPI rejected the search \(z-library\.sk\)/, error.message)
+      assert_requested search
+      assert_not_requested html_search
+    end
+  end
+
   test "search falls back to HTML results when eAPI returns HTML" do
     VCR.turned_off do
       stub_zlibrary_login_success
