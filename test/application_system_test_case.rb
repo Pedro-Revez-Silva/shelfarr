@@ -40,3 +40,4 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
 end
 
 Capybara::Node::Base.prepend(ChromeStaleNodeRetry)
+require_relative "support/chrome_storage_reset"
